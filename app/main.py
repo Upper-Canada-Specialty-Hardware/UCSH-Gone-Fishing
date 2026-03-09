@@ -28,32 +28,30 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
-    # 2. Acquire initial Graph API token
-    await token_manager.get_token()
-    logger.info("Graph API token acquired")
+    # 2. Connect to Graph API and SharePoint
+    renewal_task = None
+    try:
+        await token_manager.get_token()
+        logger.info("Graph API token acquired")
 
-    # 3. Resolve + cache SharePoint site ID
-    await sp_client.resolve_site_id()
-    logger.info(f"SharePoint site ID resolved: {sp_client.site_id}")
+        await sp_client.resolve_site_id()
+        logger.info(f"SharePoint site ID resolved: {sp_client.site_id}")
 
-    # 4. Verify SP access
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY, top=1, select=["Title"]
-    )
-    if items:
-        logger.info(f"SharePoint access verified — read: {items[0].get('fields', {}).get('Title', '?')}")
-    else:
-        logger.warning("SharePoint access check returned no items")
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_STAFF_DIRECTORY, top=1, select=["Title"]
+        )
+        if items:
+            logger.info(f"SharePoint access verified — read: {items[0].get('fields', {}).get('Title', '?')}")
+        else:
+            logger.warning("SharePoint access check returned no items")
 
-    # 5. Register/renew SP webhook subscriptions
-    from app.tasks.subscription_manager import register_all_subscriptions
-    await register_all_subscriptions()
+        from app.tasks.subscription_manager import register_all_subscriptions
+        await register_all_subscriptions()
 
-    # 6. Start background subscription renewal task
-    renewal_task = start_subscription_renewal_task()
-
-    # 7. Initialize lock manager (already a module-level singleton)
-    logger.info("EmployeeLockManager ready")
+        renewal_task = start_subscription_renewal_task()
+        logger.info("EmployeeLockManager ready")
+    except Exception:
+        logger.exception("Graph/SharePoint startup failed — app will serve but SP features are unavailable until restart")
 
     logger.info("Startup complete — serving requests")
     yield
