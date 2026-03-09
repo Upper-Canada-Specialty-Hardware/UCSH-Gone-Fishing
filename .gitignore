@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 entra-app-registration.txt
+twillio-creds.txt
 
 # Claude Code
 .claude/
