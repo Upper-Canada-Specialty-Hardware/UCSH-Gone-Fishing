@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # Server
     APPROVAL_LINK_SECRET: str
-    BASE_URL: str = "https://gone-fishing.up.railway.app"
+    BASE_URL: str = "https://gone-fishing-production-fcc4.up.railway.app"
 
     # SharePoint
     SP_SITE_HOST: str = "ucshca.sharepoint.com"
