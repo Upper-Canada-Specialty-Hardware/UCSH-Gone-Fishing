@@ -8,6 +8,9 @@ entra-app-registration.txt
 .claude/
 CLAUDE.md
 
+# Dev specs (local only)
+Dev Plan/
+
 # Python
 __pycache__/
 *.py[cod]
