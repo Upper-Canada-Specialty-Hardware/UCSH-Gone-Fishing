@@ -1,0 +1,9 @@
+Column (click to edit)	Type	Required
+Title	Single line of text	
+Date	Date and Time	
+Province	Choice	
+Notes:	Single line of text	
+Modified	Date and Time	
+Created	Date and Time	
+Created By	Person or Group	
+Modified By	Person or Group

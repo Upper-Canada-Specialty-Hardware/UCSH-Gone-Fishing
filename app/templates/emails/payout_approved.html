@@ -1,0 +1,12 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #16a34a;">Payout Request #{{ request_id }} Approved</h2>
+  <p>Your Payout request has been approved.</p>
+  <h3>Updated Balances</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr><td style="padding: 4px;">Vacation:</td><td>{{ balances.CurrentVacationBalance }} days</td></tr>
+    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ balances.CurrentSickDayBalance }} days</td></tr>
+    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ balances.CarryOver }} days</td></tr>
+    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ balances.CurrentOvertimeBalance }} days</td></tr>
+    <tr><td style="padding: 4px;">Payout:</td><td>{{ balances.Payout }} days</td></tr>
+  </table>
+</div>

@@ -1,0 +1,16 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  {% if is_half_friday %}
+  <p style="color: #b45309; font-weight: bold;">Half-Day Friday detected from the requested date.</p>
+  {% endif %}
+  <h2 style="color: #1e40af;">Time Make-Up Request</h2>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <tr><td style="padding: 8px; font-weight: bold;">Requested by:</td><td style="padding: 8px;">{{ submitter_name }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Time Make-Up Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Duration:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }} hours</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Details:</td><td style="padding: 8px;">{{ fields.get('Title', '') }}</td></tr>
+  </table>
+  <p style="margin: 24px 0;">
+    <a href="{{ approve_url }}" style="display: inline-block; padding: 12px 32px; background: #22c55e; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin-right: 12px;">Approve</a>
+    <a href="{{ reject_url }}" style="display: inline-block; padding: 12px 32px; background: #ef4444; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Reject</a>
+  </p>
+</div>

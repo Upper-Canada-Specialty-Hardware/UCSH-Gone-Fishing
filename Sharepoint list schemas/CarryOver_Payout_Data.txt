@@ -1,0 +1,16 @@
+Column (click to edit)	Type	Required
+Title	Single line of text	
+Submitted By	Person or Group	
+Manager	Person or Group	
+Type of Request	Choice	
+Days	Number	
+Managertxt	Single line of text	
+System State	Choice	
+EmployeeID	Number	
+ManagerID	Number	
+Status	Choice	
+NewBalance	Single line of text	
+Modified	Date and Time	
+Created	Date and Time	
+Created By	Person or Group	
+Modified By	Person or Group

@@ -1,0 +1,22 @@
+Column (click to edit)	Type	Used in
+AllManagers	Person or Group	Item
+Approve	Hyperlink or Picture	Item
+Approve Processed Flag	Choice	Item
+Approved Date	Date and Time	Item
+Created	Date and Time	
+Days	Number	Item
+End Date	Date and Time	Item
+Leave Type	Choice	Item
+Manager	Person or Group	Item
+Managertxt	Single line of text	Item
+Modified	Date and Time	
+New Balances	Single line of text	Item
+Reject	Hyperlink or Picture	Item
+Staff Department	Choice	Item
+Staff Location	Choice	Item
+Start Date	Date and Time	Item
+Status	Choice	Item
+Submitted By	Person or Group	Item
+Title	Single line of text	Item
+Created By	Person or Group	
+Modified By	Person or Group

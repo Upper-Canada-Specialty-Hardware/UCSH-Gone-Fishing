@@ -1,0 +1,9 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #dc2626;">Partial Day Request - Auto Rejected</h2>
+  <p>Your Partial Day-Off has been auto-rejected by the system due to the requested date being a company holiday; <strong>{{ holiday_name }}</strong>.</p>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Title:</td><td style="padding: 8px;">{{ fields.get('Title', '') }}</td></tr>
+  </table>
+</div>

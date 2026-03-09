@@ -1,0 +1,6 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #b45309;">Jury Duty / Bereavement Alert</h2>
+  <p>Employee (<strong>{{ submitter_name }}</strong>) has leave for <strong>{{ fields.get('LeaveType', '') }}</strong>.</p>
+  <p>Details:<br>{{ fields.get('Title', '') }}</p>
+  <p>{{ fields.get('StartDate', '') }} to {{ fields.get('EndDate', '') }}</p>
+</div>

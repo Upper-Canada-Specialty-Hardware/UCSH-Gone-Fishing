@@ -1,0 +1,24 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #1e40af;">{{ request_type }} Request #{{ request_id }}</h2>
+  <p>Submitted by <strong>{{ employee_name }}</strong></p>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <tr><td style="padding: 8px; font-weight: bold;">Request Type:</td><td style="padding: 8px;">{{ request_type }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Days Requested:</td><td style="padding: 8px;">{{ days }}</td></tr>
+  </table>
+  <h3>Current Balances</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr><td style="padding: 4px;">Vacation:</td><td>{{ current_vacation }} days</td></tr>
+    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ current_carryover }} days</td></tr>
+    <tr><td style="padding: 4px;">Payout:</td><td>{{ current_payout }} days</td></tr>
+  </table>
+  <h3>Projected Balances (if approved)</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr><td style="padding: 4px;">Vacation:</td><td>{{ new_vacation }} days</td></tr>
+    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ new_carryover }} days</td></tr>
+    <tr><td style="padding: 4px;">Payout:</td><td>{{ new_payout }} days</td></tr>
+  </table>
+  <p style="margin: 24px 0;">
+    <a href="{{ approve_url }}" style="display: inline-block; padding: 12px 32px; background: #22c55e; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin-right: 12px;">Approve</a>
+    <a href="{{ reject_url }}" style="display: inline-block; padding: 12px 32px; background: #ef4444; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Reject</a>
+  </p>
+</div>

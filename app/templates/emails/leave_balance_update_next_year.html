@@ -1,0 +1,11 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #1e40af;">Updated Leave Balance</h2>
+  <p>Updated Balances for (<strong>{{ employee_name }}</strong>):</p>
+  <p style="color: #b45309; font-style: italic;">The approved request is dated for the next calendar year. The request's deductions were applied to your Overtime and Carry Over balances.</p>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <tr><td style="padding: 8px;">Vacation:</td><td style="padding: 8px;">{{ balances.CurrentVacationBalance }} days</td></tr>
+    <tr><td style="padding: 8px;">Sick/Personal:</td><td style="padding: 8px;">{{ balances.CurrentSickDayBalance }} days</td></tr>
+    <tr><td style="padding: 8px;">Carry Over:</td><td style="padding: 8px;">{{ balances.CarryOver }} days</td></tr>
+    <tr><td style="padding: 8px;">Overtime:</td><td style="padding: 8px;">{{ balances.CurrentOvertimeBalance }} days</td></tr>
+  </table>
+</div>

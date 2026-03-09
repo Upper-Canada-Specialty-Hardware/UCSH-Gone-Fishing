@@ -1,0 +1,27 @@
+Column (click to edit)	Type	Required
+Title	Single line of text	
+Location	Choice	
+Department	Choice	
+Salary Hourly	Choice	
+Supervisor	Single line of text	
+Vacation Entitlement	Number	
+Current Vacation Balance	Number	
+Sick Day Entitlement	Number	
+Current Sick Day Balance	Number	
+Carry Over Balance	Number	
+Payout	Number	
+Email Address	Single line of text	
+Comments	Multiple lines of text	
+Extension	Number	
+Cell Number	Single line of text	
+Birthday	Date and Time	
+Current Make Up Balance	Number	
+SupervisorLink	Person or Group	
+TitleLink	Person or Group	
+System Check	Choice	
+AllManagers	Person or Group	
+Request Allow Date	Date and Time	
+Modified	Date and Time	
+Created	Date and Time	
+Created By	Person or Group	
+Modified By	Person or Group

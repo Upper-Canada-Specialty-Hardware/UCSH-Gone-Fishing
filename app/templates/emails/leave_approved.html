@@ -1,0 +1,10 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #16a34a;">Leave Request: Approved</h2>
+  <p>Your leave request has been approved by <strong>{{ manager_name }}</strong>.</p>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
+  </table>
+</div>

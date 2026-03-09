@@ -1,0 +1,15 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #dc2626;">{{ submitter_name }} Overtime Rejected</h2>
+  <h3>Time Make-Up Request Details</h3>
+  <p>{{ fields.get('Title', '') }}</p>
+  <p>Date: {{ fields.get('StartDate', '') }}<br>Hours: {{ fields.get('Hours', '') }}<br>Rejected by: {{ manager_name }}</p>
+  {% if balances %}
+  <h3>Current Balances</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr><td style="padding: 4px;">Vacation:</td><td>{{ balances.CurrentVacationBalance }} Days</td></tr>
+    <tr><td style="padding: 4px;">Sick Leave:</td><td>{{ balances.CurrentSickDayBalance }} Days</td></tr>
+    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ balances.CarryOver }} Days</td></tr>
+    <tr><td style="padding: 4px;">Time Make-Up:</td><td>{{ balances.CurrentOvertimeBalance }} Hours</td></tr>
+  </table>
+  {% endif %}
+</div>
