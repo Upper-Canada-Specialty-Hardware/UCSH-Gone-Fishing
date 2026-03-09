@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
 
+from app.config import settings
 from app.tasks.change_processor import process_notification
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,10 @@ async def sharepoint_webhook(
     notifications = body.get("value", [])
     logger.info("Received %d SP webhook notification(s)", len(notifications))
 
-    for notification in notifications:
-        asyncio.create_task(process_notification(notification))
+    if settings.PROCESSING_ENABLED:
+        for notification in notifications:
+            asyncio.create_task(process_notification(notification))
+    else:
+        logger.info("Processing disabled — acknowledging %d notification(s) without processing", len(notifications))
 
     return JSONResponse(content={}, status_code=202)

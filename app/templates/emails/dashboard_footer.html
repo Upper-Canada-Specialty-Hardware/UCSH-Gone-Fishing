@@ -1,0 +1,8 @@
+{% if dashboard_links %}
+<div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-family: 'Segoe UI', sans-serif;">
+  <p style="color: #6b7280; font-size: 13px; margin-bottom: 8px;">View your dashboards:</p>
+  {% for link in dashboard_links %}
+  <a href="{{ link.url }}" style="display: inline-block; padding: 8px 20px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px; font-size: 13px; margin-right: 8px; margin-bottom: 4px;">{{ link.label }}</a>
+  {% endfor %}
+</div>
+{% endif %}

@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -66,6 +67,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="UCSH Gone Fishing", lifespan=lifespan)
 
+# CORS — allow dashboard frontend
+cors_origins = [o for o in [settings.DASHBOARD_FRONTEND_URL] if o]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 templates = Jinja2Templates(directory="app/templates")
 
 # Register routers
@@ -74,9 +86,11 @@ from app.routes.forms import router as forms_router
 from app.routes.approval import router as approval_router
 from app.routes.webhooks import router as webhooks_router
 from app.routes.twilio import router as twilio_router
+from app.routes.dashboard import router as dashboard_router
 
 app.include_router(health_router)
 app.include_router(forms_router, prefix="/api/forms", tags=["forms"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])

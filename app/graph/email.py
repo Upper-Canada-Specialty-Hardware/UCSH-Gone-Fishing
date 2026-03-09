@@ -6,6 +6,24 @@ from app.graph.client import graph_client
 logger = logging.getLogger(__name__)
 
 
+async def send_email_with_dashboard(
+    to: list[str],
+    subject: str,
+    html_body: str,
+    primary_employee_id: str | int | None = None,
+    **kwargs,
+):
+    """Send email and automatically append dashboard footer for the primary recipient."""
+    footer = ""
+    if primary_employee_id and settings.DASHBOARD_FRONTEND_URL:
+        try:
+            from app.services.dashboard_tokens import build_dashboard_footer_html
+            footer = await build_dashboard_footer_html(primary_employee_id)
+        except Exception as e:
+            logger.debug("Could not build dashboard footer: %s", e)
+    await send_email(to=to, subject=subject, html_body=html_body, dashboard_footer=footer, **kwargs)
+
+
 async def send_email(
     to: list[str],
     subject: str,
@@ -13,10 +31,12 @@ async def send_email(
     cc: list[str] | None = None,
     importance: str = "Normal",
     attachments: list[dict] | None = None,
+    dashboard_footer: str = "",
 ):
+    full_body = html_body + dashboard_footer if dashboard_footer else html_body
     message = {
         "subject": subject,
-        "body": {"contentType": "HTML", "content": html_body},
+        "body": {"contentType": "HTML", "content": full_body},
         "toRecipients": [{"emailAddress": {"address": addr}} for addr in to],
         "importance": importance,
     }

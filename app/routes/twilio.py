@@ -26,8 +26,14 @@ async def receive_sms(request: Request):
     if not validate_twilio_signature(url, params, signature):
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
-    body = params.get("Body", "").strip()
     from_number = params.get("From", "")
+
+    # Gate behind processing toggle
+    if not settings.PROCESSING_ENABLED:
+        await send_sms(from_number, "System is currently in reporting-only mode. Approvals via SMS are disabled.")
+        return ""
+
+    body = params.get("Body", "").strip()
     # Extract last 10 digits
     from_digits = re.sub(r"\D", "", from_number)[-10:]
 

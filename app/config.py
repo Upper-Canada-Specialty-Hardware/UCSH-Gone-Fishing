@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     SP_LIST_CARRYOVER_PAYOUT: str = "bcfd8cc6-b29f-4d6f-a449-cb1d0a9251bb"
     SP_LIST_COMPANY_HOLIDAYS: str = "391e299d-c537-44c4-90c8-462e2ca2db5f"
 
+    # Processing toggle — when False, app is read-only (dashboards only)
+    PROCESSING_ENABLED: bool = False
+
+    # Dashboard
+    DASHBOARD_FRONTEND_URL: str = ""
+
     # Email
     SENDER_EMAIL: str = "hr@ucshca.onmicrosoft.com"
 

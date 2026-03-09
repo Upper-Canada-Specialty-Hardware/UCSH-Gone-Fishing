@@ -66,5 +66,28 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
     return await get_employee_by_name(supervisor)
 
 
+async def is_manager(employee_name: str) -> bool:
+    """Check if anyone lists this employee as their Supervisor."""
+    items = await sp_client.get_list_items(
+        settings.SP_LIST_STAFF_DIRECTORY,
+        filter=f"fields/Supervisor eq '{_escape_odata(employee_name)}'",
+        top=1,
+        select=["Title"],
+    )
+    return len(items) > 0
+
+
+async def get_employee_roles(employee: dict) -> list[str]:
+    """Determine all dashboard roles for an employee."""
+    fields = employee.get("fields", {})
+    name = fields.get("Title", "")
+    roles = ["employee"]
+    if await is_manager(name):
+        roles.append("manager")
+    if name in ADMIN_NAMES:
+        roles.append("admin")
+    return roles
+
+
 def _escape_odata(value: str) -> str:
     return value.replace("'", "''")

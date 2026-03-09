@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
-from app.graph.email import send_email
+from app.graph.email import send_email, send_email_with_dashboard
 from app.services.employee import (
     get_employee_by_name,
     get_employee_by_email,
@@ -259,10 +259,11 @@ async def send_approval_email(leave_request_id: str | int):
     from app.templates_render import render_leave_approval_email
     html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url)
 
-    await send_email(
+    await send_email_with_dashboard(
         to=[mgr_fields.get("EmailAddress", "")],
         subject=f"Leave Request - {submitter_name}",
         html_body=html,
+        primary_employee_id=manager_id,
     )
 
     # Send SMS to manager if they have a cell number
@@ -306,10 +307,11 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     # Send approval confirmation email
     from app.templates_render import render_leave_approved
     html = render_leave_approved(fields, mgr_fields.get("Title", ""))
-    await send_email(
+    await send_email_with_dashboard(
         to=[emp_fields.get("EmailAddress", "")],
         subject=f"{submitter_name} - Leave Request: Approved",
         html_body=html,
+        primary_employee_id=employee_id,
     )
 
     # Hourly staff — no balance adjustment
@@ -363,10 +365,11 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     if mgr_fields.get("EmailAddress"):
         recipients.append(mgr_fields["EmailAddress"])
 
-    await send_email(
+    await send_email_with_dashboard(
         to=recipients,
         subject=f"Updated Leave Balance - {submitter_name}",
         html_body=html,
+        primary_employee_id=employee_id,
     )
 
     # Log new balances to SP item
@@ -405,10 +408,12 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
 
     from app.templates_render import render_leave_rejected
     html = render_leave_rejected(fields, mgr_fields.get("Title", ""))
-    await send_email(
+    emp_id = employee["id"] if employee else None
+    await send_email_with_dashboard(
         to=[emp_fields.get("EmailAddress", "")],
         subject=f"{submitter_name} - Leave Request: Rejected",
         html_body=html,
+        primary_employee_id=emp_id,
     )
 
     return {"status": "rejected"}

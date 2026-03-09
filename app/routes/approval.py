@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, Query
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from app.config import settings
 from app.services.approval_links import validate_approval_token
 from app.services.leave_requests import approve_leave_request, reject_leave_request
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
@@ -33,6 +34,13 @@ async def handle_approval(
     mgr: str = Query(...),
     exp: str = Query(...),
 ):
+    # Gate behind processing toggle
+    if not settings.PROCESSING_ENABLED:
+        return templates.TemplateResponse(
+            "approval_error.html",
+            {"request": request, "error": "System is currently in reporting-only mode. Approvals are disabled.", "request_id": request_id},
+        )
+
     # Validate HMAC token
     valid, error_msg = validate_approval_token(
         request_type, request_id, action, mgr, token, exp

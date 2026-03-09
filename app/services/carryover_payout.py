@@ -3,7 +3,7 @@ from datetime import date
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
-from app.graph.email import send_email
+from app.graph.email import send_email, send_email_with_dashboard
 from app.services.employee import get_employee_by_email, get_employee_by_id, get_manager_for_employee
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
@@ -187,10 +187,11 @@ async def run_approval_pipeline(request_id: str | int):
         approve_url, reject_url,
     )
     subject = f"{request_type} Request #{request_id} Submitted by {employee_name}"
-    await send_email(
+    await send_email_with_dashboard(
         to=[mgr_fields.get("EmailAddress", ""), "mandyl@ucsh.com"],
         subject=subject,
         html_body=html,
+        primary_employee_id=manager_id,
     )
     logger.info("Sent approval email for CO/PO #%s", request_id)
 
@@ -290,12 +291,13 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
         html = render_payout_approved(request_id, employee_name, balances)
         subject = f"Payout Request #{request_id} Approved"
 
-    await send_email(
+    await send_email_with_dashboard(
         to=[ef.get("EmailAddress", "")],
         cc=[mgr_fields.get("EmailAddress", "")],
         subject=subject,
         html_body=html,
         importance="High",
+        primary_employee_id=employee_id,
     )
 
     return {"status": "approved", "balances": balances}
@@ -331,11 +333,12 @@ async def reject_carryover_payout(request_id: str | int, manager_id: str | int) 
         html = render_payout_rejected(request_id, fields)
         subject = f"Payout Request #{request_id} Rejected"
 
-    await send_email(
+    await send_email_with_dashboard(
         to=[emp_fields.get("EmailAddress", "")],
         cc=[mgr_fields.get("EmailAddress", "")],
         subject=subject,
         html_body=html,
+        primary_employee_id=employee_id,
     )
 
     return {"status": "rejected"}

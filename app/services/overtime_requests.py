@@ -3,7 +3,7 @@ from datetime import date
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
-from app.graph.email import send_email
+from app.graph.email import send_email, send_email_with_dashboard
 from app.services.employee import (
     get_employee_by_name,
     get_employee_by_id,
@@ -143,10 +143,11 @@ async def send_approval_email(request_id: str | int, employee: dict, manager: di
     if is_hf:
         subject += " - Half-Day Friday Detected"
 
-    await send_email(
+    await send_email_with_dashboard(
         to=[mgr_fields.get("EmailAddress", "")],
         subject=subject,
         html_body=html,
+        primary_employee_id=manager_id,
     )
     logger.info("Sent approval email for overtime #%s", request_id)
 
@@ -232,10 +233,11 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
 
     from app.templates_render import render_overtime_approved
     html = render_overtime_approved(fields, submitter_name, mgr_fields.get("Title", ""), balances)
-    await send_email(
+    await send_email_with_dashboard(
         to=[emp_fields.get("EmailAddress", ""), mgr_fields.get("EmailAddress", "")],
         subject=f"{submitter_name} Overtime Approved - {fields.get('StartDate', '')}",
         html_body=html,
+        primary_employee_id=employee_id,
     )
 
     return {"status": "approved", "balances": balances}
@@ -276,10 +278,12 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
 
     from app.templates_render import render_overtime_rejected
     html = render_overtime_rejected(fields, submitter_name, mgr_fields.get("Title", ""), balances)
-    await send_email(
+    emp_id = employee["id"] if employee else None
+    await send_email_with_dashboard(
         to=[emp_fields.get("EmailAddress", ""), mgr_fields.get("EmailAddress", "")],
         subject=f"{submitter_name} Overtime Rejected - {fields.get('StartDate', '')}",
         html_body=html,
+        primary_employee_id=emp_id,
     )
 
     return {"status": "rejected"}

@@ -1,0 +1,68 @@
+import axios from 'axios';
+
+const API_URL = import.meta.env.VITE_API_URL || '';
+
+const api = axios.create({
+  baseURL: `${API_URL}/api/dashboard`,
+});
+
+// Attach auth params from sessionStorage to every request
+api.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem('dashboard_token');
+  const role = sessionStorage.getItem('dashboard_role');
+  const uid = sessionStorage.getItem('dashboard_uid');
+  const exp = sessionStorage.getItem('dashboard_exp');
+
+  if (token && role && uid && exp) {
+    config.params = {
+      ...config.params,
+      token,
+      role,
+      uid,
+      exp,
+    };
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      sessionStorage.clear();
+      window.location.hash = '#/expired';
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+
+// Config
+export const getConfig = () => api.get('/config');
+
+// Employee
+export const getMyBalances = () => api.get('/me/balances');
+export const getMyRequests = (params?: Record<string, string>) =>
+  api.get('/me/requests', { params });
+
+// Manager
+export const getTeamMembers = () => api.get('/team/members');
+export const getTeamBalances = () => api.get('/team/balances');
+export const getTeamPending = () => api.get('/team/pending');
+export const getTeamRequests = (params?: Record<string, string>) =>
+  api.get('/team/requests', { params });
+export const getTeamCalendar = (params?: Record<string, string>) =>
+  api.get('/team/calendar', { params });
+export const approveRequest = (type: string, id: string) =>
+  api.post(`/team/approve/${type}/${id}`);
+export const rejectRequest = (type: string, id: string) =>
+  api.post(`/team/reject/${type}/${id}`);
+
+// Admin
+export const getAdminBalances = (params?: Record<string, string>) =>
+  api.get('/admin/balances', { params });
+export const getAdminRequests = (params?: Record<string, string>) =>
+  api.get('/admin/requests', { params });
+export const getAdminPending = () => api.get('/admin/pending');
+export const getAdminStats = () => api.get('/admin/stats');
