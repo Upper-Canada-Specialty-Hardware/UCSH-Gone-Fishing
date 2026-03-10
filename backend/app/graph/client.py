@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import httpx
@@ -47,6 +48,16 @@ class GraphClient:
         if resp.status_code == 401:
             logger.warning("Got 401, refreshing token and retrying...")
             await token_manager._acquire_token()
+            headers = await self._headers()
+            resp = await self._http.request(method, path, headers=headers, **kwargs)
+
+        # Retry on 429 (throttled) — respect Retry-After header
+        retries = 0
+        while resp.status_code == 429 and retries < 3:
+            retry_after = int(resp.headers.get("Retry-After", 5))
+            retries += 1
+            logger.warning("Graph API throttled (429), retry %d/3 after %ds — %s %s", retries, retry_after, method, path)
+            await asyncio.sleep(retry_after)
             headers = await self._headers()
             resp = await self._http.request(method, path, headers=headers, **kwargs)
 

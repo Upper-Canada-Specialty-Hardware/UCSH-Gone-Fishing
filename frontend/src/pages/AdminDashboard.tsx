@@ -34,7 +34,6 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState<any>(null);
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [groupBy, setGroupBy] = useState<string | null>(null);
   const [grouped, setGrouped] = useState<Record<string, any[]> | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -61,23 +60,34 @@ export default function AdminDashboard() {
   }, [employees]);
 
   useEffect(() => {
-    const safe = (p: Promise<any>, fallback: any) => p.catch(() => ({ data: fallback }));
-    Promise.all([
-      safe(getAdminBalances(), { employees: [] }),
-      safe(getAdminPending(), { pending: [] }),
-      safe(getAdminRequests(), { requests: [] }),
-      safe(getAdminStats(), null),
-      safe(getConfig(), { processing_enabled: false }),
-    ])
-      .then(([balRes, pendRes, reqRes, statsRes, configRes]) => {
-        setEmployees(balRes.data.employees || []);
-        setPending(pendRes.data.pending || []);
-        setRequests(reqRes.data.requests || []);
-        setStats(statsRes.data);
-        setProcessingEnabled(configRes.data?.processing_enabled || false);
-      })
-      .catch((err) => setError(err.response?.data?.detail || 'Failed to load data'))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    const loadData = async () => {
+      while (!cancelled) {
+        try {
+          const [balRes, pendRes, reqRes, statsRes, configRes] = await Promise.all([
+            getAdminBalances(),
+            getAdminPending(),
+            getAdminRequests(),
+            getAdminStats(),
+            getConfig(),
+          ]);
+          if (cancelled) return;
+          setEmployees(balRes.data.employees || []);
+          setPending(pendRes.data.pending || []);
+          setRequests(reqRes.data.requests || []);
+          setStats(statsRes.data);
+          setProcessingEnabled(configRes.data.processing_enabled || false);
+          setLoading(false);
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      }
+    };
+
+    loadData();
+    return () => { cancelled = true; };
   }, []);
 
   const handleGroupBy = async (_: any, value: string) => {
@@ -158,10 +168,6 @@ export default function AdminDashboard() {
         <CircularProgress />
       </Box>
     );
-  }
-
-  if (error) {
-    return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
   }
 
   return (
