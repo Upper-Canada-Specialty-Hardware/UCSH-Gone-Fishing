@@ -410,26 +410,17 @@ async def admin_pending(user: AuthUser):
     _require_role(user, "admin")
     pending = []
 
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_LEAVE_REQUESTS,
-        filter="fields/Status eq 'Pending'",
-    )
-    for item in items:
-        pending.append({"id": item["id"], "request_type": "leave", **item.get("fields", {})})
-
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_OVERTIME_REQUESTS,
-        filter="fields/Status eq 'Pending'",
-    )
-    for item in items:
-        pending.append({"id": item["id"], "request_type": "overtime", **item.get("fields", {})})
-
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_CARRYOVER_PAYOUT,
-        filter="fields/Status eq 'Pending'",
-    )
-    for item in items:
-        pending.append({"id": item["id"], "request_type": "carryover-payout", **item.get("fields", {})})
+    for list_id, req_type in [
+        (settings.SP_LIST_LEAVE_REQUESTS, "leave"),
+        (settings.SP_LIST_OVERTIME_REQUESTS, "overtime"),
+        (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout"),
+    ]:
+        try:
+            items = await sp_client.get_list_items(list_id, filter="fields/Status eq 'Pending'")
+            for item in items:
+                pending.append({"id": item["id"], "request_type": req_type, **item.get("fields", {})})
+        except Exception:
+            logger.exception("Failed to fetch pending %s items", req_type)
 
     return {"pending": pending}
 

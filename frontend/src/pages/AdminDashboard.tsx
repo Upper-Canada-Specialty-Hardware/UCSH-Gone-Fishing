@@ -61,19 +61,20 @@ export default function AdminDashboard() {
   }, [employees]);
 
   useEffect(() => {
+    const safe = (p: Promise<any>, fallback: any) => p.catch(() => ({ data: fallback }));
     Promise.all([
-      getAdminBalances(),
-      getAdminPending(),
-      getAdminRequests(),
-      getAdminStats(),
-      getConfig(),
+      safe(getAdminBalances(), { employees: [] }),
+      safe(getAdminPending(), { pending: [] }),
+      safe(getAdminRequests(), { requests: [] }),
+      safe(getAdminStats(), null),
+      safe(getConfig(), { processing_enabled: false }),
     ])
       .then(([balRes, pendRes, reqRes, statsRes, configRes]) => {
         setEmployees(balRes.data.employees || []);
         setPending(pendRes.data.pending || []);
         setRequests(reqRes.data.requests || []);
         setStats(statsRes.data);
-        setProcessingEnabled(configRes.data.processing_enabled || false);
+        setProcessingEnabled(configRes.data?.processing_enabled || false);
       })
       .catch((err) => setError(err.response?.data?.detail || 'Failed to load data'))
       .finally(() => setLoading(false));
