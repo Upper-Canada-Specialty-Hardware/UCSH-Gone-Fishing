@@ -1,6 +1,4 @@
-frontend/
 .venv/
-Dev Plan/
 .git/
 .env
 *.db
