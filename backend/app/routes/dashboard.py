@@ -434,6 +434,209 @@ async def admin_pending(user: AuthUser):
     return {"pending": pending}
 
 
+# ============================
+# Admin impersonation endpoints
+# ============================
+
+@router.get("/admin/view-employee/balances")
+async def admin_view_employee_balances(user: AuthUser, target_id: str = Query(...)):
+    _require_role(user, "admin")
+    emp = await get_employee_by_id(target_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    fields = emp["fields"]
+    return {
+        "employee": _format_employee(fields, target_id),
+        "balances": _format_balances(fields),
+    }
+
+
+@router.get("/admin/view-employee/requests")
+async def admin_view_employee_requests(
+    user: AuthUser,
+    target_id: str = Query(...),
+    type: str | None = Query(None),
+    status: str | None = Query(None),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    _require_role(user, "admin")
+    emp = await get_employee_by_id(target_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    emp_name = emp["fields"].get("Title", "")
+
+    results = []
+
+    if not type or type == "leave":
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_LEAVE_REQUESTS,
+            filter=f"fields/Title eq '{_esc(emp_name)}'",
+        )
+        for item in _filter_requests(items, None, status, from_date, to_date):
+            item["request_type"] = "leave"
+            results.append(item)
+
+    if not type or type == "overtime":
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_OVERTIME_REQUESTS,
+            filter=f"fields/SubmitterName eq '{_esc(emp_name)}'",
+        )
+        for item in _filter_requests(items, None, status, from_date, to_date):
+            item["request_type"] = "overtime"
+            results.append(item)
+
+    if not type or type == "carryover-payout":
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_CARRYOVER_PAYOUT,
+            filter=f"fields/SubmitterName eq '{_esc(emp_name)}'",
+        )
+        for item in _filter_requests(items, None, status, from_date, to_date):
+            item["request_type"] = "carryover-payout"
+            results.append(item)
+
+    return {"requests": results}
+
+
+@router.get("/admin/view-manager/members")
+async def admin_view_manager_members(user: AuthUser, target_id: str = Query(...)):
+    _require_role(user, "admin")
+    manager = await get_employee_by_id(target_id)
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    manager_name = manager["fields"].get("Title", "")
+
+    items = await sp_client.get_list_items(
+        settings.SP_LIST_STAFF_DIRECTORY,
+        filter=f"fields/Supervisor eq '{_esc(manager_name)}'",
+    )
+    return {"members": [
+        {**_format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
+        for item in items
+    ]}
+
+
+@router.get("/admin/view-manager/pending")
+async def admin_view_manager_pending(user: AuthUser, target_id: str = Query(...)):
+    _require_role(user, "admin")
+    manager = await get_employee_by_id(target_id)
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    manager_name = manager["fields"].get("Title", "")
+
+    pending = []
+
+    items = await sp_client.get_list_items(
+        settings.SP_LIST_LEAVE_REQUESTS,
+        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Pending'",
+    )
+    for item in items:
+        pending.append({"id": item["id"], "request_type": "leave", **item.get("fields", {})})
+
+    items = await sp_client.get_list_items(
+        settings.SP_LIST_OVERTIME_REQUESTS,
+        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Pending'",
+    )
+    for item in items:
+        pending.append({"id": item["id"], "request_type": "overtime", **item.get("fields", {})})
+
+    items = await sp_client.get_list_items(
+        settings.SP_LIST_CARRYOVER_PAYOUT,
+        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Pending'",
+    )
+    for item in items:
+        pending.append({"id": item["id"], "request_type": "carryover-payout", **item.get("fields", {})})
+
+    return {"pending": pending}
+
+
+@router.get("/admin/view-manager/requests")
+async def admin_view_manager_requests(
+    user: AuthUser,
+    target_id: str = Query(...),
+    type: str | None = Query(None),
+    status: str | None = Query(None),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    _require_role(user, "admin")
+    manager = await get_employee_by_id(target_id)
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    manager_name = manager["fields"].get("Title", "")
+
+    results = []
+
+    if not type or type == "leave":
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_LEAVE_REQUESTS,
+            filter=f"fields/Managertxt eq '{_esc(manager_name)}'",
+        )
+        for item in _filter_requests(items, None, status, from_date, to_date):
+            item["request_type"] = "leave"
+            results.append(item)
+
+    if not type or type == "overtime":
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_OVERTIME_REQUESTS,
+            filter=f"fields/Managertxt eq '{_esc(manager_name)}'",
+        )
+        for item in _filter_requests(items, None, status, from_date, to_date):
+            item["request_type"] = "overtime"
+            results.append(item)
+
+    if not type or type == "carryover-payout":
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_CARRYOVER_PAYOUT,
+            filter=f"fields/Managertxt eq '{_esc(manager_name)}'",
+        )
+        for item in _filter_requests(items, None, status, from_date, to_date):
+            item["request_type"] = "carryover-payout"
+            results.append(item)
+
+    return {"requests": results}
+
+
+@router.get("/admin/view-manager/calendar")
+async def admin_view_manager_calendar(
+    user: AuthUser,
+    target_id: str = Query(...),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    _require_role(user, "admin")
+    manager = await get_employee_by_id(target_id)
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    manager_name = manager["fields"].get("Title", "")
+
+    items = await sp_client.get_list_items(
+        settings.SP_LIST_LEAVE_REQUESTS,
+        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Approved'",
+    )
+
+    events = []
+    for item in items:
+        f = item.get("fields", {})
+        start = f.get("StartDate", "")
+        end = f.get("EndDate", start)
+        if from_date and start and start < from_date:
+            continue
+        if to_date and start and start > to_date:
+            continue
+        name = f.get("Title", "").split(" /// ")[0].strip()
+        events.append({
+            "id": item["id"],
+            "employee": name,
+            "start": start,
+            "end": end,
+            "leave_type": f.get("LeaveType", ""),
+            "days": f.get("Days", ""),
+        })
+
+    return {"events": events}
+
+
 @router.get("/admin/stats")
 async def admin_stats(user: AuthUser):
     _require_role(user, "admin")

@@ -1,12 +1,15 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Box, Typography, Paper, CircularProgress, Alert, Tabs, Tab,
   Card, CardContent, Snackbar, ToggleButton, ToggleButtonGroup,
+  Autocomplete, TextField,
 } from '@mui/material';
 import Grid from '@mui/material/Grid2';
 import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
+import BalanceCards from '../components/BalanceCards';
+import TeamCalendar from '../components/TeamCalendar';
 import {
   getAdminBalances,
   getAdminPending,
@@ -15,6 +18,12 @@ import {
   getConfig,
   approveRequest,
   rejectRequest,
+  getAdminViewEmployeeBalances,
+  getAdminViewEmployeeRequests,
+  getAdminViewManagerMembers,
+  getAdminViewManagerPending,
+  getAdminViewManagerRequests,
+  getAdminViewManagerCalendar,
 } from '../api/client';
 
 export default function AdminDashboard() {
@@ -30,6 +39,26 @@ export default function AdminDashboard() {
   const [grouped, setGrouped] = useState<Record<string, any[]> | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+
+  // View Employee tab
+  const [viewEmpId, setViewEmpId] = useState<string | null>(null);
+  const [viewEmpData, setViewEmpData] = useState<any>(null);
+  const [viewEmpRequests, setViewEmpRequests] = useState<any[]>([]);
+  const [viewEmpLoading, setViewEmpLoading] = useState(false);
+
+  // View Team tab
+  const [viewMgrId, setViewMgrId] = useState<string | null>(null);
+  const [viewMgrMembers, setViewMgrMembers] = useState<any[]>([]);
+  const [viewMgrPending, setViewMgrPending] = useState<any[]>([]);
+  const [viewMgrRequests, setViewMgrRequests] = useState<any[]>([]);
+  const [viewMgrCalendar, setViewMgrCalendar] = useState<any[]>([]);
+  const [viewMgrLoading, setViewMgrLoading] = useState(false);
+  const [viewMgrTab, setViewMgrTab] = useState(0);
+
+  const managers = useMemo(() => {
+    const supervisorNames = new Set(employees.map((e: any) => e.supervisor).filter(Boolean));
+    return employees.filter((e: any) => supervisorNames.has(e.name));
+  }, [employees]);
 
   useEffect(() => {
     Promise.all([
@@ -83,6 +112,42 @@ export default function AdminDashboard() {
       setSnack({ open: true, message: err.response?.data?.detail || 'Failed', severity: 'error' });
     } finally {
       setActionLoading(null);
+    }
+  }, []);
+
+  const handleViewEmployee = useCallback(async (id: string) => {
+    setViewEmpLoading(true);
+    try {
+      const [balRes, reqRes] = await Promise.all([
+        getAdminViewEmployeeBalances(id),
+        getAdminViewEmployeeRequests(id),
+      ]);
+      setViewEmpData(balRes.data);
+      setViewEmpRequests(reqRes.data.requests || []);
+    } catch (err: any) {
+      setSnack({ open: true, message: err.response?.data?.detail || 'Failed to load employee', severity: 'error' });
+    } finally {
+      setViewEmpLoading(false);
+    }
+  }, []);
+
+  const handleViewManager = useCallback(async (id: string) => {
+    setViewMgrLoading(true);
+    try {
+      const [memRes, pendRes, reqRes, calRes] = await Promise.all([
+        getAdminViewManagerMembers(id),
+        getAdminViewManagerPending(id),
+        getAdminViewManagerRequests(id),
+        getAdminViewManagerCalendar(id),
+      ]);
+      setViewMgrMembers(memRes.data.members || []);
+      setViewMgrPending(pendRes.data.pending || []);
+      setViewMgrRequests(reqRes.data.requests || []);
+      setViewMgrCalendar(calRes.data.events || []);
+    } catch (err: any) {
+      setSnack({ open: true, message: err.response?.data?.detail || 'Failed to load team', severity: 'error' });
+    } finally {
+      setViewMgrLoading(false);
     }
   }, []);
 
@@ -154,6 +219,8 @@ export default function AdminDashboard() {
         <Tab label="All Balances" />
         <Tab label="All Requests" />
         <Tab label="Department Summary" />
+        <Tab label="View Employee" />
+        <Tab label="View Team" />
       </Tabs>
 
       {tab === 0 && (
@@ -210,6 +277,88 @@ export default function AdminDashboard() {
               </Grid>
             ))}
           </Grid>
+        </Paper>
+      )}
+
+      {tab === 4 && (
+        <Paper sx={{ p: 3 }}>
+          <Autocomplete
+            options={employees}
+            getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
+            onChange={(_, val) => {
+              const id = val?.id || null;
+              setViewEmpId(id);
+              setViewEmpData(null);
+              setViewEmpRequests([]);
+              if (id) handleViewEmployee(id);
+            }}
+            renderInput={(params) => <TextField {...params} label="Select Employee" />}
+            sx={{ mb: 3 }}
+          />
+          {viewEmpLoading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress />
+            </Box>
+          )}
+          {viewEmpId && viewEmpData && !viewEmpLoading && (
+            <>
+              <Typography variant="h6" sx={{ mb: 2 }}>
+                {viewEmpData.employee?.name}
+              </Typography>
+              <BalanceCards balances={viewEmpData.balances} />
+              <Box sx={{ mt: 3 }}>
+                <RequestHistory requests={viewEmpRequests} />
+              </Box>
+            </>
+          )}
+        </Paper>
+      )}
+
+      {tab === 5 && (
+        <Paper sx={{ p: 3 }}>
+          <Autocomplete
+            options={managers}
+            getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
+            onChange={(_, val) => {
+              const id = val?.id || null;
+              setViewMgrId(id);
+              setViewMgrMembers([]);
+              setViewMgrPending([]);
+              setViewMgrRequests([]);
+              setViewMgrCalendar([]);
+              setViewMgrTab(0);
+              if (id) handleViewManager(id);
+            }}
+            renderInput={(params) => <TextField {...params} label="Select Manager" />}
+            sx={{ mb: 3 }}
+          />
+          {viewMgrLoading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress />
+            </Box>
+          )}
+          {viewMgrId && !viewMgrLoading && (
+            <>
+              <Tabs value={viewMgrTab} onChange={(_, v) => setViewMgrTab(v)} sx={{ mb: 2 }}>
+                <Tab label={`Pending (${viewMgrPending.length})`} />
+                <Tab label="Team Balances" />
+                <Tab label="Calendar" />
+                <Tab label="All Requests" />
+              </Tabs>
+              {viewMgrTab === 0 && (
+                <PendingApprovals
+                  pending={viewMgrPending}
+                  processingEnabled={processingEnabled}
+                  onApprove={handleApprove}
+                  onReject={handleReject}
+                  actionLoading={actionLoading}
+                />
+              )}
+              {viewMgrTab === 1 && <TeamBalanceTable members={viewMgrMembers} />}
+              {viewMgrTab === 2 && <TeamCalendar events={viewMgrCalendar} />}
+              {viewMgrTab === 3 && <RequestHistory requests={viewMgrRequests} showEmployee />}
+            </>
+          )}
         </Paper>
       )}
 

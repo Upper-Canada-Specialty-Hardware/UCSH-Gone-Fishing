@@ -66,3 +66,17 @@ export const getAdminRequests = (params?: Record<string, string>) =>
   api.get('/admin/requests', { params });
 export const getAdminPending = () => api.get('/admin/pending');
 export const getAdminStats = () => api.get('/admin/stats');
+
+// Admin view-as
+export const getAdminViewEmployeeBalances = (targetId: string) =>
+  api.get('/admin/view-employee/balances', { params: { target_id: targetId } });
+export const getAdminViewEmployeeRequests = (targetId: string) =>
+  api.get('/admin/view-employee/requests', { params: { target_id: targetId } });
+export const getAdminViewManagerMembers = (targetId: string) =>
+  api.get('/admin/view-manager/members', { params: { target_id: targetId } });
+export const getAdminViewManagerPending = (targetId: string) =>
+  api.get('/admin/view-manager/pending', { params: { target_id: targetId } });
+export const getAdminViewManagerRequests = (targetId: string) =>
+  api.get('/admin/view-manager/requests', { params: { target_id: targetId } });
+export const getAdminViewManagerCalendar = (targetId: string) =>
+  api.get('/admin/view-manager/calendar', { params: { target_id: targetId } });
