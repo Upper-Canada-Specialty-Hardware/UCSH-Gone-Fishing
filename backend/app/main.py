@@ -97,7 +97,7 @@ from app.routes.dashboard import router as dashboard_router
 
 app.include_router(health_router)
 app.include_router(forms_router, prefix="/api/forms", tags=["forms"])
-app.include_router(approval_router, prefix="/api", tags=["approval"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
-app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(approval_router, prefix="/api", tags=["approval"])
