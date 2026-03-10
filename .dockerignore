@@ -1,0 +1,9 @@
+frontend/
+.venv/
+Dev Plan/
+.git/
+.env
+*.db
+__pycache__/
+entra-app-registration.txt
+CLAUDE.md

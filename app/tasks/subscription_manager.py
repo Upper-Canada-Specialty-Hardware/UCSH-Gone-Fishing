@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.config import settings
-from app.database import async_session, init_db
+from app.database import async_session
 from app.graph.webhooks import create_subscription, renew_subscription
 from app.models import WebhookSubscription
 

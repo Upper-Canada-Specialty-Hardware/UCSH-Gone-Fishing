@@ -1,13 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.database import init_db
 from app.graph.auth import token_manager
 from app.graph.sharepoint import sp_client
 from app.services.concurrency import lock_manager
@@ -20,14 +21,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def run_migrations():
+    """Run Alembic migrations (sync — called before async event loop)."""
+    cfg = AlembicConfig("alembic.ini")
+    command.upgrade(cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- Startup ---
     logger.info("Starting UCSH Gone Fishing server...")
 
-    # 1. Initialize SQLite DB
-    await init_db()
-    logger.info("Database initialized")
+    # 1. Run database migrations
+    run_migrations()
+    logger.info("Database migrations applied")
 
     # 2. Connect to Graph API and SharePoint
     renewal_task = None
