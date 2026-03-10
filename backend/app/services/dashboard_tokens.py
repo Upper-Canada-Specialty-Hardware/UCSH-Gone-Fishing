@@ -36,7 +36,7 @@ def validate_dashboard_token(role: str, user_id: str, token: str, expiry: str) -
     except (ValueError, TypeError):
         return False, "Invalid expiry"
 
-    if time.time() > exp_int:
+    if exp_int != 0 and time.time() > exp_int:
         return False, "Link has expired. Check a recent email for a new link."
 
     expected = _sign(role, user_id, expiry)
