@@ -16,8 +16,8 @@ import {
   getAdminRequests,
   getAdminStats,
   getConfig,
-  approveRequest,
-  rejectRequest,
+  adminApproveRequest,
+  adminRejectRequest,
   getAdminViewEmployeeBalances,
   getAdminViewEmployeeRequests,
   getAdminViewManagerMembers,
@@ -103,7 +103,7 @@ export default function AdminDashboard() {
   const handleApprove = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
     try {
-      await approveRequest(type, id);
+      await adminApproveRequest(type, id);
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request approved', severity: 'success' });
     } catch (err: any) {
@@ -116,7 +116,7 @@ export default function AdminDashboard() {
   const handleReject = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
     try {
-      await rejectRequest(type, id);
+      await adminRejectRequest(type, id);
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request rejected', severity: 'success' });
     } catch (err: any) {

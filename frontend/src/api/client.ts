@@ -67,6 +67,11 @@ export const getAdminRequests = (params?: Record<string, string>) =>
 export const getAdminPending = () => api.get('/admin/pending');
 export const getAdminStats = () => api.get('/admin/stats');
 
+export const adminApproveRequest = (type: string, id: string) =>
+  api.post(`/admin/approve/${type}/${id}`);
+export const adminRejectRequest = (type: string, id: string) =>
+  api.post(`/admin/reject/${type}/${id}`);
+
 // Admin view-as
 export const getAdminViewEmployeeBalances = (targetId: string) =>
   api.get('/admin/view-employee/balances', { params: { target_id: targetId } });

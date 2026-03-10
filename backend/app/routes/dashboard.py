@@ -351,8 +351,7 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
 # ============================
 
 @router.get("/admin/balances")
-async def admin_balances(user: AuthUser, group_by: str | None = Query(None)):
-    _require_role(user, "admin")
+async def admin_balances(group_by: str | None = Query(None)):
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
     employees = []
@@ -375,13 +374,11 @@ async def admin_balances(user: AuthUser, group_by: str | None = Query(None)):
 
 @router.get("/admin/requests")
 async def admin_requests(
-    user: AuthUser,
     type: str | None = Query(None),
     status: str | None = Query(None),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
-    _require_role(user, "admin")
     results = []
 
     if not type or type == "leave":
@@ -406,8 +403,7 @@ async def admin_requests(
 
 
 @router.get("/admin/pending")
-async def admin_pending(user: AuthUser):
-    _require_role(user, "admin")
+async def admin_pending():
     pending = []
 
     for list_id, req_type in [
@@ -430,8 +426,7 @@ async def admin_pending(user: AuthUser):
 # ============================
 
 @router.get("/admin/view-employee/balances")
-async def admin_view_employee_balances(user: AuthUser, target_id: str = Query(...)):
-    _require_role(user, "admin")
+async def admin_view_employee_balances(target_id: str = Query(...)):
     emp = await get_employee_by_id(target_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -444,14 +439,12 @@ async def admin_view_employee_balances(user: AuthUser, target_id: str = Query(..
 
 @router.get("/admin/view-employee/requests")
 async def admin_view_employee_requests(
-    user: AuthUser,
     target_id: str = Query(...),
     type: str | None = Query(None),
     status: str | None = Query(None),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
-    _require_role(user, "admin")
     emp = await get_employee_by_id(target_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -490,8 +483,7 @@ async def admin_view_employee_requests(
 
 
 @router.get("/admin/view-manager/members")
-async def admin_view_manager_members(user: AuthUser, target_id: str = Query(...)):
-    _require_role(user, "admin")
+async def admin_view_manager_members(target_id: str = Query(...)):
     manager = await get_employee_by_id(target_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
@@ -508,8 +500,7 @@ async def admin_view_manager_members(user: AuthUser, target_id: str = Query(...)
 
 
 @router.get("/admin/view-manager/pending")
-async def admin_view_manager_pending(user: AuthUser, target_id: str = Query(...)):
-    _require_role(user, "admin")
+async def admin_view_manager_pending(target_id: str = Query(...)):
     manager = await get_employee_by_id(target_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
@@ -543,14 +534,12 @@ async def admin_view_manager_pending(user: AuthUser, target_id: str = Query(...)
 
 @router.get("/admin/view-manager/requests")
 async def admin_view_manager_requests(
-    user: AuthUser,
     target_id: str = Query(...),
     type: str | None = Query(None),
     status: str | None = Query(None),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
-    _require_role(user, "admin")
     manager = await get_employee_by_id(target_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
@@ -590,12 +579,10 @@ async def admin_view_manager_requests(
 
 @router.get("/admin/view-manager/calendar")
 async def admin_view_manager_calendar(
-    user: AuthUser,
     target_id: str = Query(...),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
-    _require_role(user, "admin")
     manager = await get_employee_by_id(target_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
@@ -629,8 +616,7 @@ async def admin_view_manager_calendar(
 
 
 @router.get("/admin/stats")
-async def admin_stats(user: AuthUser):
-    _require_role(user, "admin")
+async def admin_stats():
 
     # Gather counts
     leave_items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
@@ -672,6 +658,32 @@ async def admin_stats(user: AuthUser):
         "carryover_by_status": _count_by_status(carryover_items),
         "department_summary": dept_summary,
     }
+
+
+@router.post("/admin/approve/{request_type}/{request_id}")
+async def admin_approve(request_type: str, request_id: str):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    handler = HANDLERS.get((request_type, "approve"))
+    if not handler:
+        raise HTTPException(status_code=400, detail="Invalid request type")
+    result = await handler(request_id, "0")
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/admin/reject/{request_type}/{request_id}")
+async def admin_reject(request_type: str, request_id: str):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    handler = HANDLERS.get((request_type, "reject"))
+    if not handler:
+        raise HTTPException(status_code=400, detail="Invalid request type")
+    result = await handler(request_id, "0")
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
 
 
 # --- Config endpoint (no auth needed, used by frontend) ---
