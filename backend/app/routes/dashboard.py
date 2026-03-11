@@ -427,11 +427,9 @@ async def admin_pending():
 
 @router.get("/admin/impersonate-url")
 async def admin_impersonate_url(
-    user: AuthUser,
     target_id: str = Query(...),
     target_role: str = Query(...),
 ):
-    _require_role(user, "admin")
     if target_role not in ("employee", "manager"):
         raise HTTPException(status_code=400, detail="Role must be 'employee' or 'manager'")
 
