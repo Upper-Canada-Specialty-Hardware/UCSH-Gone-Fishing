@@ -72,16 +72,6 @@ export const adminApproveRequest = (type: string, id: string) =>
 export const adminRejectRequest = (type: string, id: string) =>
   api.post(`/admin/reject/${type}/${id}`);
 
-// Admin view-as
-export const getAdminViewEmployeeBalances = (targetId: string) =>
-  api.get('/admin/view-employee/balances', { params: { target_id: targetId } });
-export const getAdminViewEmployeeRequests = (targetId: string) =>
-  api.get('/admin/view-employee/requests', { params: { target_id: targetId } });
-export const getAdminViewManagerMembers = (targetId: string) =>
-  api.get('/admin/view-manager/members', { params: { target_id: targetId } });
-export const getAdminViewManagerPending = (targetId: string) =>
-  api.get('/admin/view-manager/pending', { params: { target_id: targetId } });
-export const getAdminViewManagerRequests = (targetId: string) =>
-  api.get('/admin/view-manager/requests', { params: { target_id: targetId } });
-export const getAdminViewManagerCalendar = (targetId: string) =>
-  api.get('/admin/view-manager/calendar', { params: { target_id: targetId } });
+// Admin impersonation
+export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'manager') =>
+  api.get('/admin/impersonate-url', { params: { target_id: targetId, role } });

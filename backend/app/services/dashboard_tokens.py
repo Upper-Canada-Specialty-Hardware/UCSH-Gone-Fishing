@@ -26,7 +26,7 @@ def generate_dashboard_url(role: str, user_id: str | int, expiry_days: int = DEF
     """Generate a full dashboard URL with signed token."""
     params = generate_dashboard_token(role, user_id, expiry_days)
     base = settings.DASHBOARD_FRONTEND_URL.rstrip("/")
-    return f"{base}/dashboard?token={params['token']}&role={params['role']}&uid={params['uid']}&exp={params['exp']}"
+    return f"{base}/#/dashboard?token={params['token']}&role={params['role']}&uid={params['uid']}&exp={params['exp']}"
 
 
 def validate_dashboard_token(role: str, user_id: str, token: str, expiry: str) -> tuple[bool, str]:
