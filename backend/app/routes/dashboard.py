@@ -114,32 +114,46 @@ async def my_requests(
 
     results = []
 
-    # Leave requests
+    # Leave requests — Title is "{Name} /// {notes}", use startsWith
     if not type or type == "leave":
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_LEAVE_REQUESTS,
-            filter=f"fields/Title eq '{_esc(emp_name)}'",
-        )
+        try:
+            items = await sp_client.get_list_items(
+                settings.SP_LIST_LEAVE_REQUESTS,
+                filter=f"startsWith(fields/Title, '{_esc(emp_name)}')",
+            )
+        except Exception:
+            logger.exception("Failed to fetch leave requests for %s", emp_name)
+            items = []
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "leave"
             results.append(item)
 
-    # Overtime requests
+    # Overtime requests — SubmittedBy is Person/Group, no text name column;
+    # fetch all and match client-side via LookupValue
     if not type or type == "overtime":
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_OVERTIME_REQUESTS,
-            filter=f"fields/SubmitterName eq '{_esc(emp_name)}'",
-        )
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            item["request_type"] = "overtime"
-            results.append(item)
+        try:
+            items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+        except Exception:
+            logger.exception("Failed to fetch overtime requests")
+            items = []
+        for item in items:
+            f = item.get("fields", {})
+            if f.get("SubmittedByLookupValue", "") != emp_name:
+                continue
+            for r in _filter_requests([item], None, status, from_date, to_date):
+                r["request_type"] = "overtime"
+                results.append(r)
 
-    # Carryover/Payout requests
+    # Carryover/Payout — EmployeeID stores the Staff Directory item ID
     if not type or type == "carryover-payout":
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_CARRYOVER_PAYOUT,
-            filter=f"fields/SubmitterName eq '{_esc(emp_name)}'",
-        )
+        try:
+            items = await sp_client.get_list_items(
+                settings.SP_LIST_CARRYOVER_PAYOUT,
+                filter=f"fields/EmployeeID eq {int(user.user_id)}",
+            )
+        except Exception:
+            logger.exception("Failed to fetch carryover requests for user %s", user.user_id)
+            items = []
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "carryover-payout"
             results.append(item)
