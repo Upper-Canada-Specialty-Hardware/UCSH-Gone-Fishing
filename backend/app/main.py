@@ -3,8 +3,9 @@ from contextlib import asynccontextmanager
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -84,6 +85,11 @@ if cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 templates = Jinja2Templates(directory="app/templates")
 
