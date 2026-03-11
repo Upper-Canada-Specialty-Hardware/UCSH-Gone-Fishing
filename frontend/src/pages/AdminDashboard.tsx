@@ -113,7 +113,9 @@ export default function AdminDashboard() {
       const res = await getAdminImpersonateUrl(targetId, role);
       window.open(res.data.url, '_blank');
     } catch (err: any) {
-      setSnack({ open: true, message: err.response?.data?.detail || 'Failed to generate URL', severity: 'error' });
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : 'Failed to generate URL';
+      setSnack({ open: true, message, severity: 'error' });
     }
   }, []);
 

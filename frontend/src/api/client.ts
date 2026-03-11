@@ -74,4 +74,4 @@ export const adminRejectRequest = (type: string, id: string) =>
 
 // Admin impersonation
 export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'manager') =>
-  api.get('/admin/impersonate-url', { params: { target_id: targetId, role } });
+  api.get('/admin/impersonate-url', { params: { target_id: targetId, target_role: role } });

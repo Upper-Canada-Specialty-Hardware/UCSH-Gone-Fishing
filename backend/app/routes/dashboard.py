@@ -429,17 +429,17 @@ async def admin_pending():
 async def admin_impersonate_url(
     user: AuthUser,
     target_id: str = Query(...),
-    role: str = Query(...),
+    target_role: str = Query(...),
 ):
     _require_role(user, "admin")
-    if role not in ("employee", "manager"):
+    if target_role not in ("employee", "manager"):
         raise HTTPException(status_code=400, detail="Role must be 'employee' or 'manager'")
 
     emp = await get_employee_by_id(target_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    url = generate_dashboard_url(role, target_id)
+    url = generate_dashboard_url(target_role, target_id)
     return {"url": url}
 
 
