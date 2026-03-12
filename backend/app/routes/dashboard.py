@@ -90,8 +90,10 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
-async def _build_staff_lookups() -> tuple[dict, dict]:
-    """Fetch Staff Directory once, return (by_name_lower, by_id) dicts."""
+async def _build_staff_lookups() -> tuple[dict, dict, dict]:
+    """Fetch Staff Directory and User Information List.
+    Returns (by_name_lower, by_id, sp_user_to_name) dicts.
+    """
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
@@ -106,26 +108,46 @@ async def _build_staff_lookups() -> tuple[dict, dict]:
                 by_id[int(item_id)] = item
             except (ValueError, TypeError):
                 pass
-    return by_name, by_id
+
+    # SP User Information List: map SP user IDs → display names
+    sp_user_to_name: dict[int, str] = {}
+    try:
+        user_items = await sp_client.get_list_items("User Information List", top=5000)
+        for u in user_items:
+            uid = u.get("id")
+            uname = u.get("fields", {}).get("Title", "")
+            if uid and uname:
+                sp_user_to_name[int(uid)] = uname
+    except Exception:
+        logger.exception("Failed to fetch User Information List for name resolution")
+
+    return by_name, by_id, sp_user_to_name
+
+
+def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: dict) -> str:
+    """Resolve a SP Person/Group lookup field to a display name."""
+    lookup_id = item_data.get(f"{field_prefix}LookupId")
+    if lookup_id:
+        try:
+            return sp_user_to_name.get(int(lookup_id), "")
+        except (ValueError, TypeError):
+            pass
+    return ""
 
 
 def _enrich_pending_item(
     item_data: dict, request_type: str,
-    staff_by_name: dict, staff_by_id: dict,
+    staff_by_name: dict, staff_by_id: dict, sp_user_to_name: dict,
 ) -> dict:
     """Add employee_name, current_balances, projected_balances, balance_unchanged."""
     staff = None
     emp_name = ""
 
     if request_type == "leave":
-        emp_name = item_data.get("Title", "").split(" /// ")[0].strip()
+        emp_name = _resolve_sp_user_name(item_data, "SubmittedTest", sp_user_to_name)
         staff = staff_by_name.get(emp_name.lower()) if emp_name else None
     elif request_type == "overtime":
-        emp_name = item_data.get("SubmittedByLookupValue", "")
-        if not emp_name:
-            sub = item_data.get("SubmittedBy", {})
-            if isinstance(sub, dict):
-                emp_name = sub.get("LookupValue", "")
+        emp_name = _resolve_sp_user_name(item_data, "SubmittedBy", sp_user_to_name)
         staff = staff_by_name.get(emp_name.lower()) if emp_name else None
     elif request_type == "carryover-payout":
         emp_id = item_data.get("EmployeeID")
@@ -317,7 +339,7 @@ async def team_pending(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    staff_by_name, staff_by_id = await _build_staff_lookups()
+    staff_by_name, staff_by_id, sp_user_to_name = await _build_staff_lookups()
     pending = []
 
     for list_id, req_type, mgr_field in [
@@ -335,7 +357,7 @@ async def team_pending(user: AuthUser):
             if f.get("Status") != "Pending" or f.get(mgr_field, "") != manager_name:
                 continue
             item_data = {"id": item["id"], "request_type": req_type, **f}
-            _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id)
+            _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
             pending.append(item_data)
 
     return {"pending": pending}
@@ -507,7 +529,7 @@ async def admin_requests(
 
 @router.get("/admin/pending")
 async def admin_pending():
-    staff_by_name, staff_by_id = await _build_staff_lookups()
+    staff_by_name, staff_by_id, sp_user_to_name = await _build_staff_lookups()
     pending = []
 
     for list_id, req_type in [
@@ -522,7 +544,7 @@ async def admin_pending():
                 if f.get("Status") != "Pending":
                     continue
                 item_data = {"id": item["id"], "request_type": req_type, **f}
-                _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id)
+                _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
                 pending.append(item_data)
         except Exception:
             logger.exception("Failed to fetch pending %s items", req_type)
