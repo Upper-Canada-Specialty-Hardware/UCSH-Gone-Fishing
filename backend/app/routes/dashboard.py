@@ -1,4 +1,5 @@
 import logging
+from datetime import date as dt_date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,6 +8,12 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, ADMIN_NAMES
+from app.services.balance import (
+    simulate_leave_impact,
+    simulate_overtime_impact,
+    simulate_carryover_payout_impact,
+    is_next_year_request,
+)
 from app.routes.approval import HANDLERS
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,105 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
         "supervisor": fields.get("Supervisor", ""),
         "employee_type": fields.get("EmployeeType", ""),
     }
+
+
+async def _build_staff_lookups() -> tuple[dict, dict]:
+    """Fetch Staff Directory once, return (by_name_lower, by_id) dicts."""
+    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    by_name: dict[str, dict] = {}
+    by_id: dict[int, dict] = {}
+    for item in items:
+        fields = item.get("fields", {})
+        name = fields.get("Title", "")
+        if name:
+            by_name[name.strip().lower()] = item
+        item_id = item.get("id")
+        if item_id is not None:
+            try:
+                by_id[int(item_id)] = item
+            except (ValueError, TypeError):
+                pass
+    return by_name, by_id
+
+
+def _enrich_pending_item(
+    item_data: dict, request_type: str,
+    staff_by_name: dict, staff_by_id: dict,
+) -> dict:
+    """Add employee_name, current_balances, projected_balances, balance_unchanged."""
+    staff = None
+    emp_name = ""
+
+    if request_type == "leave":
+        emp_name = item_data.get("Title", "").split(" /// ")[0].strip()
+        staff = staff_by_name.get(emp_name.lower()) if emp_name else None
+    elif request_type == "overtime":
+        emp_name = item_data.get("SubmittedByLookupValue", "")
+        if not emp_name:
+            sub = item_data.get("SubmittedBy", {})
+            if isinstance(sub, dict):
+                emp_name = sub.get("LookupValue", "")
+        staff = staff_by_name.get(emp_name.lower()) if emp_name else None
+    elif request_type == "carryover-payout":
+        emp_id = item_data.get("EmployeeID")
+        if emp_id is not None:
+            try:
+                staff = staff_by_id.get(int(emp_id))
+            except (ValueError, TypeError):
+                pass
+        if staff:
+            emp_name = staff["fields"].get("Title", "")
+
+    item_data["employee_name"] = emp_name
+
+    if not staff:
+        item_data["current_balances"] = None
+        item_data["projected_balances"] = None
+        item_data["balance_unchanged"] = False
+        return item_data
+
+    sf = staff["fields"]
+    item_data["current_balances"] = _format_balances(sf)
+
+    # Hourly staff — no balance adjustment
+    if sf.get("SalaryHourly") == "Hourly":
+        item_data["projected_balances"] = None
+        item_data["balance_unchanged"] = True
+        return item_data
+
+    projected_sp = None
+    balance_unchanged = False
+
+    if request_type == "leave":
+        leave_type = item_data.get("LeaveType", "")
+        days = float(item_data.get("Days", 0) or 0)
+        is_next_year = False
+        start_str = item_data.get("StartDate", "")
+        end_str = item_data.get("EndDate", "")
+        if start_str and end_str:
+            try:
+                start = dt_date.fromisoformat(start_str[:10])
+                end = dt_date.fromisoformat(end_str[:10])
+                is_next_year = is_next_year_request(start, end)
+            except (ValueError, TypeError):
+                pass
+        projected_sp = simulate_leave_impact(sf, leave_type, days, is_next_year)
+        balance_unchanged = projected_sp is None
+    elif request_type == "overtime":
+        hours = float(item_data.get("Hours", 0) or 0)
+        projected_sp = simulate_overtime_impact(sf, hours)
+    elif request_type == "carryover-payout":
+        days = float(item_data.get("Days", 0) or 0)
+        req_type = item_data.get("TypeofRequest", "")
+        projected_sp = simulate_carryover_payout_impact(sf, days, req_type)
+
+    if projected_sp:
+        item_data["projected_balances"] = _format_balances({**sf, **projected_sp})
+    else:
+        item_data["projected_balances"] = None
+    item_data["balance_unchanged"] = balance_unchanged
+
+    return item_data
 
 
 # ============================
@@ -211,6 +317,7 @@ async def team_pending(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
+    staff_by_name, staff_by_id = await _build_staff_lookups()
     pending = []
 
     for list_id, req_type, mgr_field in [
@@ -227,7 +334,9 @@ async def team_pending(user: AuthUser):
             f = item.get("fields", {})
             if f.get("Status") != "Pending" or f.get(mgr_field, "") != manager_name:
                 continue
-            pending.append({"id": item["id"], "request_type": req_type, **f})
+            item_data = {"id": item["id"], "request_type": req_type, **f}
+            _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id)
+            pending.append(item_data)
 
     return {"pending": pending}
 
@@ -398,6 +507,7 @@ async def admin_requests(
 
 @router.get("/admin/pending")
 async def admin_pending():
+    staff_by_name, staff_by_id = await _build_staff_lookups()
     pending = []
 
     for list_id, req_type in [
@@ -406,9 +516,14 @@ async def admin_pending():
         (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout"),
     ]:
         try:
-            items = await sp_client.get_list_items(list_id, filter="fields/Status eq 'Pending'")
+            items = await sp_client.get_list_items(list_id)
             for item in items:
-                pending.append({"id": item["id"], "request_type": req_type, **item.get("fields", {})})
+                f = item.get("fields", {})
+                if f.get("Status") != "Pending":
+                    continue
+                item_data = {"id": item["id"], "request_type": req_type, **f}
+                _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id)
+                pending.append(item_data)
         except Exception:
             logger.exception("Failed to fetch pending %s items", req_type)
 
