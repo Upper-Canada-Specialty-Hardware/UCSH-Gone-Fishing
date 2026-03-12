@@ -1,20 +1,24 @@
 import { useState } from 'react';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
-import { Box, Chip, FormControl, InputLabel, Select, MenuItem } from '@mui/material';
+import { Box, Chip, FormControl, InputLabel, Select, MenuItem, Button } from '@mui/material';
 
 interface Props {
   requests: any[];
   loading?: boolean;
   showEmployee?: boolean;
+  onRefund?: (type: string, id: string) => void;
+  processingEnabled?: boolean;
+  actionLoading?: string | null;
 }
 
-const statusColor: Record<string, 'success' | 'error' | 'warning' | 'default'> = {
+const statusColor: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {
   Approved: 'success',
   Rejected: 'error',
   Pending: 'warning',
+  Refunded: 'info',
 };
 
-export default function RequestHistory({ requests, loading, showEmployee }: Props) {
+export default function RequestHistory({ requests, loading, showEmployee, onRefund, processingEnabled, actionLoading }: Props) {
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
@@ -42,6 +46,30 @@ export default function RequestHistory({ requests, loading, showEmployee }: Prop
         <Chip label={params.value || 'Unknown'} color={statusColor[params.value as string] || 'default'} size="small" />
       ),
     },
+    ...(onRefund
+      ? [{
+          field: '_actions',
+          headerName: 'Actions',
+          width: 120,
+          sortable: false,
+          filterable: false,
+          renderCell: (params: any) => {
+            if (params.row.Status !== 'Approved') return null;
+            const key = `${params.row.request_type}-${params.row.id}`;
+            return (
+              <Button
+                size="small"
+                variant="outlined"
+                color="warning"
+                disabled={!processingEnabled || actionLoading === key}
+                onClick={() => onRefund(params.row.request_type, String(params.row.id))}
+              >
+                {actionLoading === key ? 'Refunding...' : 'Refund'}
+              </Button>
+            );
+          },
+        } as GridColDef]
+      : []),
   ];
 
   return (
@@ -63,6 +91,7 @@ export default function RequestHistory({ requests, loading, showEmployee }: Prop
             <MenuItem value="Pending">Pending</MenuItem>
             <MenuItem value="Approved">Approved</MenuItem>
             <MenuItem value="Rejected">Rejected</MenuItem>
+            <MenuItem value="Refunded">Refunded</MenuItem>
           </Select>
         </FormControl>
       </Box>

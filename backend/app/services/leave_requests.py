@@ -419,6 +419,82 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     return {"status": "rejected"}
 
 
+async def refund_leave_request(request_id: str | int, admin_id: str | int) -> dict:
+    """Reverse an approved leave request — restore balance, cascade, recalc RAD."""
+    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Approved":
+        return {"error": "Only approved requests can be refunded"}
+
+    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
+    employee = await get_employee_by_name(submitter_name)
+    if not employee:
+        return {"error": "Employee not found"}
+    emp_fields = employee["fields"]
+    employee_id = employee["id"]
+
+    leave_type = fields.get("LeaveType", "")
+    days = float(fields.get("Days", 0) or 0)
+
+    # Update SP status
+    await sp_client.update_list_item_fields(
+        settings.SP_LIST_LEAVE_REQUESTS, request_id, {"Status": "Refunded"},
+    )
+
+    # Hourly staff or bereavement/jury duty — no balance change
+    if emp_fields.get("SalaryHourly") == "Hourly" or leave_type in ("Bereavement", "Jury Duty"):
+        from app.templates_render import render_refund_notification
+        html = render_refund_notification("Leave", request_id, submitter_name, fields, None)
+        await send_email_with_dashboard(
+            to=[emp_fields.get("EmailAddress", "")],
+            subject=f"{submitter_name} - Leave Request: Refunded",
+            html_body=html,
+            primary_employee_id=employee_id,
+        )
+        return {"status": "refunded", "no_balance_change": True}
+
+    # Reverse the deduction
+    async with lock_manager.lock(employee_id):
+        emp = await get_employee_by_id(employee_id)
+        ef = emp["fields"]
+
+        if leave_type in ("Vacation", "Half Day or Partial Day Off"):
+            new_overtime = float(ef.get("CurrentOvertimeBalance", 0) or 0) + days
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                {"CurrentOvertimeBalance": new_overtime},
+            )
+        elif leave_type == "Sick or Personal Day":
+            new_sick = float(ef.get("CurrentSickDayBalance", 0) or 0) + days
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                {"CurrentSickDayBalance": new_sick},
+            )
+
+        start_date = _parse_date(fields.get("StartDate"))
+        end_date = _parse_date(fields.get("EndDate"))
+        if start_date and end_date and is_next_year_request(start_date, end_date):
+            balances = await cascade_next_year(employee_id)
+        else:
+            balances = await cascade_current_year(employee_id)
+
+        await recalculate_request_allow_date(
+            employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
+        )
+
+    from app.templates_render import render_refund_notification
+    html = render_refund_notification("Leave", request_id, submitter_name, fields, balances)
+    await send_email_with_dashboard(
+        to=[emp_fields.get("EmailAddress", "")],
+        subject=f"{submitter_name} - Leave Request: Refunded",
+        html_body=html,
+        primary_employee_id=employee_id,
+    )
+
+    return {"status": "refunded", "balances": balances}
+
+
 async def _resolve_user_lookup_id(email: str) -> int | None:
     """Resolve a user email to a SP User Information List lookup ID."""
     if not email:

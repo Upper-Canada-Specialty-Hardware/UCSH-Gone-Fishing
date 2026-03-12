@@ -72,6 +72,9 @@ export const adminApproveRequest = (type: string, id: string) =>
 export const adminRejectRequest = (type: string, id: string) =>
   api.post(`/admin/reject/${type}/${id}`);
 
+export const adminRefundRequest = (type: string, id: string) =>
+  api.post(`/admin/refund/${type}/${id}`);
+
 // Admin impersonation
 export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'manager') =>
   api.get('/admin/impersonate-url', { params: { target_id: targetId, target_role: role } });

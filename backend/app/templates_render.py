@@ -161,6 +161,16 @@ def render_system_override_reject(
     )
 
 
+def render_refund_notification(
+    request_type: str, request_id, employee_name: str, fields: dict, balances: dict | None,
+) -> str:
+    return _render(
+        "refund_notification.html",
+        request_type=request_type, request_id=request_id,
+        employee_name=employee_name, fields=fields, balances=balances,
+    )
+
+
 def render_system_override_reject_at_approval(request_id, employee_name: str, request_type: str) -> str:
     return _render(
         "system_override_reject_at_approval.html",

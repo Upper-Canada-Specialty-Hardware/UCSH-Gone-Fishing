@@ -19,6 +19,7 @@ from app.services.holidays import (
 )
 from app.services.balance import (
     apply_vacation_offset,
+    cascade_current_year,
     recalculate_request_allow_date,
 )
 from app.services.concurrency import lock_manager
@@ -241,6 +242,71 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     )
 
     return {"status": "approved", "balances": balances}
+
+
+async def refund_overtime_request(request_id: str | int, admin_id: str | int) -> dict:
+    """Reverse an approved overtime request — subtract from OT balance, cascade, recalc RAD."""
+    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Approved":
+        return {"error": "Only approved requests can be refunded"}
+
+    submitted_by = fields.get("SubmittedBy", {})
+    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
+    employee = await get_employee_by_name(submitter_name)
+    if not employee:
+        return {"error": "Employee not found"}
+
+    emp_fields = employee["fields"]
+    employee_id = employee["id"]
+    hours = float(fields.get("Hours", 0) or 0)
+    days_to_subtract = hours / 8
+
+    # Update SP status
+    await sp_client.update_list_item_fields(
+        settings.SP_LIST_OVERTIME_REQUESTS, request_id, {"Status": "Refunded"},
+    )
+
+    # Hourly staff — no balance change
+    if emp_fields.get("SalaryHourly") == "Hourly":
+        from app.templates_render import render_refund_notification
+        html = render_refund_notification("Overtime", request_id, submitter_name, fields, None)
+        await send_email_with_dashboard(
+            to=[emp_fields.get("EmailAddress", "")],
+            subject=f"{submitter_name} - Overtime Request: Refunded",
+            html_body=html,
+            primary_employee_id=employee_id,
+        )
+        return {"status": "refunded", "no_balance_change": True}
+
+    async with lock_manager.lock(employee_id):
+        emp = await get_employee_by_id(employee_id)
+        ef = emp["fields"]
+        current_ot = float(ef.get("CurrentOvertimeBalance", 0) or 0)
+        new_ot = current_ot - days_to_subtract
+
+        await sp_client.update_list_item_fields(
+            settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            {"CurrentOvertimeBalance": new_ot},
+        )
+
+        balances = await cascade_current_year(employee_id)
+
+        await recalculate_request_allow_date(
+            employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
+        )
+
+    from app.templates_render import render_refund_notification
+    html = render_refund_notification("Overtime", request_id, submitter_name, fields, balances)
+    await send_email_with_dashboard(
+        to=[emp_fields.get("EmailAddress", "")],
+        subject=f"{submitter_name} - Overtime Request: Refunded",
+        html_body=html,
+        primary_employee_id=employee_id,
+    )
+
+    return {"status": "refunded", "balances": balances}
 
 
 async def reject_overtime_request(request_id: str | int, manager_id: str | int) -> dict:

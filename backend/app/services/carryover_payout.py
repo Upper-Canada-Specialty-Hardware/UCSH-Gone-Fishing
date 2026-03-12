@@ -303,6 +303,75 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
     return {"status": "approved", "balances": balances}
 
 
+async def refund_carryover_payout(request_id: str | int, admin_id: str | int) -> dict:
+    """Reverse an approved carryover/payout — restore vacation, subtract from CO/Payout, recalc RAD."""
+    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Approved" or fields.get("SystemState") != "Processed":
+        return {"error": "Only approved/processed requests can be refunded"}
+
+    employee_id = fields.get("EmployeeID")
+    if not employee_id:
+        return {"error": "No employee ID"}
+
+    days = float(fields.get("Days", 0) or 0)
+    request_type = fields.get("TypeofRequest", "")
+
+    async with lock_manager.lock(employee_id):
+        emp = await get_employee_by_id(employee_id)
+        ef = emp["fields"]
+        fresh_vacation = float(ef.get("CurrentVacationBalance", 0) or 0)
+        fresh_carryover = float(ef.get("CarryOver", 0) or 0)
+        fresh_payout = float(ef.get("Payout", 0) or 0)
+
+        final_vacation = fresh_vacation + days
+
+        if request_type == "Carry Over":
+            final_carryover = fresh_carryover - days
+            final_payout = fresh_payout
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
+            )
+        else:
+            final_carryover = fresh_carryover
+            final_payout = fresh_payout - days
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
+            )
+
+        await recalculate_request_allow_date(employee_id, final_vacation, final_carryover)
+
+    # Update SP status
+    await sp_client.update_list_item_fields(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, {"Status": "Refunded"},
+    )
+
+    emp = await get_employee_by_id(employee_id)
+    ef = emp["fields"]
+    employee_name = ef.get("Title", "")
+    balances = {
+        "CurrentVacationBalance": final_vacation,
+        "CurrentSickDayBalance": float(ef.get("CurrentSickDayBalance", 0) or 0),
+        "CarryOver": final_carryover,
+        "CurrentOvertimeBalance": float(ef.get("CurrentOvertimeBalance", 0) or 0),
+        "Payout": final_payout,
+    }
+
+    from app.templates_render import render_refund_notification
+    html = render_refund_notification(request_type, request_id, employee_name, fields, balances)
+    await send_email_with_dashboard(
+        to=[ef.get("EmailAddress", "")],
+        subject=f"{employee_name} - {request_type} Request: Refunded",
+        html_body=html,
+        primary_employee_id=employee_id,
+    )
+
+    return {"status": "refunded", "balances": balances}
+
+
 async def reject_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
     """Process rejection."""
     item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)

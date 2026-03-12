@@ -643,6 +643,31 @@ async def admin_reject(request_type: str, request_id: str):
     return result
 
 
+@router.post("/admin/refund/{request_type}/{request_id}")
+async def admin_refund(user: AuthUser, request_type: str, request_id: str):
+    _require_role(user, "admin")
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    from app.services.leave_requests import refund_leave_request
+    from app.services.overtime_requests import refund_overtime_request
+    from app.services.carryover_payout import refund_carryover_payout
+
+    refund_handlers = {
+        "leave": refund_leave_request,
+        "overtime": refund_overtime_request,
+        "carryover-payout": refund_carryover_payout,
+    }
+    handler = refund_handlers.get(request_type)
+    if not handler:
+        raise HTTPException(status_code=400, detail="Invalid request type")
+
+    result = await handler(request_id, user.user_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
 # --- Config endpoint (no auth needed, used by frontend) ---
 
 @router.get("/config")

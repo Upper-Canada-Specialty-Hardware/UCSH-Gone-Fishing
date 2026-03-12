@@ -16,6 +16,7 @@ import {
   getConfig,
   adminApproveRequest,
   adminRejectRequest,
+  adminRefundRequest,
   getAdminImpersonateUrl,
 } from '../api/client';
 
@@ -101,6 +102,25 @@ export default function AdminDashboard() {
       await adminRejectRequest(type, id);
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request rejected', severity: 'success' });
+    } catch (err: any) {
+      setSnack({ open: true, message: err.response?.data?.detail || 'Failed', severity: 'error' });
+    } finally {
+      setActionLoading(null);
+    }
+  }, []);
+
+  const handleRefund = useCallback(async (type: string, id: string) => {
+    setActionLoading(`${type}-${id}`);
+    try {
+      await adminRefundRequest(type, id);
+      setRequests((prev) =>
+        prev.map((r) =>
+          r.request_type === type && String(r.id) === String(id)
+            ? { ...r, Status: 'Refunded' }
+            : r
+        )
+      );
+      setSnack({ open: true, message: 'Request refunded', severity: 'success' });
     } catch (err: any) {
       setSnack({ open: true, message: err.response?.data?.detail || 'Failed', severity: 'error' });
     } finally {
@@ -221,7 +241,13 @@ export default function AdminDashboard() {
 
       {tab === 2 && (
         <Paper sx={{ p: 3 }}>
-          <RequestHistory requests={requests} showEmployee />
+          <RequestHistory
+            requests={requests}
+            showEmployee
+            onRefund={handleRefund}
+            processingEnabled={processingEnabled}
+            actionLoading={actionLoading}
+          />
         </Paper>
       )}
 
