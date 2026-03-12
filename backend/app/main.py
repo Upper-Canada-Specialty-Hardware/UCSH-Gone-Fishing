@@ -88,8 +88,10 @@ if cors_origins:
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    import traceback
+    tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    logger.error("Unhandled exception on %s %s: %s\n%s", request.method, request.url.path, exc, "".join(tb))
+    return JSONResponse(status_code=500, content={"detail": str(exc), "traceback": "".join(tb)})
 
 templates = Jinja2Templates(directory="app/templates")
 
