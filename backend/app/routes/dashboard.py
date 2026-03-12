@@ -114,22 +114,23 @@ async def my_requests(
 
     results = []
 
-    # Leave requests — Title is "{Name} /// {notes}", use startsWith
+    # SharePoint text fields aren't indexed — fetch all and filter client-side.
+
+    # Leave requests — Title is "{Name} /// {notes}"
     if not type or type == "leave":
         try:
-            items = await sp_client.get_list_items(
-                settings.SP_LIST_LEAVE_REQUESTS,
-                filter=f"startsWith(fields/Title, '{_esc(emp_name)}')",
-            )
+            items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         except Exception:
-            logger.exception("Failed to fetch leave requests for %s", emp_name)
+            logger.exception("Failed to fetch leave requests")
             items = []
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            item["request_type"] = "leave"
-            results.append(item)
+        for item in items:
+            if not item.get("fields", {}).get("Title", "").startswith(emp_name):
+                continue
+            for r in _filter_requests([item], None, status, from_date, to_date):
+                r["request_type"] = "leave"
+                results.append(r)
 
-    # Overtime requests — SubmittedBy is Person/Group, no text name column;
-    # fetch all and match client-side via LookupValue
+    # Overtime — SubmittedBy is Person/Group (LookupValue has display name)
     if not type or type == "overtime":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
@@ -137,26 +138,26 @@ async def my_requests(
             logger.exception("Failed to fetch overtime requests")
             items = []
         for item in items:
-            f = item.get("fields", {})
-            if f.get("SubmittedByLookupValue", "") != emp_name:
+            if item.get("fields", {}).get("SubmittedByLookupValue", "") != emp_name:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "overtime"
                 results.append(r)
 
-    # Carryover/Payout — EmployeeID stores the Staff Directory item ID
+    # Carryover/Payout — match by EmployeeID (SD item ID)
     if not type or type == "carryover-payout":
         try:
-            items = await sp_client.get_list_items(
-                settings.SP_LIST_CARRYOVER_PAYOUT,
-                filter=f"fields/EmployeeID eq {int(user.user_id)}",
-            )
+            items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         except Exception:
-            logger.exception("Failed to fetch carryover requests for user %s", user.user_id)
+            logger.exception("Failed to fetch carryover requests")
             items = []
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            item["request_type"] = "carryover-payout"
-            results.append(item)
+        emp_id = int(user.user_id)
+        for item in items:
+            if item.get("fields", {}).get("EmployeeID") != emp_id:
+                continue
+            for r in _filter_requests([item], None, status, from_date, to_date):
+                r["request_type"] = "carryover-payout"
+                results.append(r)
 
     return {"requests": results}
 
@@ -178,10 +179,8 @@ async def team_members(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        filter=f"fields/Supervisor eq '{_esc(manager_name)}'",
-    )
+    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = [i for i in all_staff if i.get("fields", {}).get("Supervisor", "") == manager_name]
     return {"members": [
         {**_format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
         for item in items
@@ -196,10 +195,8 @@ async def team_balances(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        filter=f"fields/Supervisor eq '{_esc(manager_name)}'",
-    )
+    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = [i for i in all_staff if i.get("fields", {}).get("Supervisor", "") == manager_name]
     return {"balances": [
         {"employee": _format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
         for item in items
@@ -216,29 +213,21 @@ async def team_pending(user: AuthUser):
 
     pending = []
 
-    # Leave requests pending for this manager
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_LEAVE_REQUESTS,
-        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Pending'",
-    )
-    for item in items:
-        pending.append({"id": item["id"], "request_type": "leave", **item.get("fields", {})})
-
-    # Overtime requests
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_OVERTIME_REQUESTS,
-        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Pending'",
-    )
-    for item in items:
-        pending.append({"id": item["id"], "request_type": "overtime", **item.get("fields", {})})
-
-    # Carryover/Payout requests
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_CARRYOVER_PAYOUT,
-        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Pending'",
-    )
-    for item in items:
-        pending.append({"id": item["id"], "request_type": "carryover-payout", **item.get("fields", {})})
+    for list_id, req_type, mgr_field in [
+        (settings.SP_LIST_LEAVE_REQUESTS, "leave", "Managertxt"),
+        (settings.SP_LIST_OVERTIME_REQUESTS, "overtime", "ManagerLookupValue"),
+        (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout", "Managertxt"),
+    ]:
+        try:
+            items = await sp_client.get_list_items(list_id)
+        except Exception:
+            logger.exception("Failed to fetch %s items for team pending", req_type)
+            continue
+        for item in items:
+            f = item.get("fields", {})
+            if f.get("Status") != "Pending" or f.get(mgr_field, "") != manager_name:
+                continue
+            pending.append({"id": item["id"], "request_type": req_type, **f})
 
     return {"pending": pending}
 
@@ -259,32 +248,24 @@ async def team_requests(
 
     results = []
 
-    if not type or type == "leave":
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_LEAVE_REQUESTS,
-            filter=f"fields/Managertxt eq '{_esc(manager_name)}'",
-        )
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            item["request_type"] = "leave"
-            results.append(item)
-
-    if not type or type == "overtime":
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_OVERTIME_REQUESTS,
-            filter=f"fields/Managertxt eq '{_esc(manager_name)}'",
-        )
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            item["request_type"] = "overtime"
-            results.append(item)
-
-    if not type or type == "carryover-payout":
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_CARRYOVER_PAYOUT,
-            filter=f"fields/Managertxt eq '{_esc(manager_name)}'",
-        )
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            item["request_type"] = "carryover-payout"
-            results.append(item)
+    for list_id, req_type, mgr_field in [
+        (settings.SP_LIST_LEAVE_REQUESTS, "leave", "Managertxt"),
+        (settings.SP_LIST_OVERTIME_REQUESTS, "overtime", "ManagerLookupValue"),
+        (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout", "Managertxt"),
+    ]:
+        if type and type != req_type:
+            continue
+        try:
+            items = await sp_client.get_list_items(list_id)
+        except Exception:
+            logger.exception("Failed to fetch %s items for team requests", req_type)
+            continue
+        for item in items:
+            if item.get("fields", {}).get(mgr_field, "") != manager_name:
+                continue
+            for r in _filter_requests([item], None, status, from_date, to_date):
+                r["request_type"] = req_type
+                results.append(r)
 
     return {"requests": results}
 
@@ -301,14 +282,13 @@ async def team_calendar(
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_LEAVE_REQUESTS,
-        filter=f"fields/Managertxt eq '{_esc(manager_name)}' and fields/Status eq 'Approved'",
-    )
+    all_leave = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
 
     events = []
-    for item in items:
+    for item in all_leave:
         f = item.get("fields", {})
+        if f.get("Managertxt", "") != manager_name or f.get("Status") != "Approved":
+            continue
         start = f.get("StartDate", "")
         end = f.get("EndDate", start)
         if from_date and start and start < from_date:
