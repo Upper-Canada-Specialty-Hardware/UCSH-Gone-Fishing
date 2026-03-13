@@ -176,3 +176,9 @@ def render_system_override_reject_at_approval(request_id, employee_name: str, re
         "system_override_reject_at_approval.html",
         request_id=request_id, employee_name=employee_name, request_type=request_type,
     )
+
+
+# --- Dashboard ---
+
+def render_dashboard_link_email(manager_name: str, dashboard_url: str) -> str:
+    return _render("dashboard_link_email.html", manager_name=manager_name, dashboard_url=dashboard_url)

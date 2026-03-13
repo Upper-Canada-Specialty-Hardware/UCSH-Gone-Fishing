@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
-from app.services.employee import get_employee_by_id, ADMIN_NAMES
+from app.services.employee import get_employee_by_id, is_manager, ADMIN_NAMES
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -685,6 +685,31 @@ async def admin_impersonate_url(
 
     url = generate_dashboard_url(target_role, target_id)
     return {"url": url}
+
+
+@router.post("/admin/send-dashboard-link")
+async def admin_send_dashboard_link(user: AuthUser, target_id: str = Query(...)):
+    _require_role(user, "admin")
+
+    emp = await get_employee_by_id(target_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    fields = emp["fields"]
+    email = fields.get("EmailAddress", "")
+    if not email:
+        raise HTTPException(status_code=400, detail="Employee has no email address")
+    name = fields.get("Title", "")
+    if not await is_manager(name):
+        raise HTTPException(status_code=400, detail="Employee is not a manager")
+
+    dashboard_url = generate_dashboard_url("manager", target_id)
+
+    from app.templates_render import render_dashboard_link_email
+    from app.graph.email import send_email
+    html = render_dashboard_link_email(manager_name=name, dashboard_url=dashboard_url)
+    await send_email(to=[email], subject="Your Team Dashboard Link", html_body=html)
+
+    return {"status": "sent", "email": email}
 
 
 @router.get("/admin/stats")

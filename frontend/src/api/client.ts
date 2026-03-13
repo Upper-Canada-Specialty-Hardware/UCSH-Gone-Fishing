@@ -78,3 +78,6 @@ export const adminRefundRequest = (type: string, id: string) =>
 // Admin impersonation
 export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'manager') =>
   api.get('/admin/impersonate-url', { params: { target_id: targetId, target_role: role } });
+
+export const sendDashboardLink = (targetId: string) =>
+  api.post('/admin/send-dashboard-link', null, { params: { target_id: targetId } });

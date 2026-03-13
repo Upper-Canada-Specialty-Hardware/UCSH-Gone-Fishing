@@ -18,6 +18,7 @@ import {
   adminRejectRequest,
   adminRefundRequest,
   getAdminImpersonateUrl,
+  sendDashboardLink,
 } from '../api/client';
 
 export default function AdminDashboard() {
@@ -135,6 +136,17 @@ export default function AdminDashboard() {
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : 'Failed to generate URL';
+      setSnack({ open: true, message, severity: 'error' });
+    }
+  }, []);
+
+  const handleSendDashboardLink = useCallback(async (targetId: string) => {
+    try {
+      await sendDashboardLink(targetId);
+      setSnack({ open: true, message: 'Dashboard link sent', severity: 'success' });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : 'Failed to send dashboard link';
       setSnack({ open: true, message, severity: 'error' });
     }
   }, []);
@@ -300,12 +312,20 @@ export default function AdminDashboard() {
             sx={{ mb: 3 }}
           />
           {viewMgrId && (
-            <Button
-              variant="contained"
-              onClick={() => handleOpenDashboard(viewMgrId, 'manager')}
-            >
-              Open Team Dashboard
-            </Button>
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              <Button
+                variant="contained"
+                onClick={() => handleOpenDashboard(viewMgrId, 'manager')}
+              >
+                Open Team Dashboard
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={() => handleSendDashboardLink(viewMgrId)}
+              >
+                Send Dashboard Link
+              </Button>
+            </Box>
           )}
         </Paper>
       )}
