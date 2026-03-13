@@ -161,19 +161,35 @@ def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: d
     return ""
 
 
+def _resolve_employee_name(
+    item_data: dict, request_type: str,
+    sp_user_to_name: dict, staff_by_id: dict,
+) -> str:
+    """Resolve the submitter's display name from a request item."""
+    if request_type == "leave":
+        return _resolve_sp_user_name(item_data, "SubmittedTest", sp_user_to_name)
+    elif request_type == "overtime":
+        return _resolve_sp_user_name(item_data, "SubmittedBy", sp_user_to_name)
+    elif request_type == "carryover-payout":
+        emp_id = item_data.get("EmployeeID")
+        if emp_id is not None:
+            try:
+                staff = staff_by_id.get(int(emp_id))
+                if staff:
+                    return staff["fields"].get("Title", "")
+            except (ValueError, TypeError):
+                pass
+    return ""
+
+
 def _enrich_pending_item(
     item_data: dict, request_type: str,
     staff_by_name: dict, staff_by_id: dict, sp_user_to_name: dict,
 ) -> dict:
     """Add employee_name, current_balances, projected_balances, balance_unchanged."""
+    emp_name = _resolve_employee_name(item_data, request_type, sp_user_to_name, staff_by_id)
     staff = None
-    emp_name = ""
-
-    if request_type == "leave":
-        emp_name = _resolve_sp_user_name(item_data, "SubmittedTest", sp_user_to_name)
-        staff = staff_by_name.get(emp_name.lower()) if emp_name else None
-    elif request_type == "overtime":
-        emp_name = _resolve_sp_user_name(item_data, "SubmittedBy", sp_user_to_name)
+    if request_type in ("leave", "overtime"):
         staff = staff_by_name.get(emp_name.lower()) if emp_name else None
     elif request_type == "carryover-payout":
         emp_id = item_data.get("EmployeeID")
@@ -182,8 +198,6 @@ def _enrich_pending_item(
                 staff = staff_by_id.get(int(emp_id))
             except (ValueError, TypeError):
                 pass
-        if staff:
-            emp_name = staff["fields"].get("Title", "")
 
     item_data["employee_name"] = emp_name
 
@@ -469,6 +483,7 @@ async def team_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "leave"
+                r["employee_name"] = _resolve_employee_name(f, "leave", sp_user_to_name, staff_by_id)
                 results.append(r)
 
     # Overtime — check ManagerLookupValue OR submitter in my_employees
@@ -485,6 +500,7 @@ async def team_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "overtime"
+                r["employee_name"] = _resolve_employee_name(f, "overtime", sp_user_to_name, staff_by_id)
                 results.append(r)
 
     # Carryover/Payout — check Managertxt OR submitter in my_employees
@@ -509,6 +525,7 @@ async def team_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "carryover-payout"
+                r["employee_name"] = _resolve_employee_name(f, "carryover-payout", sp_user_to_name, staff_by_id)
                 results.append(r)
 
     return {"requests": results}
@@ -619,24 +636,28 @@ async def admin_requests(
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
+    _staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     results = []
 
     if not type or type == "leave":
         items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "leave"
+            item["employee_name"] = _resolve_employee_name(item, "leave", sp_user_to_name, staff_by_id)
             results.append(item)
 
     if not type or type == "overtime":
         items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "overtime"
+            item["employee_name"] = _resolve_employee_name(item, "overtime", sp_user_to_name, staff_by_id)
             results.append(item)
 
     if not type or type == "carryover-payout":
         items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "carryover-payout"
+            item["employee_name"] = _resolve_employee_name(item, "carryover-payout", sp_user_to_name, staff_by_id)
             results.append(item)
 
     return {"requests": results}

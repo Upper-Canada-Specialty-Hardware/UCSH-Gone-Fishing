@@ -31,7 +31,7 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
   const columns: GridColDef[] = [
     { field: 'request_type', headerName: 'Type', width: 130 },
     ...(showEmployee
-      ? [{ field: 'Title', headerName: 'Employee', width: 180, valueGetter: (_: any, row: any) => (row.Title || '').split(' /// ')[0] }]
+      ? [{ field: 'employee_name', headerName: 'Employee', width: 180 }]
       : []),
     { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
     { field: 'StartDate', headerName: 'Start', width: 120 },
