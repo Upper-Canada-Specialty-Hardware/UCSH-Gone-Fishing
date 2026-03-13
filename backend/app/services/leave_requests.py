@@ -500,18 +500,21 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
 
 
 async def _resolve_user_lookup_id(email: str) -> int | None:
-    """Resolve a user email to a SP User Information List lookup ID."""
+    """Resolve a user email to a SP User Information List lookup ID.
+
+    Fetches all items and matches client-side because OData $filter on
+    the User Information List fails silently via Graph API.
+    """
     if not email:
         return None
     try:
         from app.graph.sharepoint import sp_client
-        data = await sp_client.get_list_items(
-            "User Information List",
-            filter=f"fields/EMail eq '{email}'",
-            top=1,
-        )
-        if data:
-            return int(data[0]["id"])
+        data = await sp_client.get_list_items("User Information List", top=5000)
+        email_lower = email.lower()
+        for item in data:
+            item_email = item.get("fields", {}).get("EMail", "")
+            if item_email and item_email.lower() == email_lower:
+                return int(item["id"])
     except Exception as e:
         logger.warning("Could not resolve lookup ID for %s: %s", email, e)
     return None
