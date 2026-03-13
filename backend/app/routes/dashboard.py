@@ -8,6 +8,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, is_manager, ADMIN_NAMES
+from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -279,12 +280,14 @@ async def my_requests(
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     emp_name = emp["fields"].get("Title", "")
+    emp_email = emp["fields"].get("EmailAddress", "")
+    sp_lookup_id = await _resolve_user_lookup_id(emp_email)
 
     results = []
 
     # SharePoint text fields aren't indexed — fetch all and filter client-side.
 
-    # Leave requests — Title is "{Name} /// {notes}"
+    # Leave requests — SubmittedTest is Person/Group field with LookupId
     if not type or type == "leave":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
@@ -292,13 +295,19 @@ async def my_requests(
             logger.exception("Failed to fetch leave requests")
             items = []
         for item in items:
-            if not item.get("fields", {}).get("Title", "").startswith(emp_name):
+            f = item.get("fields", {})
+            submitted_id = f.get("SubmittedTestLookupId")
+            if sp_lookup_id and submitted_id == sp_lookup_id:
+                pass  # match by lookup ID
+            elif f.get("Title", "").startswith(emp_name):
+                pass  # fallback: match by name
+            else:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "leave"
                 results.append(r)
 
-    # Overtime — SubmittedBy is Person/Group (LookupValue has display name)
+    # Overtime — SubmittedBy is Person/Group (LookupId + LookupValue)
     if not type or type == "overtime":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
@@ -306,7 +315,13 @@ async def my_requests(
             logger.exception("Failed to fetch overtime requests")
             items = []
         for item in items:
-            if item.get("fields", {}).get("SubmittedByLookupValue", "") != emp_name:
+            f = item.get("fields", {})
+            submitted_id = f.get("SubmittedByLookupId")
+            if sp_lookup_id and submitted_id == sp_lookup_id:
+                pass  # match by lookup ID
+            elif f.get("SubmittedByLookupValue", "") == emp_name:
+                pass  # fallback: match by name
+            else:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "overtime"

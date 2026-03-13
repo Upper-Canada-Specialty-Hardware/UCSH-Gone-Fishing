@@ -29,12 +29,28 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
   });
 
   const columns: GridColDef[] = [
-    { field: 'request_type', headerName: 'Type', width: 130 },
+    {
+      field: 'request_type',
+      headerName: 'Type',
+      width: 150,
+      valueGetter: (_value: string, row: any) => {
+        if (row.request_type === 'leave') return 'Leave';
+        if (row.request_type === 'overtime') return 'Overtime';
+        if (row.request_type === 'carryover-payout') return row.TypeofRequest || 'Carry Over / Payout';
+        return row.request_type;
+      },
+    },
     ...(showEmployee
       ? [{ field: 'employee_name', headerName: 'Employee', width: 180 }]
       : []),
     { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
-    { field: 'StartDate', headerName: 'Start', width: 120 },
+    {
+      field: 'StartDate',
+      headerName: 'Start',
+      width: 120,
+      valueGetter: (_value: string, row: any) =>
+        row.StartDate || (row.Created ? row.Created.split('T')[0] : ''),
+    },
     { field: 'EndDate', headerName: 'End', width: 120 },
     { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
     { field: 'Hours', headerName: 'Hours', width: 80, type: 'number' },
