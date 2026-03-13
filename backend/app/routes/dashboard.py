@@ -162,6 +162,23 @@ def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: d
     return ""
 
 
+def _resolve_managers(staff_item: dict | None) -> str:
+    """Extract manager names from a Staff Directory item."""
+    if not staff_item:
+        return ""
+    fields = staff_item.get("fields", {})
+    all_managers = fields.get("AllManagers")
+    if all_managers and isinstance(all_managers, list):
+        names = [
+            entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+            for entry in all_managers
+        ]
+        names = [n for n in names if n]
+        if names:
+            return ", ".join(names)
+    return fields.get("Supervisor", "")
+
+
 def _resolve_employee_name(
     item_data: dict, request_type: str,
     sp_user_to_name: dict, staff_by_id: dict,
@@ -201,6 +218,7 @@ def _enrich_pending_item(
                 pass
 
     item_data["employee_name"] = emp_name
+    item_data["managers"] = _resolve_managers(staff)
 
     if not staff:
         item_data["current_balances"] = None
@@ -283,6 +301,7 @@ async def my_requests(
     emp_email = emp["fields"].get("EmailAddress", "")
     sp_lookup_id = await _resolve_user_lookup_id(emp_email)
 
+    managers = _resolve_managers(emp)
     results = []
 
     # SharePoint text fields aren't indexed — fetch all and filter client-side.
@@ -305,6 +324,7 @@ async def my_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "leave"
+                r["managers"] = managers
                 results.append(r)
 
     # Overtime — SubmittedBy is Person/Group (LookupId + LookupValue)
@@ -325,6 +345,7 @@ async def my_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "overtime"
+                r["managers"] = managers
                 results.append(r)
 
     # Carryover/Payout — match by EmployeeID (SD item ID)
@@ -340,6 +361,7 @@ async def my_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "carryover-payout"
+                r["managers"] = managers
                 results.append(r)
 
     return {"requests": results}
@@ -498,7 +520,9 @@ async def team_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "leave"
-                r["employee_name"] = _resolve_employee_name(f, "leave", sp_user_to_name, staff_by_id)
+                emp_name = _resolve_employee_name(f, "leave", sp_user_to_name, staff_by_id)
+                r["employee_name"] = emp_name
+                r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
                 results.append(r)
 
     # Overtime — check ManagerLookupValue OR submitter in my_employees
@@ -515,7 +539,9 @@ async def team_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "overtime"
-                r["employee_name"] = _resolve_employee_name(f, "overtime", sp_user_to_name, staff_by_id)
+                emp_name = _resolve_employee_name(f, "overtime", sp_user_to_name, staff_by_id)
+                r["employee_name"] = emp_name
+                r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
                 results.append(r)
 
     # Carryover/Payout — check Managertxt OR submitter in my_employees
@@ -540,7 +566,9 @@ async def team_requests(
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "carryover-payout"
-                r["employee_name"] = _resolve_employee_name(f, "carryover-payout", sp_user_to_name, staff_by_id)
+                emp_name = _resolve_employee_name(f, "carryover-payout", sp_user_to_name, staff_by_id)
+                r["employee_name"] = emp_name
+                r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
                 results.append(r)
 
     return {"requests": results}
@@ -651,28 +679,34 @@ async def admin_requests(
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
-    _staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
+    staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     results = []
 
     if not type or type == "leave":
         items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "leave"
-            item["employee_name"] = _resolve_employee_name(item, "leave", sp_user_to_name, staff_by_id)
+            emp_name = _resolve_employee_name(item, "leave", sp_user_to_name, staff_by_id)
+            item["employee_name"] = emp_name
+            item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
             results.append(item)
 
     if not type or type == "overtime":
         items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "overtime"
-            item["employee_name"] = _resolve_employee_name(item, "overtime", sp_user_to_name, staff_by_id)
+            emp_name = _resolve_employee_name(item, "overtime", sp_user_to_name, staff_by_id)
+            item["employee_name"] = emp_name
+            item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
             results.append(item)
 
     if not type or type == "carryover-payout":
         items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         for item in _filter_requests(items, None, status, from_date, to_date):
             item["request_type"] = "carryover-payout"
-            item["employee_name"] = _resolve_employee_name(item, "carryover-payout", sp_user_to_name, staff_by_id)
+            emp_name = _resolve_employee_name(item, "carryover-payout", sp_user_to_name, staff_by_id)
+            item["employee_name"] = emp_name
+            item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
             results.append(item)
 
     return {"requests": results}

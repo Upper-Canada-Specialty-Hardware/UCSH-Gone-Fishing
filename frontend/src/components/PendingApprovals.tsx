@@ -84,6 +84,11 @@ export default function PendingApprovals({ pending, processingEnabled, onApprove
                   <Typography variant="h6" gutterBottom>
                     {name}
                   </Typography>
+                  {item.managers && (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                      Manager(s): {item.managers}
+                    </Typography>
+                  )}
                   <Chip label={typeLabel[item.request_type] || item.request_type} size="small" sx={{ mr: 1 }} />
                   {item.LeaveType && <Chip label={item.LeaveType} size="small" variant="outlined" sx={{ mr: 1 }} />}
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

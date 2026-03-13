@@ -43,6 +43,7 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
     ...(showEmployee
       ? [{ field: 'employee_name', headerName: 'Employee', width: 180 }]
       : []),
+    { field: 'managers', headerName: 'Manager(s)', width: 200 },
     { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
     {
       field: 'StartDate',
