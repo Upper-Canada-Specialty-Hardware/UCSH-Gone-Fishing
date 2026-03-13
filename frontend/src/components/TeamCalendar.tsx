@@ -13,7 +13,12 @@ const localizer = dateFnsLocalizer({
     return date.toLocaleDateString();
   },
   parse: (value: string) => new Date(value),
-  startOfWeek: () => 0,
+  startOfWeek: (date: Date) => {
+    const d = new Date(date);
+    d.setDate(d.getDate() - d.getDay());
+    d.setHours(0, 0, 0, 0);
+    return d;
+  },
   getDay: (date: Date) => date.getDay(),
   locales: { 'en-US': {} },
 });
