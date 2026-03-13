@@ -300,6 +300,7 @@ async def my_requests(
     emp_name_lower = emp_name.strip().lower()
 
     managers = _resolve_managers(emp)
+    _, _, sp_user_to_name, _ = await _build_staff_lookups()
     results = []
 
     # SharePoint text fields aren't indexed — fetch all and filter client-side.
@@ -314,7 +315,7 @@ async def my_requests(
             items = []
         for item in items:
             f = item.get("fields", {})
-            submitted_name = f.get("SubmittedTestLookupValue", "")
+            submitted_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
             if submitted_name.strip().lower() != emp_name_lower:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
@@ -331,7 +332,7 @@ async def my_requests(
             items = []
         for item in items:
             f = item.get("fields", {})
-            submitted_name = f.get("SubmittedByLookupValue", "")
+            submitted_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
             if submitted_name.strip().lower() != emp_name_lower:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
