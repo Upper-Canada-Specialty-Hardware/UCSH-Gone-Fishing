@@ -4,7 +4,12 @@ from datetime import date
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
-from app.services.employee import get_employee_by_email, get_employee_by_id, get_manager_for_employee
+from app.services.employee import (
+    get_employee_by_email,
+    get_employee_by_id,
+    get_manager_for_employee,
+    get_all_managers_for_employee,
+)
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
 from app.services.approval_links import generate_approval_url
@@ -174,26 +179,36 @@ async def run_approval_pipeline(request_id: str | int):
             html_body=html,
         )
 
-    # Send approval email to manager
-    approve_url = generate_approval_url("carryover-payout", request_id, "approve", manager_id)
-    reject_url = generate_approval_url("carryover-payout", request_id, "reject", manager_id)
+    # Send approval email to all managers
+    all_managers = await get_all_managers_for_employee(employee)
+    if not all_managers:
+        all_managers = [manager]
 
     from app.templates_render import render_carryover_payout_approval_email
     employee_name = emp_fields.get("Title", "")
-    html = render_carryover_payout_approval_email(
-        request_id, request_type, employee_name, days,
-        current_vacation, current_carryover, current_payout,
-        new_vacation, new_carryover, new_payout,
-        approve_url, reject_url,
-    )
-    subject = f"{request_type} Request #{request_id} Submitted by {employee_name}"
-    await send_email_with_dashboard(
-        to=[mgr_fields.get("EmailAddress", ""), "mandyl@ucsh.com"],
-        subject=subject,
-        html_body=html,
-        primary_employee_id=manager_id,
-    )
-    logger.info("Sent approval email for CO/PO #%s", request_id)
+
+    for mgr in all_managers:
+        mgr_id = mgr["id"]
+        mgr_email = mgr["fields"].get("EmailAddress", "")
+
+        approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id)
+        reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id)
+
+        html = render_carryover_payout_approval_email(
+            request_id, request_type, employee_name, days,
+            current_vacation, current_carryover, current_payout,
+            new_vacation, new_carryover, new_payout,
+            approve_url, reject_url,
+        )
+        subject = f"{request_type} Request #{request_id} Submitted by {employee_name}"
+        await send_email_with_dashboard(
+            to=[mgr_email, "mandyl@ucsh.com"],
+            subject=subject,
+            html_body=html,
+            primary_employee_id=mgr_id,
+        )
+
+    logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
 
 
 async def approve_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:

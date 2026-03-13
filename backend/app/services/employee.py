@@ -57,24 +57,63 @@ async def get_employee_by_id(item_id: str | int) -> dict | None:
         return None
 
 
-async def get_manager_for_employee(employee: dict) -> dict | None:
+async def get_all_managers_for_employee(employee: dict) -> list[dict]:
+    """Get all managers from the AllManagers Person/Group field on Staff Directory.
+    Falls back to the Supervisor text field if AllManagers is empty.
+    """
     fields = employee.get("fields", {})
+    all_managers_field = fields.get("AllManagers")
+
+    managers = []
+    if all_managers_field and isinstance(all_managers_field, list):
+        for entry in all_managers_field:
+            name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+            if name:
+                mgr = await get_employee_by_name(name)
+                if mgr:
+                    managers.append(mgr)
+
+    if managers:
+        return managers
+
+    # Fall back to Supervisor field
     supervisor = fields.get("Supervisor")
-    if not supervisor:
-        logger.warning("No supervisor set for employee: %s", fields.get("Title"))
-        return None
-    return await get_employee_by_name(supervisor)
+    if supervisor:
+        mgr = await get_employee_by_name(supervisor)
+        if mgr:
+            return [mgr]
+
+    logger.warning("No managers found for employee: %s", fields.get("Title"))
+    return []
+
+
+async def get_manager_for_employee(employee: dict) -> dict | None:
+    managers = await get_all_managers_for_employee(employee)
+    return managers[0] if managers else None
 
 
 async def is_manager(employee_name: str) -> bool:
-    """Check if anyone lists this employee as their Supervisor."""
+    """Check if anyone lists this employee as their Supervisor or in AllManagers."""
     items = await sp_client.get_list_items(
         settings.SP_LIST_STAFF_DIRECTORY,
         filter=f"fields/Supervisor eq '{_escape_odata(employee_name)}'",
         top=1,
         select=["Title"],
     )
-    return len(items) > 0
+    if items:
+        return True
+
+    # AllManagers is Person/Group multi-value — not OData-filterable, scan client-side
+    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    for staff in all_staff:
+        all_managers = staff.get("fields", {}).get("AllManagers")
+        if all_managers and isinstance(all_managers, list):
+            for entry in all_managers:
+                name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+                if name == employee_name:
+                    return True
+
+    return False
 
 
 async def get_employee_roles(employee: dict) -> list[str]:

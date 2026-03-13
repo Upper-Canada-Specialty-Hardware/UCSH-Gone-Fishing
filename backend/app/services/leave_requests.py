@@ -10,6 +10,7 @@ from app.services.employee import (
     get_employee_by_email,
     get_employee_by_id,
     get_manager_for_employee,
+    get_all_managers_for_employee,
     map_location_to_province,
     ADMIN_NAMES,
 )
@@ -230,7 +231,7 @@ async def send_bereavement_alert(leave_request_id: str | int):
 
 
 async def send_approval_email(leave_request_id: str | int):
-    """Send approval email with HMAC links to manager."""
+    """Send approval email with HMAC links to all managers."""
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
@@ -247,34 +248,37 @@ async def send_approval_email(leave_request_id: str | int):
         return
     emp_fields = employee["fields"]
 
-    manager = await get_employee_by_name(fields.get("Managertxt", ""))
-    if not manager:
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
         return
-    mgr_fields = manager["fields"]
-    manager_id = manager["id"]
-
-    approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id)
-    reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id)
 
     from app.templates_render import render_leave_approval_email
-    html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url)
 
-    await send_email_with_dashboard(
-        to=[mgr_fields.get("EmailAddress", "")],
-        subject=f"Leave Request - {submitter_name}",
-        html_body=html,
-        primary_employee_id=manager_id,
-    )
+    for manager in managers:
+        mgr_fields = manager["fields"]
+        manager_id = manager["id"]
 
-    # Send SMS to manager if they have a cell number
-    cell = mgr_fields.get("CellNumber", "")
-    if cell:
-        await send_sms(
-            to=cell,
-            body=f"Leave Request #{leave_request_id} for {submitter_name}. Reply \"Approve {leave_request_id}\" or \"Reject {leave_request_id}\"",
+        approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id)
+        reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id)
+
+        html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url)
+
+        await send_email_with_dashboard(
+            to=[mgr_fields.get("EmailAddress", "")],
+            subject=f"Leave Request - {submitter_name}",
+            html_body=html,
+            primary_employee_id=manager_id,
         )
 
-    logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
+        # Send SMS to manager if they have a cell number
+        cell = mgr_fields.get("CellNumber", "")
+        if cell:
+            await send_sms(
+                to=cell,
+                body=f"Leave Request #{leave_request_id} for {submitter_name}. Reply \"Approve {leave_request_id}\" or \"Reject {leave_request_id}\"",
+            )
+
+        logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
 
 
 async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:

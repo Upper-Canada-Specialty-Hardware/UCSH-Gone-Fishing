@@ -66,6 +66,18 @@ def _filter_requests(items: list[dict], type_filter: str | None, status_filter: 
     return results
 
 
+def _is_in_all_managers(fields: dict, manager_name: str) -> bool:
+    """Check if manager_name appears in the AllManagers Person/Group field."""
+    all_managers = fields.get("AllManagers")
+    if not all_managers or not isinstance(all_managers, list):
+        return False
+    for entry in all_managers:
+        name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+        if name == manager_name:
+            return True
+    return False
+
+
 def _format_balances(fields: dict) -> dict:
     return {
         "vacation_balance": float(fields.get("CurrentVacationBalance", 0) or 0),
@@ -90,13 +102,14 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
-async def _build_staff_lookups() -> tuple[dict, dict, dict]:
+async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     """Fetch Staff Directory and User Information List.
-    Returns (by_name_lower, by_id, sp_user_to_name) dicts.
+    Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts.
     """
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
+    mgr_to_emp_names: dict[str, set[str]] = {}
     for item in items:
         fields = item.get("fields", {})
         name = fields.get("Title", "")
@@ -108,6 +121,19 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict]:
                 by_id[int(item_id)] = item
             except (ValueError, TypeError):
                 pass
+
+        # Build manager → employee mapping from Supervisor + AllManagers
+        emp_name = name.strip()
+        if emp_name:
+            supervisor = fields.get("Supervisor", "")
+            if supervisor:
+                mgr_to_emp_names.setdefault(supervisor, set()).add(emp_name)
+            all_managers = fields.get("AllManagers")
+            if all_managers and isinstance(all_managers, list):
+                for entry in all_managers:
+                    mgr_name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+                    if mgr_name:
+                        mgr_to_emp_names.setdefault(mgr_name, set()).add(emp_name)
 
     # SP User Information List: map SP user IDs → display names
     sp_user_to_name: dict[int, str] = {}
@@ -121,7 +147,7 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict]:
     except Exception:
         logger.exception("Failed to fetch User Information List for name resolution")
 
-    return by_name, by_id, sp_user_to_name
+    return by_name, by_id, sp_user_to_name, mgr_to_emp_names
 
 
 def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: dict) -> str:
@@ -308,7 +334,11 @@ async def team_members(user: AuthUser):
     manager_name = manager["fields"].get("Title", "")
 
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    items = [i for i in all_staff if i.get("fields", {}).get("Supervisor", "") == manager_name]
+    items = [
+        i for i in all_staff
+        if i.get("fields", {}).get("Supervisor", "") == manager_name
+        or _is_in_all_managers(i.get("fields", {}), manager_name)
+    ]
     return {"members": [
         {**_format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
         for item in items
@@ -324,7 +354,11 @@ async def team_balances(user: AuthUser):
     manager_name = manager["fields"].get("Title", "")
 
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    items = [i for i in all_staff if i.get("fields", {}).get("Supervisor", "") == manager_name]
+    items = [
+        i for i in all_staff
+        if i.get("fields", {}).get("Supervisor", "") == manager_name
+        or _is_in_all_managers(i.get("fields", {}), manager_name)
+    ]
     return {"balances": [
         {"employee": _format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
         for item in items
@@ -339,26 +373,67 @@ async def team_pending(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    staff_by_name, staff_by_id, sp_user_to_name = await _build_staff_lookups()
+    staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
+    my_employees = mgr_to_emp_names.get(manager_name, set())
     pending = []
 
-    for list_id, req_type, mgr_field in [
-        (settings.SP_LIST_LEAVE_REQUESTS, "leave", "Managertxt"),
-        (settings.SP_LIST_OVERTIME_REQUESTS, "overtime", "ManagerLookupValue"),
-        (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout", "Managertxt"),
-    ]:
-        try:
-            items = await sp_client.get_list_items(list_id)
-        except Exception:
-            logger.exception("Failed to fetch %s items for team pending", req_type)
+    # Leave — check AllManagers on request OR Managertxt
+    try:
+        items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    except Exception:
+        logger.exception("Failed to fetch leave items for team pending")
+        items = []
+    for item in items:
+        f = item.get("fields", {})
+        if f.get("Status") != "Pending":
             continue
-        for item in items:
-            f = item.get("fields", {})
-            if f.get("Status") != "Pending" or f.get(mgr_field, "") != manager_name:
-                continue
-            item_data = {"id": item["id"], "request_type": req_type, **f}
-            _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
-            pending.append(item_data)
+        if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
+            continue
+        item_data = {"id": item["id"], "request_type": "leave", **f}
+        _enrich_pending_item(item_data, "leave", staff_by_name, staff_by_id, sp_user_to_name)
+        pending.append(item_data)
+
+    # Overtime — check ManagerLookupValue OR submitter in my_employees
+    try:
+        items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+    except Exception:
+        logger.exception("Failed to fetch overtime items for team pending")
+        items = []
+    for item in items:
+        f = item.get("fields", {})
+        if f.get("Status") != "Pending":
+            continue
+        submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
+        if f.get("ManagerLookupValue", "") != manager_name and submitter_name not in my_employees:
+            continue
+        item_data = {"id": item["id"], "request_type": "overtime", **f}
+        _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
+        pending.append(item_data)
+
+    # Carryover/Payout — check Managertxt OR submitter in my_employees
+    try:
+        items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+    except Exception:
+        logger.exception("Failed to fetch carryover items for team pending")
+        items = []
+    for item in items:
+        f = item.get("fields", {})
+        if f.get("Status") != "Pending":
+            continue
+        emp_id = f.get("EmployeeID")
+        emp_name = ""
+        if emp_id is not None:
+            try:
+                staff = staff_by_id.get(int(emp_id))
+                if staff:
+                    emp_name = staff["fields"].get("Title", "")
+            except (ValueError, TypeError):
+                pass
+        if f.get("Managertxt", "") != manager_name and emp_name not in my_employees:
+            continue
+        item_data = {"id": item["id"], "request_type": "carryover-payout", **f}
+        _enrich_pending_item(item_data, "carryover-payout", staff_by_name, staff_by_id, sp_user_to_name)
+        pending.append(item_data)
 
     return {"pending": pending}
 
@@ -377,25 +452,63 @@ async def team_requests(
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
+    staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
+    my_employees = mgr_to_emp_names.get(manager_name, set())
     results = []
 
-    for list_id, req_type, mgr_field in [
-        (settings.SP_LIST_LEAVE_REQUESTS, "leave", "Managertxt"),
-        (settings.SP_LIST_OVERTIME_REQUESTS, "overtime", "ManagerLookupValue"),
-        (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout", "Managertxt"),
-    ]:
-        if type and type != req_type:
-            continue
+    # Leave — check AllManagers on request OR Managertxt
+    if not type or type == "leave":
         try:
-            items = await sp_client.get_list_items(list_id)
+            items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         except Exception:
-            logger.exception("Failed to fetch %s items for team requests", req_type)
-            continue
+            logger.exception("Failed to fetch leave items for team requests")
+            items = []
         for item in items:
-            if item.get("fields", {}).get(mgr_field, "") != manager_name:
+            f = item.get("fields", {})
+            if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
-                r["request_type"] = req_type
+                r["request_type"] = "leave"
+                results.append(r)
+
+    # Overtime — check ManagerLookupValue OR submitter in my_employees
+    if not type or type == "overtime":
+        try:
+            items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+        except Exception:
+            logger.exception("Failed to fetch overtime items for team requests")
+            items = []
+        for item in items:
+            f = item.get("fields", {})
+            submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
+            if f.get("ManagerLookupValue", "") != manager_name and submitter_name not in my_employees:
+                continue
+            for r in _filter_requests([item], None, status, from_date, to_date):
+                r["request_type"] = "overtime"
+                results.append(r)
+
+    # Carryover/Payout — check Managertxt OR submitter in my_employees
+    if not type or type == "carryover-payout":
+        try:
+            items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        except Exception:
+            logger.exception("Failed to fetch carryover items for team requests")
+            items = []
+        for item in items:
+            f = item.get("fields", {})
+            emp_id = f.get("EmployeeID")
+            emp_name = ""
+            if emp_id is not None:
+                try:
+                    staff = staff_by_id.get(int(emp_id))
+                    if staff:
+                        emp_name = staff["fields"].get("Title", "")
+                except (ValueError, TypeError):
+                    pass
+            if f.get("Managertxt", "") != manager_name and emp_name not in my_employees:
+                continue
+            for r in _filter_requests([item], None, status, from_date, to_date):
+                r["request_type"] = "carryover-payout"
                 results.append(r)
 
     return {"requests": results}
@@ -418,7 +531,9 @@ async def team_calendar(
     events = []
     for item in all_leave:
         f = item.get("fields", {})
-        if f.get("Managertxt", "") != manager_name or f.get("Status") != "Approved":
+        if f.get("Status") != "Approved":
+            continue
+        if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
             continue
         start = f.get("StartDate", "")
         end = f.get("EndDate", start)
@@ -529,7 +644,7 @@ async def admin_requests(
 
 @router.get("/admin/pending")
 async def admin_pending():
-    staff_by_name, staff_by_id, sp_user_to_name = await _build_staff_lookups()
+    staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     pending = []
 
     for list_id, req_type in [

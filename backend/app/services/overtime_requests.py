@@ -8,6 +8,7 @@ from app.services.employee import (
     get_employee_by_name,
     get_employee_by_id,
     get_manager_for_employee,
+    get_all_managers_for_employee,
     map_location_to_province,
 )
 from app.services.holidays import (
@@ -73,10 +74,12 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
             logger.warning("Cannot assign manager — employee not found for OT #%s", request_id)
             return
 
-    manager = await get_manager_for_employee(employee)
-    if not manager:
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
         return
 
+    # Assign primary manager (first) to SP item
+    manager = managers[0]
     mgr_fields = manager["fields"]
     mgr_email = mgr_fields.get("EmailAddress", "")
     manager_lookup_id = await _resolve_user_lookup_id(mgr_email)
@@ -88,12 +91,12 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     await sp_client.update_list_item_fields(settings.SP_LIST_OVERTIME_REQUESTS, request_id, update)
     logger.info("Assigned manager %s to overtime request #%s", mgr_fields.get("Title"), request_id)
 
-    # Trigger approval pipeline
-    await send_approval_email(request_id, employee, manager)
+    # Trigger approval pipeline with all managers
+    await send_approval_email(request_id, employee, managers)
 
 
-async def send_approval_email(request_id: str | int, employee: dict, manager: dict):
-    """Holiday check, half-friday detection, send approval email."""
+async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict]):
+    """Holiday check, half-friday detection, send approval email to all managers."""
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -101,8 +104,6 @@ async def send_approval_email(request_id: str | int, employee: dict, manager: di
         return
 
     emp_fields = employee["fields"]
-    mgr_fields = manager["fields"]
-    manager_id = manager["id"]
 
     location = emp_fields.get("Location", "")
     province = map_location_to_province(location)
@@ -123,8 +124,13 @@ async def send_approval_email(request_id: str | int, employee: dict, manager: di
         )
         from app.templates_render import render_overtime_auto_rejected
         html = render_overtime_auto_rejected(fields, holiday_name)
+        recipients = [emp_fields.get("EmailAddress", "")]
+        for mgr in managers:
+            mgr_email = mgr["fields"].get("EmailAddress", "")
+            if mgr_email:
+                recipients.append(mgr_email)
         await send_email(
-            to=[emp_fields.get("EmailAddress", ""), mgr_fields.get("EmailAddress", "")],
+            to=recipients,
             subject="Overtime Request - Auto Rejected",
             html_body=html,
         )
@@ -134,23 +140,29 @@ async def send_approval_email(request_id: str | int, employee: dict, manager: di
     # Half-friday detection
     is_hf = is_half_friday(overtime_date, half_friday_season)
 
-    approve_url = generate_approval_url("overtime", request_id, "approve", manager_id)
-    reject_url = generate_approval_url("overtime", request_id, "reject", manager_id)
-
     from app.templates_render import render_overtime_approval_email
-    html = render_overtime_approval_email(fields, submitter_name, approve_url, reject_url, is_hf)
 
     subject = f"Overtime Request - {submitter_name}"
     if is_hf:
         subject += " - Half-Day Friday Detected"
 
-    await send_email_with_dashboard(
-        to=[mgr_fields.get("EmailAddress", "")],
-        subject=subject,
-        html_body=html,
-        primary_employee_id=manager_id,
-    )
-    logger.info("Sent approval email for overtime #%s", request_id)
+    for manager in managers:
+        mgr_fields = manager["fields"]
+        manager_id = manager["id"]
+
+        approve_url = generate_approval_url("overtime", request_id, "approve", manager_id)
+        reject_url = generate_approval_url("overtime", request_id, "reject", manager_id)
+
+        html = render_overtime_approval_email(fields, submitter_name, approve_url, reject_url, is_hf)
+
+        await send_email_with_dashboard(
+            to=[mgr_fields.get("EmailAddress", "")],
+            subject=subject,
+            html_body=html,
+            primary_employee_id=manager_id,
+        )
+
+    logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
 
 
 async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:

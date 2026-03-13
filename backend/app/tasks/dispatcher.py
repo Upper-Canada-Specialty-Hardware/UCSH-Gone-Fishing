@@ -46,7 +46,7 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
         return
 
     from app.services.overtime_requests import send_approval_email
-    from app.services.employee import get_employee_by_name
+    from app.services.employee import get_employee_by_name, get_all_managers_for_employee
 
     submitted_by = fields.get("SubmittedBy", {})
     submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
@@ -54,13 +54,12 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
     if not employee:
         return
 
-    manager_name = manager.get("LookupValue", "") if isinstance(manager, dict) else ""
-    mgr = await get_employee_by_name(manager_name)
-    if not mgr:
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
         return
 
     logger.info("Dispatching overtime approval for #%s", item_id)
-    await send_approval_email(item_id, employee, mgr)
+    await send_approval_email(item_id, employee, managers)
 
 
 async def _handle_carryover_payout_change(item_id: str, fields: dict):

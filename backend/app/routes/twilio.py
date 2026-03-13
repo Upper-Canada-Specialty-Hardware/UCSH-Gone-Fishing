@@ -71,9 +71,17 @@ async def receive_sms(request: Request):
     sender_name = sender["fields"].get("Title", "")
     sender_id = sender["id"]
 
-    # Manager authorization check
+    # Manager authorization check — Managertxt, AllManagers, or admin
     manager_name = fields.get("Managertxt", "")
-    if sender_name != manager_name and sender_name not in ADMIN_NAMES:
+    in_all_managers = False
+    all_managers_field = fields.get("AllManagers")
+    if all_managers_field and isinstance(all_managers_field, list):
+        for entry in all_managers_field:
+            name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+            if name == sender_name:
+                in_all_managers = True
+                break
+    if sender_name != manager_name and not in_all_managers and sender_name not in ADMIN_NAMES:
         await send_sms(from_number, f"Invalid response - you do not have access to request #{item_id}.")
         return ""
 
