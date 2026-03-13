@@ -8,7 +8,6 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, is_manager, ADMIN_NAMES
-from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -298,77 +297,47 @@ async def my_requests(
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     emp_name = emp["fields"].get("Title", "")
-    emp_email = emp["fields"].get("EmailAddress", "")
-
-    # Primary: get SP User ID from the Staff Directory Person/Group field (zero cost)
-    sp_lookup_id: int | None = None
-    title_link_id = emp["fields"].get("TitleLinkLookupId")
-    if title_link_id is not None:
-        try:
-            sp_lookup_id = int(title_link_id)
-        except (ValueError, TypeError):
-            pass
-    # Secondary: fall back to client-side User Information List lookup
-    if sp_lookup_id is None:
-        sp_lookup_id = await _resolve_user_lookup_id(emp_email)
-
-    logger.debug(
-        "my_requests: emp_name=%s, sp_lookup_id=%s", emp_name, sp_lookup_id
-    )
+    emp_name_lower = emp_name.strip().lower()
 
     managers = _resolve_managers(emp)
     results = []
-    emp_name_lower = emp_name.lower()
 
     # SharePoint text fields aren't indexed — fetch all and filter client-side.
+    # Match by SubmittedTest/SubmittedBy Person/Group display name vs SD Title.
 
-    # Leave requests — SubmittedTest is Person/Group field with LookupId
+    # Leave requests — SubmittedTest Person/Group field
     if not type or type == "leave":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         except Exception:
             logger.exception("Failed to fetch leave requests")
             items = []
-        matched = 0
         for item in items:
             f = item.get("fields", {})
-            submitted_id = f.get("SubmittedTestLookupId")
-            if sp_lookup_id and submitted_id == sp_lookup_id:
-                pass  # match by lookup ID
-            elif f.get("Title", "").lower().startswith(emp_name_lower):
-                pass  # fallback: match by name (case-insensitive)
-            else:
+            submitted_name = f.get("SubmittedTestLookupValue", "")
+            if submitted_name.strip().lower() != emp_name_lower:
                 continue
-            matched += 1
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "leave"
                 r["managers"] = managers
                 results.append(r)
-        logger.debug("my_requests: leave matched=%d", matched)
 
-    # Overtime — SubmittedBy is Person/Group (LookupId + LookupValue)
+    # Overtime — SubmittedBy Person/Group field
     if not type or type == "overtime":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         except Exception:
             logger.exception("Failed to fetch overtime requests")
             items = []
-        matched = 0
         for item in items:
             f = item.get("fields", {})
-            submitted_id = f.get("SubmittedByLookupId")
-            if sp_lookup_id and submitted_id == sp_lookup_id:
-                pass  # match by lookup ID
-            elif f.get("SubmittedByLookupValue", "").lower() == emp_name_lower:
-                pass  # fallback: match by name (case-insensitive)
-            else:
+            submitted_name = f.get("SubmittedByLookupValue", "")
+            if submitted_name.strip().lower() != emp_name_lower:
                 continue
-            matched += 1
             for r in _filter_requests([item], None, status, from_date, to_date):
                 r["request_type"] = "overtime"
                 r["managers"] = managers
                 results.append(r)
-        logger.debug("my_requests: overtime matched=%d", matched)
 
     # Carryover/Payout — match by EmployeeID (SD item ID)
     if not type or type == "carryover-payout":
