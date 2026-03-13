@@ -595,8 +595,8 @@ async def team_calendar(
             continue
         if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
             continue
-        start = f.get("StartDate", "")
-        end = f.get("EndDate", start)
+        start = f.get("StartDate", "")[:10]
+        end = f.get("EndDate", "")[:10] or start
         if from_date and start and start < from_date:
             continue
         if to_date and start and start > to_date:
