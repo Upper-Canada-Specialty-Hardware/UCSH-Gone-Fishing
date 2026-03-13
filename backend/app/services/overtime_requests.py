@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 async def process_new_overtime_request(form_data: dict, submitter_email: str) -> dict:
     """Create SP item → auto-assign manager → trigger approval pipeline."""
-    hours = int(form_data.get("hours", 0))
+    hours = float(form_data.get("hours", 0))
     fields = {
         "Title": form_data.get("description", ""),
         "StartDate": form_data["date"],

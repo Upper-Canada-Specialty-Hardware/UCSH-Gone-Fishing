@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.config import settings
 from app.services.leave_requests import process_new_leave_request
@@ -28,8 +28,17 @@ class LeaveFormData(BaseModel):
 class OvertimeFormData(BaseModel):
     description: str
     date: str
-    hours: int
+    hours: float
     submitter_email: str
+
+    @field_validator("hours")
+    @classmethod
+    def hours_must_be_positive_half_hour(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("hours must be greater than 0")
+        if v % 0.5 != 0:
+            raise ValueError("hours must be a multiple of 0.5")
+        return v
 
 
 class CarryoverPayoutFormData(BaseModel):
