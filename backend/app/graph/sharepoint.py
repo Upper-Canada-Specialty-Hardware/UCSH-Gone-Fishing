@@ -34,8 +34,28 @@ class SharePointClient:
         if select:
             params["$expand"] = f"fields($select={','.join(select)})"
 
-        data = await graph_client.get(f"{self._list_path(list_id)}/items", params=params)
-        return data.get("value", [])
+        url = f"{self._list_path(list_id)}/items"
+        items: list[dict] = []
+        max_pages = 50
+
+        for page in range(max_pages):
+            data = await graph_client.get(url, params=params)
+            items.extend(data.get("value", []))
+
+            next_link = data.get("@odata.nextLink")
+            if not next_link:
+                break
+
+            # nextLink is an absolute URL with query params embedded
+            url = next_link
+            params = None
+        else:
+            logger.warning(
+                "get_list_items hit %d-page safety limit for list %s (fetched %d items)",
+                max_pages, list_id, len(items),
+            )
+
+        return items
 
     async def get_list_item(self, list_id: str, item_id: str | int) -> dict:
         path = f"{self._list_path(list_id)}/items/{item_id}"
