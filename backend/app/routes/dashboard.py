@@ -81,7 +81,7 @@ def _is_in_all_managers(fields: dict, manager_name: str) -> bool:
 def _format_balances(fields: dict) -> dict:
     return {
         "vacation_balance": float(fields.get("CurrentVacationBalance", 0) or 0),
-        "vacation_entitlement": float(fields.get("VacationEntitlement", 0) or 0),
+        "vacation_entitlement": float(fields.get("DefaultYearlyVacationDays", 0) or 0),
         "sick_balance": float(fields.get("CurrentSickDayBalance", 0) or 0),
         "sick_entitlement": float(fields.get("SickDayEntitlement", 0) or 0),
         "overtime": float(fields.get("CurrentOvertimeBalance", 0) or 0),
