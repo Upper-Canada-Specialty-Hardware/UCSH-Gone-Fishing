@@ -259,6 +259,14 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         <Chip label={row.Status || 'Unknown'} color={statusColor[row.Status as string] || 'default'} size="small" />
       ),
     },
+    {
+      field: 'Created', label: 'Created', sortable: true, width: 120,
+      getValue: (row: any) => row.Created ? row.Created.split('T')[0] : '',
+    },
+    {
+      field: 'ApprovedDate', label: 'Approved Date', sortable: true, width: 120,
+      getValue: (row: any) => row.ApprovedDate ? row.ApprovedDate.split('T')[0] : '',
+    },
   ];
 
   return (

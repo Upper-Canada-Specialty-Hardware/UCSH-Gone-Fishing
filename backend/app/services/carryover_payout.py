@@ -304,7 +304,7 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
     new_balance_str = f"{{Vacation:{final_vacation}, CarryOver:{final_carryover}, Payout:{final_payout}}}"
     await sp_client.update_list_item_fields(
         settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
-        {"Status": "Approved", "SystemState": "Processed", "NewBalance": new_balance_str},
+        {"Status": "Approved", "SystemState": "Processed", "NewBalance": new_balance_str, "ApprovedDate": date.today().isoformat()},
     )
 
     # Send approval email
