@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Box, Typography, Paper, CircularProgress, Alert, Tabs, Tab, Snackbar } from '@mui/material';
+import { Box, Typography, Paper, CircularProgress, Alert, Tabs, Tab, Snackbar, ToggleButtonGroup, ToggleButton } from '@mui/material';
 import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
 import TeamCalendar from '../components/TeamCalendar';
+import TeamTimeline from '../components/TeamTimeline';
 import RequestHistory from '../components/RequestHistory';
 import {
   getTeamMembers,
@@ -16,6 +17,7 @@ import {
 
 export default function ManagerDashboard() {
   const [tab, setTab] = useState(0);
+  const [calendarView, setCalendarView] = useState<'month' | 'timeline'>('timeline');
   const [members, setMembers] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -122,7 +124,21 @@ export default function ManagerDashboard() {
 
       {tab === 2 && (
         <Paper sx={{ p: 3 }}>
-          <TeamCalendar events={calendarEvents} />
+          <ToggleButtonGroup
+            value={calendarView}
+            exclusive
+            onChange={(_, v) => { if (v) setCalendarView(v); }}
+            size="small"
+            sx={{ mb: 2 }}
+          >
+            <ToggleButton value="month">Month</ToggleButton>
+            <ToggleButton value="timeline">Timeline</ToggleButton>
+          </ToggleButtonGroup>
+          {calendarView === 'month' ? (
+            <TeamCalendar events={calendarEvents} />
+          ) : (
+            <TeamTimeline events={calendarEvents} />
+          )}
         </Paper>
       )}
 

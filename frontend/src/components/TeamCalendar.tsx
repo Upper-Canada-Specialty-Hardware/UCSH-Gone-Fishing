@@ -94,7 +94,7 @@ export default function TeamCalendar({ events }: Props) {
         events={calendarEvents}
         startAccessor="start"
         endAccessor="end"
-        views={['month', 'week']}
+        views={['month']}
         defaultView="month"
         eventPropGetter={eventStyleGetter}
         popup
