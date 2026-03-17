@@ -578,6 +578,9 @@ async def team_calendar(
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
+    staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
+    my_employees = mgr_to_emp_names.get(manager_name, set())
+
     all_leave = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
 
     events = []
@@ -585,7 +588,11 @@ async def team_calendar(
         f = item.get("fields", {})
         if f.get("Status") != "Approved":
             continue
-        if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
+        # Match manager: Managertxt, AllManagers, or submitter in my_employees
+        emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
+        if (f.get("Managertxt", "") != manager_name
+                and not _is_in_all_managers(f, manager_name)
+                and emp_name not in my_employees):
             continue
         start = f.get("StartDate", "")[:10]
         end = f.get("EndDate", "")[:10] or start
@@ -593,7 +600,7 @@ async def team_calendar(
             continue
         if to_date and start and start > to_date:
             continue
-        name = f.get("Title", "").split(" /// ")[0].strip()
+        name = emp_name or f.get("Title", "").split(" /// ")[0].strip()
         events.append({
             "id": item["id"],
             "employee": name,
