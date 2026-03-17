@@ -14,6 +14,11 @@ from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
 from app.services.approval_links import generate_approval_url
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.audit_trail import (
+    AuditTrailBuilder,
+    snapshot_balances,
+    write_audit_log,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +265,8 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
             )
             return {"status": "system_override_rejected"}
 
+        audit = AuditTrailBuilder("approve")
+
         # Apply balance transfer
         if request_type == "Carry Over":
             final_carryover = fresh_carryover + days
@@ -268,6 +275,12 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
             )
+            audit.add_step(
+                "Transfer Vacation to Carry Over",
+                {"CurrentVacationBalance": fresh_vacation, "CarryOver": fresh_carryover},
+                {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
+                f"Transferred {days} days",
+            )
         else:
             final_carryover = fresh_carryover
             final_payout = fresh_payout + days
@@ -275,9 +288,17 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
             )
+            audit.add_step(
+                "Transfer Vacation to Payout",
+                {"CurrentVacationBalance": fresh_vacation, "Payout": fresh_payout},
+                {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
+                f"Transferred {days} days",
+            )
 
         # Recalculate Request Allow Date
         await recalculate_request_allow_date(employee_id, final_vacation, final_carryover)
+
+    await write_audit_log(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, audit)
 
     # Update request
     new_balance_str = f"{{Vacation:{final_vacation}, CarryOver:{final_carryover}, Payout:{final_payout}}}"
@@ -342,12 +363,20 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
 
         final_vacation = fresh_vacation + days
 
+        audit = AuditTrailBuilder("refund")
+
         if request_type == "Carry Over":
             final_carryover = fresh_carryover - days
             final_payout = fresh_payout
             await sp_client.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
+            )
+            audit.add_step(
+                "Reverse Carry Over to Vacation",
+                {"CurrentVacationBalance": fresh_vacation, "CarryOver": fresh_carryover},
+                {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
+                f"Reversed {days} days",
             )
         else:
             final_carryover = fresh_carryover
@@ -356,8 +385,16 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
             )
+            audit.add_step(
+                "Reverse Payout to Vacation",
+                {"CurrentVacationBalance": fresh_vacation, "Payout": fresh_payout},
+                {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
+                f"Reversed {days} days",
+            )
 
         await recalculate_request_allow_date(employee_id, final_vacation, final_carryover)
+
+    await write_audit_log(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, audit)
 
     # Update SP status
     await sp_client.update_list_item_fields(

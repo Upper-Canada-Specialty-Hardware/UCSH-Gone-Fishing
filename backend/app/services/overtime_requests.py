@@ -26,6 +26,12 @@ from app.services.balance import (
 from app.services.concurrency import lock_manager
 from app.services.approval_links import generate_approval_url
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.audit_trail import (
+    AuditTrailBuilder,
+    snapshot_balances,
+    describe_cascade_changes,
+    write_audit_log,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +213,10 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         # Calculate new overtime balance
         emp = await get_employee_by_id(employee_id)
         ef = emp["fields"]
+
+        audit = AuditTrailBuilder("approve")
+        before = snapshot_balances(ef)
+
         current_ot = float(ef.get("CurrentOvertimeBalance", 0) or 0)
         new_ot = current_ot + days_to_add
 
@@ -214,6 +224,12 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         await sp_client.update_list_item_fields(
             settings.SP_LIST_STAFF_DIRECTORY, employee_id,
             {"CurrentOvertimeBalance": new_ot},
+        )
+        audit.add_step(
+            "Add overtime to Make-Up",
+            {"CurrentOvertimeBalance": current_ot},
+            {"CurrentOvertimeBalance": new_ot},
+            f"Added {days_to_add} days ({hours} hours)",
         )
 
         # Update overtime request
@@ -228,6 +244,18 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         # Recalculate Request Allow Date
         emp = await get_employee_by_id(employee_id)
         ef = emp["fields"]
+
+        # Record vacation offset step if balances changed
+        post_offset = snapshot_balances(ef)
+        if (before["CurrentVacationBalance"] != post_offset["CurrentVacationBalance"]
+                or new_ot != post_offset["CurrentOvertimeBalance"]):
+            audit.add_step(
+                "Vacation offset",
+                {"CurrentVacationBalance": before["CurrentVacationBalance"], "CurrentOvertimeBalance": new_ot},
+                {"CurrentVacationBalance": post_offset["CurrentVacationBalance"], "CurrentOvertimeBalance": post_offset["CurrentOvertimeBalance"]},
+                "Offset negative vacation against positive overtime",
+            )
+
         await recalculate_request_allow_date(
             employee_id,
             float(ef.get("CurrentVacationBalance", 0) or 0),
@@ -252,6 +280,8 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         html_body=html,
         primary_employee_id=employee_id,
     )
+
+    await write_audit_log(settings.SP_LIST_OVERTIME_REQUESTS, request_id, audit)
 
     return {"status": "approved", "balances": balances}
 
@@ -295,6 +325,10 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
     async with lock_manager.lock(employee_id):
         emp = await get_employee_by_id(employee_id)
         ef = emp["fields"]
+
+        audit = AuditTrailBuilder("refund")
+        before = snapshot_balances(ef)
+
         current_ot = float(ef.get("CurrentOvertimeBalance", 0) or 0)
         new_ot = current_ot - days_to_subtract
 
@@ -302,12 +336,33 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
             settings.SP_LIST_STAFF_DIRECTORY, employee_id,
             {"CurrentOvertimeBalance": new_ot},
         )
+        audit.add_step(
+            "Refund overtime from Make-Up",
+            {"CurrentOvertimeBalance": current_ot},
+            {"CurrentOvertimeBalance": new_ot},
+            f"Subtracted {days_to_subtract} days ({hours} hours)",
+        )
+
+        pre_cascade = {
+            "CurrentSickDayBalance": before["CurrentSickDayBalance"],
+            "CurrentOvertimeBalance": new_ot,
+            "CarryOver": before["CarryOver"],
+            "CurrentVacationBalance": before["CurrentVacationBalance"],
+        }
 
         balances = await cascade_current_year(employee_id)
+
+        cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
+        audit.add_step(
+            "Cascade (current year)", pre_cascade, cascade_after,
+            describe_cascade_changes(pre_cascade, cascade_after),
+        )
 
         await recalculate_request_allow_date(
             employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
         )
+
+    await write_audit_log(settings.SP_LIST_OVERTIME_REQUESTS, request_id, audit)
 
     from app.templates_render import render_refund_notification
     html = render_refund_notification("Overtime", request_id, submitter_name, fields, balances)
