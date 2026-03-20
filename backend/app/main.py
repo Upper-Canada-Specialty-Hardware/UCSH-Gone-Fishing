@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
         from app.tasks.subscription_manager import register_all_subscriptions
         await register_all_subscriptions()
 
+        from app.tasks.change_processor import catch_up_all_lists
+        await catch_up_all_lists()
+
         renewal_task = start_subscription_renewal_task()
         logger.info("EmployeeLockManager ready")
     except Exception:
