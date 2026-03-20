@@ -78,6 +78,30 @@ def _is_in_all_managers(fields: dict, manager_name: str) -> bool:
     return False
 
 
+def _is_fully_processed(fields: dict, request_type: str) -> bool:
+    """Check if a pending request has been through server-side processing.
+
+    SP-created items skip the form endpoint, so they may be missing
+    calculated Days/Hours and the assigned Manager fields.
+    """
+    if request_type == "leave":
+        days = fields.get("Days")
+        if not days or float(days) == 0:
+            return False
+        return bool(fields.get("Managertxt"))
+    elif request_type == "overtime":
+        hours = fields.get("Hours")
+        if not hours or float(hours) == 0:
+            return False
+        return bool(fields.get("Manager"))
+    elif request_type == "carryover-payout":
+        days = fields.get("Days")
+        if not days or float(days) == 0:
+            return False
+        return bool(fields.get("Managertxt"))
+    return True
+
+
 def _format_balances(fields: dict) -> dict:
     return {
         "vacation_balance": float(fields.get("CurrentVacationBalance", 0) or 0),
@@ -319,6 +343,8 @@ async def my_requests(
             if submitted_name.strip().lower() != emp_name_lower:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
+                if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
+                    continue
                 r["request_type"] = "leave"
                 r["managers"] = managers
                 results.append(r)
@@ -336,6 +362,8 @@ async def my_requests(
             if submitted_name.strip().lower() != emp_name_lower:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
+                if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
+                    continue
                 r["request_type"] = "overtime"
                 r["managers"] = managers
                 results.append(r)
@@ -352,6 +380,8 @@ async def my_requests(
             if item.get("fields", {}).get("EmployeeID") != emp_id:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
+                if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
+                    continue
                 r["request_type"] = "carryover-payout"
                 r["managers"] = managers
                 results.append(r)
@@ -430,6 +460,8 @@ async def team_pending(user: AuthUser):
         f = item.get("fields", {})
         if f.get("Status") != "Pending":
             continue
+        if not _is_fully_processed(f, "leave"):
+            continue
         if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
             continue
         item_data = {"id": item["id"], "request_type": "leave", **f}
@@ -445,6 +477,8 @@ async def team_pending(user: AuthUser):
     for item in items:
         f = item.get("fields", {})
         if f.get("Status") != "Pending":
+            continue
+        if not _is_fully_processed(f, "overtime"):
             continue
         submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
         if f.get("ManagerLookupValue", "") != manager_name and submitter_name not in my_employees:
@@ -462,6 +496,8 @@ async def team_pending(user: AuthUser):
     for item in items:
         f = item.get("fields", {})
         if f.get("Status") != "Pending":
+            continue
+        if not _is_fully_processed(f, "carryover-payout"):
             continue
         emp_id = f.get("EmployeeID")
         emp_name = ""
@@ -511,6 +547,8 @@ async def team_requests(
             if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
+                if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
+                    continue
                 r["request_type"] = "leave"
                 emp_name = _resolve_employee_name(f, "leave", sp_user_to_name, staff_by_id)
                 r["employee_name"] = emp_name
@@ -530,6 +568,8 @@ async def team_requests(
             if f.get("ManagerLookupValue", "") != manager_name and submitter_name not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
+                if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
+                    continue
                 r["request_type"] = "overtime"
                 emp_name = _resolve_employee_name(f, "overtime", sp_user_to_name, staff_by_id)
                 r["employee_name"] = emp_name
@@ -557,6 +597,8 @@ async def team_requests(
             if f.get("Managertxt", "") != manager_name and emp_name not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
+                if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
+                    continue
                 r["request_type"] = "carryover-payout"
                 emp_name = _resolve_employee_name(f, "carryover-payout", sp_user_to_name, staff_by_id)
                 r["employee_name"] = emp_name
@@ -684,6 +726,8 @@ async def admin_requests(
     if not type or type == "leave":
         items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
+            if item.get("Status") == "Pending" and not _is_fully_processed(item, "leave"):
+                continue
             item["request_type"] = "leave"
             emp_name = _resolve_employee_name(item, "leave", sp_user_to_name, staff_by_id)
             item["employee_name"] = emp_name
@@ -693,6 +737,8 @@ async def admin_requests(
     if not type or type == "overtime":
         items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
+            if item.get("Status") == "Pending" and not _is_fully_processed(item, "overtime"):
+                continue
             item["request_type"] = "overtime"
             emp_name = _resolve_employee_name(item, "overtime", sp_user_to_name, staff_by_id)
             item["employee_name"] = emp_name
@@ -702,6 +748,8 @@ async def admin_requests(
     if not type or type == "carryover-payout":
         items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         for item in _filter_requests(items, None, status, from_date, to_date):
+            if item.get("Status") == "Pending" and not _is_fully_processed(item, "carryover-payout"):
+                continue
             item["request_type"] = "carryover-payout"
             emp_name = _resolve_employee_name(item, "carryover-payout", sp_user_to_name, staff_by_id)
             item["employee_name"] = emp_name
@@ -726,6 +774,8 @@ async def admin_pending():
             for item in items:
                 f = item.get("fields", {})
                 if f.get("Status") != "Pending":
+                    continue
+                if not _is_fully_processed(f, req_type):
                     continue
                 item_data = {"id": item["id"], "request_type": req_type, **f}
                 _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
