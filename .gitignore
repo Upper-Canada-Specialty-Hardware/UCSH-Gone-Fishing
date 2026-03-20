@@ -11,6 +11,7 @@ CLAUDE.md
 
 # Dev specs (local only)
 Dev Plan/
+Admin Follow-Up*.md
 
 # Python
 __pycache__/
@@ -33,6 +34,7 @@ env/
 # Frontend
 node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # OS
 .DS_Store
