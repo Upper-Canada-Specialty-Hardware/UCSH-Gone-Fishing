@@ -103,26 +103,104 @@ async def process_notification(notification: dict):
 
 
 async def catch_up_all_lists():
-    """Run delta queries for all monitored lists to process any missed changes.
+    """Query SP lists for items that still need processing and dispatch them.
 
-    Called once on startup to handle items that were missed if a previous
-    container died after acknowledging a webhook but before processing completed.
+    Called once on startup. Unlike the old delta-based approach, this directly
+    queries each list for items whose SP state indicates they haven't been
+    fully auto-processed (no manager assigned). This handles items missed by
+    stale delta tokens, admin-created SP items, and partial processing failures.
+
+    Phase 1: Direct-query each list, dispatch unprocessed items.
+    Phase 2: Refresh delta tokens so future webhooks work correctly.
     """
     if not settings.PROCESSING_ENABLED:
         logger.info("Catch-up skipped — processing is disabled")
         return
 
+    # --- Phase 1: Direct query and dispatch ---
     total = 0
+
+    # Leave Requests: Pending with no manager assigned
+    try:
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_LEAVE_REQUESTS,
+            filter="fields/Status eq 'Pending'",
+        )
+        need_processing = [
+            i for i in items if not i.get("fields", {}).get("Managertxt")
+        ]
+        processed = await _dispatch_and_log(
+            settings.SP_LIST_LEAVE_REQUESTS, need_processing, "leave request",
+        )
+        total += processed
+        logger.info(
+            "Catch-up: leave requests — %d pending, %d need processing, %d dispatched",
+            len(items), len(need_processing), processed,
+        )
+    except Exception:
+        logger.exception("Catch-up: failed to process leave requests")
+
+    # Overtime Requests: Pending with no manager assigned
+    try:
+        items = await sp_client.get_list_items(
+            settings.SP_LIST_OVERTIME_REQUESTS,
+            filter="fields/Status eq 'Pending'",
+        )
+        need_processing = [
+            i for i in items if not i.get("fields", {}).get("Manager")
+        ]
+        processed = await _dispatch_and_log(
+            settings.SP_LIST_OVERTIME_REQUESTS, need_processing, "overtime request",
+        )
+        total += processed
+        logger.info(
+            "Catch-up: overtime requests — %d pending, %d need processing, %d dispatched",
+            len(items), len(need_processing), processed,
+        )
+    except Exception:
+        logger.exception("Catch-up: failed to process overtime requests")
+
+    # Carryover/Payout: No manager, SystemState absent or "Not Processed"
+    try:
+        items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        need_processing = []
+        for i in items:
+            f = i.get("fields", {})
+            if f.get("Managertxt"):
+                continue
+            system_state = f.get("SystemState")
+            if system_state and system_state != "Not Processed":
+                continue
+            need_processing.append(i)
+        processed = await _dispatch_and_log(
+            settings.SP_LIST_CARRYOVER_PAYOUT, need_processing, "carryover/payout",
+        )
+        total += processed
+        logger.info(
+            "Catch-up: carryover/payout — %d total, %d need processing, %d dispatched",
+            len(items), len(need_processing), processed,
+        )
+    except Exception:
+        logger.exception("Catch-up: failed to process carryover/payout requests")
+
+    logger.info("Catch-up Phase 1 complete — %d items dispatched", total)
+
+    # --- Phase 2: Refresh delta tokens for future webhook use ---
     for list_id in MONITORED_LISTS:
         try:
             async with async_session() as session:
                 token_record = await session.get(ChangeToken, list_id)
                 stored_token = token_record.token if token_record else None
 
-            delta = await sp_client.get_delta(list_id, stored_token)
-            items = delta.get("value", [])
+            try:
+                delta = await sp_client.get_delta(list_id, stored_token)
+            except Exception:
+                logger.info(
+                    "Catch-up: stale delta token for list %s, falling back to tokenless",
+                    list_id,
+                )
+                delta = await sp_client.get_delta(list_id, None)
 
-            # Update delta token
             delta_link = delta.get("@odata.deltaLink", "")
             if "token=" in delta_link:
                 new_token = delta_link.split("token=")[-1]
@@ -137,51 +215,32 @@ async def catch_up_all_lists():
                             updated_at=datetime.utcnow(),
                         ))
                     await session.commit()
+                logger.info("Catch-up: refreshed delta token for list %s", list_id)
+        except Exception:
+            logger.exception("Catch-up: failed to refresh delta token for list %s", list_id)
 
-            processed = 0
-            for item in items:
-                item_id = str(item.get("id", ""))
-                if not item_id:
-                    continue
+    logger.info("Catch-up complete — %d items dispatched, delta tokens refreshed", total)
 
-                action = "webhook_change"
-                async with async_session() as session:
-                    existing = await session.execute(
-                        select(ProcessingLog).where(
-                            ProcessingLog.list_id == list_id,
-                            ProcessingLog.item_id == item_id,
-                            ProcessingLog.action == action,
-                        )
-                    )
-                    if existing.scalar_one_or_none():
-                        continue
 
-                try:
-                    await dispatch_change(list_id, item)
-                except Exception as e:
-                    logger.exception(
-                        "Catch-up: error dispatching list %s, item %s: %s",
-                        list_id, item_id, e,
-                    )
-                    continue
-
-                async with async_session() as session:
-                    session.add(ProcessingLog(
-                        list_id=list_id,
-                        item_id=item_id,
-                        action=action,
-                        processed_at=datetime.utcnow(),
-                    ))
-                    await session.commit()
-                processed += 1
-
-            total += processed
-            if processed:
-                logger.info("Catch-up: processed %d items for list %s", processed, list_id)
-            else:
-                logger.info("Catch-up: no unprocessed items for list %s", list_id)
-
-        except Exception as e:
-            logger.exception("Catch-up: failed for list %s: %s", list_id, e)
-
-    logger.info("Catch-up complete — processed %d total items", total)
+async def _dispatch_and_log(list_id: str, items: list[dict], label: str) -> int:
+    """Dispatch items via the dispatcher and write processing_log on success."""
+    processed = 0
+    for item in items:
+        item_id = str(item.get("id", ""))
+        if not item_id:
+            continue
+        try:
+            await dispatch_change(list_id, item)
+        except Exception:
+            logger.exception("Catch-up: error dispatching %s #%s", label, item_id)
+            continue
+        async with async_session() as session:
+            session.add(ProcessingLog(
+                list_id=list_id,
+                item_id=item_id,
+                action="webhook_change",
+                processed_at=datetime.utcnow(),
+            ))
+            await session.commit()
+        processed += 1
+    return processed

@@ -642,7 +642,7 @@ async def team_calendar(
             continue
         if to_date and start and start > to_date:
             continue
-        name = emp_name or f.get("Title", "").split(" /// ")[0].strip()
+        name = emp_name or "Unknown"
         events.append({
             "id": item["id"],
             "employee": name,
