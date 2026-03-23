@@ -26,27 +26,25 @@ def map_location_to_province(location: str) -> str:
 
 
 async def get_employee_by_name(name: str) -> dict | None:
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        filter=f"fields/Title eq '{_escape_odata(name)}'",
-        top=1,
-    )
-    if not items:
-        logger.warning("Employee not found by name: %s", name)
-        return None
-    return items[0]
+    # Title is not indexed on Staff Directory — fetch all and match client-side
+    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    target = name.strip().lower()
+    for item in items:
+        if item.get("fields", {}).get("Title", "").strip().lower() == target:
+            return item
+    logger.warning("Employee not found by name: %s", name)
+    return None
 
 
 async def get_employee_by_email(email: str) -> dict | None:
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        filter=f"fields/EmailAddress eq '{_escape_odata(email)}'",
-        top=1,
-    )
-    if not items:
-        logger.warning("Employee not found by email: %s", email)
-        return None
-    return items[0]
+    # EmailAddress is not indexed on Staff Directory — fetch all and match client-side
+    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    target = email.strip().lower()
+    for item in items:
+        if item.get("fields", {}).get("EmailAddress", "").strip().lower() == target:
+            return item
+    logger.warning("Employee not found by email: %s", email)
+    return None
 
 
 async def get_employee_by_id(item_id: str | int) -> dict | None:
