@@ -12,6 +12,8 @@ from app.services.employee import (
     get_manager_for_employee,
     get_all_managers_for_employee,
     map_location_to_province,
+    resolve_person_field,
+    resolve_person_field_name,
     ADMIN_NAMES,
 )
 from app.services.holidays import (
@@ -96,12 +98,8 @@ async def auto_calculate_days(leave_request_id: str | int):
         logger.error("Missing dates on leave request #%s", leave_request_id)
         return
 
-    # Get employee's title from SubmittedTest
-    submitter_name = fields.get("SubmittedTest", {}).get("LookupValue", "") if isinstance(fields.get("SubmittedTest"), dict) else ""
-    if not submitter_name:
-        submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
-
-    employee = await get_employee_by_name(submitter_name)
+    # Resolve employee from SubmittedTest Person/Group field
+    employee = await resolve_person_field(fields.get("SubmittedTest"))
     if not employee:
         logger.error("Cannot find employee for leave request #%s", leave_request_id)
         return
@@ -176,8 +174,7 @@ async def auto_assign_manager(leave_request_id: str | int):
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
-    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedTest"))
     if not employee:
         logger.warning("Cannot assign manager — employee not found for LR #%s", leave_request_id)
         return
@@ -225,7 +222,7 @@ async def send_bereavement_alert(leave_request_id: str | int):
     if leave_type not in ("Bereavement", "Jury Duty"):
         return
 
-    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
+    submitter_name = await resolve_person_field_name(fields.get("SubmittedTest"))
     from app.templates_render import render_bereavement_alert
     html = render_bereavement_alert(fields, submitter_name)
     await send_email(
@@ -248,11 +245,11 @@ async def send_approval_email(leave_request_id: str | int):
     if not fields.get("Managertxt"):
         return
 
-    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedTest"))
     if not employee:
         return
     emp_fields = employee["fields"]
+    submitter_name = emp_fields.get("Title", "")
 
     managers = await get_all_managers_for_employee(employee)
     if not managers:
@@ -267,7 +264,7 @@ async def send_approval_email(leave_request_id: str | int):
         approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id)
         reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id)
 
-        html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url)
+        html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url, submitter_name)
 
         await send_email_with_dashboard(
             to=[mgr_fields.get("EmailAddress", "")],
@@ -297,11 +294,11 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     if fields.get("Status") != "Pending":
         return {"error": "Not pending"}
 
-    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedTest"))
     if not employee:
         return {"error": "Employee not found"}
     emp_fields = employee["fields"]
+    submitter_name = emp_fields.get("Title", "")
     employee_id = employee["id"]
 
     manager = await get_employee_by_id(manager_id)
@@ -441,8 +438,8 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     if fields.get("ApproveProcessedFlag") == "Processed":
         return {"error": "Already processed"}
 
-    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    submitter_name = employee["fields"].get("Title", "") if employee else ""
     emp_fields = employee["fields"] if employee else {}
 
     manager = await get_employee_by_id(manager_id)
@@ -474,11 +471,11 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
     if fields.get("Status") != "Approved":
         return {"error": "Only approved requests can be refunded"}
 
-    submitter_name = fields.get("Title", "").split(" /// ")[0].strip()
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedTest"))
     if not employee:
         return {"error": "Employee not found"}
     emp_fields = employee["fields"]
+    submitter_name = emp_fields.get("Title", "")
     employee_id = employee["id"]
 
     leave_type = fields.get("LeaveType", "")

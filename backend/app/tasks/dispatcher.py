@@ -40,9 +40,9 @@ async def _handle_leave_request_change(item_id: str, fields: dict):
     # No Managertxt → SP-created item, auto-process it
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, item_id)
     f = item["fields"]
-    if not f.get("StartDate") or not f.get("EndDate") or not f.get("Title"):
+    if not f.get("StartDate") or not f.get("EndDate"):
         logger.warning(
-            "Leave #%s missing StartDate/EndDate/Title — skipping auto-process", item_id
+            "Leave #%s missing StartDate/EndDate — skipping auto-process", item_id
         )
         return
 
@@ -67,11 +67,9 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
     if manager:
         # Manager already assigned — existing path: send approval email
         from app.services.overtime_requests import send_approval_email
-        from app.services.employee import get_employee_by_name, get_all_managers_for_employee
+        from app.services.employee import resolve_person_field, get_all_managers_for_employee
 
-        submitted_by = fields.get("SubmittedBy", {})
-        submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-        employee = await get_employee_by_name(submitter_name)
+        employee = await resolve_person_field(fields.get("SubmittedBy"))
         if not employee:
             return
 
@@ -92,13 +90,10 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
 
     # Resolve submitter email from SubmittedBy Person field via Staff Directory
     submitter_email = None
-    submitted_by = f.get("SubmittedBy", {})
-    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-    if submitter_name:
-        from app.services.employee import get_employee_by_name
-        emp = await get_employee_by_name(submitter_name)
-        if emp:
-            submitter_email = emp["fields"].get("EmailAddress", "")
+    from app.services.employee import resolve_person_field
+    emp = await resolve_person_field(f.get("SubmittedBy"))
+    if emp:
+        submitter_email = emp["fields"].get("EmailAddress", "")
 
     from app.services.overtime_requests import auto_assign_manager
     logger.info("Auto-processing SP-created overtime request #%s", item_id)
@@ -129,13 +124,10 @@ async def _handle_carryover_payout_change(item_id: str, fields: dict):
 
     # Resolve submitter email from SubmittedBy Person field via Staff Directory
     submitter_email = None
-    submitted_by = f.get("SubmittedBy", {})
-    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-    if submitter_name:
-        from app.services.employee import get_employee_by_name
-        emp = await get_employee_by_name(submitter_name)
-        if emp:
-            submitter_email = emp["fields"].get("EmailAddress", "")
+    from app.services.employee import resolve_person_field
+    emp = await resolve_person_field(f.get("SubmittedBy"))
+    if emp:
+        submitter_email = emp["fields"].get("EmailAddress", "")
 
     if not submitter_email:
         logger.warning(

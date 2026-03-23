@@ -128,5 +128,57 @@ async def get_employee_roles(employee: dict) -> list[str]:
     return roles
 
 
+async def _get_sp_user_name_map() -> dict[int, str]:
+    """Fetch SP User Information List → {sp_user_id: display_name}."""
+    result: dict[int, str] = {}
+    try:
+        user_items = await sp_client.get_list_items("User Information List", top=5000)
+        for u in user_items:
+            uid = u.get("id")
+            uname = u.get("fields", {}).get("Title", "")
+            if uid and uname:
+                result[int(uid)] = uname
+    except Exception:
+        logger.exception("Failed to fetch User Information List")
+    return result
+
+
+async def resolve_person_field(person_field) -> dict | None:
+    """Resolve a SP Person/Group field to a Staff Directory employee record.
+
+    The Graph API only returns LookupId for Person/Group columns (LookupValue
+    is always empty). This function maps LookupId → display name via the
+    User Information List, then looks up the employee in Staff Directory.
+    """
+    if not person_field or not isinstance(person_field, dict):
+        return None
+    lookup_id = person_field.get("LookupId")
+    if not lookup_id:
+        return None
+    sp_user_map = await _get_sp_user_name_map()
+    try:
+        display_name = sp_user_map.get(int(lookup_id), "")
+    except (ValueError, TypeError):
+        return None
+    if not display_name:
+        logger.warning("SP user ID %s not found in User Information List", lookup_id)
+        return None
+    return await get_employee_by_name(display_name)
+
+
+async def resolve_person_field_name(person_field) -> str:
+    """Resolve a SP Person/Group field to a display name only."""
+    if not person_field or not isinstance(person_field, dict):
+        return ""
+    lookup_id = person_field.get("LookupId")
+    if not lookup_id:
+        return ""
+    sp_user_map = await _get_sp_user_name_map()
+    try:
+        return sp_user_map.get(int(lookup_id), "")
+    except (ValueError, TypeError):
+        return ""
+
+
 def _escape_odata(value: str) -> str:
     return value.replace("'", "''")

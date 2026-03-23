@@ -13,11 +13,12 @@ def _render(template_name: str, **kwargs) -> str:
 
 # --- Leave Requests ---
 
-def render_leave_approval_email(fields: dict, emp_fields: dict, approve_url: str, reject_url: str) -> str:
+def render_leave_approval_email(fields: dict, emp_fields: dict, approve_url: str, reject_url: str, submitter_name: str = "") -> str:
     return _render(
         "leave_approval_email.html",
         fields=fields, emp_fields=emp_fields,
         approve_url=approve_url, reject_url=reject_url,
+        submitter_name=submitter_name,
     )
 
 

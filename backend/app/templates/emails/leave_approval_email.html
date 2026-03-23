@@ -2,7 +2,7 @@
   <h2 style="color: #1e40af;">Leave Request</h2>
   <p>A leave request requires your approval.</p>
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr><td style="padding: 8px; font-weight: bold;">Requested by:</td><td style="padding: 8px;">{{ fields.get('Title', '').split(' /// ')[0] }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Requested by:</td><td style="padding: 8px;">{{ submitter_name }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '') }}</td></tr>

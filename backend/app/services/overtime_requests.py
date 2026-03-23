@@ -10,6 +10,7 @@ from app.services.employee import (
     get_manager_for_employee,
     get_all_managers_for_employee,
     map_location_to_province,
+    resolve_person_field,
 )
 from app.services.holidays import (
     get_holidays_for_province,
@@ -64,21 +65,14 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
-    # Resolve submitter name
-    submitted_by = fields.get("SubmittedBy", {})
-    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-    if not submitter_name:
-        submitter_name = fields.get("Title", "")
-
-    employee = await get_employee_by_name(submitter_name)
+    # Resolve submitter from SubmittedBy Person/Group field
+    employee = await resolve_person_field(fields.get("SubmittedBy"))
+    if not employee and submitter_email:
+        from app.services.employee import get_employee_by_email
+        employee = await get_employee_by_email(submitter_email)
     if not employee:
-        # Try by email if available
-        if submitter_email:
-            from app.services.employee import get_employee_by_email
-            employee = await get_employee_by_email(submitter_email)
-        if not employee:
-            logger.warning("Cannot assign manager — employee not found for OT #%s", request_id)
-            return
+        logger.warning("Cannot assign manager — employee not found for OT #%s", request_id)
+        return
 
     managers = await get_all_managers_for_employee(employee)
     if not managers:
@@ -179,14 +173,13 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     if fields.get("Status") != "Pending":
         return {"error": "Not pending"}
 
-    # Resolve employee
-    submitted_by = fields.get("SubmittedBy", {})
-    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-    employee = await get_employee_by_name(submitter_name)
+    # Resolve employee from SubmittedBy Person/Group field
+    employee = await resolve_person_field(fields.get("SubmittedBy"))
     if not employee:
         return {"error": "Employee not found"}
 
     emp_fields = employee["fields"]
+    submitter_name = emp_fields.get("Title", "")
     employee_id = employee["id"]
     hours = float(fields.get("Hours", 0) or 0)
     days_to_add = hours / 8
@@ -294,13 +287,12 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
     if fields.get("Status") != "Approved":
         return {"error": "Only approved requests can be refunded"}
 
-    submitted_by = fields.get("SubmittedBy", {})
-    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedBy"))
     if not employee:
         return {"error": "Employee not found"}
 
     emp_fields = employee["fields"]
+    submitter_name = emp_fields.get("Title", "")
     employee_id = employee["id"]
     hours = float(fields.get("Hours", 0) or 0)
     days_to_subtract = hours / 8
@@ -384,9 +376,8 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
     if fields.get("Status") != "Pending":
         return {"error": "Not pending"}
 
-    submitted_by = fields.get("SubmittedBy", {})
-    submitter_name = submitted_by.get("LookupValue", "") if isinstance(submitted_by, dict) else ""
-    employee = await get_employee_by_name(submitter_name)
+    employee = await resolve_person_field(fields.get("SubmittedBy"))
+    submitter_name = employee["fields"].get("Title", "") if employee else ""
     emp_fields = employee["fields"] if employee else {}
 
     manager = await get_employee_by_id(manager_id)
