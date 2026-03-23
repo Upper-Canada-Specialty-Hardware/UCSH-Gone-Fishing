@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
-from app.graph.webhooks import create_subscription, renew_subscription, delete_subscription
+from app.graph.webhooks import create_subscription, delete_subscription
 from app.models import WebhookSubscription
 
 logger = logging.getLogger(__name__)
@@ -32,44 +32,29 @@ async def register_all_subscriptions():
 
 
 async def _ensure_subscription(list_id: str):
-    """Check if active subscription exists, create or renew as needed."""
+    """Delete any existing subscription and create a fresh one.
+
+    Always recreates on startup to guarantee the client_state in our DB
+    matches what Graph API sends in webhook notifications. Previous
+    approach of reusing "still valid" subscriptions caused client_state
+    mismatches when the DB record was stale.
+    """
+    # Clean up any existing subscriptions for this list
     async with async_session() as session:
         result = await session.execute(
             select(WebhookSubscription).where(WebhookSubscription.list_id == list_id)
         )
-        existing = result.scalar_one_or_none()
+        for existing in result.scalars():
+            try:
+                await delete_subscription(existing.id, list_id)
+            except Exception:
+                logger.debug("Could not delete old subscription %s from Graph (may already be gone)", existing.id)
+            await session.delete(existing)
+        await session.commit()
 
-    now = datetime.utcnow()
-
-    if existing:
-        exp = existing.expiration
-        if exp - now > timedelta(days=RENEWAL_THRESHOLD_DAYS):
-            logger.info("Subscription for list %s is still valid (expires %s)", list_id, exp)
-            return
-        # Renew
-        try:
-            new_exp = await renew_subscription(existing.id, list_id)
-            async with async_session() as session:
-                sub = await session.get(WebhookSubscription, existing.id)
-                if sub:
-                    sub.expiration = new_exp
-                    await session.commit()
-            return
-        except Exception as e:
-            logger.warning("Failed to renew subscription %s, will delete and recreate: %s", existing.id, e)
-
-        # Clean up old subscription before creating new
-        await _delete_subscription_record(existing.id, list_id)
-
-    # Create new subscription
+    # Create fresh subscription
     sub_data = await create_subscription(list_id)
     async with async_session() as session:
-        # Remove any stale DB records for this list before inserting
-        stale = await session.execute(
-            select(WebhookSubscription).where(WebhookSubscription.list_id == list_id)
-        )
-        for old in stale.scalars():
-            await session.delete(old)
         session.add(WebhookSubscription(
             id=sub_data["id"],
             list_id=sub_data["list_id"],
@@ -78,19 +63,6 @@ async def _ensure_subscription(list_id: str):
         ))
         await session.commit()
     logger.info("Registered new subscription for list %s", list_id)
-
-
-async def _delete_subscription_record(subscription_id: str, list_id: str):
-    """Delete subscription from Graph API and DB."""
-    try:
-        await delete_subscription(subscription_id, list_id)
-    except Exception:
-        logger.debug("Could not delete old subscription %s from Graph (may already be gone)", subscription_id)
-    async with async_session() as session:
-        sub = await session.get(WebhookSubscription, subscription_id)
-        if sub:
-            await session.delete(sub)
-            await session.commit()
 
 
 async def _renewal_loop():

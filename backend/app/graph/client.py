@@ -27,7 +27,7 @@ class GraphClient:
 
     async def post(self, path: str, json: dict | None = None) -> dict:
         resp = await self._request("POST", path, json=json)
-        if resp.status_code == 204:
+        if resp.status_code in (202, 204) or not resp.content:
             return {}
         return resp.json()
 
