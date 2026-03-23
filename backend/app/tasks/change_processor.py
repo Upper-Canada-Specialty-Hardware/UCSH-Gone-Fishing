@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -60,9 +60,9 @@ async def process_notification(notification: dict):
             token_record = await session.get(ChangeToken, list_id)
             if token_record:
                 token_record.token = new_token
-                token_record.updated_at = datetime.now(timezone.utc)
+                token_record.updated_at = datetime.utcnow()
             else:
-                session.add(ChangeToken(list_id=list_id, token=new_token, updated_at=datetime.now(timezone.utc)))
+                session.add(ChangeToken(list_id=list_id, token=new_token, updated_at=datetime.utcnow()))
             await session.commit()
 
     # Process each changed item
@@ -97,7 +97,7 @@ async def process_notification(notification: dict):
                 list_id=list_id,
                 item_id=item_id,
                 action=action,
-                processed_at=datetime.now(timezone.utc),
+                processed_at=datetime.utcnow(),
             ))
             await session.commit()
 
@@ -130,11 +130,11 @@ async def catch_up_all_lists():
                     token_record = await session.get(ChangeToken, list_id)
                     if token_record:
                         token_record.token = new_token
-                        token_record.updated_at = datetime.now(timezone.utc)
+                        token_record.updated_at = datetime.utcnow()
                     else:
                         session.add(ChangeToken(
                             list_id=list_id, token=new_token,
-                            updated_at=datetime.now(timezone.utc),
+                            updated_at=datetime.utcnow(),
                         ))
                     await session.commit()
 
@@ -170,7 +170,7 @@ async def catch_up_all_lists():
                         list_id=list_id,
                         item_id=item_id,
                         action=action,
-                        processed_at=datetime.now(timezone.utc),
+                        processed_at=datetime.utcnow(),
                     ))
                     await session.commit()
                 processed += 1
