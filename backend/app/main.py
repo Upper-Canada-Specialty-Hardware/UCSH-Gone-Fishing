@@ -35,6 +35,12 @@ async def lifespan(app: FastAPI):
 
     # 1. Run database migrations
     run_migrations()
+    # Alembic's fileConfig resets root logger to WARN — restore our config
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
     logger.info("Database migrations applied")
 
     # 2. Connect to Graph API and SharePoint
