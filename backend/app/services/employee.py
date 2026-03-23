@@ -92,17 +92,14 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
 
 async def is_manager(employee_name: str) -> bool:
     """Check if anyone lists this employee as their Supervisor or in AllManagers."""
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        filter=f"fields/Supervisor eq '{_escape_odata(employee_name)}'",
-        top=1,
-        select=["Title"],
-    )
-    if items:
-        return True
-
-    # AllManagers is Person/Group multi-value — not OData-filterable, scan client-side
+    # Supervisor and AllManagers are not indexed — scan all staff client-side
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    target = employee_name.strip().lower()
+    for staff in all_staff:
+        if staff.get("fields", {}).get("Supervisor", "").strip().lower() == target:
+            return True
+
+    # Also check AllManagers (Person/Group multi-value)
     for staff in all_staff:
         all_managers = staff.get("fields", {}).get("AllManagers")
         if all_managers and isinstance(all_managers, list):
@@ -189,7 +186,3 @@ async def resolve_person_field_name(person_field) -> str:
         return sp_user_map.get(int(lookup_id), "")
     except (ValueError, TypeError):
         return ""
-
-
-def _escape_odata(value: str) -> str:
-    return value.replace("'", "''")

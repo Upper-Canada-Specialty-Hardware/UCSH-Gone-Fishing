@@ -123,12 +123,11 @@ async def catch_up_all_lists():
 
     # Leave Requests: Pending with no manager assigned
     try:
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_LEAVE_REQUESTS,
-            filter="fields/Status eq 'Pending'",
-        )
+        items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         need_processing = [
-            i for i in items if not i.get("fields", {}).get("Managertxt")
+            i for i in items
+            if i.get("fields", {}).get("Status") == "Pending"
+            and not i.get("fields", {}).get("Managertxt")
         ]
         processed = await _dispatch_and_log(
             settings.SP_LIST_LEAVE_REQUESTS, need_processing, "leave request",

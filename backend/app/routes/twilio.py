@@ -57,12 +57,12 @@ async def receive_sms(request: Request):
         await send_sms(from_number, f"Request #{item_id} has already been processed and archived.")
         return ""
 
-    # Look up SMS sender by cell number
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        filter=f"fields/CellNumber eq '{from_digits}'",
-        top=1,
-    )
+    # Look up SMS sender by cell number (not indexed — client-side filter)
+    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = [
+        s for s in all_staff
+        if s.get("fields", {}).get("CellNumber", "").replace("-", "").replace(" ", "")[-10:] == from_digits
+    ]
     if not items:
         await send_sms(from_number, f"Invalid response - your number is not registered in the system.")
         return ""
