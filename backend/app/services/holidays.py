@@ -8,12 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 async def get_holidays_for_province(province: str) -> list[dict]:
-    items = await sp_client.get_list_items(
-        settings.SP_LIST_COMPANY_HOLIDAYS,
-        filter=f"fields/Province eq '{province}'",
-        top=5000,
-    )
-    return [item.get("fields", {}) for item in items]
+    # Province is not indexed — fetch all and filter client-side
+    items = await sp_client.get_list_items(settings.SP_LIST_COMPANY_HOLIDAYS)
+    return [
+        item.get("fields", {}) for item in items
+        if item.get("fields", {}).get("Province", "") == province
+    ]
 
 
 def get_half_friday_season(holidays: list[dict]) -> tuple[date | None, date | None]:

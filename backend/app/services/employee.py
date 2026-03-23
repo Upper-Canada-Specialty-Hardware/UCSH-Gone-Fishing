@@ -49,7 +49,7 @@ async def get_employee_by_email(email: str) -> dict | None:
 
 async def get_employee_by_id(item_id: str | int) -> dict | None:
     try:
-        return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, item_id)
+        return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
     except Exception:
         logger.warning("Employee not found by ID: %s", item_id)
         return None
