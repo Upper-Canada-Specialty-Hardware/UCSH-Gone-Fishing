@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
-from app.graph.webhooks import create_subscription, renew_subscription
+from app.graph.webhooks import create_subscription, renew_subscription, delete_subscription
 from app.models import WebhookSubscription
 
 logger = logging.getLogger(__name__)
@@ -56,11 +56,20 @@ async def _ensure_subscription(list_id: str):
                     await session.commit()
             return
         except Exception as e:
-            logger.warning("Failed to renew subscription %s, creating new: %s", existing.id, e)
+            logger.warning("Failed to renew subscription %s, will delete and recreate: %s", existing.id, e)
+
+        # Clean up old subscription before creating new
+        await _delete_subscription_record(existing.id, list_id)
 
     # Create new subscription
     sub_data = await create_subscription(list_id)
     async with async_session() as session:
+        # Remove any stale DB records for this list before inserting
+        stale = await session.execute(
+            select(WebhookSubscription).where(WebhookSubscription.list_id == list_id)
+        )
+        for old in stale.scalars():
+            await session.delete(old)
         session.add(WebhookSubscription(
             id=sub_data["id"],
             list_id=sub_data["list_id"],
@@ -69,6 +78,19 @@ async def _ensure_subscription(list_id: str):
         ))
         await session.commit()
     logger.info("Registered new subscription for list %s", list_id)
+
+
+async def _delete_subscription_record(subscription_id: str, list_id: str):
+    """Delete subscription from Graph API and DB."""
+    try:
+        await delete_subscription(subscription_id, list_id)
+    except Exception:
+        logger.debug("Could not delete old subscription %s from Graph (may already be gone)", subscription_id)
+    async with async_session() as session:
+        sub = await session.get(WebhookSubscription, subscription_id)
+        if sub:
+            await session.delete(sub)
+            await session.commit()
 
 
 async def _renewal_loop():
