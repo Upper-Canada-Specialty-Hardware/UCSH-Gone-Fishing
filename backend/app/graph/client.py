@@ -61,6 +61,11 @@ class GraphClient:
             headers = await self._headers()
             resp = await self._http.request(method, path, headers=headers, **kwargs)
 
+        if resp.status_code >= 400:
+            logger.error(
+                "Graph API %s %s → %d: %s",
+                method, path, resp.status_code, resp.text[:500],
+            )
         resp.raise_for_status()
         return resp
 
