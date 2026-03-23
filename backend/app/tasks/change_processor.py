@@ -142,20 +142,20 @@ async def catch_up_all_lists():
         logger.exception("Catch-up: failed to process leave requests")
 
     # Overtime Requests: Pending with no manager assigned
+    # Note: Status is not indexed on this list, so fetch all and filter client-side
     try:
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_OVERTIME_REQUESTS,
-            filter="fields/Status eq 'Pending'",
-        )
+        items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         need_processing = [
-            i for i in items if not i.get("fields", {}).get("Manager")
+            i for i in items
+            if i.get("fields", {}).get("Status") == "Pending"
+            and not i.get("fields", {}).get("Manager")
         ]
         processed = await _dispatch_and_log(
             settings.SP_LIST_OVERTIME_REQUESTS, need_processing, "overtime request",
         )
         total += processed
         logger.info(
-            "Catch-up: overtime requests — %d pending, %d need processing, %d dispatched",
+            "Catch-up: overtime requests — %d total, %d need processing, %d dispatched",
             len(items), len(need_processing), processed,
         )
     except Exception:
