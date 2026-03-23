@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head><title>Confirm {{ action | title }}</title>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
+  .card { background: white; border-radius: 8px; padding: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
+  .icon { font-size: 48px; }
+  .icon-approve { color: #22c55e; }
+  .icon-reject { color: #ef4444; }
+  h1 { margin: 16px 0 8px; }
+  h1.approve { color: #16a34a; }
+  h1.reject { color: #dc2626; }
+  p { color: #555; }
+  .btn { display: inline-block; padding: 14px 40px; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; border: none; cursor: pointer; margin-top: 16px; }
+  .btn-approve { background: #22c55e; }
+  .btn-approve:hover { background: #16a34a; }
+  .btn-reject { background: #ef4444; }
+  .btn-reject:hover { background: #dc2626; }
+  .btn-cancel { background: #9ca3af; margin-left: 12px; }
+  .btn-cancel:hover { background: #6b7280; }
+</style>
+</head>
+<body>
+<div class="card">
+  {% if action == "approve" %}
+  <div class="icon icon-approve">&#10003;</div>
+  <h1 class="approve">Confirm Approval</h1>
+  {% else %}
+  <div class="icon icon-reject">&#10007;</div>
+  <h1 class="reject">Confirm Rejection</h1>
+  {% endif %}
+  <p>Are you sure you want to <strong>{{ action }}</strong> this {{ request_type | replace('-', ' ') }} request #{{ request_id }}?</p>
+  <form method="POST">
+    <input type="hidden" name="token" value="{{ token }}">
+    <input type="hidden" name="mgr" value="{{ mgr }}">
+    <input type="hidden" name="exp" value="{{ exp }}">
+    <button type="submit" class="btn btn-{{ action }}">Yes, {{ action | title }}</button>
+  </form>
+  <p style="color: #888; font-size: 13px; margin-top: 20px;">This page was loaded to confirm your action. Nothing has been processed yet.</p>
+</div>
+</body>
+</html>

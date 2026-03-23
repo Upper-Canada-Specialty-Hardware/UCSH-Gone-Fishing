@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Request, Query, Form
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -24,24 +24,14 @@ HANDLERS = {
 }
 
 
-@router.get("/{request_type}/{action}/{request_id}", response_class=HTMLResponse)
-async def handle_approval(
-    request: Request,
-    request_type: str,
-    action: str,
-    request_id: str,
-    token: str = Query(...),
-    mgr: str = Query(...),
-    exp: str = Query(...),
-):
-    # Gate behind processing toggle
+def _validate_and_check(request, request_type, action, request_id, token, mgr, exp):
+    """Shared validation for GET and POST. Returns error response or None."""
     if not settings.PROCESSING_ENABLED:
         return templates.TemplateResponse(
             "approval_error.html",
             {"request": request, "error": "System is currently in reporting-only mode. Approvals are disabled.", "request_id": request_id},
         )
 
-    # Validate HMAC token
     valid, error_msg = validate_approval_token(
         request_type, request_id, action, mgr, token, exp
     )
@@ -51,13 +41,60 @@ async def handle_approval(
             {"request": request, "error": error_msg, "request_id": request_id},
         )
 
-    # Look up handler
-    handler = HANDLERS.get((request_type, action))
-    if not handler:
+    if (request_type, action) not in HANDLERS:
         return templates.TemplateResponse(
             "approval_error.html",
             {"request": request, "error": "Invalid request type or action", "request_id": request_id},
         )
+
+    return None
+
+
+@router.get("/{request_type}/{action}/{request_id}", response_class=HTMLResponse)
+async def confirm_approval(
+    request: Request,
+    request_type: str,
+    action: str,
+    request_id: str,
+    token: str = Query(...),
+    mgr: str = Query(...),
+    exp: str = Query(...),
+):
+    """Show confirmation page — does NOT process the action."""
+    error_response = _validate_and_check(request, request_type, action, request_id, token, mgr, exp)
+    if error_response:
+        return error_response
+
+    return templates.TemplateResponse(
+        "approval_confirm.html",
+        {
+            "request": request,
+            "request_type": request_type,
+            "action": action,
+            "request_id": request_id,
+            "token": token,
+            "mgr": mgr,
+            "exp": exp,
+        },
+    )
+
+
+@router.post("/{request_type}/{action}/{request_id}", response_class=HTMLResponse)
+async def handle_approval(
+    request: Request,
+    request_type: str,
+    action: str,
+    request_id: str,
+    token: str = Form(...),
+    mgr: str = Form(...),
+    exp: str = Form(...),
+):
+    """Process the approval/rejection action (requires POST from confirmation page)."""
+    error_response = _validate_and_check(request, request_type, action, request_id, token, mgr, exp)
+    if error_response:
+        return error_response
+
+    handler = HANDLERS[(request_type, action)]
 
     try:
         result = await handler(request_id, mgr)
