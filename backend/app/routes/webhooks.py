@@ -16,10 +16,11 @@ async def sharepoint_webhook(
     request: Request,
     validationToken: str | None = Query(None),
 ):
-    # Subscription validation handshake
-    if validationToken:
+    # Subscription validation handshake (Graph may send lowercase "validationtoken")
+    token = validationToken or request.query_params.get("validationtoken")
+    if token:
         logger.info("SP webhook validation — echoing token")
-        return PlainTextResponse(content=validationToken, status_code=200)
+        return PlainTextResponse(content=token, status_code=200)
 
     # Change notification — respond 202 immediately, process async
     body = await request.json()
