@@ -199,10 +199,17 @@ async def auto_assign_manager(leave_request_id: str | int):
     if manager_lookup_id:
         update_fields["ManagerLookupId"] = manager_lookup_id
 
-    # Set AllManagers from employee's AllManagers field
+    # Set AllManagers from employee's AllManagers field (multi-value Person/Group)
+    # Graph API requires LookupId array format for writing multi-value Person fields
     all_managers = emp_fields.get("AllManagers")
-    if all_managers:
-        update_fields["AllManagers"] = all_managers
+    if all_managers and isinstance(all_managers, list):
+        lookup_ids = [
+            int(entry["LookupId"]) for entry in all_managers
+            if isinstance(entry, dict) and entry.get("LookupId")
+        ]
+        if lookup_ids:
+            update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
+            update_fields["AllManagersLookupId"] = lookup_ids
 
     await sp_client.update_list_item_fields(
         settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, update_fields
