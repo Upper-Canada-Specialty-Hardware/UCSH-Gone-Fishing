@@ -73,11 +73,39 @@ class SharePointClient:
         return await graph_client.patch(path, json=fields)
 
     async def get_delta(self, list_id: str, token: str | None = None) -> dict:
+        """Fetch all pages of a delta query, returning combined items + deltaLink."""
         if token:
-            path = f"{self._list_path(list_id)}/items/delta?token={quote(token)}"
+            url = f"{self._list_path(list_id)}/items/delta?token={quote(token)}"
         else:
-            path = f"{self._list_path(list_id)}/items/delta"
-        return await graph_client.get(path)
+            url = f"{self._list_path(list_id)}/items/delta"
+
+        all_items: list[dict] = []
+        delta_link = ""
+        params = None
+        max_pages = 50
+
+        for page in range(max_pages):
+            data = await graph_client.get(url, params=params)
+            all_items.extend(data.get("value", []))
+
+            # deltaLink only appears on the final page
+            if "@odata.deltaLink" in data:
+                delta_link = data["@odata.deltaLink"]
+                break
+
+            next_link = data.get("@odata.nextLink")
+            if not next_link:
+                break
+
+            url = next_link
+            params = None
+        else:
+            logger.warning(
+                "get_delta hit %d-page safety limit for list %s (fetched %d items)",
+                max_pages, list_id, len(all_items),
+            )
+
+        return {"value": all_items, "@odata.deltaLink": delta_link}
 
     async def close(self):
         await graph_client.close()
