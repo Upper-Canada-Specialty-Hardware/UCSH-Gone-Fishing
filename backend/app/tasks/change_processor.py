@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database import async_session
@@ -234,13 +235,16 @@ async def _dispatch_and_log(list_id: str, items: list[dict], label: str) -> int:
         except Exception:
             logger.exception("Catch-up: error dispatching %s #%s", label, item_id)
             continue
-        async with async_session() as session:
-            session.add(ProcessingLog(
-                list_id=list_id,
-                item_id=item_id,
-                action="webhook_change",
-                processed_at=datetime.utcnow(),
-            ))
-            await session.commit()
+        try:
+            async with async_session() as session:
+                session.add(ProcessingLog(
+                    list_id=list_id,
+                    item_id=item_id,
+                    action="webhook_change",
+                    processed_at=datetime.utcnow(),
+                ))
+                await session.commit()
+        except IntegrityError:
+            pass  # Already logged from a previous run
         processed += 1
     return processed
