@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
@@ -39,12 +39,10 @@ async def _ensure_subscription(list_id: str):
         )
         existing = result.scalar_one_or_none()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     if existing:
         exp = existing.expiration
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
         if exp - now > timedelta(days=RENEWAL_THRESHOLD_DAYS):
             logger.info("Subscription for list %s is still valid (expires %s)", list_id, exp)
             return
