@@ -69,7 +69,7 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
         from app.services.overtime_requests import send_approval_email
         from app.services.employee import resolve_person_field, get_all_managers_for_employee
 
-        employee = await resolve_person_field(fields.get("SubmittedBy"))
+        employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
         if not employee:
             return
 
@@ -91,7 +91,7 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
     # Resolve submitter email from SubmittedBy Person field via Staff Directory
     submitter_email = None
     from app.services.employee import resolve_person_field
-    emp = await resolve_person_field(f.get("SubmittedBy"))
+    emp = await resolve_person_field(f.get("SubmittedBy") or f.get("SubmittedByLookupId"))
     if emp:
         submitter_email = emp["fields"].get("EmailAddress", "")
 
@@ -125,7 +125,7 @@ async def _handle_carryover_payout_change(item_id: str, fields: dict):
     # Resolve submitter email from SubmittedBy Person field via Staff Directory
     submitter_email = None
     from app.services.employee import resolve_person_field
-    emp = await resolve_person_field(f.get("SubmittedBy"))
+    emp = await resolve_person_field(f.get("SubmittedBy") or f.get("SubmittedByLookupId"))
     if emp:
         submitter_email = emp["fields"].get("EmailAddress", "")
 

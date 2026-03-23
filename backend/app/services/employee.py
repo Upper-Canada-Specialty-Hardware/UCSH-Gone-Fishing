@@ -149,10 +149,17 @@ async def resolve_person_field(person_field) -> dict | None:
     The Graph API only returns LookupId for Person/Group columns (LookupValue
     is always empty). This function maps LookupId → display name via the
     User Information List, then looks up the employee in Staff Directory.
+
+    Accepts either a dict with a LookupId key (complex object form) or a raw
+    LookupId value (int/str) since Graph API often only returns the *LookupId
+    suffixed field (e.g. SubmittedTestLookupId) without the complex object.
     """
-    if not person_field or not isinstance(person_field, dict):
+    if not person_field:
         return None
-    lookup_id = person_field.get("LookupId")
+    if isinstance(person_field, dict):
+        lookup_id = person_field.get("LookupId")
+    else:
+        lookup_id = person_field
     if not lookup_id:
         return None
     sp_user_map = await _get_sp_user_name_map()
@@ -167,10 +174,16 @@ async def resolve_person_field(person_field) -> dict | None:
 
 
 async def resolve_person_field_name(person_field) -> str:
-    """Resolve a SP Person/Group field to a display name only."""
-    if not person_field or not isinstance(person_field, dict):
+    """Resolve a SP Person/Group field to a display name only.
+
+    Accepts either a dict with LookupId or a raw LookupId value.
+    """
+    if not person_field:
         return ""
-    lookup_id = person_field.get("LookupId")
+    if isinstance(person_field, dict):
+        lookup_id = person_field.get("LookupId")
+    else:
+        lookup_id = person_field
     if not lookup_id:
         return ""
     sp_user_map = await _get_sp_user_name_map()

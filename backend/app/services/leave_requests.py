@@ -99,7 +99,7 @@ async def auto_calculate_days(leave_request_id: str | int):
         return
 
     # Resolve employee from SubmittedTest Person/Group field
-    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
         logger.error("Cannot find employee for leave request #%s", leave_request_id)
         return
@@ -174,7 +174,7 @@ async def auto_assign_manager(leave_request_id: str | int):
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
-    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
         logger.warning("Cannot assign manager — employee not found for LR #%s", leave_request_id)
         return
@@ -222,7 +222,7 @@ async def send_bereavement_alert(leave_request_id: str | int):
     if leave_type not in ("Bereavement", "Jury Duty"):
         return
 
-    submitter_name = await resolve_person_field_name(fields.get("SubmittedTest"))
+    submitter_name = await resolve_person_field_name(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     from app.templates_render import render_bereavement_alert
     html = render_bereavement_alert(fields, submitter_name)
     await send_email(
@@ -245,7 +245,7 @@ async def send_approval_email(leave_request_id: str | int):
     if not fields.get("Managertxt"):
         return
 
-    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
         return
     emp_fields = employee["fields"]
@@ -294,7 +294,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     if fields.get("Status") != "Pending":
         return {"error": "Not pending"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
         return {"error": "Employee not found"}
     emp_fields = employee["fields"]
@@ -438,7 +438,7 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     if fields.get("ApproveProcessedFlag") == "Processed":
         return {"error": "Already processed"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     submitter_name = employee["fields"].get("Title", "") if employee else ""
     emp_fields = employee["fields"] if employee else {}
 
@@ -471,7 +471,7 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
     if fields.get("Status") != "Approved":
         return {"error": "Only approved requests can be refunded"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest"))
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
         return {"error": "Employee not found"}
     emp_fields = employee["fields"]
