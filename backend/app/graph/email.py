@@ -52,5 +52,5 @@ async def send_email(
         message["attachments"] = attachments
 
     path = f"/users/{settings.SENDER_EMAIL}/sendMail"
-    await graph_client.post(path, json={"message": message, "saveToSentItems": False})
+    await graph_client.post(path, json={"message": message, "saveToSentItems": True})
     logger.info("Email sent to %s — subject: %s", to, subject)
