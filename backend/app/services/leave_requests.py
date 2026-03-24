@@ -300,9 +300,22 @@ async def send_approval_email(leave_request_id: str | int):
         # Send SMS to manager if they have a cell number
         cell = mgr_fields.get("CellNumber", "")
         if cell:
+            if projected:
+                bal_line = (
+                    f"If approved: Vac: {projected['CurrentVacationBalance']}, "
+                    f"Sick: {projected['CurrentSickDayBalance']}, "
+                    f"MU: {projected['CurrentOvertimeBalance']}, "
+                    f"CO: {projected['CarryOver']}.\n"
+                )
+            else:
+                bal_line = "No balance change.\n"
             await send_sms(
                 to=cell,
-                body=f"Leave Request #{leave_request_id} for {submitter_name}. Reply \"Approve {leave_request_id}\" or \"Reject {leave_request_id}\"",
+                body=(
+                    f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
+                    f"{bal_line}"
+                    f"Reply \"Approve {leave_request_id}\" or \"Reject {leave_request_id}\""
+                ),
             )
 
         logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
