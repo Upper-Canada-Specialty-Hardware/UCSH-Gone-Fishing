@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { Calendar, dateFnsLocalizer, Event } from 'react-big-calendar';
 import { Box, Typography } from '@mui/material';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
+import { LEAVE_COLORS, FALLBACK_COLOR } from '../constants/leaveColors';
 
 // Minimal date-fns replacement using native Date
 const localizer = dateFnsLocalizer({
@@ -36,21 +37,7 @@ interface Props {
   events: CalendarEvent[];
 }
 
-const COLORS = [
-  '#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#ea580c',
-  '#0891b2', '#be185d', '#65a30d', '#4f46e5', '#0d9488',
-];
-
 export default function TeamCalendar({ events }: Props) {
-  const employeeColors = useMemo(() => {
-    const map: Record<string, string> = {};
-    const names = [...new Set(events.map((e) => e.employee))];
-    names.forEach((name, i) => {
-      map[name] = COLORS[i % COLORS.length];
-    });
-    return map;
-  }, [events]);
-
   const calendarEvents: Event[] = useMemo(
     () =>
       events.map((e) => ({
@@ -65,10 +52,10 @@ export default function TeamCalendar({ events }: Props) {
 
   const eventStyleGetter = useCallback(
     (event: Event) => {
-      const emp = (event.resource as CalendarEvent)?.employee || '';
+      const leaveType = (event.resource as CalendarEvent)?.leave_type || '';
       return {
         style: {
-          backgroundColor: employeeColors[emp] || '#6b7280',
+          backgroundColor: LEAVE_COLORS[leaveType] || FALLBACK_COLOR,
           borderRadius: '4px',
           border: 'none',
           color: 'white',
@@ -76,7 +63,7 @@ export default function TeamCalendar({ events }: Props) {
         },
       };
     },
-    [employeeColors]
+    []
   );
 
   if (events.length === 0) {

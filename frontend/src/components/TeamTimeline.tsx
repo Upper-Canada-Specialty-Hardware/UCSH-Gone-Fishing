@@ -16,13 +16,7 @@ interface Props {
   events: CalendarEvent[];
 }
 
-const LEAVE_COLORS: Record<string, string> = {
-  Vacation: '#2563eb',
-  Sick: '#dc2626',
-  Personal: '#7c3aed',
-  Bereavement: '#6b7280',
-};
-const FALLBACK_COLOR = '#0891b2';
+import { LEAVE_COLORS, FALLBACK_COLOR } from '../constants/leaveColors';
 
 function getMonday(d: Date): Date {
   const date = new Date(d);
