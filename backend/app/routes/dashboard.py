@@ -879,26 +879,28 @@ async def admin_stats():
 
 
 @router.post("/admin/approve/{request_type}/{request_id}")
-async def admin_approve(request_type: str, request_id: str):
+async def admin_approve(user: AuthUser, request_type: str, request_id: str):
+    _require_role(user, "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    result = await handler(request_id, "0")
+    result = await handler(request_id, user.user_id)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 
 @router.post("/admin/reject/{request_type}/{request_id}")
-async def admin_reject(request_type: str, request_id: str):
+async def admin_reject(user: AuthUser, request_type: str, request_id: str):
+    _require_role(user, "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    result = await handler(request_id, "0")
+    result = await handler(request_id, user.user_id)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
