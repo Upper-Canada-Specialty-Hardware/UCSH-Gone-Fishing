@@ -34,15 +34,19 @@ async def send_email(
     dashboard_footer: str = "",
 ):
     full_body = html_body + dashboard_footer if dashboard_footer else html_body
+    valid_to = [addr for addr in to if addr]
+    if not valid_to:
+        logger.warning("No valid recipients for email: %s", subject)
+        return
     message = {
         "subject": subject,
         "body": {"contentType": "HTML", "content": full_body},
-        "toRecipients": [{"emailAddress": {"address": addr}} for addr in to],
+        "toRecipients": [{"emailAddress": {"address": addr}} for addr in valid_to],
         "importance": importance,
     }
 
     if cc:
-        message["ccRecipients"] = [{"emailAddress": {"address": addr}} for addr in cc]
+        message["ccRecipients"] = [{"emailAddress": {"address": addr}} for addr in cc if addr]
 
     if attachments:
         message["attachments"] = attachments
