@@ -567,7 +567,7 @@ async def team_requests(
             f = item.get("fields", {})
             submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
             mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
-        if mgr_name != manager_name and submitter_name not in my_employees:
+            if mgr_name != manager_name and submitter_name not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
