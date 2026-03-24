@@ -87,7 +87,11 @@ async def build_dashboard_footer_html(employee_id: str | int) -> str:
         f'<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;'
         f'font-family:\'Segoe UI\',sans-serif;">'
         f'<p style="color:#6b7280;font-size:13px;margin-bottom:8px;">View your dashboards:</p>'
-        f'{link_buttons}</div>'
+        f'{link_buttons}'
+        f'<p style="color:#991b1b;font-size:12px;margin-top:12px;margin-bottom:0;">'
+        f'Do not forward this email to anyone. It contains cryptographed links that '
+        f'provide access to your employee and manager\'s dashboards.</p>'
+        f'</div>'
     )
 
 
