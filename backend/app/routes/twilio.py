@@ -17,12 +17,15 @@ router = APIRouter()
 @router.post("/sms", response_class=PlainTextResponse)
 async def receive_sms(request: Request):
     """Inbound SMS webhook from Twilio."""
+    logger.info("Inbound SMS webhook received from %s", request.client.host if request.client else "unknown")
     form = await request.form()
     params = {k: v for k, v in form.items()}
 
-    # Validate Twilio signature
+    # Validate Twilio signature — use BASE_URL (not request.url) to match
+    # the public URL that Twilio signed against, since Railway's proxy
+    # rewrites the internal URL scheme/host.
     signature = request.headers.get("X-Twilio-Signature", "")
-    url = str(request.url)
+    url = f"{settings.BASE_URL}/api/twilio/sms"
     if not validate_twilio_signature(url, params, signature):
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
@@ -61,7 +64,7 @@ async def receive_sms(request: Request):
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         s for s in all_staff
-        if s.get("fields", {}).get("CellNumber", "").replace("-", "").replace(" ", "")[-10:] == from_digits
+        if re.sub(r"\D", "", s.get("fields", {}).get("CellNumber", ""))[-10:] == from_digits
     ]
     if not items:
         await send_sms(from_number, f"Invalid response - your number is not registered in the system.")
