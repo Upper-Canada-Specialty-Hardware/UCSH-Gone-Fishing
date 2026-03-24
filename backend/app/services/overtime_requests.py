@@ -23,6 +23,7 @@ from app.services.balance import (
     apply_vacation_offset,
     cascade_current_year,
     recalculate_request_allow_date,
+    simulate_overtime_impact,
 )
 from app.services.concurrency import lock_manager
 from app.services.approval_links import generate_approval_url
@@ -140,7 +141,11 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
     # Half-friday detection
     is_hf = is_half_friday(overtime_date, half_friday_season)
 
-    from app.templates_render import render_overtime_approval_email
+    from app.templates_render import render_overtime_approval_email, render_overtime_confirmation
+
+    # Compute projected balances
+    hours = float(fields.get("Hours", 0) or 0)
+    projected = simulate_overtime_impact(emp_fields, hours)
 
     subject = f"Overtime Request - {submitter_name}"
     if is_hf:
@@ -153,7 +158,10 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
         approve_url = generate_approval_url("overtime", request_id, "approve", manager_id)
         reject_url = generate_approval_url("overtime", request_id, "reject", manager_id)
 
-        html = render_overtime_approval_email(fields, submitter_name, approve_url, reject_url, is_hf)
+        html = render_overtime_approval_email(
+            fields, submitter_name, approve_url, reject_url, is_hf,
+            emp_fields=emp_fields, projected=projected,
+        )
 
         await send_email_with_dashboard(
             to=[mgr_fields.get("EmailAddress", "")],
@@ -163,6 +171,17 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
         )
 
     logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
+
+    # Send confirmation email to employee
+    emp_email = emp_fields.get("EmailAddress", "")
+    if emp_email:
+        html = render_overtime_confirmation(fields, emp_fields, projected)
+        await send_email_with_dashboard(
+            to=[emp_email],
+            subject=f"Time Make-Up Request Received - {submitter_name}",
+            html_body=html,
+            primary_employee_id=employee["id"],
+        )
 
 
 async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:

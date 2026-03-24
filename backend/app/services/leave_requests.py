@@ -29,6 +29,7 @@ from app.services.balance import (
     cascade_next_year,
     is_next_year_request,
     recalculate_request_allow_date,
+    simulate_leave_impact,
 )
 from app.services.concurrency import lock_manager
 from app.services.approval_links import generate_approval_url
@@ -262,7 +263,23 @@ async def send_approval_email(leave_request_id: str | int):
     if not managers:
         return
 
-    from app.templates_render import render_leave_approval_email
+    from app.templates_render import render_leave_approval_email, render_leave_confirmation
+
+    # Compute projected balances
+    leave_type = fields.get("LeaveType", "")
+    days = float(fields.get("Days", 0) or 0)
+    is_next_year = False
+    start_str = fields.get("StartDate", "")
+    end_str = fields.get("EndDate", "")
+    if start_str and end_str:
+        try:
+            start = _parse_date(start_str)
+            end = _parse_date(end_str)
+            if start and end:
+                is_next_year = is_next_year_request(start, end)
+        except (ValueError, TypeError):
+            pass
+    projected = simulate_leave_impact(emp_fields, leave_type, days, is_next_year)
 
     for manager in managers:
         mgr_fields = manager["fields"]
@@ -271,7 +288,7 @@ async def send_approval_email(leave_request_id: str | int):
         approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id)
         reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id)
 
-        html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url, submitter_name)
+        html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url, submitter_name, projected)
 
         await send_email_with_dashboard(
             to=[mgr_fields.get("EmailAddress", "")],
@@ -289,6 +306,17 @@ async def send_approval_email(leave_request_id: str | int):
             )
 
         logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
+
+    # Send confirmation email to employee
+    emp_email = emp_fields.get("EmailAddress", "")
+    if emp_email:
+        html = render_leave_confirmation(fields, emp_fields, projected)
+        await send_email_with_dashboard(
+            to=[emp_email],
+            subject=f"Leave Request Received - {submitter_name}",
+            html_body=html,
+            primary_employee_id=employee["id"],
+        )
 
 
 async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:

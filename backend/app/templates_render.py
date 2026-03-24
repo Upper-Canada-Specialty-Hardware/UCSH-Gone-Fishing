@@ -13,12 +13,15 @@ def _render(template_name: str, **kwargs) -> str:
 
 # --- Leave Requests ---
 
-def render_leave_approval_email(fields: dict, emp_fields: dict, approve_url: str, reject_url: str, submitter_name: str = "") -> str:
+def render_leave_approval_email(
+    fields: dict, emp_fields: dict, approve_url: str, reject_url: str,
+    submitter_name: str = "", projected: dict | None = None,
+) -> str:
     return _render(
         "leave_approval_email.html",
         fields=fields, emp_fields=emp_fields,
         approve_url=approve_url, reject_url=reject_url,
-        submitter_name=submitter_name,
+        submitter_name=submitter_name, projected=projected,
     )
 
 
@@ -47,6 +50,13 @@ def render_partial_day_halffriday_rejected(fields: dict) -> str:
     return _render("partial_day_halffriday_rejected.html", fields=fields)
 
 
+def render_leave_confirmation(fields: dict, emp_fields: dict, projected: dict | None = None) -> str:
+    return _render(
+        "leave_confirmation.html",
+        fields=fields, emp_fields=emp_fields, projected=projected,
+    )
+
+
 def render_bereavement_alert(fields: dict, submitter_name: str) -> str:
     return _render("bereavement_alert.html", fields=fields, submitter_name=submitter_name)
 
@@ -54,13 +64,14 @@ def render_bereavement_alert(fields: dict, submitter_name: str) -> str:
 # --- Overtime Requests ---
 
 def render_overtime_approval_email(
-    fields: dict, submitter_name: str, approve_url: str, reject_url: str, is_half_friday: bool
+    fields: dict, submitter_name: str, approve_url: str, reject_url: str,
+    is_half_friday: bool, emp_fields: dict | None = None, projected: dict | None = None,
 ) -> str:
     return _render(
         "overtime_approval_email.html",
         fields=fields, submitter_name=submitter_name,
         approve_url=approve_url, reject_url=reject_url,
-        is_half_friday=is_half_friday,
+        is_half_friday=is_half_friday, emp_fields=emp_fields, projected=projected,
     )
 
 
@@ -75,6 +86,13 @@ def render_overtime_rejected(fields: dict, submitter_name: str, manager_name: st
     return _render(
         "overtime_rejected.html",
         fields=fields, submitter_name=submitter_name, manager_name=manager_name, balances=balances,
+    )
+
+
+def render_overtime_confirmation(fields: dict, emp_fields: dict, projected: dict | None = None) -> str:
+    return _render(
+        "overtime_confirmation.html",
+        fields=fields, emp_fields=emp_fields, projected=projected,
     )
 
 

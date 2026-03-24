@@ -9,6 +9,24 @@
     <tr><td style="padding: 8px; font-weight: bold;">Duration:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }} hours</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Details:</td><td style="padding: 8px;">{{ fields.get('Title', '') }}</td></tr>
   </table>
+  {% if emp_fields %}
+  <h3>Current Balances</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr><td style="padding: 4px;">Vacation:</td><td>{{ emp_fields.get('CurrentVacationBalance', 0) }} days</td></tr>
+    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ emp_fields.get('CurrentSickDayBalance', 0) }} days</td></tr>
+    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ emp_fields.get('CarryOver', 0) }} days</td></tr>
+    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ emp_fields.get('CurrentOvertimeBalance', 0) }} days</td></tr>
+  </table>
+  {% if projected %}
+  <h3>Projected Balances (if approved)</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr><td style="padding: 4px;">Vacation:</td><td>{{ projected.CurrentVacationBalance }} days</td></tr>
+    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ projected.CurrentSickDayBalance }} days</td></tr>
+    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ projected.CarryOver }} days</td></tr>
+    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ projected.CurrentOvertimeBalance }} days</td></tr>
+  </table>
+  {% endif %}
+  {% endif %}
   <p style="margin: 24px 0;">
     <a href="{{ approve_url }}" style="display: inline-block; padding: 12px 32px; background: #22c55e; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin-right: 12px;">Approve</a>
     <a href="{{ reject_url }}" style="display: inline-block; padding: 12px 32px; background: #ef4444; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Reject</a>
