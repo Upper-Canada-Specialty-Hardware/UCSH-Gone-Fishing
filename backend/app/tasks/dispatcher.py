@@ -63,7 +63,7 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
     if fields.get("Status") != "Pending":
         return
 
-    manager = fields.get("Manager")
+    manager = fields.get("ManagerLookupId")
     if manager:
         # Manager already assigned — existing path: send approval email
         from app.services.overtime_requests import send_approval_email

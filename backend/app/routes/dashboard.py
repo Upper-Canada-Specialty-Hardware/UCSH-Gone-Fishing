@@ -93,7 +93,7 @@ def _is_fully_processed(fields: dict, request_type: str) -> bool:
         hours = fields.get("Hours")
         if not hours or float(hours) == 0:
             return False
-        return bool(fields.get("Manager"))
+        return bool(fields.get("ManagerLookupId"))
     elif request_type == "carryover-payout":
         days = fields.get("Days")
         if not days or float(days) == 0:
@@ -468,7 +468,7 @@ async def team_pending(user: AuthUser):
         _enrich_pending_item(item_data, "leave", staff_by_name, staff_by_id, sp_user_to_name)
         pending.append(item_data)
 
-    # Overtime — check ManagerLookupValue OR submitter in my_employees
+    # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
     try:
         items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
     except Exception:
@@ -481,7 +481,8 @@ async def team_pending(user: AuthUser):
         if not _is_fully_processed(f, "overtime"):
             continue
         submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
-        if f.get("ManagerLookupValue", "") != manager_name and submitter_name not in my_employees:
+        mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
+        if mgr_name != manager_name and submitter_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "overtime", **f}
         _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
@@ -555,7 +556,7 @@ async def team_requests(
                 r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
                 results.append(r)
 
-    # Overtime — check ManagerLookupValue OR submitter in my_employees
+    # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
     if not type or type == "overtime":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
@@ -565,7 +566,8 @@ async def team_requests(
         for item in items:
             f = item.get("fields", {})
             submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
-            if f.get("ManagerLookupValue", "") != manager_name and submitter_name not in my_employees:
+            mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
+        if mgr_name != manager_name and submitter_name not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):

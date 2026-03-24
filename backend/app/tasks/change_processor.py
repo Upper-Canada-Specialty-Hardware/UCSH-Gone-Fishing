@@ -147,7 +147,7 @@ async def catch_up_all_lists():
         need_processing = [
             i for i in items
             if i.get("fields", {}).get("Status") == "Pending"
-            and not i.get("fields", {}).get("Manager")
+            and not i.get("fields", {}).get("ManagerLookupId")
         ]
         processed = await _dispatch_and_log(
             settings.SP_LIST_OVERTIME_REQUESTS, need_processing, "overtime request",
