@@ -1,9 +1,13 @@
 import logging
 
+import httpx
+
 from app.config import settings
-from app.graph.client import graph_client
 
 logger = logging.getLogger(__name__)
+
+SMTP2GO_URL = "https://api.smtp2go.com/v3/email/send"
+_http = httpx.AsyncClient(timeout=30.0)
 
 
 async def send_email_with_dashboard(
@@ -38,19 +42,33 @@ async def send_email(
     if not valid_to:
         logger.warning("No valid recipients for email: %s", subject)
         return
-    message = {
+
+    payload = {
+        "api_key": settings.SMTP2GO_API_KEY,
+        "sender": settings.SENDER_EMAIL,
+        "to": valid_to,
         "subject": subject,
-        "body": {"contentType": "HTML", "content": full_body},
-        "toRecipients": [{"emailAddress": {"address": addr}} for addr in valid_to],
-        "importance": importance,
+        "html_body": full_body,
     }
 
     if cc:
-        message["ccRecipients"] = [{"emailAddress": {"address": addr}} for addr in cc if addr]
+        valid_cc = [addr for addr in cc if addr]
+        if valid_cc:
+            payload["cc"] = valid_cc
 
-    if attachments:
-        message["attachments"] = attachments
+    if importance and importance != "Normal":
+        payload["custom_headers"] = [
+            {"header": "X-Priority", "value": "1"},
+            {"header": "Importance", "value": importance},
+        ]
 
-    path = f"/users/{settings.SENDER_EMAIL}/sendMail"
-    await graph_client.post(path, json={"message": message, "saveToSentItems": True})
-    logger.info("Email sent to %s — subject: %s", to, subject)
+    resp = await _http.post(SMTP2GO_URL, json=payload)
+    if resp.status_code >= 400:
+        logger.error("SMTP2GO %d: %s", resp.status_code, resp.text[:500])
+    resp.raise_for_status()
+
+    data = resp.json().get("data", {})
+    if data.get("failed", 0) > 0:
+        logger.error("SMTP2GO partial failure: %s", data.get("failures"))
+
+    logger.info("Email sent to %s — subject: %s", valid_to, subject)

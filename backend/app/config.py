@@ -34,8 +34,9 @@ class Settings(BaseSettings):
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
 
-    # Email
-    SENDER_EMAIL: str = "hr@ucshca.onmicrosoft.com"
+    # Email (SMTP2GO)
+    SMTP2GO_API_KEY: str = ""
+    SENDER_EMAIL: str = "HR@s2gms.com"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
