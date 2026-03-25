@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import time
+from collections import deque
 
 import httpx
 
@@ -8,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 SMTP2GO_URL = "https://api.smtp2go.com/v3/email/send"
 _http = httpx.AsyncClient(timeout=30.0)
+
+# Rate limiter: 10 requests per 60-second sliding window
+_MAX_REQUESTS = 10
+_WINDOW_SECONDS = 60
+_timestamps: deque[float] = deque()
 
 
 async def send_email_with_dashboard(
@@ -62,6 +70,7 @@ async def send_email(
             {"header": "Importance", "value": importance},
         ]
 
+    await _rate_limit()
     resp = await _http.post(SMTP2GO_URL, json=payload)
     if resp.status_code >= 400:
         logger.error("SMTP2GO %d: %s", resp.status_code, resp.text[:500])
@@ -72,3 +81,16 @@ async def send_email(
         logger.error("SMTP2GO partial failure: %s", data.get("failures"))
 
     logger.info("Email sent to %s — subject: %s", valid_to, subject)
+
+
+async def _rate_limit():
+    """Sliding window rate limiter — waits if at capacity."""
+    now = time.monotonic()
+    while _timestamps and _timestamps[0] <= now - _WINDOW_SECONDS:
+        _timestamps.popleft()
+    if len(_timestamps) >= _MAX_REQUESTS:
+        wait = _WINDOW_SECONDS - (now - _timestamps[0])
+        logger.info("SMTP2GO rate limit reached, waiting %.1fs", wait)
+        await asyncio.sleep(wait)
+        return await _rate_limit()
+    _timestamps.append(time.monotonic())
