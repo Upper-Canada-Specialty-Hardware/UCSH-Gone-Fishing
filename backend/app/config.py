@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     DASHBOARD_FRONTEND_URL: str = ""
 
     # Email (SMTP2GO)
-    SMTP2GO_API_KEY: str = ""
+    SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
