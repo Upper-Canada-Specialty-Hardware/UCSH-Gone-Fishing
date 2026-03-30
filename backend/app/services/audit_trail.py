@@ -56,6 +56,50 @@ def describe_cascade_changes(before: dict, after: dict) -> str:
     return "; ".join(changes) if changes else "No changes needed"
 
 
+def extract_approval_deltas(
+    raw_audit_log: str,
+    balance_keys: tuple[str, ...] = (
+        "CurrentVacationBalance",
+        "CurrentSickDayBalance",
+        "CurrentOvertimeBalance",
+        "CarryOver",
+    ),
+) -> dict[str, float] | None:
+    """Parse BalanceAuditLog JSON, find last approve entry, return net deltas per balance key.
+
+    Returns None if parsing fails, no approve entry exists, or all deltas are zero.
+    """
+    try:
+        entries = json.loads(raw_audit_log) if raw_audit_log and raw_audit_log.strip() else []
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(entries, list):
+        return None
+
+    # Find the last approve entry
+    approve_entry = None
+    for entry in reversed(entries):
+        if isinstance(entry, dict) and entry.get("action") == "approve":
+            approve_entry = entry
+            break
+
+    if not approve_entry:
+        return None
+
+    deltas: dict[str, float] = {key: 0.0 for key in balance_keys}
+    for step in approve_entry.get("steps", []):
+        before = step.get("before", {})
+        after = step.get("after", {})
+        for key in balance_keys:
+            if key in before and key in after:
+                deltas[key] += float(after[key]) - float(before[key])
+
+    # Filter to non-zero deltas
+    result = {k: v for k, v in deltas.items() if v != 0.0}
+    return result if result else None
+
+
 async def write_audit_log(
     list_id: str, item_id: str | int, builder: AuditTrailBuilder
 ) -> None:

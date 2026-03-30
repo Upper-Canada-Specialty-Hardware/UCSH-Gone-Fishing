@@ -39,6 +39,7 @@ from app.services.audit_trail import (
     snapshot_balances,
     describe_cascade_changes,
     write_audit_log,
+    extract_approval_deltas,
 )
 
 logger = logging.getLogger(__name__)
@@ -559,6 +560,9 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
         return {"status": "refunded", "no_balance_change": True}
 
     # Reverse the deduction
+    raw_audit_log = fields.get("BalanceAuditLog", "") or ""
+    approval_deltas = extract_approval_deltas(raw_audit_log)
+
     async with lock_manager.lock(employee_id):
         emp = await get_employee_by_id(employee_id)
         ef = emp["fields"]
@@ -566,60 +570,97 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
         audit = AuditTrailBuilder("refund")
         before = snapshot_balances(ef)
 
-        if leave_type in ("Vacation", "Half Day or Partial Day Off"):
-            new_overtime = float(ef.get("CurrentOvertimeBalance", 0) or 0) + days
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
-                {"CurrentOvertimeBalance": new_overtime},
-            )
+        if approval_deltas is not None:
+            # Precise path: reverse exact deltas from the approval audit log
+            updates = {}
+            for key, delta in approval_deltas.items():
+                current_val = float(ef.get(key, 0) or 0)
+                updates[key] = current_val - delta
+
+            if updates:
+                await sp_client.update_list_item_fields(
+                    settings.SP_LIST_STAFF_DIRECTORY, employee_id, updates,
+                )
+
+            audit_before = {k: float(ef.get(k, 0) or 0) for k in updates}
+            audit_after = {k: updates[k] for k in updates}
+            detail_parts = []
+            for key in sorted(updates):
+                restored = abs(updates[key] - float(ef.get(key, 0) or 0))
+                if restored != 0:
+                    detail_parts.append(f"{restored} restored to {key}")
             audit.add_step(
-                f"Refund {leave_type} to Make-Up",
-                {"CurrentOvertimeBalance": before["CurrentOvertimeBalance"]},
-                {"CurrentOvertimeBalance": new_overtime},
-                f"Restored {days} days",
-            )
-        elif leave_type == "Sick or Personal Day":
-            new_sick = float(ef.get("CurrentSickDayBalance", 0) or 0) + days
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
-                {"CurrentSickDayBalance": new_sick},
-            )
-            audit.add_step(
-                "Refund Sick/Personal to Sick",
-                {"CurrentSickDayBalance": before["CurrentSickDayBalance"]},
-                {"CurrentSickDayBalance": new_sick},
-                f"Restored {days} days",
+                f"Refund {leave_type} (audit-log reversal)",
+                audit_before,
+                audit_after,
+                "; ".join(detail_parts) if detail_parts else f"Reversed {days} days",
             )
 
-        # Construct pre-cascade state
-        pre_cascade = {
-            "CurrentSickDayBalance": before["CurrentSickDayBalance"],
-            "CurrentOvertimeBalance": before["CurrentOvertimeBalance"],
-            "CarryOver": before["CarryOver"],
-            "CurrentVacationBalance": before["CurrentVacationBalance"],
-        }
-        if leave_type in ("Vacation", "Half Day or Partial Day Off"):
-            pre_cascade["CurrentOvertimeBalance"] = new_overtime
-        elif leave_type == "Sick or Personal Day":
-            pre_cascade["CurrentSickDayBalance"] = new_sick
+            # No cascade — audit deltas already include cascade effects
+            emp_updated = await get_employee_by_id(employee_id)
+            uf = emp_updated["fields"]
+            balances = {
+                "CurrentVacationBalance": float(uf.get("CurrentVacationBalance", 0) or 0),
+                "CurrentSickDayBalance": float(uf.get("CurrentSickDayBalance", 0) or 0),
+                "CurrentOvertimeBalance": float(uf.get("CurrentOvertimeBalance", 0) or 0),
+                "CarryOver": float(uf.get("CarryOver", 0) or 0),
+            }
 
-        start_date = _parse_date(fields.get("StartDate"))
-        end_date = _parse_date(fields.get("EndDate"))
-        if start_date and end_date and is_next_year_request(start_date, end_date):
-            balances = await cascade_next_year(employee_id)
-            cascade_label = "Cascade (next year)"
         else:
-            balances = await cascade_current_year(employee_id)
-            cascade_label = "Cascade (current year)"
+            # Fallback path: naive reversal for requests without audit data
+            if leave_type in ("Vacation", "Half Day or Partial Day Off"):
+                new_overtime = float(ef.get("CurrentOvertimeBalance", 0) or 0) + days
+                await sp_client.update_list_item_fields(
+                    settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                    {"CurrentOvertimeBalance": new_overtime},
+                )
+                audit.add_step(
+                    f"Refund {leave_type} to Make-Up (fallback)",
+                    {"CurrentOvertimeBalance": before["CurrentOvertimeBalance"]},
+                    {"CurrentOvertimeBalance": new_overtime},
+                    f"Restored {days} days (no audit log available)",
+                )
+            elif leave_type == "Sick or Personal Day":
+                new_sick = float(ef.get("CurrentSickDayBalance", 0) or 0) + days
+                await sp_client.update_list_item_fields(
+                    settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                    {"CurrentSickDayBalance": new_sick},
+                )
+                audit.add_step(
+                    "Refund Sick/Personal to Sick (fallback)",
+                    {"CurrentSickDayBalance": before["CurrentSickDayBalance"]},
+                    {"CurrentSickDayBalance": new_sick},
+                    f"Restored {days} days (no audit log available)",
+                )
 
-        cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
-        audit.add_step(
-            cascade_label, pre_cascade, cascade_after,
-            describe_cascade_changes(pre_cascade, cascade_after),
-        )
+            pre_cascade = {
+                "CurrentSickDayBalance": before["CurrentSickDayBalance"],
+                "CurrentOvertimeBalance": before["CurrentOvertimeBalance"],
+                "CarryOver": before["CarryOver"],
+                "CurrentVacationBalance": before["CurrentVacationBalance"],
+            }
+            if leave_type in ("Vacation", "Half Day or Partial Day Off"):
+                pre_cascade["CurrentOvertimeBalance"] = new_overtime
+            elif leave_type == "Sick or Personal Day":
+                pre_cascade["CurrentSickDayBalance"] = new_sick
+
+            start_date = _parse_date(fields.get("StartDate"))
+            end_date = _parse_date(fields.get("EndDate"))
+            if start_date and end_date and is_next_year_request(start_date, end_date):
+                balances = await cascade_next_year(employee_id)
+                cascade_label = "Cascade (next year)"
+            else:
+                balances = await cascade_current_year(employee_id)
+                cascade_label = "Cascade (current year)"
+
+            cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
+            audit.add_step(
+                cascade_label, pre_cascade, cascade_after,
+                describe_cascade_changes(pre_cascade, cascade_after),
+            )
 
         await recalculate_request_allow_date(
-            employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
+            employee_id, balances["CurrentVacationBalance"], balances.get("CarryOver", 0)
         )
 
     await write_audit_log(settings.SP_LIST_LEAVE_REQUESTS, request_id, audit)
