@@ -80,4 +80,4 @@ export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'man
   api.get('/admin/impersonate-url', { params: { target_id: targetId, target_role: role } });
 
 export const sendDashboardLink = (targetId: string) =>
-  api.post('/admin/send-dashboard-link', null, { params: { target_id: targetId } });
+  api.post(`/admin/send-dashboard-link/${targetId}`);

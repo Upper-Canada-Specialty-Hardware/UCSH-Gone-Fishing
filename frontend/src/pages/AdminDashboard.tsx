@@ -39,8 +39,7 @@ export default function AdminDashboard() {
   const [viewMgrId, setViewMgrId] = useState<string | null>(null);
 
   const managers = useMemo(() => {
-    const supervisorNames = new Set(employees.map((e: any) => e.supervisor).filter(Boolean));
-    return employees.filter((e: any) => supervisorNames.has(e.name));
+    return employees.filter((e: any) => e.is_manager);
   }, [employees]);
 
   useEffect(() => {

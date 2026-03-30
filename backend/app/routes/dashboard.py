@@ -697,12 +697,27 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
 async def admin_balances(group_by: str | None = Query(None)):
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
+    # Build set of all manager names from Supervisor and AllManagers fields
+    manager_names: set[str] = set()
+    for item in items:
+        f = item.get("fields", {})
+        supervisor = f.get("Supervisor", "")
+        if supervisor:
+            manager_names.add(supervisor.strip())
+        all_managers = f.get("AllManagers")
+        if all_managers and isinstance(all_managers, list):
+            for entry in all_managers:
+                name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+                if name:
+                    manager_names.add(name.strip())
+
     employees = []
     for item in items:
         f = item.get("fields", {})
         employees.append({
             **_format_employee(f, item["id"]),
             "balances": _format_balances(f),
+            "is_manager": f.get("Title", "").strip() in manager_names,
         })
 
     if group_by in ("department", "location"):
@@ -808,8 +823,8 @@ async def admin_impersonate_url(
     return {"url": url}
 
 
-@router.post("/admin/send-dashboard-link")
-async def admin_send_dashboard_link(user: AuthUser, target_id: str = Query(...)):
+@router.post("/admin/send-dashboard-link/{target_id}")
+async def admin_send_dashboard_link(user: AuthUser, target_id: str):
     _require_role(user, "admin")
 
     emp = await get_employee_by_id(target_id)
