@@ -212,3 +212,21 @@ def render_duplicate_request_rejected(request_type: str, fields: dict, overlap: 
 
 def render_dashboard_link_email(manager_name: str, dashboard_url: str) -> str:
     return _render("dashboard_link_email.html", manager_name=manager_name, dashboard_url=dashboard_url)
+
+
+# --- Annual CarryOver Reset ---
+
+def render_carryover_reset_employee(employee_name: str, carryover_lost: float) -> str:
+    return _render(
+        "carryover_reset_employee.html",
+        employee_name=employee_name, carryover_lost=carryover_lost,
+    )
+
+
+def render_carryover_reset_admin_summary(
+    year: int, succeeded: list[dict], failed: list[dict],
+) -> str:
+    return _render(
+        "carryover_reset_admin_summary.html",
+        year=year, succeeded=succeeded, failed=failed,
+    )

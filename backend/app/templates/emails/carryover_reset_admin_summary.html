@@ -1,0 +1,40 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #1e40af;">Carry Over Reset Summary &mdash; {{ year }}</h2>
+  <p>The annual Carry Over reset ran on March 31, {{ year }}. Below is a summary of all affected employees.</p>
+
+  {% if succeeded %}
+  <h3 style="color: #16a34a;">Successfully Cleared ({{ succeeded | length }})</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr style="background: #f3f4f6;">
+      <th style="padding: 8px; text-align: left; border-bottom: 2px solid #d1d5db;">Employee</th>
+      <th style="padding: 8px; text-align: right; border-bottom: 2px solid #d1d5db;">Carry Over Cleared</th>
+    </tr>
+    {% for emp in succeeded %}
+    <tr>
+      <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">{{ emp.name }}</td>
+      <td style="padding: 6px 8px; text-align: right; border-bottom: 1px solid #e5e7eb;">{{ emp.carryover }} days</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if failed %}
+  <h3 style="color: #dc2626;">Failed ({{ failed | length }}) &mdash; Manual Follow-Up Required</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
+    <tr style="background: #fef2f2;">
+      <th style="padding: 8px; text-align: left; border-bottom: 2px solid #fca5a5;">Employee</th>
+      <th style="padding: 8px; text-align: right; border-bottom: 2px solid #fca5a5;">Carry Over Amount</th>
+    </tr>
+    {% for emp in failed %}
+    <tr>
+      <td style="padding: 6px 8px; border-bottom: 1px solid #fecaca;">{{ emp.name }}</td>
+      <td style="padding: 6px 8px; text-align: right; border-bottom: 1px solid #fecaca;">{{ emp.carryover }} days</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if not succeeded and not failed %}
+  <p>No employees had a non-zero Carry Over balance. No action was taken.</p>
+  {% endif %}
+</div>
