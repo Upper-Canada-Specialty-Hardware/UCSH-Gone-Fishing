@@ -56,9 +56,7 @@ async def get_employee_by_id(item_id: str | int) -> dict | None:
 
 
 async def get_all_managers_for_employee(employee: dict) -> list[dict]:
-    """Get all managers from the AllManagers Person/Group field on Staff Directory.
-    Falls back to the Supervisor text field if AllManagers is empty.
-    """
+    """Get all managers from the AllManagers Person/Group field on Staff Directory."""
     fields = employee.get("fields", {})
     all_managers_field = fields.get("AllManagers")
 
@@ -71,18 +69,9 @@ async def get_all_managers_for_employee(employee: dict) -> list[dict]:
                 if mgr:
                     managers.append(mgr)
 
-    if managers:
-        return managers
-
-    # Fall back to Supervisor field
-    supervisor = fields.get("Supervisor")
-    if supervisor:
-        mgr = await get_employee_by_name(supervisor)
-        if mgr:
-            return [mgr]
-
-    logger.warning("No managers found for employee: %s", fields.get("Title"))
-    return []
+    if not managers:
+        logger.warning("No managers found for employee: %s", fields.get("Title"))
+    return managers
 
 
 async def get_manager_for_employee(employee: dict) -> dict | None:
@@ -91,15 +80,8 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
 
 
 async def is_manager(employee_name: str) -> bool:
-    """Check if anyone lists this employee as their Supervisor or in AllManagers."""
-    # Supervisor and AllManagers are not indexed — scan all staff client-side
+    """Check if anyone lists this employee in their AllManagers field."""
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    target = employee_name.strip().lower()
-    for staff in all_staff:
-        if staff.get("fields", {}).get("Supervisor", "").strip().lower() == target:
-            return True
-
-    # Also check AllManagers (Person/Group multi-value)
     for staff in all_staff:
         all_managers = staff.get("fields", {}).get("AllManagers")
         if all_managers and isinstance(all_managers, list):
@@ -107,7 +89,6 @@ async def is_manager(employee_name: str) -> bool:
                 name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
                 if name == employee_name:
                     return True
-
     return False
 
 

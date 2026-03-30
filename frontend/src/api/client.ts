@@ -81,3 +81,16 @@ export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'man
 
 export const sendDashboardLink = (targetId: string) =>
   api.post(`/admin/send-dashboard-link/${targetId}`);
+
+// Admin — Manager Assignments
+export const getManagerAssignments = () => api.get('/admin/manager-assignments');
+export const getSpUsers = () => api.get('/admin/sp-users');
+export const updateManagerAssignment = (employeeId: string, managerIds: number[]) =>
+  api.patch(`/admin/manager-assignments/${employeeId}`, { manager_ids: managerIds });
+export const bulkManagerAssignment = (params: {
+  operation: 'replace' | 'add' | 'remove';
+  preview?: boolean;
+  source_manager_id?: number;
+  target_manager_id?: number;
+  employee_ids?: string[];
+}) => api.post('/admin/manager-assignments/bulk', params);

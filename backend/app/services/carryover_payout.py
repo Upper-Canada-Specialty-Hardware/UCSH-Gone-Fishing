@@ -66,13 +66,23 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str):
     manager_lookup_id = await _resolve_user_lookup_id(mgr_email)
 
     update = {
-        "Managertxt": mgr_fields.get("Title", ""),
         "SystemState": "Not Processed",
         "EmployeeID": int(employee_id),
         "ManagerID": int(manager_id),
     }
     if manager_lookup_id:
         update["ManagerLookupId"] = manager_lookup_id
+
+    # Set AllManagers from employee's AllManagers field (multi-value Person/Group)
+    all_managers_field = emp_fields.get("AllManagers")
+    if all_managers_field and isinstance(all_managers_field, list):
+        lookup_ids = [
+            int(entry["LookupId"]) for entry in all_managers_field
+            if isinstance(entry, dict) and entry.get("LookupId")
+        ]
+        if lookup_ids:
+            update["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
+            update["AllManagersLookupId"] = lookup_ids
 
     await sp_client.update_list_item_fields(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, update)
     logger.info("Assigned manager %s to CO/PO request #%s", mgr_fields.get("Title"), request_id)
@@ -86,7 +96,7 @@ async def run_approval_pipeline(request_id: str | int):
     item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
-    if not fields.get("Managertxt"):
+    if not fields.get("ManagerLookupId"):
         return
     if fields.get("SystemState") != "Not Processed":
         return

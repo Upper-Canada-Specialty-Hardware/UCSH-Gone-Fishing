@@ -28,7 +28,7 @@ async def _handle_leave_request_change(item_id: str, fields: dict):
     if fields.get("Status") != "Pending":
         return
 
-    if fields.get("Managertxt"):
+    if fields.get("ManagerLookupId"):
         # Manager already assigned — existing path: send approval email
         if fields.get("ApproveProcessedFlag") == "Processed":
             return
@@ -37,7 +37,7 @@ async def _handle_leave_request_change(item_id: str, fields: dict):
         await send_approval_email(item_id)
         return
 
-    # No Managertxt → SP-created item, auto-process it
+    # No ManagerLookupId → SP-created item, auto-process it
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, item_id)
     f = item["fields"]
     if not f.get("StartDate") or not f.get("EndDate"):
@@ -129,7 +129,7 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
 
 async def _handle_carryover_payout_change(item_id: str, fields: dict):
     """Detect manager assignment or auto-process SP-created items."""
-    if fields.get("Managertxt"):
+    if fields.get("ManagerLookupId"):
         # Manager already assigned — existing path: run approval pipeline
         if fields.get("SystemState") != "Not Processed":
             return
@@ -138,7 +138,7 @@ async def _handle_carryover_payout_change(item_id: str, fields: dict):
         await run_approval_pipeline(item_id)
         return
 
-    # No Managertxt → SP-created item, auto-process it
+    # No ManagerLookupId → SP-created item, auto-process it
     system_state = fields.get("SystemState")
     if system_state and system_state != "Not Processed":
         return

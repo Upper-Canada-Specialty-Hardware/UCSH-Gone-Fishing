@@ -203,7 +203,6 @@ async def auto_assign_manager(leave_request_id: str | int):
     manager_email = mgr_fields.get("EmailAddress", "")
 
     update_fields = {
-        "Managertxt": mgr_fields.get("Title", ""),
         "StaffLocation": emp_fields.get("Location", ""),
         "StaffDepartment": emp_fields.get("Department", ""),
     }
@@ -263,7 +262,7 @@ async def send_approval_email(leave_request_id: str | int):
         return
     if fields.get("Status") != "Pending":
         return
-    if not fields.get("Managertxt"):
+    if not fields.get("ManagerLookupId"):
         return
 
     employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))

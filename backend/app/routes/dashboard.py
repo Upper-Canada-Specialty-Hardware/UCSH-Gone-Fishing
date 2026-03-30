@@ -88,7 +88,7 @@ def _is_fully_processed(fields: dict, request_type: str) -> bool:
         days = fields.get("Days")
         if not days or float(days) == 0:
             return False
-        return bool(fields.get("Managertxt"))
+        return bool(fields.get("ManagerLookupId"))
     elif request_type == "overtime":
         hours = fields.get("Hours")
         if not hours or float(hours) == 0:
@@ -98,7 +98,7 @@ def _is_fully_processed(fields: dict, request_type: str) -> bool:
         days = fields.get("Days")
         if not days or float(days) == 0:
             return False
-        return bool(fields.get("Managertxt"))
+        return bool(fields.get("ManagerLookupId"))
     return True
 
 
@@ -121,7 +121,6 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
         "email": fields.get("EmailAddress", ""),
         "department": fields.get("Department", ""),
         "location": fields.get("Location", ""),
-        "supervisor": fields.get("Supervisor", ""),
         "employee_type": fields.get("EmployeeType", ""),
     }
 
@@ -146,12 +145,9 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
             except (ValueError, TypeError):
                 pass
 
-        # Build manager → employee mapping from Supervisor + AllManagers
+        # Build manager → employee mapping from AllManagers
         emp_name = name.strip()
         if emp_name:
-            supervisor = fields.get("Supervisor", "")
-            if supervisor:
-                mgr_to_emp_names.setdefault(supervisor, set()).add(emp_name)
             all_managers = fields.get("AllManagers")
             if all_managers and isinstance(all_managers, list):
                 for entry in all_managers:
@@ -199,7 +195,7 @@ def _resolve_managers(staff_item: dict | None) -> str:
         names = [n for n in names if n]
         if names:
             return ", ".join(names)
-    return fields.get("Supervisor", "")
+    return ""
 
 
 def _resolve_employee_name(
@@ -409,8 +405,7 @@ async def team_members(user: AuthUser):
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         i for i in all_staff
-        if i.get("fields", {}).get("Supervisor", "") == manager_name
-        or _is_in_all_managers(i.get("fields", {}), manager_name)
+        if _is_in_all_managers(i.get("fields", {}), manager_name)
     ]
     return {"members": [
         {**_format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
@@ -429,8 +424,7 @@ async def team_balances(user: AuthUser):
     all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         i for i in all_staff
-        if i.get("fields", {}).get("Supervisor", "") == manager_name
-        or _is_in_all_managers(i.get("fields", {}), manager_name)
+        if _is_in_all_managers(i.get("fields", {}), manager_name)
     ]
     return {"balances": [
         {"employee": _format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
@@ -450,7 +444,7 @@ async def team_pending(user: AuthUser):
     my_employees = mgr_to_emp_names.get(manager_name, set())
     pending = []
 
-    # Leave — check AllManagers on request OR Managertxt
+    # Leave — check submitter in my_employees (dynamic manager lookup)
     try:
         items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
     except Exception:
@@ -462,7 +456,8 @@ async def team_pending(user: AuthUser):
             continue
         if not _is_fully_processed(f, "leave"):
             continue
-        if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
+        emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
+        if emp_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "leave", **f}
         _enrich_pending_item(item_data, "leave", staff_by_name, staff_by_id, sp_user_to_name)
@@ -488,7 +483,7 @@ async def team_pending(user: AuthUser):
         _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
         pending.append(item_data)
 
-    # Carryover/Payout — check Managertxt OR submitter in my_employees
+    # Carryover/Payout — check submitter in my_employees
     try:
         items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:
@@ -509,7 +504,7 @@ async def team_pending(user: AuthUser):
                     emp_name = staff["fields"].get("Title", "")
             except (ValueError, TypeError):
                 pass
-        if f.get("Managertxt", "") != manager_name and emp_name not in my_employees:
+        if emp_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "carryover-payout", **f}
         _enrich_pending_item(item_data, "carryover-payout", staff_by_name, staff_by_id, sp_user_to_name)
@@ -536,7 +531,7 @@ async def team_requests(
     my_employees = mgr_to_emp_names.get(manager_name, set())
     results = []
 
-    # Leave — check AllManagers on request OR Managertxt
+    # Leave — check submitter in my_employees (dynamic manager lookup)
     if not type or type == "leave":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
@@ -545,7 +540,8 @@ async def team_requests(
             items = []
         for item in items:
             f = item.get("fields", {})
-            if f.get("Managertxt", "") != manager_name and not _is_in_all_managers(f, manager_name):
+            emp_name_check = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
+            if emp_name_check not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
@@ -578,7 +574,7 @@ async def team_requests(
                 r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
                 results.append(r)
 
-    # Carryover/Payout — check Managertxt OR submitter in my_employees
+    # Carryover/Payout — check submitter in my_employees
     if not type or type == "carryover-payout":
         try:
             items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
@@ -596,7 +592,7 @@ async def team_requests(
                         emp_name = staff["fields"].get("Title", "")
                 except (ValueError, TypeError):
                     pass
-            if f.get("Managertxt", "") != manager_name and emp_name not in my_employees:
+            if emp_name not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
@@ -632,11 +628,8 @@ async def team_calendar(
         f = item.get("fields", {})
         if f.get("Status") != "Approved":
             continue
-        # Match manager: Managertxt, AllManagers, or submitter in my_employees
         emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
-        if (f.get("Managertxt", "") != manager_name
-                and not _is_in_all_managers(f, manager_name)
-                and emp_name not in my_employees):
+        if emp_name not in my_employees:
             continue
         start = f.get("StartDate", "")[:10]
         end = f.get("EndDate", "")[:10] or start
@@ -697,13 +690,10 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
 async def admin_balances(group_by: str | None = Query(None)):
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
-    # Build set of all manager names from Supervisor and AllManagers fields
+    # Build set of all manager names from AllManagers fields
     manager_names: set[str] = set()
     for item in items:
         f = item.get("fields", {})
-        supervisor = f.get("Supervisor", "")
-        if supervisor:
-            manager_names.add(supervisor.strip())
         all_managers = f.get("AllManagers")
         if all_managers and isinstance(all_managers, list):
             for entry in all_managers:
@@ -946,6 +936,48 @@ async def admin_refund(request_type: str, request_id: str):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+# ============================
+# Admin — Manager Assignments
+# ============================
+
+@router.get("/admin/manager-assignments")
+async def admin_manager_assignments():
+    from app.services.manager_assignments import get_all_assignments
+    assignments = await get_all_assignments()
+    return {"assignments": assignments}
+
+
+@router.get("/admin/sp-users")
+async def admin_sp_users():
+    from app.services.manager_assignments import get_staff_as_sp_users
+    users = await get_staff_as_sp_users()
+    return {"users": users}
+
+
+@router.patch("/admin/manager-assignments/{employee_id}")
+async def admin_update_manager_assignment(employee_id: str, body: dict):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.manager_assignments import update_employee_managers
+    manager_ids = body.get("manager_ids", [])
+    result = await update_employee_managers(int(employee_id), manager_ids)
+    return result
+
+
+@router.post("/admin/manager-assignments/bulk")
+async def admin_bulk_manager_assignment(body: dict):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.manager_assignments import preview_bulk_operation, execute_bulk_operation
+    operation = body.get("operation")
+    if operation not in ("replace", "add", "remove"):
+        raise HTTPException(status_code=400, detail="Invalid operation")
+    preview = body.get("preview", False)
+    if preview:
+        return await preview_bulk_operation(operation, body)
+    return await execute_bulk_operation(operation, body)
 
 
 # --- Config endpoint (no auth needed, used by frontend) ---

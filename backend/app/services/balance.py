@@ -150,14 +150,13 @@ async def recalculate_request_allow_date(
     if current_rad and current_rad[:10] == new_date_str:
         return  # No change needed
 
-    # Include Title and Supervisor to avoid clearing them (SP PatchItem behavior)
+    # Include Title to avoid clearing it (SP PatchItem behavior)
     await sp_client.update_list_item_fields(
         settings.SP_LIST_STAFF_DIRECTORY,
         employee_id,
         {
             "RequestAllowDate": new_date_str,
             "Title": fields.get("Title", ""),
-            "Supervisor": fields.get("Supervisor", ""),
         },
     )
     logger.info("Updated RequestAllowDate for employee %s to %s", employee_id, new_date_str)

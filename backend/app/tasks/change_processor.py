@@ -127,7 +127,7 @@ async def catch_up_all_lists():
         need_processing = [
             i for i in items
             if i.get("fields", {}).get("Status") == "Pending"
-            and not i.get("fields", {}).get("Managertxt")
+            and not i.get("fields", {}).get("ManagerLookupId")
         ]
         processed = await _dispatch_and_log(
             settings.SP_LIST_LEAVE_REQUESTS, need_processing, "leave request",
@@ -166,7 +166,7 @@ async def catch_up_all_lists():
         need_processing = []
         for i in items:
             f = i.get("fields", {})
-            if f.get("Managertxt"):
+            if f.get("ManagerLookupId"):
                 continue
             system_state = f.get("SystemState")
             if system_state and system_state != "Not Processed":

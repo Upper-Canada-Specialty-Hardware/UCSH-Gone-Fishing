@@ -8,6 +8,7 @@ import Grid from '@mui/material/Grid2';
 import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
+import ManagerAssignments from '../components/ManagerAssignments';
 import {
   getAdminBalances,
   getAdminPending,
@@ -219,6 +220,7 @@ export default function AdminDashboard() {
         <Tab label="Department Summary" />
         <Tab label="View Employee" />
         <Tab label="View Team" />
+        <Tab label="Manager Assignments" />
       </Tabs>
 
       {tab === 0 && (
@@ -331,6 +333,8 @@ export default function AdminDashboard() {
           )}
         </Paper>
       )}
+
+      {tab === 6 && <ManagerAssignments />}
 
       <Snackbar
         open={snack.open}
