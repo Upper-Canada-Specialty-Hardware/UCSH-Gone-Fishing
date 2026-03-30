@@ -841,7 +841,11 @@ async def admin_send_dashboard_link(target_id: str):
     from app.templates_render import render_dashboard_link_email
     from app.graph.email import send_email
     html = render_dashboard_link_email(manager_name=name, dashboard_url=dashboard_url)
-    await send_email(to=[email], subject="Your Team Dashboard Link", html_body=html)
+    try:
+        await send_email(to=[email], subject="Your Team Dashboard Link", html_body=html)
+    except Exception as e:
+        logger.exception("Failed to send dashboard link email to %s", email)
+        raise HTTPException(status_code=502, detail=f"Email delivery failed: {e}")
 
     return {"status": "sent", "email": email}
 
