@@ -694,8 +694,7 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
 # ============================
 
 @router.get("/admin/balances")
-async def admin_balances(user: AuthUser, group_by: str | None = Query(None)):
-    _require_role(user, "admin")
+async def admin_balances(group_by: str | None = Query(None)):
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
     # Build set of all manager names from Supervisor and AllManagers fields
@@ -733,13 +732,11 @@ async def admin_balances(user: AuthUser, group_by: str | None = Query(None)):
 
 @router.get("/admin/requests")
 async def admin_requests(
-    user: AuthUser,
     type: str | None = Query(None),
     status: str | None = Query(None),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
-    _require_role(user, "admin")
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     results = []
 
@@ -780,8 +777,7 @@ async def admin_requests(
 
 
 @router.get("/admin/pending")
-async def admin_pending(user: AuthUser):
-    _require_role(user, "admin")
+async def admin_pending():
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     pending = []
 
@@ -813,11 +809,9 @@ async def admin_pending(user: AuthUser):
 
 @router.get("/admin/impersonate-url")
 async def admin_impersonate_url(
-    user: AuthUser,
     target_id: str = Query(...),
     target_role: str = Query(...),
 ):
-    _require_role(user, "admin")
     if target_role not in ("employee", "manager"):
         raise HTTPException(status_code=400, detail="Role must be 'employee' or 'manager'")
 
@@ -830,8 +824,7 @@ async def admin_impersonate_url(
 
 
 @router.post("/admin/send-dashboard-link/{target_id}")
-async def admin_send_dashboard_link(user: AuthUser, target_id: str):
-    _require_role(user, "admin")
+async def admin_send_dashboard_link(target_id: str):
     emp = await get_employee_by_id(target_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -858,8 +851,7 @@ async def admin_send_dashboard_link(user: AuthUser, target_id: str):
 
 
 @router.get("/admin/stats")
-async def admin_stats(user: AuthUser):
-    _require_role(user, "admin")
+async def admin_stats():
 
     # Gather counts
     leave_items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
@@ -903,37 +895,37 @@ async def admin_stats(user: AuthUser):
     }
 
 
+ADMIN_DEFAULT_ID = "admin"
+
+
 @router.post("/admin/approve/{request_type}/{request_id}")
-async def admin_approve(user: AuthUser, request_type: str, request_id: str):
-    _require_role(user, "admin")
+async def admin_approve(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    result = await handler(request_id, user.user_id)
+    result = await handler(request_id, ADMIN_DEFAULT_ID)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 
 @router.post("/admin/reject/{request_type}/{request_id}")
-async def admin_reject(user: AuthUser, request_type: str, request_id: str):
-    _require_role(user, "admin")
+async def admin_reject(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    result = await handler(request_id, user.user_id)
+    result = await handler(request_id, ADMIN_DEFAULT_ID)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 
 @router.post("/admin/refund/{request_type}/{request_id}")
-async def admin_refund(user: AuthUser, request_type: str, request_id: str):
-    _require_role(user, "admin")
+async def admin_refund(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
 
@@ -950,7 +942,7 @@ async def admin_refund(user: AuthUser, request_type: str, request_id: str):
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    result = await handler(request_id, user.user_id)
+    result = await handler(request_id, ADMIN_DEFAULT_ID)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result

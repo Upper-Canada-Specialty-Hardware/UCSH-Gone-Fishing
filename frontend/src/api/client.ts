@@ -28,13 +28,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    const status = error.response?.status;
-    if (status === 401) {
+    if (error.response?.status === 401) {
       sessionStorage.clear();
-      window.location.hash = '#/expired';
-    }
-    // 422 with no session tokens means auth params are missing — treat as expired
-    if (status === 422 && !sessionStorage.getItem('dashboard_token')) {
       window.location.hash = '#/expired';
     }
     return Promise.reject(error);
