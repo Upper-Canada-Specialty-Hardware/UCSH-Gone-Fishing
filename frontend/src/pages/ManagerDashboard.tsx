@@ -55,7 +55,8 @@ export default function ManagerDashboard() {
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request approved', severity: 'success' });
     } catch (err: any) {
-      setSnack({ open: true, message: err.response?.data?.detail || 'Approval failed', severity: 'error' });
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Approval failed', severity: 'error' });
     } finally {
       setActionLoading(null);
     }
@@ -69,7 +70,8 @@ export default function ManagerDashboard() {
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request rejected', severity: 'success' });
     } catch (err: any) {
-      setSnack({ open: true, message: err.response?.data?.detail || 'Rejection failed', severity: 'error' });
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Rejection failed', severity: 'error' });
     } finally {
       setActionLoading(null);
     }

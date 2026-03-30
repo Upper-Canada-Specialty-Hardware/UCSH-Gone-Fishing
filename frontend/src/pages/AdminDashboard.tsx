@@ -90,7 +90,8 @@ export default function AdminDashboard() {
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request approved', severity: 'success' });
     } catch (err: any) {
-      setSnack({ open: true, message: err.response?.data?.detail || 'Failed', severity: 'error' });
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Approval failed', severity: 'error' });
     } finally {
       setActionLoading(null);
     }
@@ -103,7 +104,8 @@ export default function AdminDashboard() {
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setSnack({ open: true, message: 'Request rejected', severity: 'success' });
     } catch (err: any) {
-      setSnack({ open: true, message: err.response?.data?.detail || 'Failed', severity: 'error' });
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Rejection failed', severity: 'error' });
     } finally {
       setActionLoading(null);
     }
@@ -122,7 +124,8 @@ export default function AdminDashboard() {
       );
       setSnack({ open: true, message: 'Request refunded', severity: 'success' });
     } catch (err: any) {
-      setSnack({ open: true, message: err.response?.data?.detail || 'Failed', severity: 'error' });
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Refund failed', severity: 'error' });
     } finally {
       setActionLoading(null);
     }

@@ -694,7 +694,8 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
 # ============================
 
 @router.get("/admin/balances")
-async def admin_balances(group_by: str | None = Query(None)):
+async def admin_balances(user: AuthUser, group_by: str | None = Query(None)):
+    _require_role(user, "admin")
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
     # Build set of all manager names from Supervisor and AllManagers fields
@@ -732,11 +733,13 @@ async def admin_balances(group_by: str | None = Query(None)):
 
 @router.get("/admin/requests")
 async def admin_requests(
+    user: AuthUser,
     type: str | None = Query(None),
     status: str | None = Query(None),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
 ):
+    _require_role(user, "admin")
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     results = []
 
@@ -777,7 +780,8 @@ async def admin_requests(
 
 
 @router.get("/admin/pending")
-async def admin_pending():
+async def admin_pending(user: AuthUser):
+    _require_role(user, "admin")
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     pending = []
 
@@ -809,9 +813,11 @@ async def admin_pending():
 
 @router.get("/admin/impersonate-url")
 async def admin_impersonate_url(
+    user: AuthUser,
     target_id: str = Query(...),
     target_role: str = Query(...),
 ):
+    _require_role(user, "admin")
     if target_role not in ("employee", "manager"):
         raise HTTPException(status_code=400, detail="Role must be 'employee' or 'manager'")
 
@@ -824,7 +830,8 @@ async def admin_impersonate_url(
 
 
 @router.post("/admin/send-dashboard-link/{target_id}")
-async def admin_send_dashboard_link(target_id: str):
+async def admin_send_dashboard_link(user: AuthUser, target_id: str):
+    _require_role(user, "admin")
     emp = await get_employee_by_id(target_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -851,7 +858,8 @@ async def admin_send_dashboard_link(target_id: str):
 
 
 @router.get("/admin/stats")
-async def admin_stats():
+async def admin_stats(user: AuthUser):
+    _require_role(user, "admin")
 
     # Gather counts
     leave_items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
