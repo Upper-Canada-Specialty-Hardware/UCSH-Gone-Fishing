@@ -1,5 +1,6 @@
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import { Box } from '@mui/material';
+import { SHARED_DATA_GRID_PROPS } from './dataGridDefaults';
 
 interface Props {
   members: any[];
@@ -61,10 +62,7 @@ export default function TeamBalanceTable({ members, loading }: Props) {
         rows={rows}
         columns={columns}
         loading={loading}
-        initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        pageSizeOptions={[10, 25, 50]}
-        autoHeight
-        disableRowSelectionOnClick
+        {...SHARED_DATA_GRID_PROPS}
       />
     </Box>
   );
