@@ -824,9 +824,7 @@ async def admin_impersonate_url(
 
 
 @router.post("/admin/send-dashboard-link/{target_id}")
-async def admin_send_dashboard_link(user: AuthUser, target_id: str):
-    _require_role(user, "admin")
-
+async def admin_send_dashboard_link(target_id: str):
     emp = await get_employee_by_id(target_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
