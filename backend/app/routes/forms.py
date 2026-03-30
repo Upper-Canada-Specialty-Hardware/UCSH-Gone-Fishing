@@ -8,6 +8,7 @@ from app.config import settings
 from app.services.leave_requests import process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
 from app.services.carryover_payout import process_new_carryover_payout
+from app.services.overlap_detection import OverlapError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -63,6 +64,15 @@ async def receive_leave_form(data: LeaveFormData):
     try:
         item = await process_new_leave_request(data.model_dump(), data.submitter_email)
         return {"status": "ok", "item_id": item.get("id")}
+    except OverlapError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_request",
+                "message": "You already have a leave request that overlaps with these dates.",
+                "conflicting_request": e.conflicting_request,
+            },
+        )
     except Exception as e:
         logger.exception("Error processing leave form")
         raise HTTPException(status_code=500, detail=str(e))
@@ -75,6 +85,15 @@ async def receive_overtime_form(data: OvertimeFormData):
     try:
         item = await process_new_overtime_request(data.model_dump(), data.submitter_email)
         return {"status": "ok", "item_id": item.get("id")}
+    except OverlapError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_request",
+                "message": "You already have an overtime request for this date.",
+                "conflicting_request": e.conflicting_request,
+            },
+        )
     except Exception as e:
         logger.exception("Error processing overtime form")
         raise HTTPException(status_code=500, detail=str(e))

@@ -52,6 +52,15 @@ async def process_new_overtime_request(form_data: dict, submitter_email: str) ->
     if lookup_id:
         fields["SubmittedByLookupId"] = lookup_id
 
+        # Duplicate detection — block same-date requests
+        from app.services.overlap_detection import check_overtime_overlap, OverlapError
+        overlap = await check_overtime_overlap(
+            submitter_lookup_id=lookup_id,
+            overtime_date=form_data["date"],
+        )
+        if overlap:
+            raise OverlapError("overtime", overlap)
+
     item = await sp_client.create_list_item(settings.SP_LIST_OVERTIME_REQUESTS, fields)
     item_id = item["id"]
     logger.info("Created overtime request #%s", item_id)

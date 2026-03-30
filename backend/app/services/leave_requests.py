@@ -72,6 +72,18 @@ async def process_new_leave_request(form_data: dict, submitter_email: str) -> di
     # Set SubmittedTest via Claims lookup
     fields["SubmittedTestLookupId"] = await _resolve_user_lookup_id(submitter_email)
 
+    # Duplicate detection — block overlapping date ranges
+    lookup_id = fields["SubmittedTestLookupId"]
+    if lookup_id:
+        from app.services.overlap_detection import check_leave_overlap, OverlapError
+        overlap = await check_leave_overlap(
+            submitter_lookup_id=lookup_id,
+            start_date=fields["StartDate"],
+            end_date=fields["EndDate"],
+        )
+        if overlap:
+            raise OverlapError("leave", overlap)
+
     item = await sp_client.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, fields)
     item_id = item["id"]
     logger.info("Created leave request #%s", item_id)

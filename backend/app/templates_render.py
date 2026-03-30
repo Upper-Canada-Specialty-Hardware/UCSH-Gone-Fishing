@@ -197,6 +197,17 @@ def render_system_override_reject_at_approval(request_id, employee_name: str, re
     )
 
 
+# --- Duplicate Request ---
+
+def render_duplicate_request_rejected(request_type: str, fields: dict, overlap: dict) -> str:
+    request_type_display = "Leave" if request_type == "leave" else "Time Make-Up"
+    return _render(
+        "duplicate_request_rejected.html",
+        request_type=request_type, request_type_display=request_type_display,
+        fields=fields, overlap=overlap,
+    )
+
+
 # --- Dashboard ---
 
 def render_dashboard_link_email(manager_name: str, dashboard_url: str) -> str:

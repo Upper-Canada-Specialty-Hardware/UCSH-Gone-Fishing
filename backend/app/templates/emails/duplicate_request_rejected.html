@@ -1,0 +1,28 @@
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #dc2626;">{{ request_type_display }} Request - Auto Rejected (Duplicate)</h2>
+  <p>Your request has been auto-rejected because you already have an existing <strong>{{ overlap.status }}</strong> request that overlaps with these dates.</p>
+
+  <h3>Your New Request</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    {% if request_type == "leave" %}
+    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '')[:10] }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '')[:10] }}</td></tr>
+    {% else %}
+    <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '')[:10] }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }}</td></tr>
+    {% endif %}
+  </table>
+
+  <h3>Conflicting Request (#{{ overlap.item_id }})</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    {% if request_type == "leave" %}
+    <tr><td style="padding: 8px; font-weight: bold;">Dates:</td><td style="padding: 8px;">{{ overlap.start_date }} to {{ overlap.end_date }}</td></tr>
+    {% else %}
+    <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ overlap.date }}</td></tr>
+    {% endif %}
+    <tr><td style="padding: 8px; font-weight: bold;">Status:</td><td style="padding: 8px;">{{ overlap.status }}</td></tr>
+  </table>
+
+  <p>If you need to modify your existing request, please contact your manager or HR.</p>
+</div>
