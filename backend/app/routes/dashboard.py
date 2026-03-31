@@ -984,38 +984,19 @@ async def admin_bulk_manager_assignment(body: dict):
 # Admin — One-time CarryOver restore (premature reset fix)
 # ============================
 
-# CarryOver values before the premature March 31 reset
-_CARRYOVER_RESTORE = {
-    "349": 15.0,   # Bob Glover
-    "351": 2.0,    # Brian Hughes
-    "354": 0.5,    # Colum McGuinness
-    "357": 2.5,    # Dave Powell
-    "358": 0.5,    # David Proto
-    "367": 2.0,    # Jack Hazlett
-    "368": 9.25,   # Jay Puzon
-    "370": 2.0,    # Jeff Sokol
-    "377": 3.0,    # Karthiga Sujikaran
-    "387": 0.5,    # Marty Brown
-    "391": 9.0,    # Mike Scetto
-    "397": 3.13,   # Nicole De Claro
-    "402": 4.5,    # Ravi Mattai
-    "416": 3.0,    # Thiru Shankar
-    "439": 0.5,    # Jana Giuranno
-    "454": 3.0,    # Monica Oracz
-    "457": 0.5,    # Sarthak Anand
-    "489": 8.0,    # Dexter Ducusin
-    "492": 0.25,   # Faizan Kazi
-    "509": 4.0,    # Test User
-    "511": 10.0,   # Human Resources
-    "572": 0.5,    # Nyakuma Wal
+# Already applied — do not call restore-carryover again
+_CARRYOVER_RESTORE = {}
+
+# Reverse the double-applied vacation corrections + fix Dheepak CarryOver
+_VACATION_CORRECTIONS = {
+    "480": -0.25,  # Bansi Popat (10.25 → 10.0, reverse over-correction)
+    "414": -1.0,   # Sheila Chibeen Laguna (11.0 → 10.0, reverse over-correction)
+    "393": -0.25,  # Murtaza Burhani (15.0 → 14.75, reverse over-correction)
 }
 
-# Vacation corrections for employees whose post-reset leave cascaded incorrectly
-_VACATION_CORRECTIONS = {
-    "359": 1.0,    # Dheepak Soundarraj (leave #3187 approved post-reset)
-    "480": 0.25,   # Bansi Popat (9.75 → 10.0)
-    "414": 1.0,    # Sheila Chibeen Laguna (9.0 → 10.0)
-    "393": 0.25,   # Murtaza Burhani (14.5 → 14.75)
+# Dheepak's CarryOver was incorrectly restored to 1.0 by first call — zero it
+_CARRYOVER_ZERO = {
+    "359": 0,      # Dheepak Soundarraj (CarryOver 1.0 → 0, consumed by leave)
 }
 
 
@@ -1080,6 +1061,32 @@ async def admin_restore_carryover():
                 })
         except Exception as e:
             logger.exception("Failed to correct Vacation for %s", emp_id)
+            report["errors"].append({"id": emp_id, "error": str(e)})
+
+    # C. Zero CarryOver for employees whose restore was incorrect
+    for emp_id, co_val in _CARRYOVER_ZERO.items():
+        try:
+            async with lock_manager.lock(emp_id):
+                emp = await get_employee_by_id(emp_id)
+                if not emp:
+                    report["errors"].append({"id": emp_id, "error": "Employee not found"})
+                    continue
+                fields = emp["fields"]
+                current_co = float(fields.get("CarryOver", 0) or 0)
+                await sp_client.update_list_item_fields(
+                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
+                    {"CarryOver": co_val},
+                )
+                vacation = float(fields.get("CurrentVacationBalance", 0) or 0)
+                await recalculate_request_allow_date(emp_id, vacation, co_val)
+                report["carryover_restored"].append({
+                    "id": emp_id,
+                    "name": fields.get("Title", ""),
+                    "from": current_co,
+                    "to": co_val,
+                })
+        except Exception as e:
+            logger.exception("Failed to fix CarryOver for %s", emp_id)
             report["errors"].append({"id": emp_id, "error": str(e)})
 
     return report
