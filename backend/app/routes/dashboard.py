@@ -991,7 +991,6 @@ _CARRYOVER_RESTORE = {
     "354": 0.5,    # Colum McGuinness
     "357": 2.5,    # Dave Powell
     "358": 0.5,    # David Proto
-    "359": 1.0,    # Dheepak Soundarraj
     "367": 2.0,    # Jack Hazlett
     "368": 9.25,   # Jay Puzon
     "370": 2.0,    # Jeff Sokol
@@ -1013,6 +1012,7 @@ _CARRYOVER_RESTORE = {
 
 # Vacation corrections for employees whose post-reset leave cascaded incorrectly
 _VACATION_CORRECTIONS = {
+    "359": 1.0,    # Dheepak Soundarraj (leave #3187 approved post-reset)
     "480": 0.25,   # Bansi Popat (9.75 → 10.0)
     "414": 1.0,    # Sheila Chibeen Laguna (9.0 → 10.0)
     "393": 0.25,   # Murtaza Burhani (14.5 → 14.75)
