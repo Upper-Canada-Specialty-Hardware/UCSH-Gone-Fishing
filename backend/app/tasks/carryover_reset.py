@@ -1,4 +1,4 @@
-"""Annual CarryOver balance reset — zeroes all employees' CarryOver on March 31st midnight ET."""
+"""Annual CarryOver balance reset — zeroes all employees' CarryOver on April 1st midnight ET."""
 
 import asyncio
 import logging
@@ -23,12 +23,12 @@ CHECK_INTERVAL = 60  # seconds between checks
 
 
 async def _carryover_reset_loop():
-    """Background task: check every 60s if it's March 31 and time to reset."""
+    """Background task: check every 60s if it's April 1 and time to reset."""
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
         try:
             now = datetime.now(TORONTO_TZ)
-            if now.month == 3 and now.day == 31:
+            if now.month == 4 and now.day == 1:
                 if not await _already_ran_this_year(now.year):
                     if settings.PROCESSING_ENABLED:
                         logger.info("CarryOver reset triggered for year %d", now.year)

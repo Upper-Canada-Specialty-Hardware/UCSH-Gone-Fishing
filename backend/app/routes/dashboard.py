@@ -980,6 +980,130 @@ async def admin_bulk_manager_assignment(body: dict):
     return await execute_bulk_operation(operation, body)
 
 
+# ============================
+# Admin — One-time CarryOver restore (premature reset fix)
+# ============================
+
+# CarryOver values before the premature March 31 reset
+_CARRYOVER_RESTORE = {
+    "349": 15.0,   # Bob Glover
+    "351": 2.0,    # Brian Hughes
+    "354": 0.5,    # Colum McGuinness
+    "357": 2.5,    # Dave Powell
+    "358": 0.5,    # David Proto
+    "359": 1.0,    # Dheepak Soundarraj
+    "367": 2.0,    # Jack Hazlett
+    "368": 9.25,   # Jay Puzon
+    "370": 2.0,    # Jeff Sokol
+    "377": 3.0,    # Karthiga Sujikaran
+    "387": 0.5,    # Marty Brown
+    "391": 9.0,    # Mike Scetto
+    "397": 3.13,   # Nicole De Claro
+    "402": 4.5,    # Ravi Mattai
+    "416": 3.0,    # Thiru Shankar
+    "439": 0.5,    # Jana Giuranno
+    "454": 3.0,    # Monica Oracz
+    "457": 0.5,    # Sarthak Anand
+    "489": 8.0,    # Dexter Ducusin
+    "492": 0.25,   # Faizan Kazi
+    "509": 4.0,    # Test User
+    "511": 10.0,   # Human Resources
+    "572": 0.5,    # Nyakuma Wal
+}
+
+# Vacation corrections for employees whose post-reset leave cascaded incorrectly
+_VACATION_CORRECTIONS = {
+    "480": 0.25,   # Bansi Popat (9.75 → 10.0)
+    "414": 1.0,    # Sheila Chibeen Laguna (9.0 → 10.0)
+    "393": 0.25,   # Murtaza Burhani (14.5 → 14.75)
+}
+
+
+@router.post("/admin/restore-carryover")
+async def admin_restore_carryover():
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    from app.services.concurrency import lock_manager
+    from app.services.balance import recalculate_request_allow_date
+
+    report = {"carryover_restored": [], "vacation_corrected": [], "errors": []}
+
+    # A. Restore CarryOver for employees with no post-reset cascade damage
+    for emp_id, carryover in _CARRYOVER_RESTORE.items():
+        try:
+            async with lock_manager.lock(emp_id):
+                emp = await get_employee_by_id(emp_id)
+                if not emp:
+                    report["errors"].append({"id": emp_id, "error": "Employee not found"})
+                    continue
+                fields = emp["fields"]
+                current_co = float(fields.get("CarryOver", 0) or 0)
+                await sp_client.update_list_item_fields(
+                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
+                    {"CarryOver": carryover},
+                )
+                vacation = float(fields.get("CurrentVacationBalance", 0) or 0)
+                await recalculate_request_allow_date(emp_id, vacation, carryover)
+                report["carryover_restored"].append({
+                    "id": emp_id,
+                    "name": fields.get("Title", ""),
+                    "from": current_co,
+                    "to": carryover,
+                })
+        except Exception as e:
+            logger.exception("Failed to restore CarryOver for %s", emp_id)
+            report["errors"].append({"id": emp_id, "error": str(e)})
+
+    # B. Vacation corrections for cascade-damaged employees
+    for emp_id, correction in _VACATION_CORRECTIONS.items():
+        try:
+            async with lock_manager.lock(emp_id):
+                emp = await get_employee_by_id(emp_id)
+                if not emp:
+                    report["errors"].append({"id": emp_id, "error": "Employee not found"})
+                    continue
+                fields = emp["fields"]
+                current_vac = float(fields.get("CurrentVacationBalance", 0) or 0)
+                new_vac = current_vac + correction
+                current_co = float(fields.get("CarryOver", 0) or 0)
+                await sp_client.update_list_item_fields(
+                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
+                    {"CurrentVacationBalance": new_vac},
+                )
+                await recalculate_request_allow_date(emp_id, new_vac, current_co)
+                report["vacation_corrected"].append({
+                    "id": emp_id,
+                    "name": fields.get("Title", ""),
+                    "vacation_from": current_vac,
+                    "vacation_to": new_vac,
+                })
+        except Exception as e:
+            logger.exception("Failed to correct Vacation for %s", emp_id)
+            report["errors"].append({"id": emp_id, "error": str(e)})
+
+    return report
+
+
+@router.post("/admin/clear-carryover-reset-log/{year}")
+async def admin_clear_carryover_reset_log(year: int):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    from sqlalchemy import delete
+    from app.database import async_session
+    from app.models.carryover_reset_log import CarryoverResetLog
+
+    async with async_session() as session:
+        result = await session.execute(
+            delete(CarryoverResetLog).where(CarryoverResetLog.year == year)
+        )
+        await session.commit()
+        deleted = result.rowcount
+
+    return {"year": year, "deleted": deleted}
+
+
 # --- Config endpoint (no auth needed, used by frontend) ---
 
 @router.get("/config")
