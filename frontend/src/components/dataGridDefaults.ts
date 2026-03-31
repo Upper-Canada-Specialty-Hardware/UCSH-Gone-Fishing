@@ -22,6 +22,17 @@ export function getDisplayType(row: any): string {
   return row.request_type;
 }
 
+export function getDescription(row: any): string {
+  const title = (row.Title || '').trim();
+  if (!title) return '';
+  if (row.request_type === 'overtime') return title;
+  if (row.request_type === 'leave') {
+    const parts = title.split(' /// ');
+    return parts.length > 1 ? parts.slice(1).join(' /// ').trim() : '';
+  }
+  return title;
+}
+
 export function getStartDate(row: any): string {
   return row.StartDate || (row.Created ? row.Created.split('T')[0] : '');
 }

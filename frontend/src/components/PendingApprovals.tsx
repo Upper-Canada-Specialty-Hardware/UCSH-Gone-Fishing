@@ -1,6 +1,7 @@
 import { Card, CardContent, Typography, Button, Box, Chip, Stack } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
+import { getDescription } from './dataGridDefaults';
 
 interface Balances {
   vacation_balance: number;
@@ -73,6 +74,7 @@ export default function PendingApprovals({ pending, processingEnabled, onApprove
     <Stack spacing={2}>
       {pending.map((item) => {
         const name = item.employee_name || (item.Title || '').split(' /// ')[0] || item.SubmitterName || 'Unknown';
+        const description = getDescription(item);
         const key = `${item.request_type}-${item.id}`;
         const isLoading = actionLoading === key;
 
@@ -91,6 +93,11 @@ export default function PendingApprovals({ pending, processingEnabled, onApprove
                   )}
                   <Chip label={typeLabel[item.request_type] || item.request_type} size="small" sx={{ mr: 1 }} />
                   {item.LeaveType && <Chip label={item.LeaveType} size="small" variant="outlined" sx={{ mr: 1 }} />}
+                  {description && (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontStyle: 'italic' }}>
+                      {description}
+                    </Typography>
+                  )}
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                     {item.StartDate}
                     {item.EndDate && item.EndDate !== item.StartDate && ` — ${item.EndDate}`}

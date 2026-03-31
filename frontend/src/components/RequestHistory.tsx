@@ -10,6 +10,7 @@ import {
   REQUEST_TYPE_OPTIONS,
   STATUS_OPTIONS,
   getDisplayType,
+  getDescription,
   getStartDate,
   hasAuditLog,
 } from './dataGridDefaults';
@@ -36,6 +37,7 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         employee_name: r.employee_name || '',
         managers: r.managers || '',
         LeaveType: r.LeaveType || '',
+        description: getDescription(r),
         StartDate: getStartDate(r),
         EndDate: r.EndDate || '',
         Days: r.Days ?? null,
@@ -61,6 +63,7 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         : []),
       { field: 'managers', headerName: 'Manager(s)', width: 200 },
       { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
+      { field: 'description', headerName: 'Description', width: 200 },
       { field: 'StartDate', headerName: 'Start', width: 120 },
       { field: 'EndDate', headerName: 'End', width: 120 },
       { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
