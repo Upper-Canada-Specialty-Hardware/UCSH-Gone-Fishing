@@ -981,113 +981,83 @@ async def admin_bulk_manager_assignment(body: dict):
 
 
 # ============================
-# Admin — One-time CarryOver restore (premature reset fix)
+# Admin — Balance corrections
 # ============================
 
-# Already applied — do not call restore-carryover again
-_CARRYOVER_RESTORE = {}
-
-# Reverse the double-applied vacation corrections + fix Dheepak CarryOver
-_VACATION_CORRECTIONS = {
-    "480": -0.25,  # Bansi Popat (10.25 → 10.0, reverse over-correction)
-    "414": -1.0,   # Sheila Chibeen Laguna (11.0 → 10.0, reverse over-correction)
-    "393": -0.25,  # Murtaza Burhani (15.0 → 14.75, reverse over-correction)
-}
-
-# Dheepak's CarryOver was incorrectly restored to 1.0 by first call — zero it
-_CARRYOVER_ZERO = {
-    "359": 0,      # Dheepak Soundarraj (CarryOver 1.0 → 0, consumed by leave)
+BALANCE_FIELDS = {
+    "vacation": "CurrentVacationBalance",
+    "sick": "CurrentSickDayBalance",
+    "overtime": "CurrentOvertimeBalance",
+    "carryover": "CarryOver",
+    "payout": "Payout",
 }
 
 
-@router.post("/admin/restore-carryover")
-async def admin_restore_carryover():
+@router.post("/admin/set-balances")
+async def admin_set_balances(body: dict):
+    """Set exact balance values for one or more employees.
+
+    Body: {"corrections": [{"employee_id": "480", "vacation": 10.0, "carryover": 0}, ...]}
+    Only specified balance fields are updated; others are left unchanged.
+    """
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
 
     from app.services.concurrency import lock_manager
     from app.services.balance import recalculate_request_allow_date
 
-    report = {"carryover_restored": [], "vacation_corrected": [], "errors": []}
+    corrections = body.get("corrections", [])
+    if not corrections:
+        raise HTTPException(status_code=400, detail="No corrections provided")
 
-    # A. Restore CarryOver for employees with no post-reset cascade damage
-    for emp_id, carryover in _CARRYOVER_RESTORE.items():
+    report = {"applied": [], "errors": []}
+
+    for entry in corrections:
+        emp_id = str(entry.get("employee_id", ""))
+        if not emp_id:
+            report["errors"].append({"entry": entry, "error": "Missing employee_id"})
+            continue
+
+        sp_updates = {}
+        for key, sp_field in BALANCE_FIELDS.items():
+            if key in entry:
+                sp_updates[sp_field] = float(entry[key])
+
+        if not sp_updates:
+            report["errors"].append({"employee_id": emp_id, "error": "No balance fields provided"})
+            continue
+
         try:
             async with lock_manager.lock(emp_id):
                 emp = await get_employee_by_id(emp_id)
                 if not emp:
-                    report["errors"].append({"id": emp_id, "error": "Employee not found"})
+                    report["errors"].append({"employee_id": emp_id, "error": "Employee not found"})
                     continue
                 fields = emp["fields"]
-                current_co = float(fields.get("CarryOver", 0) or 0)
+
+                before = {k: float(fields.get(sp_field, 0) or 0)
+                          for k, sp_field in BALANCE_FIELDS.items()
+                          if k in entry}
+
                 await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
-                    {"CarryOver": carryover},
+                    settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
                 )
-                vacation = float(fields.get("CurrentVacationBalance", 0) or 0)
+
+                vacation = sp_updates.get("CurrentVacationBalance",
+                           float(fields.get("CurrentVacationBalance", 0) or 0))
+                carryover = sp_updates.get("CarryOver",
+                            float(fields.get("CarryOver", 0) or 0))
                 await recalculate_request_allow_date(emp_id, vacation, carryover)
-                report["carryover_restored"].append({
-                    "id": emp_id,
-                    "name": fields.get("Title", ""),
-                    "from": current_co,
-                    "to": carryover,
-                })
-        except Exception as e:
-            logger.exception("Failed to restore CarryOver for %s", emp_id)
-            report["errors"].append({"id": emp_id, "error": str(e)})
 
-    # B. Vacation corrections for cascade-damaged employees
-    for emp_id, correction in _VACATION_CORRECTIONS.items():
-        try:
-            async with lock_manager.lock(emp_id):
-                emp = await get_employee_by_id(emp_id)
-                if not emp:
-                    report["errors"].append({"id": emp_id, "error": "Employee not found"})
-                    continue
-                fields = emp["fields"]
-                current_vac = float(fields.get("CurrentVacationBalance", 0) or 0)
-                new_vac = current_vac + correction
-                current_co = float(fields.get("CarryOver", 0) or 0)
-                await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
-                    {"CurrentVacationBalance": new_vac},
-                )
-                await recalculate_request_allow_date(emp_id, new_vac, current_co)
-                report["vacation_corrected"].append({
-                    "id": emp_id,
+                report["applied"].append({
+                    "employee_id": emp_id,
                     "name": fields.get("Title", ""),
-                    "vacation_from": current_vac,
-                    "vacation_to": new_vac,
+                    "before": before,
+                    "after": {k: float(entry[k]) for k in before},
                 })
         except Exception as e:
-            logger.exception("Failed to correct Vacation for %s", emp_id)
-            report["errors"].append({"id": emp_id, "error": str(e)})
-
-    # C. Zero CarryOver for employees whose restore was incorrect
-    for emp_id, co_val in _CARRYOVER_ZERO.items():
-        try:
-            async with lock_manager.lock(emp_id):
-                emp = await get_employee_by_id(emp_id)
-                if not emp:
-                    report["errors"].append({"id": emp_id, "error": "Employee not found"})
-                    continue
-                fields = emp["fields"]
-                current_co = float(fields.get("CarryOver", 0) or 0)
-                await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
-                    {"CarryOver": co_val},
-                )
-                vacation = float(fields.get("CurrentVacationBalance", 0) or 0)
-                await recalculate_request_allow_date(emp_id, vacation, co_val)
-                report["carryover_restored"].append({
-                    "id": emp_id,
-                    "name": fields.get("Title", ""),
-                    "from": current_co,
-                    "to": co_val,
-                })
-        except Exception as e:
-            logger.exception("Failed to fix CarryOver for %s", emp_id)
-            report["errors"].append({"id": emp_id, "error": str(e)})
+            logger.exception("Failed to set balances for %s", emp_id)
+            report["errors"].append({"employee_id": emp_id, "error": str(e)})
 
     return report
 
