@@ -7,6 +7,9 @@
     <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
+    {% if fields.get('LeaveType') == 'Half Day or Partial Day Off' %}
+    <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ (fields.get('Days', 0) or 0) * 8 }} hours</td></tr>
+    {% endif %}
   </table>
   {% if emp_fields %}
   <h3>Current Balances</h3>
