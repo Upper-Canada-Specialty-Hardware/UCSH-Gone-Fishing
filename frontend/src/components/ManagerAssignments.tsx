@@ -56,6 +56,10 @@ export default function ManagerAssignments() {
       flex: 1,
       minWidth: 250,
       sortable: false,
+      valueFormatter: (value: any[]) => {
+        if (!value || value.length === 0) return 'No manager';
+        return value.map((m: any) => m.name).join(', ');
+      },
       renderCell: (params) => {
         const managers = params.value as any[];
         if (!managers || managers.length === 0) {
