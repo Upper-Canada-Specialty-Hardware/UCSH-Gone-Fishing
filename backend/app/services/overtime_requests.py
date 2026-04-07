@@ -4,6 +4,7 @@ from datetime import date
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
+from app.services.sms import send_sms
 from app.services.employee import (
     get_employee_by_name,
     get_employee_by_id,
@@ -178,6 +179,24 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
             html_body=html,
             primary_employee_id=manager_id,
         )
+
+        # Send SMS to manager if they have a cell number
+        cell = mgr_fields.get("CellNumber", "")
+        if cell:
+            ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
+            if projected:
+                bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
+            else:
+                bal_line = ""
+            await send_sms(
+                to=cell,
+                body=(
+                    f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
+                    f"{ot_date}\n"
+                    f"{bal_line}"
+                    f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
+                ),
+            )
 
     logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
 

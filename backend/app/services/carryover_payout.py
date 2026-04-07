@@ -4,6 +4,7 @@ from datetime import date
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
+from app.services.sms import send_sms
 from app.services.employee import (
     get_employee_by_email,
     get_employee_by_id,
@@ -222,6 +223,18 @@ async def run_approval_pipeline(request_id: str | int):
             html_body=html,
             primary_employee_id=mgr_id,
         )
+
+        # Send SMS to manager if they have a cell number
+        cell = mgr["fields"].get("CellNumber", "")
+        if cell:
+            await send_sms(
+                to=cell,
+                body=(
+                    f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
+                    f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
+                    f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
+                ),
+            )
 
     logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
 

@@ -338,7 +338,7 @@ async def send_approval_email(leave_request_id: str | int):
                     f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
                     f"{date_line}"
                     f"{bal_line}"
-                    f"Reply \"Approve {leave_request_id}\" or \"Reject {leave_request_id}\""
+                    f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
                 ),
             )
 

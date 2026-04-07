@@ -6,12 +6,38 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import settings
 from app.services.sms import validate_twilio_signature, send_sms
-from app.services.employee import get_employee_by_name, ADMIN_NAMES
+from app.services.employee import get_employee_by_name, get_employee_by_id, ADMIN_NAMES
 from app.services.leave_requests import approve_leave_request, reject_leave_request
+from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
+from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
 from app.graph.sharepoint import sp_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+REQUEST_TYPE_CONFIG = {
+    "leave": {
+        "list_id": settings.SP_LIST_LEAVE_REQUESTS,
+        "is_processed": lambda f: f.get("ApproveProcessedFlag") == "Processed" or f.get("Status") != "Pending",
+        "submitter_field": ("SubmittedTest", "SubmittedTestLookupId"),
+        "approve": approve_leave_request,
+        "reject": reject_leave_request,
+    },
+    "overtime": {
+        "list_id": settings.SP_LIST_OVERTIME_REQUESTS,
+        "is_processed": lambda f: f.get("Status") != "Pending",
+        "submitter_field": ("SubmittedBy", "SubmittedByLookupId"),
+        "approve": approve_overtime_request,
+        "reject": reject_overtime_request,
+    },
+    "carryover-payout": {
+        "list_id": settings.SP_LIST_CARRYOVER_PAYOUT,
+        "is_processed": lambda f: f.get("SystemState") == "Processed",
+        "submitter_field": None,  # uses EmployeeID directly
+        "approve": approve_carryover_payout,
+        "reject": reject_carryover_payout,
+    },
+}
 
 
 @router.post("/sms", response_class=PlainTextResponse)
@@ -40,15 +66,23 @@ async def receive_sms(request: Request):
     # Extract last 10 digits
     from_digits = re.sub(r"\D", "", from_number)[-10:]
 
-    # Parse decision and request ID from body
-    decision, item_id = _parse_sms_body(body)
-    if not decision or not item_id:
-        await send_sms(from_number, "Could not understand your response. Reply 'Approve {ID}' or 'Reject {ID}'.")
+    # Parse decision, request ID, and request type from body
+    decision, item_id, request_type = _parse_sms_body(body)
+    if not decision or not item_id or not request_type:
+        await send_sms(
+            from_number,
+            "Could not understand your response. "
+            "Reply 'LR Approve {ID}' or 'LR Reject {ID}' for leave, "
+            "'OT Approve {ID}' or 'OT Reject {ID}' for overtime, "
+            "'CO Approve {ID}' or 'CO Reject {ID}' for carry over/payout.",
+        )
         return ""
 
-    # Look up the leave request
+    config = REQUEST_TYPE_CONFIG[request_type]
+
+    # Look up the request
     try:
-        item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, item_id)
+        item = await sp_client.get_list_item(config["list_id"], item_id)
     except Exception:
         await send_sms(from_number, f"Request #{item_id} does not exist, please try again.")
         return ""
@@ -56,7 +90,7 @@ async def receive_sms(request: Request):
     fields = item.get("fields", {})
 
     # Already processed check
-    if fields.get("ApproveProcessedFlag") == "Processed" or fields.get("Status") != "Pending":
+    if config["is_processed"](fields):
         await send_sms(from_number, f"Request #{item_id} has already been processed and archived.")
         return ""
 
@@ -76,9 +110,17 @@ async def receive_sms(request: Request):
 
     # Manager authorization check — dynamic lookup from Staff Directory AllManagers
     from app.services.employee import resolve_person_field, get_all_managers_for_employee
-    submitter = await resolve_person_field(
-        fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId")
-    )
+    submitter = None
+    if config["submitter_field"]:
+        submitter = await resolve_person_field(
+            fields.get(config["submitter_field"][0]) or fields.get(config["submitter_field"][1])
+        )
+    else:
+        # Carryover/payout uses EmployeeID directly
+        employee_id = fields.get("EmployeeID")
+        if employee_id:
+            submitter = await get_employee_by_id(employee_id)
+
     authorized = sender_name in ADMIN_NAMES
     if not authorized and submitter:
         mgrs = await get_all_managers_for_employee(submitter)
@@ -92,22 +134,47 @@ async def receive_sms(request: Request):
 
     # Process
     if decision == "Approve":
-        result = await approve_leave_request(item_id, sender_id)
+        result = await config["approve"](item_id, sender_id)
         manager_email = sender["fields"].get("EmailAddress", "")
         await send_sms(
             from_number,
             f"Response has been received. An email will be sent to ({manager_email}) once the process is completed.",
         )
     else:
-        result = await reject_leave_request(item_id, sender_id)
+        result = await config["reject"](item_id, sender_id)
         await send_sms(from_number, f"Response has been received. Cancelling request #{item_id}.")
 
     return ""
 
 
-def _parse_sms_body(body: str) -> tuple[str | None, str | None]:
-    """Extract decision (Approve/Reject) and item ID from SMS body."""
-    body_lower = body.lower()
+# Prefix → request type mapping
+_PREFIX_MAP = {
+    "lr": "leave",
+    "ot": "overtime",
+    "co": "carryover-payout",
+}
+
+
+def _parse_sms_body(body: str) -> tuple[str | None, str | None, str | None]:
+    """Extract decision (Approve/Reject), item ID, and request type from SMS body.
+
+    Expected formats:
+        LR Approve 123
+        OT Reject 45
+        CO Approve 12
+    """
+    body_lower = body.lower().strip()
+
+    # Check for prefix
+    request_type = None
+    for prefix, rtype in _PREFIX_MAP.items():
+        if body_lower.startswith(prefix + " "):
+            request_type = rtype
+            body_lower = body_lower[len(prefix) + 1:].strip()
+            break
+
+    if not request_type:
+        return None, None, None
 
     decision = None
     if "approve" in body_lower:
@@ -115,8 +182,8 @@ def _parse_sms_body(body: str) -> tuple[str | None, str | None]:
     elif "reject" in body_lower or "yeet" in body_lower:
         decision = "Reject"
 
-    # Extract number from body
-    numbers = re.findall(r"\d+", body)
+    # Extract number from remaining body
+    numbers = re.findall(r"\d+", body_lower)
     item_id = numbers[0] if numbers else None
 
-    return decision, item_id
+    return decision, item_id, request_type
