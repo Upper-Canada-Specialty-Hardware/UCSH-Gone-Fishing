@@ -321,10 +321,22 @@ async def send_approval_email(leave_request_id: str | int):
                 )
             else:
                 bal_line = "No balance change.\n"
+            _s = _parse_date(start_str)
+            _e = _parse_date(end_str)
+            if _s and _e:
+                if _s == _e:
+                    date_line = f"{_s.strftime('%b %d, %Y')}\n"
+                else:
+                    date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
+            elif start_str:
+                date_line = f"{start_str[:10]}\n"
+            else:
+                date_line = ""
             await send_sms(
                 to=cell,
                 body=(
                     f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
+                    f"{date_line}"
                     f"{bal_line}"
                     f"Reply \"Approve {leave_request_id}\" or \"Reject {leave_request_id}\""
                 ),
