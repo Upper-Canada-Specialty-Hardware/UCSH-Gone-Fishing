@@ -6,6 +6,7 @@ import TeamCalendar from '../components/TeamCalendar';
 import TeamTimeline from '../components/TeamTimeline';
 import RequestHistory from '../components/RequestHistory';
 import {
+  getMyBalances,
   getTeamMembers,
   getTeamPending,
   getTeamRequests,
@@ -22,6 +23,7 @@ export default function ManagerDashboard() {
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+  const [managerName, setManagerName] = useState('');
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -30,13 +32,15 @@ export default function ManagerDashboard() {
 
   useEffect(() => {
     Promise.all([
+      getMyBalances(),
       getTeamMembers(),
       getTeamPending(),
       getTeamRequests(),
       getTeamCalendar(),
       getConfig(),
     ])
-      .then(([membersRes, pendingRes, reqRes, calRes, configRes]) => {
+      .then(([profileRes, membersRes, pendingRes, reqRes, calRes, configRes]) => {
+        setManagerName(profileRes.data.employee?.name || '');
         setMembers(membersRes.data.members || []);
         setPending(pendingRes.data.pending || []);
         setRequests(reqRes.data.requests || []);
@@ -92,7 +96,7 @@ export default function ManagerDashboard() {
   return (
     <Box>
       <Typography variant="h5" sx={{ mb: 3, fontWeight: 600 }}>
-        Team Dashboard
+        {managerName ? `Welcome, ${managerName}` : 'Team Dashboard'}
       </Typography>
 
       {!processingEnabled && (
