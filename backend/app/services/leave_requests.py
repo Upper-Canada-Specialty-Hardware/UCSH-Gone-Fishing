@@ -393,12 +393,12 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
         primary_employee_id=employee_id,
     )
 
-    # Hourly staff — no balance adjustment
-    if emp_fields.get("SalaryHourly") == "Hourly":
-        return {"status": "approved", "hourly": True}
-
     leave_type = fields.get("LeaveType", "")
     days = float(fields.get("Days", 0) or 0)
+
+    # Hourly staff — no balance adjustment (except sick leave)
+    if emp_fields.get("SalaryHourly") == "Hourly" and leave_type != "Sick or Personal Day":
+        return {"status": "approved", "hourly": True}
 
     # Bereavement / Jury Duty — no balance adjustment
     if leave_type in ("Bereavement", "Jury Duty"):
@@ -558,8 +558,9 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
         settings.SP_LIST_LEAVE_REQUESTS, request_id, {"Status": "Refunded"},
     )
 
-    # Hourly staff or bereavement/jury duty — no balance change
-    if emp_fields.get("SalaryHourly") == "Hourly" or leave_type in ("Bereavement", "Jury Duty"):
+    # Hourly staff (except sick leave) or bereavement/jury duty — no balance change
+    is_hourly = emp_fields.get("SalaryHourly") == "Hourly"
+    if leave_type in ("Bereavement", "Jury Duty") or (is_hourly and leave_type != "Sick or Personal Day"):
         from app.templates_render import render_refund_notification
         html = render_refund_notification("Leave", request_id, submitter_name, fields, None)
         await send_email_with_dashboard(

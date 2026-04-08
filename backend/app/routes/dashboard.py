@@ -249,11 +249,12 @@ def _enrich_pending_item(
     sf = staff["fields"]
     item_data["current_balances"] = _format_balances(sf)
 
-    # Hourly staff — no balance adjustment
+    # Hourly staff — no balance adjustment (except sick leave)
     if sf.get("SalaryHourly") == "Hourly":
-        item_data["projected_balances"] = None
-        item_data["balance_unchanged"] = "Hourly staff — no balance adjustment"
-        return item_data
+        if request_type != "leave" or item_data.get("LeaveType") != "Sick or Personal Day":
+            item_data["projected_balances"] = None
+            item_data["balance_unchanged"] = "Hourly staff — no balance adjustment"
+            return item_data
 
     projected_sp = None
     balance_unchanged = False
