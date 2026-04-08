@@ -9,15 +9,18 @@ import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
 import ManagerAssignments from '../components/ManagerAssignments';
+import StuckRequests from '../components/StuckRequests';
 import {
   getAdminBalances,
   getAdminPending,
   getAdminRequests,
   getAdminStats,
+  getAdminStuckRequests,
   getConfig,
   adminApproveRequest,
   adminRejectRequest,
   adminRefundRequest,
+  adminReprocessRequest,
   getAdminImpersonateUrl,
   sendDashboardLink,
 } from '../api/client';
@@ -27,6 +30,7 @@ export default function AdminDashboard() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
+  const [stuckRequests, setStuckRequests] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -49,17 +53,19 @@ export default function AdminDashboard() {
     const loadData = async () => {
       while (!cancelled) {
         try {
-          const [balRes, pendRes, reqRes, statsRes, configRes] = await Promise.all([
+          const [balRes, pendRes, reqRes, statsRes, stuckRes, configRes] = await Promise.all([
             getAdminBalances(),
             getAdminPending(),
             getAdminRequests(),
             getAdminStats(),
+            getAdminStuckRequests(),
             getConfig(),
           ]);
           if (cancelled) return;
           setEmployees(balRes.data.employees || []);
           setPending(pendRes.data.pending || []);
           setRequests(reqRes.data.requests || []);
+          setStuckRequests(stuckRes.data.stuck || []);
           setStats(statsRes.data);
           setProcessingEnabled(configRes.data.processing_enabled || false);
           setLoading(false);
@@ -154,6 +160,31 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  const handleReprocess = useCallback(async (id: string, reason: string) => {
+    setActionLoading(`reprocess-${id}`);
+    try {
+      const res = await adminReprocessRequest(id, reason);
+      const remaining = res.data.remaining_issues?.length || 0;
+      // Refresh stuck + pending lists
+      const [stuckRes, pendRes] = await Promise.all([
+        getAdminStuckRequests(),
+        getAdminPending(),
+      ]);
+      setStuckRequests(stuckRes.data.stuck || []);
+      setPending(pendRes.data.pending || []);
+      if (remaining === 0) {
+        setSnack({ open: true, message: 'Request reprocessed successfully', severity: 'success' });
+      } else {
+        setSnack({ open: true, message: `Reprocessed with ${remaining} remaining issue(s)`, severity: 'error' });
+      }
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Reprocess failed', severity: 'error' });
+    } finally {
+      setActionLoading(null);
+    }
+  }, []);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
@@ -221,6 +252,7 @@ export default function AdminDashboard() {
         <Tab label="View Employee" />
         <Tab label="View Team" />
         <Tab label="Manager Assignments" />
+        <Tab label={`Stuck (${stuckRequests.length})`} />
       </Tabs>
 
       {tab === 0 && (
@@ -335,6 +367,17 @@ export default function AdminDashboard() {
       )}
 
       {tab === 6 && <ManagerAssignments />}
+
+      {tab === 7 && (
+        <Paper sx={{ p: 3 }}>
+          <StuckRequests
+            stuckRequests={stuckRequests}
+            processingEnabled={processingEnabled}
+            onReprocess={handleReprocess}
+            actionLoading={actionLoading}
+          />
+        </Paper>
+      )}
 
       <Snackbar
         open={snack.open}

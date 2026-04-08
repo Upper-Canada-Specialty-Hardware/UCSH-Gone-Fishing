@@ -94,3 +94,8 @@ export const bulkManagerAssignment = (params: {
   target_manager_id?: number;
   employee_ids?: string[];
 }) => api.post('/admin/manager-assignments/bulk', params);
+
+// Admin — Stuck Requests / Reprocess
+export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
+export const adminReprocessRequest = (id: string, reason: string) =>
+  api.post(`/admin/reprocess/leave/${id}`, { reason });

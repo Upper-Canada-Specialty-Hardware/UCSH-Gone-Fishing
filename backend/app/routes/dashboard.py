@@ -3,6 +3,7 @@ from datetime import date as dt_date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
@@ -794,6 +795,103 @@ async def admin_pending():
 
 
 # ============================
+# Admin stuck requests
+# ============================
+
+def _diagnose_stuck_leave(fields: dict, staff_by_name: dict, sp_user_to_name: dict) -> tuple[list[str], str]:
+    """Inspect a stuck leave request and return (diagnostic_codes, detail_string)."""
+    codes = []
+    details = []
+
+    # Missing dates — blocks auto_calculate_days entirely
+    if not fields.get("StartDate") or not fields.get("EndDate"):
+        codes.append("missing_dates")
+        details.append("Start Date or End Date is missing")
+
+    # Resolve employee from SubmittedTest person field
+    emp_name = _resolve_sp_user_name(fields, "SubmittedTest", sp_user_to_name)
+    staff = staff_by_name.get(emp_name.strip().lower()) if emp_name else None
+
+    if not emp_name or not staff:
+        codes.append("missing_employee")
+        details.append("Cannot resolve submitter to a Staff Directory record")
+    else:
+        # Check AllManagers on the employee's Staff Directory record
+        all_mgrs = staff.get("fields", {}).get("AllManagers")
+        if not all_mgrs or not isinstance(all_mgrs, list) or len(all_mgrs) == 0:
+            codes.append("missing_all_managers")
+            details.append(f"Employee '{emp_name}' found but AllManagers field is empty in Staff Directory")
+
+    # Days not calculated
+    days = fields.get("Days")
+    has_dates = fields.get("StartDate") and fields.get("EndDate")
+    if has_dates and (not days or float(days) == 0):
+        codes.append("missing_days")
+        details.append("Dates present but Days not calculated")
+
+    # Manager lookup failed (has AllManagers on SD but ManagerLookupId not set on request)
+    if staff and not fields.get("ManagerLookupId"):
+        all_mgrs = staff.get("fields", {}).get("AllManagers")
+        if all_mgrs and isinstance(all_mgrs, list) and len(all_mgrs) > 0:
+            codes.append("missing_manager_lookup")
+            details.append("AllManagers populated but ManagerLookupId not set on request")
+
+    # Approval email pending (manager assigned but email not sent)
+    if fields.get("ManagerLookupId") and fields.get("ApproveProcessedFlag") != "Processed":
+        codes.append("approval_email_pending")
+        details.append("Manager assigned but approval email not sent")
+
+    return codes, "; ".join(details) if details else "Unknown issue"
+
+
+@router.get("/admin/stuck-requests")
+async def admin_stuck_requests():
+    staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
+    stuck = []
+
+    try:
+        items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    except Exception:
+        logger.exception("Failed to fetch leave requests for stuck check")
+        items = []
+
+    for item in items:
+        f = item.get("fields", {})
+        if f.get("Status") != "Pending":
+            continue
+
+        # Two stuck conditions:
+        # 1. Not fully processed (no Days or no Manager)
+        # 2. Has manager but approval email never sent
+        is_stuck = (
+            not _is_fully_processed(f, "leave")
+            or (f.get("ManagerLookupId") and f.get("ApproveProcessedFlag") != "Processed")
+        )
+        if not is_stuck:
+            continue
+
+        emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
+        diagnostics, diagnostic_detail = _diagnose_stuck_leave(f, staff_by_name, sp_user_to_name)
+
+        stuck.append({
+            "id": item.get("id"),
+            "employee_name": emp_name,
+            "LeaveType": f.get("LeaveType"),
+            "Title": f.get("Title"),
+            "StartDate": f.get("StartDate"),
+            "EndDate": f.get("EndDate"),
+            "Days": f.get("Days"),
+            "ManagerLookupId": f.get("ManagerLookupId"),
+            "ApproveProcessedFlag": f.get("ApproveProcessedFlag"),
+            "Created": f.get("Created"),
+            "diagnostics": diagnostics,
+            "diagnostic_detail": diagnostic_detail,
+        })
+
+    return {"stuck": stuck}
+
+
+# ============================
 # Admin impersonation endpoint
 # ============================
 
@@ -936,6 +1034,66 @@ async def admin_refund(request_type: str, request_id: str):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+# ============================
+# Admin — Reprocess stuck requests
+# ============================
+
+class ReprocessRequest(BaseModel):
+    reason: str
+
+
+@router.post("/admin/reprocess/leave/{request_id}")
+async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    if not body.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required")
+
+    # Fetch current item from SharePoint
+    try:
+        item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    except Exception:
+        logger.exception("Reprocess: failed to fetch leave request #%s", request_id)
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    fields = item.get("fields", {})
+    if fields.get("Status") != "Pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Request is not Pending (current status: {fields.get('Status')})",
+        )
+
+    logger.info("Admin reprocess for leave #%s — reason: %s", request_id, body.reason.strip())
+
+    # Re-run through the dispatcher pipeline
+    from app.tasks.dispatcher import dispatch_change
+    try:
+        await dispatch_change(settings.SP_LIST_LEAVE_REQUESTS, item)
+    except Exception:
+        logger.exception("Reprocess: dispatch_change failed for leave #%s", request_id)
+        raise HTTPException(status_code=500, detail="Reprocessing failed — check server logs")
+
+    # Re-fetch and diagnose remaining issues
+    updated = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    uf = updated.get("fields", {})
+
+    staff_by_name, _by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
+    remaining, detail = _diagnose_stuck_leave(uf, staff_by_name, sp_user_to_name)
+
+    # If fully processed now, clear remaining
+    if _is_fully_processed(uf, "leave") and uf.get("ApproveProcessedFlag") == "Processed":
+        remaining = []
+        detail = "All issues resolved"
+
+    return {
+        "status": "reprocessed",
+        "request_id": request_id,
+        "remaining_issues": remaining,
+        "detail": f"Reprocessing complete. {detail}",
+    }
 
 
 # ============================
