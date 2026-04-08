@@ -109,7 +109,7 @@ export default function PendingApprovals({ pending, processingEnabled, onApprove
                       <BalanceRow label="Current:" balances={item.current_balances} />
                       {item.balance_unchanged ? (
                         <Typography variant="caption" color="text.secondary" fontStyle="italic" sx={{ mt: 0.5, display: 'block' }}>
-                          No balance change
+                          {item.balance_unchanged}
                         </Typography>
                       ) : item.projected_balances ? (
                         <BalanceRow label="If Approved:" balances={item.projected_balances} compare={item.current_balances} />

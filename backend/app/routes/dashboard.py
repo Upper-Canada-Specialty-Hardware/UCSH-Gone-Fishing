@@ -252,7 +252,7 @@ def _enrich_pending_item(
     # Hourly staff — no balance adjustment
     if sf.get("SalaryHourly") == "Hourly":
         item_data["projected_balances"] = None
-        item_data["balance_unchanged"] = True
+        item_data["balance_unchanged"] = "Hourly staff — no balance adjustment"
         return item_data
 
     projected_sp = None
@@ -272,7 +272,7 @@ def _enrich_pending_item(
             except (ValueError, TypeError):
                 pass
         projected_sp = simulate_leave_impact(sf, leave_type, days, is_next_year)
-        balance_unchanged = projected_sp is None
+        balance_unchanged = f"No balance deduction for {leave_type}" if projected_sp is None else ""
     elif request_type == "overtime":
         hours = float(item_data.get("Hours", 0) or 0)
         projected_sp = simulate_overtime_impact(sf, hours)
