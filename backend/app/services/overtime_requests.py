@@ -27,6 +27,7 @@ from app.services.balance import (
     simulate_overtime_impact,
 )
 from app.services.concurrency import lock_manager
+from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.audit_trail import (
@@ -214,6 +215,9 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
 
 async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
     """Process overtime approval — update balance, vacation offset, recalc RAD."""
+    if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "approve"):
+        return {"error": "Already processed"}
+
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -417,6 +421,9 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
 
 async def reject_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
     """Process overtime rejection."""
+    if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "reject"):
+        return {"error": "Already processed"}
+
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 

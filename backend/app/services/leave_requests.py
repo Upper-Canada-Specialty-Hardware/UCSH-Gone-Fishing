@@ -32,6 +32,7 @@ from app.services.balance import (
     simulate_leave_impact,
 )
 from app.services.concurrency import lock_manager
+from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
 from app.services.sms import send_sms
 from app.services.audit_trail import (
@@ -358,6 +359,9 @@ async def send_approval_email(leave_request_id: str | int):
 
 async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:
     """Process leave approval — update SP, deduct balance, cascade, email."""
+    if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "approve"):
+        return {"error": "Already processed"}
+
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -504,6 +508,9 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
 
 async def reject_leave_request(request_id: str | int, manager_id: str | int) -> dict:
     """Process leave rejection."""
+    if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "reject"):
+        return {"error": "Already processed"}
+
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
     fields = item["fields"]
 

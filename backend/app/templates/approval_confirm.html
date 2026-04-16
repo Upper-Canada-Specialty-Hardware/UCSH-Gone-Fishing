@@ -30,7 +30,7 @@
   <h1 class="reject">Confirm Rejection</h1>
   {% endif %}
   <p>Are you sure you want to <strong>{{ action }}</strong> this {{ request_type | replace('-', ' ') }} request #{{ request_id }}?</p>
-  <form method="POST">
+  <form method="POST" onsubmit="if(this.dataset.submitted){return false;}this.dataset.submitted='1';var b=this.querySelector('button');b.disabled=true;b.textContent='Processing...';">
     <input type="hidden" name="token" value="{{ token }}">
     <input type="hidden" name="mgr" value="{{ mgr }}">
     <input type="hidden" name="exp" value="{{ exp }}">

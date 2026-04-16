@@ -13,6 +13,7 @@ from app.services.employee import (
 )
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
+from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.audit_trail import (
@@ -241,6 +242,9 @@ async def run_approval_pipeline(request_id: str | int):
 
 async def approve_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
     """Process approval — re-validate, apply balance transfer, recalc RAD."""
+    if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "approve"):
+        return {"error": "Already processed"}
+
     item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
@@ -449,6 +453,9 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
 
 async def reject_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
     """Process rejection."""
+    if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "reject"):
+        return {"error": "Already processed"}
+
     item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
