@@ -912,6 +912,15 @@ async def admin_impersonate_url(
     return {"url": url}
 
 
+@router.get("/admin/employee-dashboard-link/{target_id}")
+async def admin_employee_dashboard_link(target_id: str):
+    emp = await get_employee_by_id(target_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    url = generate_dashboard_url("employee", target_id)
+    return {"url": url}
+
+
 @router.post("/admin/send-dashboard-link/{target_id}")
 async def admin_send_dashboard_link(target_id: str):
     emp = await get_employee_by_id(target_id)

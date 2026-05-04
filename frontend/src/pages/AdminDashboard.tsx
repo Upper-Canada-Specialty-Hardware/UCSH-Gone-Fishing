@@ -23,6 +23,7 @@ import {
   adminReprocessRequest,
   getAdminImpersonateUrl,
   sendDashboardLink,
+  getEmployeeDashboardLink,
 } from '../api/client';
 
 export default function AdminDashboard() {
@@ -156,6 +157,18 @@ export default function AdminDashboard() {
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : 'Failed to send dashboard link';
+      setSnack({ open: true, message, severity: 'error' });
+    }
+  }, []);
+
+  const handleCopyEmployeeLink = useCallback(async (targetId: string) => {
+    try {
+      const res = await getEmployeeDashboardLink(targetId);
+      await navigator.clipboard.writeText(res.data.url);
+      setSnack({ open: true, message: 'Employee dashboard link copied to clipboard', severity: 'success' });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : 'Failed to copy link';
       setSnack({ open: true, message, severity: 'error' });
     }
   }, []);
@@ -328,12 +341,20 @@ export default function AdminDashboard() {
             sx={{ mb: 3 }}
           />
           {viewEmpId && (
-            <Button
-              variant="contained"
-              onClick={() => handleOpenDashboard(viewEmpId, 'employee')}
-            >
-              Open Employee Dashboard
-            </Button>
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              <Button
+                variant="contained"
+                onClick={() => handleOpenDashboard(viewEmpId, 'employee')}
+              >
+                Open Employee Dashboard
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={() => handleCopyEmployeeLink(viewEmpId)}
+              >
+                Copy Link
+              </Button>
+            </Box>
           )}
         </Paper>
       )}
@@ -360,6 +381,12 @@ export default function AdminDashboard() {
                 onClick={() => handleSendDashboardLink(viewMgrId)}
               >
                 Send Dashboard Link
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={() => handleCopyEmployeeLink(viewMgrId)}
+              >
+                Copy Employee Link
               </Button>
             </Box>
           )}

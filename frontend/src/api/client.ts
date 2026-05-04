@@ -82,6 +82,9 @@ export const getAdminImpersonateUrl = (targetId: string, role: 'employee' | 'man
 export const sendDashboardLink = (targetId: string) =>
   api.post(`/admin/send-dashboard-link/${targetId}`);
 
+export const getEmployeeDashboardLink = (targetId: string) =>
+  api.get(`/admin/employee-dashboard-link/${targetId}`);
+
 // Admin — Manager Assignments
 export const getManagerAssignments = () => api.get('/admin/manager-assignments');
 export const getSpUsers = () => api.get('/admin/sp-users');
