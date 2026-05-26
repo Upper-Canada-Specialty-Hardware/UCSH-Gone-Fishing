@@ -63,14 +63,20 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("SharePoint access check returned no items")
 
-        from app.tasks.change_processor import catch_up_all_lists
-        await catch_up_all_lists()
-
         renewal_task = start_subscription_renewal_task()
         carryover_reset_task = start_carryover_reset_task()
 
-        # Defer subscription registration — Graph must reach our validation
-        # endpoint, which isn't available until after yield (server accepting HTTP).
+        # Defer catch-up and subscription registration — both can be slow under
+        # backlog/rate-limit conditions, and Graph webhook validation needs the
+        # server to already be accepting HTTP. Running them after yield keeps
+        # /health responsive within Railway's healthcheck window.
+        async def _deferred_catch_up():
+            try:
+                from app.tasks.change_processor import catch_up_all_lists
+                await catch_up_all_lists()
+            except Exception:
+                logger.exception("Deferred catch-up failed")
+
         async def _deferred_subscriptions():
             await asyncio.sleep(3)
             try:
@@ -79,6 +85,7 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Deferred subscription registration failed")
 
+        asyncio.create_task(_deferred_catch_up())
         asyncio.create_task(_deferred_subscriptions())
         logger.info("EmployeeLockManager ready")
     except Exception:
