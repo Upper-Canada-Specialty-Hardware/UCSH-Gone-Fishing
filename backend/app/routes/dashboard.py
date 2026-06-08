@@ -1107,6 +1107,100 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
 
 
 # ============================
+# Admin — Edit pending requests
+# ============================
+
+class LeaveEditRequest(BaseModel):
+    Days: float
+    LeaveType: str
+    StartDate: str
+    EndDate: str
+    reason: str
+
+
+class OvertimeEditRequest(BaseModel):
+    Hours: float
+    StartDate: str
+    Title: str
+    reason: str
+
+
+class CarryoverPayoutEditRequest(BaseModel):
+    TypeofRequest: str
+    Days: float
+    reason: str
+
+
+@router.post("/admin/edit/leave/{request_id}")
+async def admin_edit_leave(request_id: str, body: LeaveEditRequest):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    if not body.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required")
+
+    from app.services.leave_requests import admin_edit_leave_request
+    payload = {
+        "Days": body.Days,
+        "LeaveType": body.LeaveType,
+        "StartDate": body.StartDate,
+        "EndDate": body.EndDate,
+    }
+    try:
+        result = await admin_edit_leave_request(request_id, payload, body.reason.strip())
+    except Exception:
+        logger.exception("Admin edit failed for leave #%s", request_id)
+        raise HTTPException(status_code=500, detail="Edit failed — check server logs")
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/admin/edit/overtime/{request_id}")
+async def admin_edit_overtime(request_id: str, body: OvertimeEditRequest):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    if not body.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required")
+
+    from app.services.overtime_requests import admin_edit_overtime_request
+    payload = {
+        "Hours": body.Hours,
+        "StartDate": body.StartDate,
+        "Title": body.Title,
+    }
+    try:
+        result = await admin_edit_overtime_request(request_id, payload, body.reason.strip())
+    except Exception:
+        logger.exception("Admin edit failed for overtime #%s", request_id)
+        raise HTTPException(status_code=500, detail="Edit failed — check server logs")
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/admin/edit/carryover-payout/{request_id}")
+async def admin_edit_carryover_payout_route(request_id: str, body: CarryoverPayoutEditRequest):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    if not body.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required")
+
+    from app.services.carryover_payout import admin_edit_carryover_payout
+    payload = {
+        "TypeofRequest": body.TypeofRequest,
+        "Days": body.Days,
+    }
+    try:
+        result = await admin_edit_carryover_payout(request_id, payload, body.reason.strip())
+    except Exception:
+        logger.exception("Admin edit failed for CO/PO #%s", request_id)
+        raise HTTPException(status_code=500, detail="Edit failed — check server logs")
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+# ============================
 # Admin — Manager Assignments
 # ============================
 

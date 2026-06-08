@@ -15,6 +15,11 @@ from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
 from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
+from app.services.approval_versions import (
+    bump_and_snapshot,
+    get_previous_snapshot,
+    MATERIAL_FIELDS_CARRYOVER_PAYOUT,
+)
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.audit_trail import (
     AuditTrailBuilder,
@@ -196,26 +201,78 @@ async def run_approval_pipeline(request_id: str | int):
             html_body=html,
         )
 
-    # Send approval email to all managers
+    await send_approval_email(request_id)
+
+
+async def send_approval_email(request_id: str | int):
+    """Send the manager approval email(s) for an in-flight CO/PO request.
+
+    Reads fresh SP + employee state so it can be called standalone (e.g. from
+    the admin edit endpoint after fields have been updated).
+    """
+    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Pending":
+        return
+    if fields.get("SystemState") == "Processed":
+        return
+
+    employee_id = fields.get("EmployeeID")
+    if not employee_id:
+        return
+
+    employee = await get_employee_by_id(employee_id)
+    if not employee:
+        return
+
+    emp_fields = employee["fields"]
+    employee_name = emp_fields.get("Title", "")
+    days = float(fields.get("Days", 0) or 0)
+    request_type = fields.get("TypeofRequest", "")
+
+    current_vacation = float(emp_fields.get("CurrentVacationBalance", 0) or 0)
+    current_carryover = float(emp_fields.get("CarryOver", 0) or 0)
+    current_payout = float(emp_fields.get("Payout", 0) or 0)
+
+    new_vacation = current_vacation - days
+    if request_type == "Carry Over":
+        new_carryover = current_carryover + days
+        new_payout = current_payout
+    else:
+        new_carryover = current_carryover
+        new_payout = current_payout + days
+
     all_managers = await get_all_managers_for_employee(employee)
     if not all_managers:
-        all_managers = [manager]
+        manager_id_field = fields.get("ManagerID")
+        if manager_id_field:
+            mgr = await get_employee_by_id(manager_id_field)
+            if mgr:
+                all_managers = [mgr]
+    if not all_managers:
+        return
+
+    version = await bump_and_snapshot(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, fields, MATERIAL_FIELDS_CARRYOVER_PAYOUT,
+    )
+    previous_snapshot = await get_previous_snapshot(settings.SP_LIST_CARRYOVER_PAYOUT, request_id) if version > 1 else None
 
     from app.templates_render import render_carryover_payout_approval_email
-    employee_name = emp_fields.get("Title", "")
 
     for mgr in all_managers:
         mgr_id = mgr["id"]
         mgr_email = mgr["fields"].get("EmailAddress", "")
 
-        approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id)
-        reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id)
+        approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
+        reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
 
         html = render_carryover_payout_approval_email(
             request_id, request_type, employee_name, days,
             current_vacation, current_carryover, current_payout,
             new_vacation, new_carryover, new_payout,
             approve_url, reject_url,
+            previous_snapshot=previous_snapshot,
         )
         subject = f"{request_type} Request #{request_id} Submitted by {employee_name}"
         await send_email_with_dashboard(
@@ -225,7 +282,6 @@ async def run_approval_pipeline(request_id: str | int):
             primary_employee_id=mgr_id,
         )
 
-        # Send SMS to manager if they have a cell number
         cell = mgr["fields"].get("CellNumber", "")
         if cell:
             await send_sms(
@@ -238,6 +294,75 @@ async def run_approval_pipeline(request_id: str | int):
             )
 
     logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
+
+
+ALLOWED_CARRYOVER_TYPES = {"Carry Over", "Payout"}
+
+
+async def admin_edit_carryover_payout(
+    request_id: str | int,
+    payload: dict,
+    reason: str,
+) -> dict:
+    """Apply an admin-driven edit to a pending CO/PO request, re-send approval email."""
+    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Pending":
+        return {"error": f"Request is not Pending (current status: {fields.get('Status')})"}
+    if fields.get("SystemState") == "Processed":
+        return {"error": "Request has already been processed"}
+
+    new_type = payload.get("TypeofRequest")
+    if new_type not in ALLOWED_CARRYOVER_TYPES:
+        return {"error": f"Invalid TypeofRequest: {new_type}"}
+
+    try:
+        new_days = float(payload["Days"])
+    except (KeyError, ValueError, TypeError):
+        return {"error": "Days must be a number"}
+    if new_days <= 0:
+        return {"error": "Days must be > 0"}
+
+    employee_id = fields.get("EmployeeID")
+    if not employee_id:
+        return {"error": "Request has no EmployeeID — cannot edit"}
+
+    before = {
+        "TypeofRequest": fields.get("TypeofRequest"),
+        "Days": fields.get("Days"),
+    }
+    after = {
+        "TypeofRequest": new_type,
+        "Days": new_days,
+    }
+
+    async with lock_manager.lock(employee_id):
+        fresh = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+        ff = fresh["fields"]
+        if ff.get("Status") != "Pending":
+            return {"error": "Request status changed during edit — refresh and try again"}
+        if ff.get("SystemState") == "Processed":
+            return {"error": "Request was just processed — refresh and try again"}
+
+        await sp_client.update_list_item_fields(
+            settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
+            {
+                "TypeofRequest": new_type,
+                "Days": new_days,
+            },
+        )
+
+        await send_approval_email(request_id)
+
+        audit = AuditTrailBuilder("admin_edit")
+        audit.add_step("Admin edit", before, after, f"Reason: {reason}")
+        await write_audit_log(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, audit)
+
+    from app.services.approval_versions import get_current_version
+    new_version = await get_current_version(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    logger.info("Admin edit applied to CO/PO #%s — version %s, reason: %s", request_id, new_version, reason)
+    return {"status": "saved", "new_version": new_version, "fields": after}
 
 
 async def approve_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:

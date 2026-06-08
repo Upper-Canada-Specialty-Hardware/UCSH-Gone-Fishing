@@ -34,6 +34,7 @@ from app.services.balance import (
 from app.services.concurrency import lock_manager
 from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
+from app.services.approval_versions import bump_and_snapshot, MATERIAL_FIELDS_LEAVE
 from app.services.sms import send_sms
 from app.services.audit_trail import (
     AuditTrailBuilder,
@@ -294,14 +295,23 @@ async def send_approval_email(leave_request_id: str | int):
             pass
     projected = simulate_leave_impact(emp_fields, leave_type, days, is_next_year)
 
+    version = await bump_and_snapshot(
+        settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, fields, MATERIAL_FIELDS_LEAVE,
+    )
+    from app.services.approval_versions import get_previous_snapshot
+    previous_snapshot = await get_previous_snapshot(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id) if version > 1 else None
+
     for manager in managers:
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
 
-        approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id)
-        reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id)
+        approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
+        reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
 
-        html = render_leave_approval_email(fields, emp_fields, approve_url, reject_url, submitter_name, projected)
+        html = render_leave_approval_email(
+            fields, emp_fields, approve_url, reject_url, submitter_name, projected,
+            previous_snapshot=previous_snapshot,
+        )
 
         await send_email_with_dashboard(
             to=[mgr_fields.get("EmailAddress", "")],
@@ -355,6 +365,97 @@ async def send_approval_email(leave_request_id: str | int):
             html_body=html,
             primary_employee_id=employee["id"],
         )
+
+
+ALLOWED_LEAVE_TYPES = {
+    "Vacation",
+    "Sick or Personal Day",
+    "Half Day or Partial Day Off",
+    "Bereavement",
+    "Jury Duty",
+}
+
+
+async def admin_edit_leave_request(
+    request_id: str | int,
+    payload: dict,
+    reason: str,
+) -> dict:
+    """Apply an admin-driven edit to a pending leave request, re-send approval email."""
+    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Pending":
+        return {"error": f"Request is not Pending (current status: {fields.get('Status')})"}
+    if fields.get("ApproveProcessedFlag") == "Processed":
+        return {"error": "Request has already been processed"}
+
+    new_leave_type = payload.get("LeaveType")
+    if new_leave_type not in ALLOWED_LEAVE_TYPES:
+        return {"error": f"Invalid LeaveType: {new_leave_type}"}
+
+    try:
+        new_days = float(payload["Days"])
+    except (KeyError, ValueError, TypeError):
+        return {"error": "Days must be a number"}
+    if new_days < 0:
+        return {"error": "Days must be ≥ 0"}
+
+    new_start = payload.get("StartDate", "")
+    new_end = payload.get("EndDate", "")
+    start_date = _parse_date(new_start)
+    end_date = _parse_date(new_end)
+    if not start_date or not end_date:
+        return {"error": "StartDate and EndDate are required ISO dates"}
+    if start_date > end_date:
+        return {"error": "StartDate must be on or before EndDate"}
+
+    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    if not employee:
+        return {"error": "Cannot resolve employee for this request"}
+    employee_id = employee["id"]
+
+    before = {
+        "Days": fields.get("Days"),
+        "LeaveType": fields.get("LeaveType"),
+        "StartDate": fields.get("StartDate"),
+        "EndDate": fields.get("EndDate"),
+    }
+    after = {
+        "Days": new_days,
+        "LeaveType": new_leave_type,
+        "StartDate": new_start,
+        "EndDate": new_end,
+    }
+
+    async with lock_manager.lock(employee_id):
+        fresh = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+        ff = fresh["fields"]
+        if ff.get("Status") != "Pending":
+            return {"error": "Request status changed during edit — refresh and try again"}
+        if ff.get("ApproveProcessedFlag") == "Processed":
+            return {"error": "Request was just processed — refresh and try again"}
+
+        await sp_client.update_list_item_fields(
+            settings.SP_LIST_LEAVE_REQUESTS, request_id,
+            {
+                "Days": new_days,
+                "LeaveType": new_leave_type,
+                "StartDate": new_start,
+                "EndDate": new_end,
+            },
+        )
+
+        await send_approval_email(request_id)
+
+        audit = AuditTrailBuilder("admin_edit")
+        audit.add_step("Admin edit", before, after, f"Reason: {reason}")
+        await write_audit_log(settings.SP_LIST_LEAVE_REQUESTS, request_id, audit)
+
+    from app.services.approval_versions import get_current_version
+    new_version = await get_current_version(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    logger.info("Admin edit applied to leave #%s — version %s, reason: %s", request_id, new_version, reason)
+    return {"status": "saved", "new_version": new_version, "fields": after}
 
 
 async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:

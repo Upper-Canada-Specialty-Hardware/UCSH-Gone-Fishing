@@ -1,6 +1,7 @@
 import { Card, CardContent, Typography, Button, Box, Chip, Stack } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
+import EditIcon from '@mui/icons-material/Edit';
 import { getDescription } from './dataGridDefaults';
 
 interface Balances {
@@ -16,6 +17,7 @@ interface Props {
   processingEnabled: boolean;
   onApprove: (type: string, id: string) => void;
   onReject: (type: string, id: string) => void;
+  onEdit?: (item: any) => void;
   actionLoading?: string | null;
 }
 
@@ -61,7 +63,7 @@ function BalanceRow({ label, balances, compare }: {
   );
 }
 
-export default function PendingApprovals({ pending, processingEnabled, onApprove, onReject, actionLoading }: Props) {
+export default function PendingApprovals({ pending, processingEnabled, onApprove, onReject, onEdit, actionLoading }: Props) {
   if (pending.length === 0) {
     return (
       <Typography color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
@@ -117,7 +119,19 @@ export default function PendingApprovals({ pending, processingEnabled, onApprove
                     </Box>
                   )}
                 </Box>
-                <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+                <Box sx={{ display: 'flex', gap: 1, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {onEdit && (
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={<EditIcon />}
+                      disabled={!processingEnabled || isLoading}
+                      onClick={() => onEdit(item)}
+                      title={!processingEnabled ? 'Processing is currently disabled' : ''}
+                    >
+                      Edit
+                    </Button>
+                  )}
                   <Button
                     variant="contained"
                     color="success"

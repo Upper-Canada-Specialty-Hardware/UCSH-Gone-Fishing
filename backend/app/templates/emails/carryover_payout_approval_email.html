@@ -1,5 +1,20 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #1e40af;">{{ request_type }} Request #{{ request_id }}</h2>
+  {% if previous_snapshot %}
+  {% set edited_keys = [] %}
+  {% if previous_snapshot.get('TypeofRequest') != request_type %}{% set _ = edited_keys.append('TypeofRequest') %}{% endif %}
+  {% if (previous_snapshot.get('Days') | float) != (days | float) %}{% set _ = edited_keys.append('Days') %}{% endif %}
+  {% if edited_keys %}
+  <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 12px 0;">
+    <p style="margin: 0 0 8px; font-weight: bold; color: #92400e;">This request was edited by an admin. Updated values:</p>
+    <ul style="margin: 0; padding-left: 20px; color: #78350f;">
+      {% if 'TypeofRequest' in edited_keys %}<li>Request Type: {{ previous_snapshot.get('TypeofRequest', '') }} &rarr; {{ request_type }}</li>{% endif %}
+      {% if 'Days' in edited_keys %}<li>Days: {{ previous_snapshot.get('Days', '') }} &rarr; {{ days }}</li>{% endif %}
+    </ul>
+    <p style="margin: 8px 0 0; font-size: 12px; color: #92400e;">Any previous approval emails for this request are no longer valid &mdash; please use the buttons below.</p>
+  </div>
+  {% endif %}
+  {% endif %}
   <p>Submitted by <strong>{{ employee_name }}</strong></p>
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
     <tr><td style="padding: 8px; font-weight: bold;">Request Type:</td><td style="padding: 8px;">{{ request_type }}</td></tr>
