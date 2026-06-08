@@ -29,6 +29,11 @@ from app.services.balance import (
 from app.services.concurrency import lock_manager
 from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
+from app.services.approval_versions import (
+    bump_and_snapshot,
+    get_previous_snapshot,
+    MATERIAL_FIELDS_OVERTIME,
+)
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.audit_trail import (
     AuditTrailBuilder,
@@ -162,16 +167,22 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
     if is_hf:
         subject += " - Half-Day Friday Detected"
 
+    version = await bump_and_snapshot(
+        settings.SP_LIST_OVERTIME_REQUESTS, request_id, fields, MATERIAL_FIELDS_OVERTIME,
+    )
+    previous_snapshot = await get_previous_snapshot(settings.SP_LIST_OVERTIME_REQUESTS, request_id) if version > 1 else None
+
     for manager in managers:
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
 
-        approve_url = generate_approval_url("overtime", request_id, "approve", manager_id)
-        reject_url = generate_approval_url("overtime", request_id, "reject", manager_id)
+        approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
+        reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
 
         html = render_overtime_approval_email(
             fields, submitter_name, approve_url, reject_url, is_hf,
             emp_fields=emp_fields, projected=projected,
+            previous_snapshot=previous_snapshot,
         )
 
         await send_email_with_dashboard(
@@ -211,6 +222,79 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
             html_body=html,
             primary_employee_id=employee["id"],
         )
+
+
+async def admin_edit_overtime_request(
+    request_id: str | int,
+    payload: dict,
+    reason: str,
+) -> dict:
+    """Apply an admin-driven edit to a pending overtime request, re-send approval email."""
+    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    fields = item["fields"]
+
+    if fields.get("Status") != "Pending":
+        return {"error": f"Request is not Pending (current status: {fields.get('Status')})"}
+
+    try:
+        new_hours = float(payload["Hours"])
+    except (KeyError, ValueError, TypeError):
+        return {"error": "Hours must be a number"}
+    if new_hours <= 0:
+        return {"error": "Hours must be > 0"}
+
+    new_start = payload.get("StartDate", "")
+    if not _parse_date(new_start):
+        return {"error": "StartDate is required (ISO date)"}
+
+    new_title = payload.get("Title", "")
+    if not isinstance(new_title, str):
+        return {"error": "Title must be a string"}
+
+    employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
+    if not employee:
+        return {"error": "Cannot resolve employee for this request"}
+    employee_id = employee["id"]
+
+    before = {
+        "Hours": fields.get("Hours"),
+        "StartDate": fields.get("StartDate"),
+        "Title": fields.get("Title"),
+    }
+    after = {
+        "Hours": new_hours,
+        "StartDate": new_start,
+        "Title": new_title,
+    }
+
+    async with lock_manager.lock(employee_id):
+        fresh = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+        if fresh["fields"].get("Status") != "Pending":
+            return {"error": "Request status changed during edit — refresh and try again"}
+
+        await sp_client.update_list_item_fields(
+            settings.SP_LIST_OVERTIME_REQUESTS, request_id,
+            {
+                "Hours": new_hours,
+                "StartDate": new_start,
+                "Title": new_title,
+            },
+        )
+
+        managers = await get_all_managers_for_employee(employee)
+        if not managers:
+            logger.warning("Admin edit overtime #%s — no managers found, skipping email", request_id)
+        else:
+            await send_approval_email(request_id, employee, managers)
+
+        audit = AuditTrailBuilder("admin_edit")
+        audit.add_step("Admin edit", before, after, f"Reason: {reason}")
+        await write_audit_log(settings.SP_LIST_OVERTIME_REQUESTS, request_id, audit)
+
+    from app.services.approval_versions import get_current_version
+    new_version = await get_current_version(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    logger.info("Admin edit applied to overtime #%s — version %s, reason: %s", request_id, new_version, reason)
+    return {"status": "saved", "new_version": new_version, "fields": after}
 
 
 async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:

@@ -13,12 +13,13 @@ def generate_approval_url(
     action: str,
     manager_id: str | int,
     expiry_hours: int = DEFAULT_EXPIRY_HOURS,
+    approval_version: int = 1,
 ) -> str:
     expiry = int(time.time()) + expiry_hours * 3600
-    token = _sign(request_type, str(request_id), action, str(manager_id), str(expiry))
+    token = _sign(request_type, str(request_id), action, str(manager_id), str(expiry), approval_version)
     return (
         f"{settings.BASE_URL}/api/{request_type}/{action}/{request_id}"
-        f"?token={token}&mgr={manager_id}&exp={expiry}"
+        f"?token={token}&mgr={manager_id}&exp={expiry}&v={approval_version}"
     )
 
 
@@ -29,8 +30,8 @@ def validate_approval_token(
     manager_id: str,
     token: str,
     expiry: str,
+    approval_version: int = 1,
 ) -> tuple[bool, str]:
-    # Check expiry
     try:
         exp_int = int(expiry)
     except (ValueError, TypeError):
@@ -39,15 +40,24 @@ def validate_approval_token(
     if time.time() > exp_int:
         return False, "Link has expired"
 
-    expected = _sign(request_type, request_id, action, manager_id, expiry)
+    expected = _sign(request_type, request_id, action, manager_id, expiry, approval_version)
     if not hmac.compare_digest(token, expected):
         return False, "Invalid token"
 
     return True, ""
 
 
-def _sign(request_type: str, request_id: str, action: str, manager_id: str, expiry: str) -> str:
+def _sign(
+    request_type: str,
+    request_id: str,
+    action: str,
+    manager_id: str,
+    expiry: str,
+    approval_version: int = 1,
+) -> str:
     payload = f"{request_type}:{request_id}:{action}:{manager_id}:{expiry}"
+    if approval_version and approval_version != 1:
+        payload = f"{payload}:v{approval_version}"
     return hmac.new(
         settings.APPROVAL_LINK_SECRET.encode(),
         payload.encode(),

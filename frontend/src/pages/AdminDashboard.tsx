@@ -10,6 +10,7 @@ import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
 import ManagerAssignments from '../components/ManagerAssignments';
 import StuckRequests from '../components/StuckRequests';
+import EditRequestDialog from '../components/EditRequestDialog';
 import {
   getAdminBalances,
   getAdminPending,
@@ -21,6 +22,9 @@ import {
   adminRejectRequest,
   adminRefundRequest,
   adminReprocessRequest,
+  adminEditLeaveRequest,
+  adminEditOvertimeRequest,
+  adminEditCarryoverPayoutRequest,
   getAdminImpersonateUrl,
   sendDashboardLink,
   getEmployeeDashboardLink,
@@ -43,6 +47,9 @@ export default function AdminDashboard() {
   // View Employee / View Team tabs
   const [viewEmpId, setViewEmpId] = useState<string | null>(null);
   const [viewMgrId, setViewMgrId] = useState<string | null>(null);
+
+  // Edit pending request
+  const [editItem, setEditItem] = useState<any | null>(null);
 
   const managers = useMemo(() => {
     return employees.filter((e: any) => e.is_manager);
@@ -173,6 +180,24 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  const handleEditSave = useCallback(async (payload: any) => {
+    if (!editItem) return;
+    const id = String(editItem.id);
+    const type = editItem.request_type;
+    if (type === 'leave') {
+      await adminEditLeaveRequest(id, payload);
+    } else if (type === 'overtime') {
+      await adminEditOvertimeRequest(id, payload);
+    } else if (type === 'carryover-payout') {
+      await adminEditCarryoverPayoutRequest(id, payload);
+    } else {
+      throw new Error(`Unknown request type: ${type}`);
+    }
+    const pendRes = await getAdminPending();
+    setPending(pendRes.data.pending || []);
+    setSnack({ open: true, message: 'Request updated and approval email re-sent', severity: 'success' });
+  }, [editItem]);
+
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
     try {
@@ -274,6 +299,7 @@ export default function AdminDashboard() {
           processingEnabled={processingEnabled}
           onApprove={handleApprove}
           onReject={handleReject}
+          onEdit={(item) => setEditItem(item)}
           actionLoading={actionLoading}
         />
       )}
@@ -411,6 +437,13 @@ export default function AdminDashboard() {
         autoHideDuration={4000}
         onClose={() => setSnack((s) => ({ ...s, open: false }))}
         message={snack.message}
+      />
+
+      <EditRequestDialog
+        open={editItem !== null}
+        item={editItem}
+        onClose={() => setEditItem(null)}
+        onSave={handleEditSave}
       />
     </Box>
   );

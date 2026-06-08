@@ -1,5 +1,24 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #1e40af;">Leave Request</h2>
+  {% if previous_snapshot %}
+  {% set edited_keys = [] %}
+  {% if previous_snapshot.get('Days') != fields.get('Days') %}{% set _ = edited_keys.append('Days') %}{% endif %}
+  {% if previous_snapshot.get('LeaveType') != fields.get('LeaveType') %}{% set _ = edited_keys.append('LeaveType') %}{% endif %}
+  {% if previous_snapshot.get('StartDate') != fields.get('StartDate') %}{% set _ = edited_keys.append('StartDate') %}{% endif %}
+  {% if previous_snapshot.get('EndDate') != fields.get('EndDate') %}{% set _ = edited_keys.append('EndDate') %}{% endif %}
+  {% if edited_keys %}
+  <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 12px 0;">
+    <p style="margin: 0 0 8px; font-weight: bold; color: #92400e;">This request was edited by an admin. Updated values:</p>
+    <ul style="margin: 0; padding-left: 20px; color: #78350f;">
+      {% if 'Days' in edited_keys %}<li>Days: {{ previous_snapshot.get('Days', '') }} &rarr; {{ fields.get('Days', '') }}</li>{% endif %}
+      {% if 'LeaveType' in edited_keys %}<li>Leave Type: {{ previous_snapshot.get('LeaveType', '') }} &rarr; {{ fields.get('LeaveType', '') }}</li>{% endif %}
+      {% if 'StartDate' in edited_keys %}<li>Start Date: {{ previous_snapshot.get('StartDate', '') }} &rarr; {{ fields.get('StartDate', '') }}</li>{% endif %}
+      {% if 'EndDate' in edited_keys %}<li>End Date: {{ previous_snapshot.get('EndDate', '') }} &rarr; {{ fields.get('EndDate', '') }}</li>{% endif %}
+    </ul>
+    <p style="margin: 8px 0 0; font-size: 12px; color: #92400e;">Any previous approval emails for this request are no longer valid &mdash; please use the buttons below.</p>
+  </div>
+  {% endif %}
+  {% endif %}
   <p>A leave request requires your approval.</p>
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
     <tr><td style="padding: 8px; font-weight: bold;">Requested by:</td><td style="padding: 8px;">{{ submitter_name }}</td></tr>

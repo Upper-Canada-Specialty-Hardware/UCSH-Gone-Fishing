@@ -16,12 +16,14 @@ def _render(template_name: str, **kwargs) -> str:
 def render_leave_approval_email(
     fields: dict, emp_fields: dict, approve_url: str, reject_url: str,
     submitter_name: str = "", projected: dict | None = None,
+    previous_snapshot: dict | None = None,
 ) -> str:
     return _render(
         "leave_approval_email.html",
         fields=fields, emp_fields=emp_fields,
         approve_url=approve_url, reject_url=reject_url,
         submitter_name=submitter_name, projected=projected,
+        previous_snapshot=previous_snapshot,
     )
 
 
@@ -66,12 +68,14 @@ def render_bereavement_alert(fields: dict, submitter_name: str) -> str:
 def render_overtime_approval_email(
     fields: dict, submitter_name: str, approve_url: str, reject_url: str,
     is_half_friday: bool, emp_fields: dict | None = None, projected: dict | None = None,
+    previous_snapshot: dict | None = None,
 ) -> str:
     return _render(
         "overtime_approval_email.html",
         fields=fields, submitter_name=submitter_name,
         approve_url=approve_url, reject_url=reject_url,
         is_half_friday=is_half_friday, emp_fields=emp_fields, projected=projected,
+        previous_snapshot=previous_snapshot,
     )
 
 
@@ -136,6 +140,7 @@ def render_carryover_payout_approval_email(
     current_vacation: float, current_carryover: float, current_payout: float,
     new_vacation: float, new_carryover: float, new_payout: float,
     approve_url: str, reject_url: str,
+    previous_snapshot: dict | None = None,
 ) -> str:
     return _render(
         "carryover_payout_approval_email.html",
@@ -145,6 +150,7 @@ def render_carryover_payout_approval_email(
         current_payout=current_payout,
         new_vacation=new_vacation, new_carryover=new_carryover, new_payout=new_payout,
         approve_url=approve_url, reject_url=reject_url,
+        previous_snapshot=previous_snapshot,
     )
 
 

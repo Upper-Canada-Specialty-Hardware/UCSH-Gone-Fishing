@@ -102,3 +102,16 @@ export const bulkManagerAssignment = (params: {
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
 export const adminReprocessRequest = (id: string, reason: string) =>
   api.post(`/admin/reprocess/leave/${id}`, { reason });
+
+// Admin — Edit pending requests
+export const adminEditLeaveRequest = (id: string, payload: {
+  Days: number; LeaveType: string; StartDate: string; EndDate: string; reason: string;
+}) => api.post(`/admin/edit/leave/${id}`, payload);
+
+export const adminEditOvertimeRequest = (id: string, payload: {
+  Hours: number; StartDate: string; Title: string; reason: string;
+}) => api.post(`/admin/edit/overtime/${id}`, payload);
+
+export const adminEditCarryoverPayoutRequest = (id: string, payload: {
+  TypeofRequest: string; Days: number; reason: string;
+}) => api.post(`/admin/edit/carryover-payout/${id}`, payload);
