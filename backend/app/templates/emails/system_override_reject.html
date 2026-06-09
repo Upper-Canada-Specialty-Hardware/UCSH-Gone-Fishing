@@ -1,7 +1,9 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #dc2626;">Carry Over / Payout Request - Auto Rejected</h2>
   <p>Your {{ request_type }} request (#{{ request_id }}) has been auto-rejected by the system.</p>
-  <p>Company Policy - Payout can not exceed 5 days. Current Vacation can not result in negative days.</p>
+  <p style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px;margin:16px 0;">
+    <strong>Reason:</strong> {{ reason }}
+  </p>
   <h3>Current Balances</h3>
   <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
     <tr><td style="padding: 4px;">Vacation:</td><td>{{ current_vacation }} days</td></tr>

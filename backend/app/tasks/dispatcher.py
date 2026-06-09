@@ -169,13 +169,30 @@ async def _handle_carryover_payout_change(item_id: str, fields: dict):
 
 async def _auto_reject_duplicate(item_id: str, request_type: str, fields: dict, overlap: dict):
     """Auto-reject a duplicate request and notify the employee."""
+    from app.services.auto_reject_titles import append_auto_reject_tag
+
     if request_type == "leave":
         list_id = settings.SP_LIST_LEAVE_REQUESTS
-        update_fields = {"Status": "Rejected", "ApproveProcessedFlag": "Processed"}
+        reason = (
+            f"This request overlaps with leave request #{overlap['item_id']} "
+            f"covering {overlap['start_date']} to {overlap['end_date']}."
+        )
+        update_fields = {
+            "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
+            "Status": "Rejected",
+            "ApproveProcessedFlag": "Processed",
+        }
         person_field = fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId")
     else:
         list_id = settings.SP_LIST_OVERTIME_REQUESTS
-        update_fields = {"Status": "Rejected"}
+        reason = (
+            f"This request conflicts with overtime request #{overlap['item_id']} "
+            f"on {overlap['date']}."
+        )
+        update_fields = {
+            "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
+            "Status": "Rejected",
+        }
         person_field = fields.get("SubmittedBy") or fields.get("SubmittedByLookupId")
 
     await sp_client.update_list_item_fields(list_id, item_id, update_fields)
@@ -196,7 +213,7 @@ async def _auto_reject_duplicate(item_id: str, request_type: str, fields: dict, 
     from app.templates_render import render_duplicate_request_rejected
     from app.graph.email import send_email
 
-    html = render_duplicate_request_rejected(request_type, fields, overlap)
+    html = render_duplicate_request_rejected(request_type, fields, overlap, reason)
     await send_email(
         to=[emp_email],
         subject=f"{'Leave' if request_type == 'leave' else 'Time Make-Up'} Request - Auto Rejected (Duplicate)",

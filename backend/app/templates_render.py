@@ -44,12 +44,15 @@ def render_leave_hourly_approved(fields: dict, manager_name: str) -> str:
     return _render("leave_hourly_approved.html", fields=fields, manager_name=manager_name)
 
 
-def render_partial_day_holiday_rejected(fields: dict, holiday_name: str) -> str:
-    return _render("partial_day_holiday_rejected.html", fields=fields, holiday_name=holiday_name)
+def render_partial_day_holiday_rejected(fields: dict, holiday_name: str, reason: str) -> str:
+    return _render(
+        "partial_day_holiday_rejected.html",
+        fields=fields, holiday_name=holiday_name, reason=reason,
+    )
 
 
-def render_partial_day_halffriday_rejected(fields: dict) -> str:
-    return _render("partial_day_halffriday_rejected.html", fields=fields)
+def render_partial_day_halffriday_rejected(fields: dict, reason: str) -> str:
+    return _render("partial_day_halffriday_rejected.html", fields=fields, reason=reason)
 
 
 def render_leave_confirmation(fields: dict, emp_fields: dict, projected: dict | None = None) -> str:
@@ -100,8 +103,11 @@ def render_overtime_confirmation(fields: dict, emp_fields: dict, projected: dict
     )
 
 
-def render_overtime_auto_rejected(fields: dict, holiday_name: str) -> str:
-    return _render("overtime_auto_rejected.html", fields=fields, holiday_name=holiday_name)
+def render_overtime_auto_rejected(fields: dict, holiday_name: str, reason: str) -> str:
+    return _render(
+        "overtime_auto_rejected.html",
+        fields=fields, holiday_name=holiday_name, reason=reason,
+    )
 
 
 def render_overtime_hourly_approved(fields: dict, submitter_name: str, manager_name: str) -> str:
@@ -170,19 +176,23 @@ def render_payout_rejected(request_id, fields: dict) -> str:
     return _render("payout_rejected.html", request_id=request_id, fields=fields)
 
 
-def render_payout_cap_rejected(request_id, emp_fields: dict) -> str:
-    return _render("payout_cap_rejected.html", request_id=request_id, emp_fields=emp_fields)
+def render_payout_cap_rejected(request_id, emp_fields: dict, reason: str) -> str:
+    return _render(
+        "payout_cap_rejected.html",
+        request_id=request_id, emp_fields=emp_fields, reason=reason,
+    )
 
 
 def render_system_override_reject(
     request_id, emp_fields: dict, request_type: str,
     current_vacation: float, current_carryover: float, current_payout: float,
+    reason: str,
 ) -> str:
     return _render(
         "system_override_reject.html",
         request_id=request_id, emp_fields=emp_fields, request_type=request_type,
         current_vacation=current_vacation, current_carryover=current_carryover,
-        current_payout=current_payout,
+        current_payout=current_payout, reason=reason,
     )
 
 
@@ -196,21 +206,26 @@ def render_refund_notification(
     )
 
 
-def render_system_override_reject_at_approval(request_id, employee_name: str, request_type: str) -> str:
+def render_system_override_reject_at_approval(
+    request_id, employee_name: str, request_type: str, reason: str,
+) -> str:
     return _render(
         "system_override_reject_at_approval.html",
-        request_id=request_id, employee_name=employee_name, request_type=request_type,
+        request_id=request_id, employee_name=employee_name,
+        request_type=request_type, reason=reason,
     )
 
 
 # --- Duplicate Request ---
 
-def render_duplicate_request_rejected(request_type: str, fields: dict, overlap: dict) -> str:
+def render_duplicate_request_rejected(
+    request_type: str, fields: dict, overlap: dict, reason: str,
+) -> str:
     request_type_display = "Leave" if request_type == "leave" else "Time Make-Up"
     return _render(
         "duplicate_request_rejected.html",
         request_type=request_type, request_type_display=request_type_display,
-        fields=fields, overlap=overlap,
+        fields=fields, overlap=overlap, reason=reason,
     )
 
 
