@@ -1,6 +1,8 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #dc2626;">System Override Reject: {{ request_type }} Request #{{ request_id }}</h2>
   <p>Submitted by {{ employee_name }}</p>
-  <p>Employee no longer has a sufficient vacation balance to accommodate the initial carry over / payout request at the time of manager's approval.</p>
+  <p style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px;margin:16px 0;">
+    <strong>Reason:</strong> {{ reason }}
+  </p>
   <p>The request has been automatically rejected. No balance changes have been made.</p>
 </div>

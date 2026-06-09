@@ -136,11 +136,17 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
     # Holiday check — auto-reject
     is_holiday, holiday_name = is_company_holiday(overtime_date, holidays)
     if is_holiday:
+        from app.services.auto_reject_titles import append_auto_reject_tag
+        reason = f"{overtime_date} is the company holiday {holiday_name}."
         await sp_client.update_list_item_fields(
-            settings.SP_LIST_OVERTIME_REQUESTS, request_id, {"Status": "Rejected"}
+            settings.SP_LIST_OVERTIME_REQUESTS, request_id,
+            {
+                "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
+                "Status": "Rejected",
+            },
         )
         from app.templates_render import render_overtime_auto_rejected
-        html = render_overtime_auto_rejected(fields, holiday_name)
+        html = render_overtime_auto_rejected(fields, holiday_name, reason)
         recipients = [emp_fields.get("EmailAddress", "")]
         for mgr in managers:
             mgr_email = mgr["fields"].get("EmailAddress", "")

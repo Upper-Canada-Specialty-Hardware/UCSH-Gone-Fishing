@@ -139,16 +139,18 @@ async def run_approval_pipeline(request_id: str | int):
         new_payout = current_payout + days
         if new_payout > 5:
             # Payout cap auto-reject
+            from app.services.auto_reject_titles import append_auto_reject_tag
+            reason = f"Payout cap exceeded — new total would be {new_payout} days (max 5)."
             await sp_client.update_list_item_fields(
                 settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
                 {
-                    "Title": "System Auto-Rejected: new Payout value will exceed 5.",
+                    "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
                     "Status": "Rejected",
                     "SystemState": "Processed",
                 },
             )
             from app.templates_render import render_payout_cap_rejected
-            html = render_payout_cap_rejected(request_id, emp_fields)
+            html = render_payout_cap_rejected(request_id, emp_fields, reason)
             await send_email(
                 to=[emp_fields.get("EmailAddress", "")],
                 subject="Payout Request - Auto Rejected",
@@ -163,14 +165,24 @@ async def run_approval_pipeline(request_id: str | int):
 
     # Vacation cannot go negative
     if new_vacation < 0:
+        from app.services.auto_reject_titles import append_auto_reject_tag
+        reason = (
+            f"Vacation balance would go to {new_vacation} days "
+            f"({current_vacation} - {days})."
+        )
         await sp_client.update_list_item_fields(
             settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
-            {"Status": "Rejected", "SystemState": "Processed"},
+            {
+                "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
+                "Status": "Rejected",
+                "SystemState": "Processed",
+            },
         )
         from app.templates_render import render_system_override_reject
         html = render_system_override_reject(
             request_id, emp_fields, request_type,
             current_vacation, current_carryover, current_payout,
+            reason,
         )
         await send_email(
             to=[emp_fields.get("EmailAddress", "")],
@@ -398,14 +410,25 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
 
         # Re-validate at approval time
         if final_vacation < 0:
+            from app.services.auto_reject_titles import append_auto_reject_tag
+            reason = (
+                f"Vacation balance has dropped since submission — would go to "
+                f"{final_vacation} days ({fresh_vacation} - {days})."
+            )
             # System override reject
             await sp_client.update_list_item_fields(
                 settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
-                {"Status": "Rejected", "SystemState": "Processed"},
+                {
+                    "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
+                    "Status": "Rejected",
+                    "SystemState": "Processed",
+                },
             )
             employee_name = ef.get("Title", "")
             from app.templates_render import render_system_override_reject_at_approval
-            html = render_system_override_reject_at_approval(request_id, employee_name, request_type)
+            html = render_system_override_reject_at_approval(
+                request_id, employee_name, request_type, reason,
+            )
             recipients = [ef.get("EmailAddress", "")]
             if mgr_fields.get("EmailAddress"):
                 recipients.append(mgr_fields["EmailAddress"])

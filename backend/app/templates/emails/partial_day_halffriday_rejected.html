@@ -1,6 +1,8 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #dc2626;">Partial Day Request - Auto Rejected</h2>
-  <p>Your Partial Day-Off has been auto-rejected, system has detected the requested date is a Half-Day Friday, and the requested amount of hours exceeds 4 hours.</p>
+  <p style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px;margin:16px 0;">
+    <strong>Reason:</strong> {{ reason }}
+  </p>
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
     <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>

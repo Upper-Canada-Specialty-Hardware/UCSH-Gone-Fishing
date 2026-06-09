@@ -143,19 +143,27 @@ async def _check_partial_day(
     request_id, fields, start_date, holidays, half_friday_season, emp_fields
 ):
     """Run partial-day auto-rejection checks."""
+    from app.services.auto_reject_titles import append_auto_reject_tag
+
     submitter_email = emp_fields.get("EmailAddress", "")
     days = float(fields.get("Days", 0) or 0)
+    original_title = fields.get("Title", "")
 
     # Holiday conflict check
     holiday_match, holiday_name = is_company_holiday(start_date, holidays)
     if holiday_match:
+        reason = f"{start_date} is the company holiday {holiday_name}."
         await sp_client.update_list_item_fields(
             settings.SP_LIST_LEAVE_REQUESTS, request_id,
-            {"Status": "Rejected", "ApproveProcessedFlag": "Processed"},
+            {
+                "Title": append_auto_reject_tag(original_title, reason),
+                "Status": "Rejected",
+                "ApproveProcessedFlag": "Processed",
+            },
         )
         if submitter_email:
             from app.templates_render import render_partial_day_holiday_rejected
-            html = render_partial_day_holiday_rejected(fields, holiday_name)
+            html = render_partial_day_holiday_rejected(fields, holiday_name, reason)
             await send_email(
                 to=[submitter_email],
                 subject="Partial Day Request - Auto Rejected",
@@ -166,13 +174,21 @@ async def _check_partial_day(
 
     # Half-friday hour limit check
     if is_half_friday(start_date, half_friday_season) and days > 0.5:
+        reason = (
+            f"Requested {days} days on the half-Friday {start_date}, "
+            f"which exceeds the 0.5 day limit."
+        )
         await sp_client.update_list_item_fields(
             settings.SP_LIST_LEAVE_REQUESTS, request_id,
-            {"Status": "Rejected", "ApproveProcessedFlag": "Processed"},
+            {
+                "Title": append_auto_reject_tag(original_title, reason),
+                "Status": "Rejected",
+                "ApproveProcessedFlag": "Processed",
+            },
         )
         if submitter_email:
             from app.templates_render import render_partial_day_halffriday_rejected
-            html = render_partial_day_halffriday_rejected(fields)
+            html = render_partial_day_halffriday_rejected(fields, reason)
             await send_email(
                 to=[submitter_email],
                 subject=f"Leave Request {request_id} {fields.get('Title', '')}",

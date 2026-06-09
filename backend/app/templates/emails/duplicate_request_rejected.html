@@ -1,6 +1,8 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #dc2626;">{{ request_type_display }} Request - Auto Rejected (Duplicate)</h2>
-  <p>Your request has been auto-rejected because you already have an existing <strong>{{ overlap.status }}</strong> request that overlaps with these dates.</p>
+  <p style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px;margin:16px 0;">
+    <strong>Reason:</strong> {{ reason }}
+  </p>
 
   <h3>Your New Request</h3>
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
