@@ -72,6 +72,9 @@ export const adminApproveRequest = (type: string, id: string) =>
 export const adminRejectRequest = (type: string, id: string) =>
   api.post(`/admin/reject/${type}/${id}`);
 
+export const adminSendReminder = (type: string, id: string) =>
+  api.post(`/admin/send-reminder/${type}/${id}`);
+
 export const adminRefundRequest = (type: string, id: string) =>
   api.post(`/admin/refund/${type}/${id}`);
 

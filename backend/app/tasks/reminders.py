@@ -27,12 +27,16 @@ REPEAT_REMINDER_DAYS = 7
 MAX_REMINDERS_WITHOUT_DATE = 6
 
 
+_LIST_FOR_TYPE = {
+    "leave": settings.SP_LIST_LEAVE_REQUESTS,
+    "overtime": settings.SP_LIST_OVERTIME_REQUESTS,
+    "carryover-payout": settings.SP_LIST_CARRYOVER_PAYOUT,
+}
+_TYPE_FOR_LIST = {v: k for k, v in _LIST_FOR_TYPE.items()}
+
+
 def _request_type(list_id: str) -> str | None:
-    return {
-        settings.SP_LIST_LEAVE_REQUESTS: "leave",
-        settings.SP_LIST_OVERTIME_REQUESTS: "overtime",
-        settings.SP_LIST_CARRYOVER_PAYOUT: "carryover-payout",
-    }.get(list_id)
+    return _TYPE_FOR_LIST.get(list_id)
 
 
 def _parse_date(value) -> date | None:
@@ -106,6 +110,26 @@ async def _resend(req_type: str, item_id: str, fields: dict) -> None:
     elif req_type == "carryover-payout":
         from app.services.carryover_payout import send_approval_email
         await send_approval_email(item_id, is_reminder=True)
+
+
+async def send_reminder_now(request_type: str, request_id: str | int) -> dict:
+    """Admin-triggered immediate reminder for one pending request.
+
+    Skips the cadence/cutoff gating (an admin is explicitly nudging) but still
+    refuses if the request is no longer pending. Re-sends the manager approval
+    email with fresh links, superseding the prior links, exactly like a scheduled
+    reminder.
+    """
+    list_id = _LIST_FOR_TYPE.get(request_type)
+    if not list_id:
+        return {"error": f"Unknown request type: {request_type}"}
+    item = await sp_client.get_list_item(list_id, request_id)
+    fields = item.get("fields", {})
+    if _is_processed(fields, request_type):
+        return {"error": "Request is no longer pending"}
+    await _resend(request_type, str(request_id), fields)
+    logger.info("Admin sent manual reminder for %s #%s", request_type, request_id)
+    return {"status": "reminder_sent", "request_type": request_type, "request_id": str(request_id)}
 
 
 async def _process_row(row: RequestApprovalState) -> None:

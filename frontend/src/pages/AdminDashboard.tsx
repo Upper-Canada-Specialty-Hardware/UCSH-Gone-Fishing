@@ -21,6 +21,7 @@ import {
   adminApproveRequest,
   adminRejectRequest,
   adminRefundRequest,
+  adminSendReminder,
   adminReprocessRequest,
   adminEditLeaveRequest,
   adminEditOvertimeRequest,
@@ -141,6 +142,19 @@ export default function AdminDashboard() {
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Refund failed', severity: 'error' });
+    } finally {
+      setActionLoading(null);
+    }
+  }, []);
+
+  const handleSendReminder = useCallback(async (type: string, id: string) => {
+    setActionLoading(`${type}-${id}`);
+    try {
+      await adminSendReminder(type, id);
+      setSnack({ open: true, message: 'Reminder email sent to manager', severity: 'success' });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Failed to send reminder', severity: 'error' });
     } finally {
       setActionLoading(null);
     }
@@ -299,6 +313,7 @@ export default function AdminDashboard() {
           processingEnabled={processingEnabled}
           onApprove={handleApprove}
           onReject={handleReject}
+          onSendReminder={handleSendReminder}
           onEdit={(item) => setEditItem(item)}
           actionLoading={actionLoading}
         />

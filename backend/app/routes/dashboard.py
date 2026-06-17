@@ -1046,6 +1046,17 @@ async def admin_refund(request_type: str, request_id: str):
     return result
 
 
+@router.post("/admin/send-reminder/{request_type}/{request_id}")
+async def admin_send_reminder(request_type: str, request_id: str):
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.tasks.reminders import send_reminder_now
+    result = await send_reminder_now(request_type, request_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
 # ============================
 # Admin — Reprocess stuck requests
 # ============================
