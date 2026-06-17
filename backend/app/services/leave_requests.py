@@ -271,7 +271,7 @@ async def send_bereavement_alert(leave_request_id: str | int):
     logger.info("Sent bereavement/jury duty alert for leave request #%s", leave_request_id)
 
 
-async def send_approval_email(leave_request_id: str | int):
+async def send_approval_email(leave_request_id: str | int, is_reminder: bool = False):
     """Send approval email with HMAC links to all managers."""
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
@@ -313,9 +313,13 @@ async def send_approval_email(leave_request_id: str | int):
 
     version = await bump_and_snapshot(
         settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, fields, MATERIAL_FIELDS_LEAVE,
+        force_bump=is_reminder,
     )
     from app.services.approval_versions import get_previous_snapshot
-    previous_snapshot = await get_previous_snapshot(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id) if version > 1 else None
+    previous_snapshot = (
+        await get_previous_snapshot(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+        if version > 1 and not is_reminder else None
+    )
 
     for manager in managers:
         mgr_fields = manager["fields"]
@@ -331,14 +335,15 @@ async def send_approval_email(leave_request_id: str | int):
 
         await send_email_with_dashboard(
             to=[mgr_fields.get("EmailAddress", "")],
-            subject=f"Leave Request - {submitter_name}",
+            subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
             html_body=html,
             primary_employee_id=manager_id,
         )
 
-        # Send SMS to manager if they have a cell number
+        # Send SMS to manager if they have a cell number (skipped on reminders -
+        # reminders are email-only with fresh links)
         cell = mgr_fields.get("CellNumber", "")
-        if cell:
+        if cell and not is_reminder:
             if projected:
                 bal_line = (
                     f"If approved: Vac: {projected['CurrentVacationBalance']}, "
@@ -371,9 +376,9 @@ async def send_approval_email(leave_request_id: str | int):
 
         logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
 
-    # Send confirmation email to employee
+    # Send confirmation email to employee (not on reminders - already received once)
     emp_email = emp_fields.get("EmailAddress", "")
-    if emp_email:
+    if emp_email and not is_reminder:
         html = render_leave_confirmation(fields, emp_fields, projected)
         await send_email_with_dashboard(
             to=[emp_email],

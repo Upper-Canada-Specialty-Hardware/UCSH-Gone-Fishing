@@ -216,7 +216,7 @@ async def run_approval_pipeline(request_id: str | int):
     await send_approval_email(request_id)
 
 
-async def send_approval_email(request_id: str | int):
+async def send_approval_email(request_id: str | int, is_reminder: bool = False):
     """Send the manager approval email(s) for an in-flight CO/PO request.
 
     Reads fresh SP + employee state so it can be called standalone (e.g. from
@@ -267,8 +267,12 @@ async def send_approval_email(request_id: str | int):
 
     version = await bump_and_snapshot(
         settings.SP_LIST_CARRYOVER_PAYOUT, request_id, fields, MATERIAL_FIELDS_CARRYOVER_PAYOUT,
+        force_bump=is_reminder,
     )
-    previous_snapshot = await get_previous_snapshot(settings.SP_LIST_CARRYOVER_PAYOUT, request_id) if version > 1 else None
+    previous_snapshot = (
+        await get_previous_snapshot(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+        if version > 1 and not is_reminder else None
+    )
 
     from app.templates_render import render_carryover_payout_approval_email
 
@@ -286,7 +290,7 @@ async def send_approval_email(request_id: str | int):
             approve_url, reject_url,
             previous_snapshot=previous_snapshot,
         )
-        subject = f"{request_type} Request #{request_id} Submitted by {employee_name}"
+        subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
         await send_email_with_dashboard(
             to=[mgr_email, "mandyl@ucsh.com"],
             subject=subject,
@@ -295,7 +299,7 @@ async def send_approval_email(request_id: str | int):
         )
 
         cell = mgr["fields"].get("CellNumber", "")
-        if cell:
+        if cell and not is_reminder:
             await send_sms(
                 to=cell,
                 body=(

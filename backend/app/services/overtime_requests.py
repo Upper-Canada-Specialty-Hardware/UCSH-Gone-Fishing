@@ -112,7 +112,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     await send_approval_email(request_id, employee, managers)
 
 
-async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict]):
+async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict], is_reminder: bool = False):
     """Holiday check, half-friday detection, send approval email to all managers."""
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
@@ -172,11 +172,17 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
     subject = f"Overtime Request - {submitter_name}"
     if is_hf:
         subject += " - Half-Day Friday Detected"
+    if is_reminder:
+        subject = "Reminder: " + subject
 
     version = await bump_and_snapshot(
         settings.SP_LIST_OVERTIME_REQUESTS, request_id, fields, MATERIAL_FIELDS_OVERTIME,
+        force_bump=is_reminder,
     )
-    previous_snapshot = await get_previous_snapshot(settings.SP_LIST_OVERTIME_REQUESTS, request_id) if version > 1 else None
+    previous_snapshot = (
+        await get_previous_snapshot(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+        if version > 1 and not is_reminder else None
+    )
 
     for manager in managers:
         mgr_fields = manager["fields"]
@@ -198,9 +204,9 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
             primary_employee_id=manager_id,
         )
 
-        # Send SMS to manager if they have a cell number
+        # Send SMS to manager if they have a cell number (skipped on reminders)
         cell = mgr_fields.get("CellNumber", "")
-        if cell:
+        if cell and not is_reminder:
             ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
             if projected:
                 bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
@@ -218,9 +224,9 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
 
     logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
 
-    # Send confirmation email to employee
+    # Send confirmation email to employee (not on reminders - already received once)
     emp_email = emp_fields.get("EmailAddress", "")
-    if emp_email:
+    if emp_email and not is_reminder:
         html = render_overtime_confirmation(fields, emp_fields, projected)
         await send_email_with_dashboard(
             to=[emp_email],

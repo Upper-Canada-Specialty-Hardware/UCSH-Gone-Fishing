@@ -20,12 +20,18 @@ async def bump_and_snapshot(
     item_id: str | int,
     current_fields: dict,
     material_keys: tuple[str, ...],
+    force_bump: bool = False,
 ) -> int:
     """Record the current material-field snapshot for an outgoing approval email.
 
-    Returns the version embedded in the link being sent. Bumps the version only
-    when material fields actually differ from the prior snapshot — re-sends with
-    no value change keep the version stable so existing links keep working.
+    Returns the version embedded in the link being sent. Normally the version is
+    bumped only when material fields actually differ from the prior snapshot, so
+    benign re-sends keep the version stable and existing links keep working.
+
+    force_bump=True (reminder follow-ups) bumps the version even when nothing
+    changed, which supersedes the prior email's links. A bump caused by a real
+    field change restarts the reminder cadence (reminder_count back to 0, reminders
+    re-opened); a forced reminder bump increments reminder_count.
     """
     new_snapshot = extract_snapshot(current_fields, material_keys)
     item_id_str = str(item_id)
@@ -46,7 +52,8 @@ async def bump_and_snapshot(
             await session.commit()
             return 1
 
-        if row.current_snapshot == new_snapshot:
+        snapshot_changed = row.current_snapshot != new_snapshot
+        if not snapshot_changed and not force_bump:
             row.last_emailed_at = now
             await session.commit()
             return row.current_version
@@ -55,6 +62,13 @@ async def bump_and_snapshot(
         row.current_snapshot = new_snapshot
         row.current_version += 1
         row.last_emailed_at = now
+        if snapshot_changed:
+            # Material change (e.g. admin edit) - restart the reminder cadence.
+            row.reminder_count = 0
+            row.reminders_closed = False
+        else:
+            # Forced reminder re-send with no value change.
+            row.reminder_count += 1
         await session.commit()
         return row.current_version
 
