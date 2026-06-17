@@ -2,6 +2,7 @@ import { Card, CardContent, Typography, Button, Box, Chip, Stack } from '@mui/ma
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import EditIcon from '@mui/icons-material/Edit';
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import { getDescription } from './dataGridDefaults';
 
 interface Balances {
@@ -17,6 +18,7 @@ interface Props {
   processingEnabled: boolean;
   onApprove: (type: string, id: string) => void;
   onReject: (type: string, id: string) => void;
+  onSendReminder?: (type: string, id: string) => void;
   onEdit?: (item: any) => void;
   actionLoading?: string | null;
 }
@@ -63,7 +65,7 @@ function BalanceRow({ label, balances, compare }: {
   );
 }
 
-export default function PendingApprovals({ pending, processingEnabled, onApprove, onReject, onEdit, actionLoading }: Props) {
+export default function PendingApprovals({ pending, processingEnabled, onApprove, onReject, onSendReminder, onEdit, actionLoading }: Props) {
   if (pending.length === 0) {
     return (
       <Typography color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
@@ -154,6 +156,19 @@ export default function PendingApprovals({ pending, processingEnabled, onApprove
                   >
                     Reject
                   </Button>
+                  {onSendReminder && (
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      size="small"
+                      startIcon={<NotificationsActiveIcon />}
+                      disabled={!processingEnabled || isLoading}
+                      onClick={() => onSendReminder(item.request_type, item.id)}
+                      title={!processingEnabled ? 'Processing is currently disabled' : 'Re-send the approval email to the manager now'}
+                    >
+                      Remind
+                    </Button>
+                  )}
                 </Box>
               </Box>
             </CardContent>
