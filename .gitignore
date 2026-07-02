@@ -28,6 +28,12 @@ build/
 venv/
 env/
 
+# Local SQLite dev database (Railway uses Postgres; this is the local fallback
+# created by the SQLite fallback in app/database.py and by alembic/pytest runs)
+backend/app/data/
+*.db
+*.sqlite3
+
 # IDE
 .vscode/
 .idea/
