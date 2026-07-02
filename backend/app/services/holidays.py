@@ -1,15 +1,14 @@
 import logging
 from datetime import date, datetime
 
-from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories import get_holiday_repository
 
 logger = logging.getLogger(__name__)
 
 
 async def get_holidays_for_province(province: str) -> list[dict]:
     # Province is not indexed — fetch all and filter client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_COMPANY_HOLIDAYS)
+    items = await get_holiday_repository().get_all()
     return [
         item.get("fields", {}) for item in items
         if item.get("fields", {}).get("Province", "") == province
