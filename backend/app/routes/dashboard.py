@@ -892,6 +892,25 @@ async def admin_stuck_requests():
     return {"stuck": stuck}
 
 
+@router.get("/admin/validate-employee/{employee_id}")
+async def admin_validate_employee(employee_id: str):
+    """Run the read-only employee-setup validation suite (GH #41).
+
+    Reproduces every check a real request would exercise against the employee's
+    current Staff Directory values — identity resolution, supervisor lookup,
+    location/holidays, and a pure balance simulation for each leave / overtime /
+    carryover-payout type — without creating a request or sending any
+    notification. Read-only, so it is deliberately NOT gated on
+    PROCESSING_ENABLED (safe to run in reporting-only mode).
+    """
+    from app.services.employee_validation import validate_employee_setup
+    try:
+        return await validate_employee_setup(employee_id)
+    except Exception:
+        logger.exception("Employee validation failed for #%s", employee_id)
+        raise HTTPException(status_code=500, detail="Validation failed — check server logs")
+
+
 # ============================
 # Admin impersonation endpoint
 # ============================
