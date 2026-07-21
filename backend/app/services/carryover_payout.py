@@ -23,7 +23,6 @@ from app.services.approval_versions import (
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.audit_trail import (
     AuditTrailBuilder,
-    snapshot_balances,
     write_audit_log,
 )
 
@@ -124,7 +123,6 @@ async def run_approval_pipeline(request_id: str | int):
         return
 
     emp_fields = employee["fields"]
-    mgr_fields = manager["fields"]
     days = float(fields.get("Days", 0) or 0)
     request_type = fields.get("TypeofRequest", "")
 
@@ -628,7 +626,6 @@ async def reject_carryover_payout(request_id: str | int, manager_id: str | int) 
     mgr_fields = manager["fields"] if manager else {}
 
     from app.templates_render import render_carryover_rejected, render_payout_rejected
-    employee_name = emp_fields.get("Title", "")
     if request_type == "Carry Over":
         html = render_carryover_rejected(request_id, fields)
         subject = f"Carry Over Request #{request_id} Rejected"

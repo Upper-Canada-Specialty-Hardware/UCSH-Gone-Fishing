@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.graph.auth import token_manager

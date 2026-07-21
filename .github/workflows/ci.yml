@@ -1,8 +1,10 @@
 name: CI
 
-# Runs the automated gate this repo previously lacked: back-end tests and the
-# front-end build. Railway still deploys on merge to master with no test gate,
-# so this is what catches a broken change BEFORE it can be merged.
+# Runs the automated gate this repo previously lacked: a back-end lint (Ruff),
+# back-end tests, and the front-end build. Railway still deploys on merge to
+# master with no test gate, so this is what catches a broken change BEFORE it can
+# be merged. The lint job matters for cost too: Railway fails a build outright on
+# lint errors, so catching them here avoids wasting deploy credits.
 on:
   push:
     branches: [master]
@@ -14,6 +16,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  backend-lint:
+    name: Backend lint (ruff)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # matches the backend Dockerfile pin
+      - name: Install ruff
+        run: pip install ruff==0.15.20   # pinned so CI and local flag the same things
+      - name: Lint
+        run: ruff check .                # config in backend/ruff.toml
+
   backend-tests:
     name: Backend tests (pytest)
     runs-on: ubuntu-latest

@@ -28,6 +28,10 @@ build/
 venv/
 env/
 
+# Backend local data — SQLite fallback db, created at backend/app/data/ when
+# DATABASE_URL is empty (local dev / the test suite). Never commit this binary.
+backend/app/data/
+
 # IDE
 .vscode/
 .idea/
