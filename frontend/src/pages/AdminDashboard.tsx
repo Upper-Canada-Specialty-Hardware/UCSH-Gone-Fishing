@@ -10,6 +10,7 @@ import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
 import ManagerAssignments from '../components/ManagerAssignments';
 import StuckRequests from '../components/StuckRequests';
+import EmployeeValidation from '../components/EmployeeValidation';
 import EditRequestDialog from '../components/EditRequestDialog';
 import {
   getAdminBalances,
@@ -305,6 +306,7 @@ export default function AdminDashboard() {
         <Tab label="View Team" />
         <Tab label="Manager Assignments" />
         <Tab label={`Stuck (${stuckRequests.length})`} />
+        <Tab label="Validate Setup" />
       </Tabs>
 
       {tab === 0 && (
@@ -444,6 +446,12 @@ export default function AdminDashboard() {
             onReprocess={handleReprocess}
             actionLoading={actionLoading}
           />
+        </Paper>
+      )}
+
+      {tab === 8 && (
+        <Paper sx={{ p: 3 }}>
+          <EmployeeValidation employees={employees} />
         </Paper>
       )}
 

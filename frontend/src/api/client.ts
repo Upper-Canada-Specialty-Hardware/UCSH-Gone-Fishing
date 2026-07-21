@@ -101,6 +101,11 @@ export const bulkManagerAssignment = (params: {
   employee_ids?: string[];
 }) => api.post('/admin/manager-assignments/bulk', params);
 
+// Admin — Validate employee setup (read-only; runs the current Staff Directory
+// values through every workflow/leave type without creating a request)
+export const validateEmployee = (id: string) =>
+  api.get(`/admin/validate-employee/${id}`);
+
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
 export const adminReprocessRequest = (id: string, reason: string) =>
