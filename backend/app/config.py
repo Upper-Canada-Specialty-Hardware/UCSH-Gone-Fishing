@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     # Processing toggle — when False, app is read-only (dashboards only)
     PROCESSING_ENABLED: bool = False
 
+    # Storage backend per domain (SharePoint -> Postgres migration cutover flags).
+    # "sharepoint" (default) keeps SharePoint as the source of truth; "postgres"
+    # switches that domain's reads/writes to Postgres. Flipped per cutover PR once
+    # that domain's Postgres implementation exists.
+    STORAGE_HOLIDAYS: str = "sharepoint"
+    STORAGE_EMPLOYEES: str = "sharepoint"
+    STORAGE_REQUESTS: str = "sharepoint"
+
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
 
