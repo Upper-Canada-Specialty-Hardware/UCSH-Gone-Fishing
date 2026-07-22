@@ -6,9 +6,7 @@ from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
-    get_employee_by_name,
     get_employee_by_id,
-    get_manager_for_employee,
     get_all_managers_for_employee,
     map_location_to_province,
     resolve_person_field,

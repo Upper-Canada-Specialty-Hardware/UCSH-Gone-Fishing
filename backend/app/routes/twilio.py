@@ -6,7 +6,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import settings
 from app.services.sms import validate_twilio_signature, send_sms
-from app.services.employee import get_employee_by_name, get_employee_by_id, ADMIN_NAMES
+from app.services.employee import get_employee_by_id, ADMIN_NAMES
 from app.services.leave_requests import approve_leave_request, reject_leave_request
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
@@ -101,7 +101,7 @@ async def receive_sms(request: Request):
         if re.sub(r"\D", "", s.get("fields", {}).get("CellNumber", ""))[-10:] == from_digits
     ]
     if not items:
-        await send_sms(from_number, f"Invalid response - your number is not registered in the system.")
+        await send_sms(from_number, "Invalid response - your number is not registered in the system.")
         return ""
 
     sender = items[0]
@@ -134,14 +134,14 @@ async def receive_sms(request: Request):
 
     # Process
     if decision == "Approve":
-        result = await config["approve"](item_id, sender_id)
+        await config["approve"](item_id, sender_id)
         manager_email = sender["fields"].get("EmailAddress", "")
         await send_sms(
             from_number,
             f"Response has been received. An email will be sent to ({manager_email}) once the process is completed.",
         )
     else:
-        result = await config["reject"](item_id, sender_id)
+        await config["reject"](item_id, sender_id)
         await send_sms(from_number, f"Response has been received. Cancelling request #{item_id}.")
 
     return ""
