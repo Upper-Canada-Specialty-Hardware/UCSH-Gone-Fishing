@@ -7,13 +7,11 @@ from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.graph.auth import token_manager
 from app.graph.sharepoint import sp_client
-from app.services.concurrency import lock_manager
 from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task

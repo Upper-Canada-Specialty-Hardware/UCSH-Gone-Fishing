@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
-from app.services.employee import get_employee_by_id, is_manager, ADMIN_NAMES
+from app.services.employee import get_employee_by_id, is_manager
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,

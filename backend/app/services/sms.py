@@ -2,7 +2,6 @@ import hashlib
 import hmac
 import logging
 from base64 import b64encode
-from urllib.parse import urljoin
 
 import httpx
 
