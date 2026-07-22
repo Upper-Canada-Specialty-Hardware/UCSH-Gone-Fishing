@@ -1,9 +1,9 @@
 """Read-only "does this employee's setup work?" validation suite (GH #41).
 
 Runs an employee's CURRENT Staff Directory values through every request
-workflow — identity resolution, supervisor/manager lookup, location -> province
+workflow - identity resolution, supervisor/manager lookup, location -> province
 -> holiday calendar, and a pure balance simulation for each leave / overtime /
-carryover-payout type — WITHOUT creating any request or sending any
+carryover-payout type - WITHOUT creating any request or sending any
 notification.
 
 Why this exists: previously the only way to confirm an employee was set up
@@ -15,7 +15,7 @@ engine's pure `simulate_*` functions.
 SAFETY CONTRACT: this module performs READS ONLY. It must never call
 `create_list_item`, `update_list_item_fields`, `send_email`,
 `send_email_with_dashboard`, `send_approval_email`, or `send_sms`. A guard test
-(`tests/test_employee_validation.py`) enforces that it stays side-effect free —
+(`tests/test_employee_validation.py`) enforces that it stays side-effect free -
 keep it that way.
 
 The suite is split like the balance engine: `build_validation_report(...)` is a
@@ -44,7 +44,7 @@ from app.services.balance import (
 
 logger = logging.getLogger(__name__)
 
-# Representative sample inputs for the dry-run simulations. Nothing is written —
+# Representative sample inputs for the dry-run simulations. Nothing is written -
 # these only drive the pure `simulate_*` math so the report can show "if this
 # employee took X, here is what happens to their balances".
 SAMPLE_LEAVE_DAYS = 1.0
@@ -88,7 +88,7 @@ def _count_all_managers(fields: dict) -> int:
 
 
 def _sample_weekday_range() -> tuple[date, date]:
-    """Next Monday..Tuesday — a stable 1-business-day range for the calc check."""
+    """Next Monday..Tuesday - a stable 1-business-day range for the calc check."""
     today = date.today()
     # weekday(): Mon=0 .. Sun=6. Days until next Monday (at least 1 day out).
     days_ahead = (7 - today.weekday()) % 7 or 7
@@ -306,7 +306,7 @@ def _simulate_co_po_case(code, req_type, fields) -> dict:
         projected = simulate_carryover_payout_impact(fields, SAMPLE_CO_PO_DAYS, req_type)
         if projected is None:
             # A would-be-declined carryover/payout is a valid outcome (the employee
-            # just has no vacation to move), not a setup problem — keep it a pass and
+            # just has no vacation to move), not a setup problem - keep it a pass and
             # surface it only in the preview.
             return _check(
                 code, "simulation", "pass",

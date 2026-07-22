@@ -175,10 +175,15 @@ export default function EmployeeValidation({ employees }: Props) {
   };
 
   // Only real setup checks are "problems". Simulations are previews: a carryover
-  // that would be declined is expected behavior, not something to fix. Fails come
+  // that would be declined is expected behavior, not something to fix. The one
+  // exception is a simulation that RAISED (status 'fail') - that is a genuine
+  // engine error on this employee's data, so surface it too; otherwise the
+  // verdict shows green while the backend `overall` is already 'fail'. Fails come
   // before warns so must-fix items sort above review items.
   const problems = useMemo(() => {
-    const items = (report?.checks || []).filter((c) => c.status !== 'pass' && c.category !== 'simulation');
+    const items = (report?.checks || []).filter(
+      (c) => c.status !== 'pass' && (c.category !== 'simulation' || c.status === 'fail'),
+    );
     return [...items.filter((c) => c.status === 'fail'), ...items.filter((c) => c.status === 'warn')];
   }, [report]);
   const realFails = useMemo(() => problems.filter((c) => c.status === 'fail'), [problems]);

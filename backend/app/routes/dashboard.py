@@ -15,6 +15,7 @@ from app.services.balance import (
     simulate_carryover_payout_impact,
     is_next_year_request,
 )
+from app.services.employee_validation import validate_employee_setup
 from app.routes.approval import HANDLERS
 
 logger = logging.getLogger(__name__)
@@ -897,24 +898,23 @@ async def admin_validate_employee(employee_id: str, user: AuthUser):
     """Run the read-only employee-setup validation suite (GH #41).
 
     Reproduces every check a real request would exercise against the employee's
-    current Staff Directory values — identity resolution, supervisor lookup,
+    current Staff Directory values - identity resolution, supervisor lookup,
     location/holidays, and a pure balance simulation for each leave / overtime /
-    carryover-payout type — without creating a request or sending any
+    carryover-payout type - without creating a request or sending any
     notification. Read-only, so it is deliberately NOT gated on
     PROCESSING_ENABLED (safe to run in reporting-only mode).
 
     Requires a valid **admin** dashboard token (the same HMAC check the /me and
     /team endpoints use). Because it exposes employee identity + balances, it is
     authenticated server-side rather than relying only on the frontend to hide
-    the tab — the dashboard already sends the token on every request.
+    the tab - the dashboard already sends the token on every request.
     """
     _require_role(user, "admin")
-    from app.services.employee_validation import validate_employee_setup
     try:
         return await validate_employee_setup(employee_id)
     except Exception:
         logger.exception("Employee validation failed for #%s", employee_id)
-        raise HTTPException(status_code=500, detail="Validation failed — check server logs")
+        raise HTTPException(status_code=500, detail="Validation failed - check server logs")
 
 
 # ============================
