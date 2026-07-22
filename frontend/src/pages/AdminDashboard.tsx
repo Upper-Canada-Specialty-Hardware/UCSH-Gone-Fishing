@@ -297,7 +297,13 @@ export default function AdminDashboard() {
         </Grid>
       )}
 
-      <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3 }}>
+      <Tabs
+        value={tab}
+        onChange={(_, v) => setTab(v)}
+        variant="scrollable"
+        scrollButtons="auto"
+        sx={{ mb: 3 }}
+      >
         <Tab label={`Pending (${pending.length})`} />
         <Tab label="All Balances" />
         <Tab label="All Requests" />
@@ -306,7 +312,7 @@ export default function AdminDashboard() {
         <Tab label="View Team" />
         <Tab label="Manager Assignments" />
         <Tab label={`Stuck (${stuckRequests.length})`} />
-        <Tab label="Validate Setup" />
+        <Tab label="Check Employee Setup" />
       </Tabs>
 
       {tab === 0 && (

@@ -133,11 +133,24 @@ def test_bereavement_and_jury_are_no_impact():
     assert _by_code(report, "sim_jury_duty")["projected"] is None
 
 
-def test_carryover_override_reject_warns_when_no_vacation():
+def test_carryover_declined_is_pass_not_a_problem():
+    # No vacation -> a carryover/payout would be declined. That is a valid outcome,
+    # not a setup problem, so the simulation stays 'pass' (surfaced only in the
+    # preview) and does not drag the overall verdict down.
     fields = {**GOOD_FIELDS, "CurrentVacationBalance": 0}
     report = _report(employee_fields=fields)
-    assert _by_code(report, "sim_carry_over")["status"] == "warn"
-    assert _by_code(report, "sim_payout")["status"] == "warn"
+    assert _by_code(report, "sim_carry_over")["status"] == "pass"
+    assert _by_code(report, "sim_payout")["status"] == "pass"
+    assert report["overall"] == "pass"
+
+
+def test_current_balances_included():
+    report = _report()
+    assert report["current_balances"]["CurrentVacationBalance"] == 10.0
+    assert set(report["current_balances"]) == {
+        "CurrentVacationBalance", "CurrentSickDayBalance",
+        "CurrentOvertimeBalance", "CarryOver", "Payout",
+    }
 
 
 # ----- SAFETY: no side effects -----

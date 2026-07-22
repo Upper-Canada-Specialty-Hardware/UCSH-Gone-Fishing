@@ -137,27 +137,26 @@ def build_validation_report(
     if all_managers_count == 0:
         checks.append(_check(
             "supervisor_set", "supervisor", "fail",
-            "AllManagers is empty on the Staff Directory record — a request would "
-            "have no manager to route approval to.",
+            "No supervisor is set on the Staff Directory record, so a request would "
+            "have no one to approve it.",
         ))
     else:
         checks.append(_check(
             "supervisor_set", "supervisor", "pass",
-            f"AllManagers lists {all_managers_count} manager(s).",
+            f"{all_managers_count} supervisor(s) listed.",
         ))
         # Every listed manager must resolve to a real Staff Directory employee
         # via the SAME path the approval email uses.
         if len(managers) < all_managers_count:
             checks.append(_check(
                 "supervisor_resolves", "supervisor", "fail",
-                f"Only {len(managers)} of {all_managers_count} listed manager(s) "
-                "resolved to a Staff Directory employee (name/LookupValue mismatch) "
-                "— approval routing would be incomplete.",
+                f"Only {len(managers)} of {all_managers_count} listed supervisor(s) "
+                "match a real employee, so approval routing would be incomplete.",
             ))
         else:
             checks.append(_check(
                 "supervisor_resolves", "supervisor", "pass",
-                f"All {all_managers_count} manager(s) resolve: "
+                "All listed supervisors match a real employee: "
                 + ", ".join(m.get("fields", {}).get("Title", "?") for m in managers),
             ))
         # Each resolved manager needs an email to actually receive the approval.
@@ -169,21 +168,21 @@ def build_validation_report(
         if unreachable:
             checks.append(_check(
                 "manager_reachable", "supervisor", "warn",
-                "Manager(s) with no Email Address (approval email can't reach them): "
-                + ", ".join(unreachable),
+                "Supervisor(s) with no email address, so approval emails can't reach "
+                "them: " + ", ".join(unreachable),
             ))
         elif managers:
             checks.append(_check(
                 "manager_reachable", "supervisor", "pass",
-                "All resolved managers have an Email Address.",
+                "All supervisors have an email address.",
             ))
 
     # --- Location -> province ---
     if province_error:
         checks.append(_check(
             "location_province", "location", "fail",
-            f"{province_error} — auto-calculation of Days would raise and the "
-            "request would silently get stuck.",
+            f"{province_error}. Leave days cannot be calculated until a valid "
+            "location is set, so the request would get stuck.",
         ))
     else:
         checks.append(_check(
@@ -206,8 +205,8 @@ def build_validation_report(
         else:
             checks.append(_check(
                 "holidays_load", "location", "warn",
-                f"No holiday rows found for province {province} — business-day math "
-                "will treat every weekday as workable.",
+                f"No holidays are set for province {province}, so every weekday will "
+                "count as a workday when leave is calculated.",
             ))
 
     # --- Balance pots are numeric ---
@@ -221,8 +220,8 @@ def build_validation_report(
     if bad_pots:
         checks.append(_check(
             "balances_numeric", "balances", "fail",
-            "Non-numeric balance value(s): " + ", ".join(bad_pots)
-            + " — every balance simulation would crash on this record.",
+            "These balance values are not numbers: " + ", ".join(bad_pots)
+            + ". Leave calculations cannot run until they are corrected.",
         ))
     else:
         checks.append(_check(
@@ -271,10 +270,19 @@ def build_validation_report(
     for code, req_type in [("sim_carry_over", "Carry Over"), ("sim_payout", "Payout")]:
         checks.append(_simulate_co_po_case(code, req_type, employee_fields))
 
+    # Current balances, so the UI can show a before -> after preview per request type.
+    current_balances: dict = {}
+    for pot in BALANCE_POTS:
+        try:
+            current_balances[pot] = float(employee_fields.get(pot) or 0)
+        except (TypeError, ValueError):
+            current_balances[pot] = None
+
     return {
         "employee_id": employee_id,
         "employee_name": employee_name,
         "overall": _overall(checks),
+        "current_balances": current_balances,
         "checks": checks,
     }
 
@@ -297,11 +305,13 @@ def _simulate_co_po_case(code, req_type, fields) -> dict:
     try:
         projected = simulate_carryover_payout_impact(fields, SAMPLE_CO_PO_DAYS, req_type)
         if projected is None:
+            # A would-be-declined carryover/payout is a valid outcome (the employee
+            # just has no vacation to move), not a setup problem — keep it a pass and
+            # surface it only in the preview.
             return _check(
-                code, "simulation", "warn",
-                f"{req_type} of {SAMPLE_CO_PO_DAYS} day(s) would be system-rejected "
-                "(vacation would go negative) with the current balance. Valid outcome, "
-                "but worth noting if the employee expects to move days.",
+                code, "simulation", "pass",
+                f"{req_type} of {SAMPLE_CO_PO_DAYS} day would be declined: not enough "
+                "vacation to move. Expected with the current balance.",
             )
         return _check(code, "simulation", "pass", f"{req_type} of {SAMPLE_CO_PO_DAYS} day(s) simulates cleanly.", projected)
     except Exception as e:  # noqa: BLE001
@@ -316,30 +326,30 @@ async def _check_identity(employee_id, fields: dict) -> dict:
     email = (fields.get("EmailAddress") or "").strip()
     if not email:
         return {"status": "fail", "detail": (
-            "No Email Address on the Staff Directory record — a submitted request "
-            "cannot be linked back to this person."
+            "There is no email address on the record, so a submitted request cannot "
+            "be linked back to this person."
         )}
     lookup_id = await _resolve_user_lookup_id(email)
     if not lookup_id:
         return {"status": "fail", "detail": (
-            f"Email {email} is not in the M365 User Information List — a request "
-            "submitted by this person would not resolve to their record."
+            f"The email {email} was not found in the Microsoft 365 directory, so a "
+            "request from this person would not match their record."
         )}
     resolved = await resolve_person_field(lookup_id)
     if not resolved:
         return {"status": "fail", "detail": (
-            "The M365 identity for this email did not resolve to any Staff Directory "
-            "record (display name likely differs from the Staff Directory Title)."
+            "Their Microsoft 365 account did not match any Staff Directory record "
+            "(their display name likely differs from their name in the directory)."
         )}
     if str(resolved.get("id")) != str(employee_id):
         other = resolved.get("fields", {}).get("Title", "")
         return {"status": "fail", "detail": (
-            f"Identity resolves to a DIFFERENT Staff Directory record "
-            f"(#{resolved.get('id')} {other}), not this one — names/emails are crossed."
+            f"Their email/name matches a different person in the directory "
+            f"({other}, #{resolved.get('id')}), not this record."
         )}
     return {"status": "pass", "detail": (
-        f"Email -> M365 user -> Staff Directory round-trip resolves correctly to "
-        f"{resolved.get('fields', {}).get('Title', '')}."
+        "Their email matches their Microsoft 365 account and their Staff Directory "
+        f"record ({resolved.get('fields', {}).get('Title', '')})."
     )}
 
 
@@ -351,6 +361,7 @@ async def validate_employee_setup(employee_id: str | int) -> dict:
             "employee_id": str(employee_id),
             "employee_name": "",
             "overall": "fail",
+            "current_balances": {},
             "checks": [_check(
                 "employee_record", "identity", "fail",
                 "No Staff Directory record found for this id.",
