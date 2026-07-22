@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import {
   Box, Autocomplete, TextField, Button, CircularProgress, Alert,
   Typography, Paper, Divider, Collapse, Stack, Chip,
-  Table, TableBody, TableRow, TableCell,
+  Table, TableHead, TableBody, TableRow, TableCell,
 } from '@mui/material';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
@@ -240,7 +240,7 @@ export default function EmployeeValidation({ employees }: Props) {
             setReport(null);
             setError('');
           }}
-          renderInput={(params) => <TextField {...params} label="Select employee" />}
+          renderInput={(params) => <TextField {...params} label="Select Employee" />}
           sx={{ flex: 1, maxWidth: 420 }}
         />
         <Button
@@ -294,21 +294,35 @@ export default function EmployeeValidation({ employees }: Props) {
             </Paper>
           )}
 
+          <Divider sx={{ mb: 0.5 }} />
+
           <ToggleSection
             title="What each request would do"
             open={previewOpen}
             onToggle={() => setPreviewOpen((o) => !o)}
           >
             <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ border: 0, py: 0.5, width: '42%', color: 'text.secondary', fontWeight: 600 }}>
+                    Request
+                  </TableCell>
+                  <TableCell sx={{ border: 0, py: 0.5, color: 'text.secondary', fontWeight: 600 }}>
+                    Effect on balances
+                  </TableCell>
+                </TableRow>
+              </TableHead>
               <TableBody>
                 {PREVIEW_ROWS.map((row) => {
                   const c = byCode(report, row.code);
                   if (!c) return null;
+                  const outcome = previewOutcome(c, report.current_balances);
+                  const muted = outcome === 'No balance change';
                   return (
                     <TableRow key={row.code}>
                       <TableCell sx={{ border: 0, py: 0.5, width: '42%' }}>{row.label}</TableCell>
-                      <TableCell sx={{ border: 0, py: 0.5, color: 'text.secondary' }}>
-                        {previewOutcome(c, report.current_balances)}
+                      <TableCell sx={{ border: 0, py: 0.5, color: muted ? 'text.secondary' : 'text.primary' }}>
+                        {outcome}
                       </TableCell>
                     </TableRow>
                   );

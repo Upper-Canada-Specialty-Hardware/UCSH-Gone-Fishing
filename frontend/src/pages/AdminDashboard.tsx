@@ -304,15 +304,15 @@ export default function AdminDashboard() {
         scrollButtons="auto"
         sx={{ mb: 3 }}
       >
-        <Tab label={`Pending (${pending.length})`} />
-        <Tab label="All Balances" />
-        <Tab label="All Requests" />
-        <Tab label="Department Summary" />
-        <Tab label="View Employee" />
-        <Tab label="View Team" />
-        <Tab label="Manager Assignments" />
-        <Tab label={`Stuck (${stuckRequests.length})`} />
-        <Tab label="Check Employee Setup" />
+        <Tab label="Check Employee Setup" value={8} />
+        <Tab label={`Pending (${pending.length})`} value={0} />
+        <Tab label="All Balances" value={1} />
+        <Tab label="All Requests" value={2} />
+        <Tab label="Department Summary" value={3} />
+        <Tab label="View Employee" value={4} />
+        <Tab label="View Team" value={5} />
+        <Tab label="Manager Assignments" value={6} />
+        <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
       </Tabs>
 
       {tab === 0 && (
