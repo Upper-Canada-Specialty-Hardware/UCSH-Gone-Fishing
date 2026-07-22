@@ -28,9 +28,11 @@ build/
 venv/
 env/
 
-# Backend local data — SQLite fallback db, created at backend/app/data/ when
-# DATABASE_URL is empty (local dev / the test suite). Never commit this binary.
+# Local SQLite dev database (Railway uses Postgres; this is the local fallback
+# created by the SQLite fallback in app/database.py and by alembic/pytest runs)
 backend/app/data/
+*.db
+*.sqlite3
 
 # IDE
 .vscode/
