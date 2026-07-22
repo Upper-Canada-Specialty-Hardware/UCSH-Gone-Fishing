@@ -15,6 +15,7 @@ from app.services.balance import (
     simulate_carryover_payout_impact,
     is_next_year_request,
 )
+from app.services.employee_validation import validate_employee_setup
 from app.routes.approval import HANDLERS
 
 logger = logging.getLogger(__name__)
@@ -890,6 +891,28 @@ async def admin_stuck_requests():
         })
 
     return {"stuck": stuck}
+
+
+@router.get("/admin/validate-employee/{employee_id}")
+async def admin_validate_employee(employee_id: str):
+    """Run the read-only employee-setup validation suite (GH #41).
+
+    Reproduces every check a real request would exercise against the employee's
+    current Staff Directory values - identity resolution, supervisor lookup,
+    location/holidays, and a pure balance simulation for each leave / overtime /
+    carryover-payout type - without creating a request or sending any
+    notification. Read-only, so it is deliberately NOT gated on
+    PROCESSING_ENABLED (safe to run in reporting-only mode).
+
+    Part of the unauthenticated admin dashboard: like every other /admin/*
+    endpoint it carries no token or role check (the admin dashboard is an open
+    backdoor by design, and already exposes the same employee data elsewhere).
+    """
+    try:
+        return await validate_employee_setup(employee_id)
+    except Exception:
+        logger.exception("Employee validation failed for #%s", employee_id)
+        raise HTTPException(status_code=500, detail="Validation failed - check server logs")
 
 
 # ============================
