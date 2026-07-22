@@ -893,7 +893,7 @@ async def admin_stuck_requests():
 
 
 @router.get("/admin/validate-employee/{employee_id}")
-async def admin_validate_employee(employee_id: str):
+async def admin_validate_employee(employee_id: str, user: AuthUser):
     """Run the read-only employee-setup validation suite (GH #41).
 
     Reproduces every check a real request would exercise against the employee's
@@ -902,7 +902,13 @@ async def admin_validate_employee(employee_id: str):
     carryover-payout type — without creating a request or sending any
     notification. Read-only, so it is deliberately NOT gated on
     PROCESSING_ENABLED (safe to run in reporting-only mode).
+
+    Requires a valid **admin** dashboard token (the same HMAC check the /me and
+    /team endpoints use). Because it exposes employee identity + balances, it is
+    authenticated server-side rather than relying only on the frontend to hide
+    the tab — the dashboard already sends the token on every request.
     """
+    _require_role(user, "admin")
     from app.services.employee_validation import validate_employee_setup
     try:
         return await validate_employee_setup(employee_id)
