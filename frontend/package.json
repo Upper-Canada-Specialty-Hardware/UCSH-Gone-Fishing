@@ -15,7 +15,7 @@
     "@mui/material": "^6.3.0",
     "@mui/x-data-grid": "^7.24.0",
     "@mui/x-date-pickers": "^7.24.0",
-    "axios": "^1.7.9",
+    "axios": "^1.18.0",
     "dayjs": "^1.11.13",
     "react": "^19.0.0",
     "react-big-calendar": "^1.16.3",
