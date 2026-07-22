@@ -13,7 +13,6 @@ from sqlalchemy import create_engine, insert, select
 from app.database import Base
 from app.models import (
     Employee,
-    ManagerAssignment,
     LeaveRequest,
     OvertimeRequest,
     CarryoverPayoutRequest,
