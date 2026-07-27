@@ -11,6 +11,7 @@ import asyncio
 import logging
 from datetime import date, datetime, timedelta
 
+import httpx
 from sqlalchemy import select
 
 from app.config import settings
@@ -138,7 +139,17 @@ async def _process_row(row: RequestApprovalState) -> None:
         await _close(row.list_id, row.item_id)
         return
 
-    item = await sp_client.get_list_item(row.list_id, row.item_id)
+    try:
+        item = await sp_client.get_list_item(row.list_id, row.item_id)
+    except httpx.HTTPStatusError as e:
+        # Item deleted in SharePoint. Nothing left to remind about, and without
+        # closing the row every scan would retry it forever.
+        if e.response.status_code == 404:
+            await _close(row.list_id, row.item_id)
+            logger.info("Reminders closed for %s #%s - item no longer in SharePoint", req_type, row.item_id)
+            return
+        raise
+
     fields = item.get("fields", {})
 
     if _is_processed(fields, req_type):

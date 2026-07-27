@@ -35,8 +35,9 @@ async def _validate_and_check(request, request_type, action, request_id, token, 
     """Shared validation for GET and POST. Returns error response or None."""
     if not settings.PROCESSING_ENABLED:
         return templates.TemplateResponse(
+            request,
             "approval_error.html",
-            {"request": request, "error": "System is currently in reporting-only mode. Approvals are disabled.", "request_id": request_id},
+            {"error": "System is currently in reporting-only mode. Approvals are disabled.", "request_id": request_id},
         )
 
     valid, error_msg = validate_approval_token(
@@ -44,14 +45,16 @@ async def _validate_and_check(request, request_type, action, request_id, token, 
     )
     if not valid:
         return templates.TemplateResponse(
+            request,
             "approval_error.html",
-            {"request": request, "error": error_msg, "request_id": request_id},
+            {"error": error_msg, "request_id": request_id},
         )
 
     if (request_type, action) not in HANDLERS:
         return templates.TemplateResponse(
+            request,
             "approval_error.html",
-            {"request": request, "error": "Invalid request type or action", "request_id": request_id},
+            {"error": "Invalid request type or action", "request_id": request_id},
         )
 
     list_id = LIST_ID_FOR_TYPE.get(request_type)
@@ -63,8 +66,9 @@ async def _validate_and_check(request, request_type, action, request_id, token, 
                 request_type, request_id, version, current_version,
             )
             return templates.TemplateResponse(
+                request,
                 "approval_outdated.html",
-                {"request": request, "request_type": request_type, "request_id": request_id},
+                {"request_type": request_type, "request_id": request_id},
             )
 
     return None
@@ -87,9 +91,9 @@ async def confirm_approval(
         return error_response
 
     return templates.TemplateResponse(
+        request,
         "approval_confirm.html",
         {
-            "request": request,
             "request_type": request_type,
             "action": action,
             "request_id": request_id,
@@ -124,23 +128,27 @@ async def handle_approval(
     except Exception as e:
         logger.exception("Error processing approval for %s #%s", request_type, request_id)
         return templates.TemplateResponse(
+            request,
             "approval_error.html",
-            {"request": request, "error": str(e), "request_id": request_id},
+            {"error": str(e), "request_id": request_id},
         )
 
     if "error" in result:
         return templates.TemplateResponse(
+            request,
             "approval_error.html",
-            {"request": request, "error": result["error"], "request_id": request_id},
+            {"error": result["error"], "request_id": request_id},
         )
 
     if action == "approve":
         return templates.TemplateResponse(
+            request,
             "approval_success.html",
-            {"request": request, "request_type": request_type, "request_id": request_id, "result": result},
+            {"request_type": request_type, "request_id": request_id, "result": result},
         )
     else:
         return templates.TemplateResponse(
+            request,
             "approval_rejected.html",
-            {"request": request, "request_type": request_type, "request_id": request_id},
+            {"request_type": request_type, "request_id": request_id},
         )

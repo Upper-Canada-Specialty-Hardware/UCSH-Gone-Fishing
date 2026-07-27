@@ -51,9 +51,9 @@ async def status_page(request: Request):
         })
 
     return templates.TemplateResponse(
+        request,
         "status.html",
         {
-            "request": request,
             "subscriptions": sub_data,
             "recent_logs": recent_logs,
             "token_valid": token_manager.is_valid,
