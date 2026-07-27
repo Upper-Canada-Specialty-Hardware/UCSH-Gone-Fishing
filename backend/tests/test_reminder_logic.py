@@ -6,11 +6,13 @@ no-expiry sentinel). The actual email send + supersession is verified live.
 """
 
 import asyncio
+import contextlib
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from app.config import settings
 from app.services.approval_links import (
@@ -36,7 +38,7 @@ def test_no_expiry_sentinel_never_expires():
 
 
 def test_past_real_expiry_still_rejected():
-    # exp=100 is 1970 — a pre-existing 72h link should still lapse.
+    # exp=100 is 1970 - a pre-existing 72h link should still lapse.
     token = _sign("leave", "123", "approve", "45", "100", 1)
     ok, msg = validate_approval_token("leave", "123", "approve", "45", token, "100", 1)
     assert not ok and "expired" in msg.lower()
@@ -170,16 +172,45 @@ def _http_error(status_code):
     return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
-def test_deleted_item_closes_reminders():
-    """A 404 means the request was deleted in SharePoint.
+@contextlib.contextmanager
+def _get_list_item_raises(status_code):
+    """Patch the shared sp_client singleton, then fully undo it.
 
-    Without closing the row, every hourly scan retries it forever and logs a
-    full traceback each time.
+    Restoring by re-assignment would leave a bound method in the instance
+    __dict__ for the rest of the run, shadowing the class method so any later
+    class-level patch of get_list_item silently does nothing. Delete instead.
     """
-    asyncio.run(_deleted_item_flow())
+    async def _raise(list_id, item_id):
+        raise _http_error(status_code)
+
+    client = reminders.sp_client
+    had_own = "get_list_item" in client.__dict__
+    previous = client.__dict__.get("get_list_item")
+    client.get_list_item = _raise
+    try:
+        yield
+    finally:
+        if had_own:
+            client.get_list_item = previous
+        else:
+            del client.get_list_item
 
 
-async def _deleted_item_flow():
+@pytest.mark.parametrize(
+    "status_code, expect_closed",
+    [
+        # 404 = deleted in SharePoint. Nothing left to remind about, and leaving
+        # the row open makes every hourly scan retry it and log a traceback.
+        (404, True),
+        # 503 is not proof the request is gone - it must stay open and retry.
+        (503, False),
+    ],
+)
+def test_reminders_close_only_when_the_item_is_really_gone(status_code, expect_closed):
+    asyncio.run(_missing_item_flow(status_code, expect_closed))
+
+
+async def _missing_item_flow(status_code, expect_closed):
     from app.database import engine, Base, async_session
     from app.models import RequestApprovalState
 
@@ -187,59 +218,36 @@ async def _deleted_item_flow():
         await conn.run_sync(Base.metadata.create_all)
 
     lid = settings.SP_LIST_LEAVE_REQUESTS
-    iid = f"gone-{uuid.uuid4().hex}"
+    iid = f"missing-{status_code}-{uuid.uuid4().hex}"
     await bump_and_snapshot(lid, iid, {"Days": 1}, MATERIAL_FIELDS_LEAVE)
-
-    async def _raise_404(list_id, item_id):
-        raise _http_error(404)
-
-    original = reminders.sp_client.get_list_item
-    reminders.sp_client.get_list_item = _raise_404
-    try:
-        async with async_session() as s:
-            row = await s.get(RequestApprovalState, (lid, iid))
-        await reminders._process_row(row)
-    finally:
-        reminders.sp_client.get_list_item = original
 
     async with async_session() as s:
         row = await s.get(RequestApprovalState, (lid, iid))
-        assert row.reminders_closed is True
 
-
-def test_transient_error_does_not_close_reminders():
-    """A 503 is not proof the request is gone - it must stay open and retry."""
-    asyncio.run(_transient_error_flow())
-
-
-async def _transient_error_flow():
-    from app.database import engine, Base, async_session
-    from app.models import RequestApprovalState
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    lid = settings.SP_LIST_LEAVE_REQUESTS
-    iid = f"flaky-{uuid.uuid4().hex}"
-    await bump_and_snapshot(lid, iid, {"Days": 1}, MATERIAL_FIELDS_LEAVE)
-
-    async def _raise_503(list_id, item_id):
-        raise _http_error(503)
-
-    original = reminders.sp_client.get_list_item
-    reminders.sp_client.get_list_item = _raise_503
-    try:
-        async with async_session() as s:
-            row = await s.get(RequestApprovalState, (lid, iid))
-        raised = False
-        try:
+    with _get_list_item_raises(status_code):
+        if expect_closed:
             await reminders._process_row(row)
-        except httpx.HTTPStatusError:
-            raised = True
-        assert raised, "transient errors must propagate, not be swallowed"
-    finally:
-        reminders.sp_client.get_list_item = original
+        else:
+            with pytest.raises(httpx.HTTPStatusError):
+                await reminders._process_row(row)
 
     async with async_session() as s:
         row = await s.get(RequestApprovalState, (lid, iid))
-        assert row.reminders_closed is False
+        assert row.reminders_closed is expect_closed
+
+
+def test_admin_reminder_on_deleted_item_returns_error_not_500():
+    """send_reminder_now is the sibling call site of _process_row.
+
+    A deleted item must come back as a dict the dashboard can turn into a 400,
+    not an httpx exception escaping into an unhandled 500.
+    """
+    with _get_list_item_raises(404):
+        result = asyncio.run(reminders.send_reminder_now("leave", "3402"))
+    assert "error" in result
+
+
+def test_admin_reminder_propagates_transient_errors():
+    with _get_list_item_raises(503):
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(reminders.send_reminder_now("leave", "3402"))

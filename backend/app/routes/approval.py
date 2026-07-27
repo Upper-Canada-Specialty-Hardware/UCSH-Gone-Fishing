@@ -31,38 +31,42 @@ LIST_ID_FOR_TYPE = {
 }
 
 
+def _error_page(request, request_id, message):
+    """The one place approval_error.html is rendered.
+
+    Keeping every error path behind a single call means a change to the
+    templating call signature is a one-line edit here, not a sweep of the module.
+    """
+    return templates.TemplateResponse(
+        request,
+        "approval_error.html",
+        {"error": message, "request_id": request_id},
+    )
+
+
 async def _validate_and_check(request, request_type, action, request_id, token, mgr, exp, version):
     """Shared validation for GET and POST. Returns error response or None."""
     if not settings.PROCESSING_ENABLED:
-        return templates.TemplateResponse(
-            request,
-            "approval_error.html",
-            {"error": "System is currently in reporting-only mode. Approvals are disabled.", "request_id": request_id},
+        return _error_page(
+            request, request_id,
+            "System is currently in reporting-only mode. Approvals are disabled.",
         )
 
     valid, error_msg = validate_approval_token(
         request_type, request_id, action, mgr, token, exp, version
     )
     if not valid:
-        return templates.TemplateResponse(
-            request,
-            "approval_error.html",
-            {"error": error_msg, "request_id": request_id},
-        )
+        return _error_page(request, request_id, error_msg)
 
     if (request_type, action) not in HANDLERS:
-        return templates.TemplateResponse(
-            request,
-            "approval_error.html",
-            {"error": "Invalid request type or action", "request_id": request_id},
-        )
+        return _error_page(request, request_id, "Invalid request type or action")
 
     list_id = LIST_ID_FOR_TYPE.get(request_type)
     if list_id:
         current_version = await get_current_version(list_id, request_id)
         if version != current_version:
             logger.info(
-                "Stale approval link for %s #%s — link v%s, current v%s",
+                "Stale approval link for %s #%s - link v%s, current v%s",
                 request_type, request_id, version, current_version,
             )
             return templates.TemplateResponse(
@@ -85,7 +89,7 @@ async def confirm_approval(
     exp: str = Query(...),
     v: int = Query(1),
 ):
-    """Show confirmation page — does NOT process the action."""
+    """Show confirmation page - does NOT process the action."""
     error_response = await _validate_and_check(request, request_type, action, request_id, token, mgr, exp, v)
     if error_response:
         return error_response
@@ -127,18 +131,10 @@ async def handle_approval(
         result = await handler(request_id, mgr)
     except Exception as e:
         logger.exception("Error processing approval for %s #%s", request_type, request_id)
-        return templates.TemplateResponse(
-            request,
-            "approval_error.html",
-            {"error": str(e), "request_id": request_id},
-        )
+        return _error_page(request, request_id, str(e))
 
     if "error" in result:
-        return templates.TemplateResponse(
-            request,
-            "approval_error.html",
-            {"error": result["error"], "request_id": request_id},
-        )
+        return _error_page(request, request_id, result["error"])
 
     if action == "approve":
         return templates.TemplateResponse(

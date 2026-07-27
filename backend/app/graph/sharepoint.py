@@ -1,6 +1,8 @@
 import logging
 from urllib.parse import quote
 
+import httpx
+
 from app.config import settings
 from app.graph.client import graph_client
 
@@ -61,6 +63,22 @@ class SharePointClient:
         path = f"{self._list_path(list_id)}/items/{item_id}"
         params = {"$expand": "fields"}
         return await graph_client.get(path, params=params)
+
+    async def get_list_item_or_none(self, list_id: str, item_id: str | int) -> dict | None:
+        """get_list_item, but a deleted item is None instead of an exception.
+
+        Only 404 maps to None. Every other status still raises, so throttling, an
+        outage, or a permissions change is never mistaken for a deleted item.
+        Callers that treat "missing" as a terminal state (closing a reminder row,
+        rejecting an admin action) should use this rather than catching
+        httpx.HTTPStatusError themselves.
+        """
+        try:
+            return await self.get_list_item(list_id, item_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
 
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
         path = f"{self._list_path(list_id)}/items"
