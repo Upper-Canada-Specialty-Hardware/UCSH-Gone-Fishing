@@ -123,7 +123,9 @@ async def send_reminder_now(request_type: str, request_id: str | int) -> dict:
     list_id = _LIST_FOR_TYPE.get(request_type)
     if not list_id:
         return {"error": f"Unknown request type: {request_type}"}
-    item = await sp_client.get_list_item(list_id, request_id)
+    item = await sp_client.get_list_item_or_none(list_id, request_id)
+    if item is None:
+        return {"error": "Request no longer exists in SharePoint"}
     fields = item.get("fields", {})
     if _is_processed(fields, request_type):
         return {"error": "Request is no longer pending"}
@@ -138,7 +140,16 @@ async def _process_row(row: RequestApprovalState) -> None:
         await _close(row.list_id, row.item_id)
         return
 
-    item = await sp_client.get_list_item(row.list_id, row.item_id)
+    item = await sp_client.get_list_item_or_none(row.list_id, row.item_id)
+    if item is None:
+        # Item deleted in SharePoint. Nothing left to remind about, and without
+        # closing the row every scan would retry it forever. Warning, not info:
+        # unlike the actioned/cutoff closes below this is not a normal ending,
+        # and this line is the only trace that a pending request vanished.
+        await _close(row.list_id, row.item_id)
+        logger.warning("Reminders closed for %s #%s - item no longer in SharePoint", req_type, row.item_id)
+        return
+
     fields = item.get("fields", {})
 
     if _is_processed(fields, req_type):
