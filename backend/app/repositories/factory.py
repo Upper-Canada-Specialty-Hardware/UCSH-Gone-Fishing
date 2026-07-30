@@ -1,12 +1,16 @@
 """Repository factory — hands each domain the storage-backed implementation
 selected by its feature flag.
 
-Right now every flag defaults to "sharepoint" and only the SharePoint
-implementations exist, so the factory always returns those (no behavior
-change). Each cutover PR will add a Postgres implementation for one domain and
-wire its "postgres" branch here, then the flag is flipped. Setting a flag to
-"postgres" before that impl exists raises a clear error rather than silently
-falling back to SharePoint.
+Every flag still defaults to "sharepoint", so the factory returns the
+SharePoint implementations unless a flag is explicitly set (no behavior change
+on deploy). Each cutover PR adds a Postgres implementation for one domain and
+wires its "postgres" branch here; the flag is flipped separately, once that
+domain's rows have been backfilled. Selecting a backend a domain has no
+implementation for raises a clear error rather than silently falling back to
+SharePoint.
+
+Implemented so far: holidays (sharepoint | postgres). Employees and requests
+remain SharePoint-only.
 """
 from app.config import settings
 from app.repositories.base import (
@@ -20,6 +24,7 @@ from app.repositories.sharepoint.holidays import SharePointHolidayRepository
 from app.repositories.sharepoint.manager_assignments import (
     SharePointManagerAssignmentRepository,
 )
+from app.repositories.postgres.holidays import PostgresHolidayRepository
 from app.repositories.sharepoint.requests import SharePointRequestRepository
 
 SHAREPOINT = "sharepoint"
@@ -28,9 +33,10 @@ POSTGRES = "postgres"
 
 def _unsupported(domain: str, backend: str):
     raise NotImplementedError(
-        f"Storage backend '{backend}' for {domain} is not implemented yet. "
-        f"Postgres implementations arrive in the per-domain cutover PRs — keep "
-        f"{domain} on '{SHAREPOINT}' until then."
+        f"Storage backend '{backend}' for {domain} is not implemented. "
+        f"'{SHAREPOINT}' is always valid; '{POSTGRES}' only once that domain's "
+        f"cutover PR has landed its repository — keep {domain} on "
+        f"'{SHAREPOINT}' until then."
     )
 
 
@@ -51,6 +57,8 @@ def get_manager_assignment_repository() -> ManagerAssignmentRepository:
 def get_holiday_repository() -> HolidayRepository:
     if settings.STORAGE_HOLIDAYS == SHAREPOINT:
         return SharePointHolidayRepository()
+    if settings.STORAGE_HOLIDAYS == POSTGRES:
+        return PostgresHolidayRepository()
     _unsupported("holidays", settings.STORAGE_HOLIDAYS)
 
 
