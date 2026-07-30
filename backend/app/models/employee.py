@@ -40,10 +40,15 @@ class Employee(Base, TimestampMixin):
     sp_user_lookup_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String, nullable=False)                            # Title
 
+    cell_number: Mapped[str | None] = mapped_column(String, nullable=True)               # CellNumber
+
     # --- Org placement ---
     department: Mapped[str | None] = mapped_column(String, nullable=True)                # Department
     location: Mapped[str | None] = mapped_column(String, nullable=True)                  # Location
     employee_type: Mapped[str | None] = mapped_column(String, nullable=True)             # EmployeeType
+    # "Hourly" / "Salary". Decides whether an approval adjusts balances at all,
+    # so it must never be silently absent — see Alembic 0006.
+    salary_hourly: Mapped[str | None] = mapped_column(String, nullable=True)             # SalaryHourly
 
     # --- The five balance "pots" (days) ---
     vacation_balance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)  # CurrentVacationBalance

@@ -181,12 +181,9 @@ def test_factory_rejects_an_unknown_backend(monkeypatch):
     assert "mysql" in str(excinfo.value)
 
 
-def test_employees_and_requests_are_still_sharepoint_only(monkeypatch):
-    # This PR cuts over holidays only; the other domains must still refuse.
-    monkeypatch.setattr(factory.settings, "STORAGE_EMPLOYEES", "postgres")
-    with pytest.raises(NotImplementedError):
-        factory.get_employee_repository()
-
+def test_requests_are_still_sharepoint_only(monkeypatch):
+    # Employees gained a Postgres implementation in PR G; requests is the last
+    # domain still without one, so it must keep refusing the flag.
     monkeypatch.setattr(factory.settings, "STORAGE_REQUESTS", "postgres")
     with pytest.raises(NotImplementedError):
         factory.get_leave_request_repository()

@@ -9,7 +9,7 @@ domain's rows have been backfilled. Selecting a backend a domain has no
 implementation for raises a clear error rather than silently falling back to
 SharePoint.
 
-Implemented so far: holidays (sharepoint | postgres). Employees and requests
+Implemented so far: holidays and employees (sharepoint | postgres). Requests
 remain SharePoint-only.
 """
 from app.config import settings
@@ -24,7 +24,11 @@ from app.repositories.sharepoint.holidays import SharePointHolidayRepository
 from app.repositories.sharepoint.manager_assignments import (
     SharePointManagerAssignmentRepository,
 )
+from app.repositories.postgres.employee import PostgresEmployeeRepository
 from app.repositories.postgres.holidays import PostgresHolidayRepository
+from app.repositories.postgres.manager_assignments import (
+    PostgresManagerAssignmentRepository,
+)
 from app.repositories.sharepoint.requests import SharePointRequestRepository
 
 SHAREPOINT = "sharepoint"
@@ -43,6 +47,8 @@ def _unsupported(domain: str, backend: str):
 def get_employee_repository() -> EmployeeRepository:
     if settings.STORAGE_EMPLOYEES == SHAREPOINT:
         return SharePointEmployeeRepository()
+    if settings.STORAGE_EMPLOYEES == POSTGRES:
+        return PostgresEmployeeRepository()
     _unsupported("employees", settings.STORAGE_EMPLOYEES)
 
 
@@ -51,6 +57,8 @@ def get_manager_assignment_repository() -> ManagerAssignmentRepository:
     # employees flag.
     if settings.STORAGE_EMPLOYEES == SHAREPOINT:
         return SharePointManagerAssignmentRepository()
+    if settings.STORAGE_EMPLOYEES == POSTGRES:
+        return PostgresManagerAssignmentRepository()
     _unsupported("employees", settings.STORAGE_EMPLOYEES)
 
 
