@@ -4,6 +4,7 @@ from datetime import date
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.employee import (
     get_employee_by_id,
@@ -592,8 +593,8 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
 
         if leave_type in ("Vacation", "Half Day or Partial Day Off"):
             new_overtime = float(ef.get("CurrentOvertimeBalance", 0) or 0) - days
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            await get_employee_repository().update_fields(
+                employee_id,
                 {"CurrentOvertimeBalance": new_overtime},
             )
             audit.add_step(
@@ -604,8 +605,8 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
             )
         elif leave_type == "Sick or Personal Day":
             new_sick = float(ef.get("CurrentSickDayBalance", 0) or 0) - days
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            await get_employee_repository().update_fields(
+                employee_id,
                 {"CurrentSickDayBalance": new_sick},
             )
             audit.add_step(
@@ -771,8 +772,8 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
                 updates[key] = current_val - delta
 
             if updates:
-                await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, employee_id, updates,
+                await get_employee_repository().update_fields(
+                    employee_id, updates,
                 )
 
             audit_before = {k: float(ef.get(k, 0) or 0) for k in updates}
@@ -803,8 +804,8 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
             # Fallback path: naive reversal for requests without audit data
             if leave_type in ("Vacation", "Half Day or Partial Day Off"):
                 new_overtime = float(ef.get("CurrentOvertimeBalance", 0) or 0) + days
-                await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                await get_employee_repository().update_fields(
+                    employee_id,
                     {"CurrentOvertimeBalance": new_overtime},
                 )
                 audit.add_step(
@@ -815,8 +816,8 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
                 )
             elif leave_type == "Sick or Personal Day":
                 new_sick = float(ef.get("CurrentSickDayBalance", 0) or 0) + days
-                await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                await get_employee_repository().update_fields(
+                    employee_id,
                     {"CurrentSickDayBalance": new_sick},
                 )
                 audit.add_step(

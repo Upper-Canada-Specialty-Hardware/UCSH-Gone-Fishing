@@ -3,6 +3,7 @@ from datetime import date
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
@@ -408,8 +409,8 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         new_ot = current_ot + days_to_add
 
         # Update SD balance
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+        await get_employee_repository().update_fields(
+            employee_id,
             {"CurrentOvertimeBalance": new_ot},
         )
         audit.add_step(
@@ -524,8 +525,8 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
         current_ot = float(ef.get("CurrentOvertimeBalance", 0) or 0)
         new_ot = current_ot - days_to_subtract
 
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+        await get_employee_repository().update_fields(
+            employee_id,
             {"CurrentOvertimeBalance": new_ot},
         )
         audit.add_step(

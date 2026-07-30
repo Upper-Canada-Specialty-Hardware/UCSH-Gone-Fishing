@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, is_manager
 from app.services.leave_requests import _resolve_user_lookup_id
@@ -133,7 +134,7 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     """Fetch Staff Directory and User Information List.
     Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts.
     """
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await get_employee_repository().get_all()
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
     mgr_to_emp_names: dict[str, set[str]] = {}
@@ -407,7 +408,7 @@ async def team_members(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await get_employee_repository().get_all()
     items = [
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
@@ -426,7 +427,7 @@ async def team_balances(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await get_employee_repository().get_all()
     items = [
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
@@ -782,7 +783,7 @@ async def admin_create_employee(body: dict):
 
 @router.get("/admin/balances")
 async def admin_balances(group_by: str | None = Query(None)):
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await get_employee_repository().get_all()
 
     # Build set of all manager names from AllManagers fields
     manager_names: set[str] = set()
@@ -1130,7 +1131,7 @@ async def admin_stats():
         return counts
 
     # Department breakdown from staff directory
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    staff = await get_employee_repository().get_all()
     dept_summary = {}
     for item in staff:
         f = item.get("fields", {})
@@ -1478,8 +1479,8 @@ async def admin_set_balances(body: dict):
                           for k, sp_field in BALANCE_FIELDS.items()
                           if k in entry}
 
-                await sp_client.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
+                await get_employee_repository().update_fields(
+                    emp_id, sp_updates,
                 )
 
                 vacation = sp_updates.get("CurrentVacationBalance",

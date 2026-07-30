@@ -3,6 +3,7 @@ from datetime import date
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
@@ -448,8 +449,8 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
         if request_type == "Carry Over":
             final_carryover = fresh_carryover + days
             final_payout = fresh_payout
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            await get_employee_repository().update_fields(
+                employee_id,
                 {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
             )
             audit.add_step(
@@ -461,8 +462,8 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
         else:
             final_carryover = fresh_carryover
             final_payout = fresh_payout + days
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            await get_employee_repository().update_fields(
+                employee_id,
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
             )
             audit.add_step(
@@ -545,8 +546,8 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
         if request_type == "Carry Over":
             final_carryover = fresh_carryover - days
             final_payout = fresh_payout
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            await get_employee_repository().update_fields(
+                employee_id,
                 {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
             )
             audit.add_step(
@@ -558,8 +559,8 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
         else:
             final_carryover = fresh_carryover
             final_payout = fresh_payout - days
-            await sp_client.update_list_item_fields(
-                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            await get_employee_repository().update_fields(
+                employee_id,
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
             )
             audit.add_step(
