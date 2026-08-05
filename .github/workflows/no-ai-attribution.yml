@@ -1,0 +1,81 @@
+name: no-ai-attribution
+
+# Fails when a commit MESSAGE or author/committer IDENTITY mentions the vendor.
+#
+# Scope is deliberately limited to text that lands in a github text field.
+# File contents and path names are OUT of scope, so a tracked CLAUDE.md or a
+# .claude/ entry is fine and is never flagged.
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: scan commit messages and identities
+        env:
+          EV: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          # Actions invokes this with `bash -e`. Combined with pipefail, a grep
+          # that matches nothing (exit 1) is the CLEAN case but would abort the
+          # script, so the grep-in-assignment below ends with `|| true`.
+          set -uo pipefail
+
+          PAT='claude|anthropic'
+
+          if [ "$EV" = "pull_request" ]; then
+            base=$(git merge-base "$PR_BASE" "$PR_HEAD" 2>/dev/null || echo "$PR_BASE")
+            head="$PR_HEAD"
+          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            # New branch: only inspect commits not already on another remote ref,
+            # so a fresh branch is not judged for the whole repo's history.
+            base=""
+            head="$PUSH_AFTER"
+          else
+            base="$PUSH_BEFORE"
+            head="$PUSH_AFTER"
+          fi
+
+          if [ -n "$base" ]; then
+            range=$(git rev-list "$base..$head" 2>/dev/null || echo "")
+          else
+            range=$(git rev-list "$head" --not --remotes=origin --max-count=200 2>/dev/null || echo "")
+          fi
+
+          if [ -z "$range" ]; then
+            echo "no new commits to scan"
+            exit 0
+          fi
+
+          failed=0
+          for c in $range; do
+            meta=$(git show -s --format='%an <%ae>%n%cn <%ce>%n%B' "$c")
+            bad=$(echo "$meta" | grep -inE "$PAT" | head -3 || true)
+            if [ -n "$bad" ]; then
+              echo "::error::$(git show -s --format='%h %s' "$c")"
+              echo "$bad" | sed 's/^/    /'
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -eq 1 ]; then
+            echo ""
+            echo "Commit messages above reference the vendor. Reword them and force-push."
+            exit 1
+          fi
+
+          n=$(echo "$range" | grep -c . || true)
+          echo "clean - ${n:-0} commit message(s) scanned"
