@@ -91,6 +91,10 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
 
     managers = await get_all_managers_for_employee(employee)
     if not managers:
+        logger.warning(
+            "OT #%s — no notification: no supervisor resolved for %s",
+            request_id, employee.get("fields", {}).get("Title"),
+        )
         return
 
     # Assign primary manager (first) to SP item
@@ -102,6 +106,14 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     update = {"Status": "Pending"}
     if manager_lookup_id:
         update["ManagerLookupId"] = manager_lookup_id
+    else:
+        # Overtime still notifies without this field, but the request stays hidden
+        # from the dashboards, which treat "no manager assigned" as unprocessed.
+        logger.warning(
+            "OT #%s — supervisor %s (%s) has no Microsoft 365 match, so ManagerLookupId "
+            "cannot be set and the request stays hidden from the dashboards",
+            request_id, mgr_fields.get("Title"), mgr_email,
+        )
 
     await sp_client.update_list_item_fields(settings.SP_LIST_OVERTIME_REQUESTS, request_id, update)
     logger.info("Assigned manager %s to overtime request #%s", mgr_fields.get("Title"), request_id)
@@ -111,11 +123,19 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
 
 
 async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict], is_reminder: bool = False):
-    """Holiday check, half-friday detection, send approval email to all managers."""
+    """Holiday check, half-friday detection, send approval email to all managers.
+
+    Early returns log why, so a request that notifies nobody is distinguishable
+    from one that was never submitted.
+    """
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
+        logger.info(
+            "OT #%s — no notification: status is %s, not Pending",
+            request_id, fields.get("Status"),
+        )
         return
 
     emp_fields = employee["fields"]

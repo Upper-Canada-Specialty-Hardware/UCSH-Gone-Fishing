@@ -226,6 +226,16 @@ async def auto_assign_manager(leave_request_id: str | int):
     manager_lookup_id = await _resolve_user_lookup_id(manager_email)
     if manager_lookup_id:
         update_fields["ManagerLookupId"] = manager_lookup_id
+    else:
+        # Without this field send_approval_email returns at its own guard, so the
+        # request notifies nobody AND stays hidden from the dashboards, which
+        # treat "no manager assigned" as not-yet-processed. Warn loudly: the
+        # success line below fires either way and would otherwise read as fine.
+        logger.warning(
+            "LR #%s — supervisor %s (%s) has no Microsoft 365 match, so ManagerLookupId "
+            "cannot be set and no approval notification will be sent",
+            leave_request_id, mgr_fields.get("Title"), manager_email,
+        )
 
     # Set AllManagers from employee's AllManagers field (multi-value Person/Group)
     # Graph API requires LookupId array format for writing multi-value Person fields
@@ -269,25 +279,52 @@ async def send_bereavement_alert(leave_request_id: str | int):
 
 
 async def send_approval_email(leave_request_id: str | int, is_reminder: bool = False):
-    """Send approval email with HMAC links to all managers."""
+    """Send approval email with HMAC links to all managers.
+
+    Every early return below means nobody is notified. Each one logs why, because
+    a request that silently notifies no one is indistinguishable from one that
+    was never submitted — that ambiguity is what made the July outage take a full
+    code audit to diagnose. "Skipped" reasons log at info, "should have worked"
+    reasons at warning.
+    """
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
     if fields.get("ApproveProcessedFlag") == "Processed":
+        logger.info("LR #%s — no notification: already processed", leave_request_id)
         return
     if fields.get("Status") != "Pending":
+        logger.info(
+            "LR #%s — no notification: status is %s, not Pending",
+            leave_request_id, fields.get("Status"),
+        )
         return
     if not fields.get("ManagerLookupId"):
+        # The single most likely cause of "nobody was notified and the request is
+        # invisible" — see the matching warning in auto_assign_manager.
+        logger.warning(
+            "LR #%s — no notification: ManagerLookupId is not set, so no manager is assigned",
+            leave_request_id,
+        )
         return
 
     employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
+        logger.warning(
+            "LR #%s — no notification: submitter could not be resolved to a Staff Directory record",
+            leave_request_id,
+        )
         return
     emp_fields = employee["fields"]
     submitter_name = emp_fields.get("Title", "")
 
     managers = await get_all_managers_for_employee(employee)
     if not managers:
+        # get_all_managers_for_employee already warns; name the consequence here.
+        logger.warning(
+            "LR #%s — no notification: no supervisor resolved for %s",
+            leave_request_id, submitter_name,
+        )
         return
 
     from app.templates_render import render_leave_approval_email, render_leave_confirmation

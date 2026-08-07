@@ -13,6 +13,7 @@ and numbers in the 555-0100..0199 range (reserved for fictional use), so nothing
 here can reach a real person if a test is ever pointed at a live provider.
 """
 import asyncio
+import logging
 
 import pytest
 
@@ -378,3 +379,56 @@ def test_carryover_failing_text_does_not_silence_later_managers(monkeypatch):
     # This pipeline has no submitter confirmation, so only the supervisors appear.
     assert emailed == _all_manager_emails()
     assert texted == [_manager_cell(1)]
+
+
+# ----- silent returns must not be silent -----
+#
+# Every guard before the loop exits without notifying anyone. Diagnosing the July
+# outage cost a full code audit precisely because those exits left no trace, so
+# each one is pinned here.
+
+
+def _run_leave_approval_with_fields(monkeypatch, fields):
+    """Call the real leave send_approval_email against a bare SharePoint item.
+
+    Only the item read is stubbed - the intent is to trip a guard before any
+    provider call is reached, so nothing else needs replacing.
+
+    Args:
+        monkeypatch: pytest fixture used to swap the SharePoint read.
+        fields: The SharePoint item's `fields` payload to return.
+    """
+    from app.services import leave_requests
+
+    async def fake_get_list_item(list_id, item_id):
+        return {"id": str(item_id), "fields": fields}
+
+    monkeypatch.setattr(leave_requests.sp_client, "get_list_item", fake_get_list_item)
+    asyncio.run(leave_requests.send_approval_email("3402"))
+
+
+def test_missing_manager_lookup_id_is_logged(monkeypatch, caplog):
+    """The likeliest cause of "nobody was notified" must name itself.
+
+    Without ManagerLookupId the request notifies no one and is also hidden from
+    the dashboards, so this warning is the only evidence it ever existed.
+    """
+    with caplog.at_level(logging.WARNING):
+        _run_leave_approval_with_fields(
+            monkeypatch, {"Status": "Pending", "ApproveProcessedFlag": "Not Processed"}
+        )
+
+    assert "ManagerLookupId" in caplog.text
+    assert "3402" in caplog.text
+
+
+def test_non_pending_status_is_logged(monkeypatch, caplog):
+    """A normal skip still says so, at info rather than warning."""
+    with caplog.at_level(logging.INFO):
+        _run_leave_approval_with_fields(
+            monkeypatch,
+            {"Status": "Approved", "ApproveProcessedFlag": "Not Processed", "ManagerLookupId": 42},
+        )
+
+    assert "not Pending" in caplog.text
+    assert "3402" in caplog.text

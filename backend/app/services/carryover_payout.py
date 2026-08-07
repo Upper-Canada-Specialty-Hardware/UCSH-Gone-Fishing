@@ -223,17 +223,29 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
     item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
+    # Every early return here means nobody is notified; each logs why, so silence
+    # is never ambiguous with "no request was submitted".
     if fields.get("Status") != "Pending":
+        logger.info(
+            "CO/PO #%s — no notification: status is %s, not Pending",
+            request_id, fields.get("Status"),
+        )
         return
     if fields.get("SystemState") == "Processed":
+        logger.info("CO/PO #%s — no notification: already processed", request_id)
         return
 
     employee_id = fields.get("EmployeeID")
     if not employee_id:
+        logger.warning("CO/PO #%s — no notification: request carries no EmployeeID", request_id)
         return
 
     employee = await get_employee_by_id(employee_id)
     if not employee:
+        logger.warning(
+            "CO/PO #%s — no notification: EmployeeID %s matches no Staff Directory record",
+            request_id, employee_id,
+        )
         return
 
     emp_fields = employee["fields"]
@@ -261,6 +273,11 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
             if mgr:
                 all_managers = [mgr]
     if not all_managers:
+        logger.warning(
+            "CO/PO #%s — no notification: no supervisor resolved for %s, and the "
+            "ManagerID fallback did not resolve either",
+            request_id, employee_name,
+        )
         return
 
     version = await bump_and_snapshot(
