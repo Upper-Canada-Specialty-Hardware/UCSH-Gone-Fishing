@@ -18,6 +18,8 @@ import ast
 import inspect
 from datetime import date
 
+import pytest
+
 from app.services import employee_validation as ev
 from app.services.employee_validation import build_validation_report
 
@@ -98,6 +100,52 @@ def test_unresolved_manager_fails():
 def test_manager_without_email_warns():
     report = _report(managers=[{"id": "5", "fields": {"Title": "Boss", "EmailAddress": ""}}])
     assert _by_code(report, "manager_reachable")["status"] == "warn"
+
+
+@pytest.mark.parametrize("stored", ["4165550101x22", "555-0101", "n/a"])
+def test_manager_with_undiallable_phone_warns(stored):
+    """A number that cannot be dialled reports warn instead of passing silently.
+
+    These are values normalization cannot rescue — an appended extension, too
+    few digits, free text. Without this check the record validates green while
+    the supervisor's approval texts are never delivered.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": stored},
+    }])
+    check = _by_code(report, "manager_phone_valid")
+    assert check["status"] == "warn"
+    assert "Boss" in check["detail"]
+
+
+@pytest.mark.parametrize(
+    "stored",
+    ["4165550101", "(416) 555-0101", "416-555-0101", "4165550101 ", "+14165550101"],
+)
+def test_manager_phone_passes_for_anything_normalization_handles(stored):
+    """Human formatting is fine — the send path normalizes it before dialling.
+
+    Only genuinely undialable values are worth a supervisor's attention, so a
+    number typed with punctuation or a trailing space is not flagged.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": stored},
+    }])
+    assert _by_code(report, "manager_phone_valid")["status"] == "pass"
+
+
+def test_manager_without_a_phone_is_not_flagged():
+    """No number on file is a normal state, not a misconfiguration.
+
+    Most staff never enter one, and the send path already skips them.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": ""},
+    }])
+    assert _by_code(report, "manager_phone_valid")["status"] == "pass"
 
 
 # ----- location / province -----

@@ -322,54 +322,65 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
 
-        approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
-        reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
+        # One manager's failure must not cost the others their notification. Every
+        # send in here can raise (a rejected recipient, a throttled provider), and
+        # an escape would skip every remaining manager AND the submitter's
+        # confirmation email below.
+        try:
+            approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
+            reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
 
-        html = render_leave_approval_email(
-            fields, emp_fields, approve_url, reject_url, submitter_name, projected,
-            previous_snapshot=previous_snapshot,
-        )
-
-        await send_email_with_dashboard(
-            to=[mgr_fields.get("EmailAddress", "")],
-            subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
-            html_body=html,
-            primary_employee_id=manager_id,
-        )
-
-        # Send SMS to manager if they have a cell number (skipped on reminders -
-        # reminders are email-only with fresh links)
-        cell = mgr_fields.get("CellNumber", "")
-        if cell and not is_reminder:
-            if projected:
-                bal_line = (
-                    f"If approved: Vac: {projected['CurrentVacationBalance']}, "
-                    f"Sick: {projected['CurrentSickDayBalance']}, "
-                    f"MU: {projected['CurrentOvertimeBalance']}, "
-                    f"CO: {projected['CarryOver']}.\n"
-                )
-            else:
-                bal_line = "No balance change.\n"
-            _s = _parse_date(start_str)
-            _e = _parse_date(end_str)
-            if _s and _e:
-                if _s == _e:
-                    date_line = f"{_s.strftime('%b %d, %Y')}\n"
-                else:
-                    date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
-            elif start_str:
-                date_line = f"{start_str[:10]}\n"
-            else:
-                date_line = ""
-            await send_sms(
-                to=cell,
-                body=(
-                    f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
-                    f"{date_line}"
-                    f"{bal_line}"
-                    f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
-                ),
+            html = render_leave_approval_email(
+                fields, emp_fields, approve_url, reject_url, submitter_name, projected,
+                previous_snapshot=previous_snapshot,
             )
+
+            await send_email_with_dashboard(
+                to=[mgr_fields.get("EmailAddress", "")],
+                subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
+                html_body=html,
+                primary_employee_id=manager_id,
+            )
+
+            # Send SMS to manager if they have a cell number (skipped on reminders -
+            # reminders are email-only with fresh links)
+            cell = mgr_fields.get("CellNumber", "")
+            if cell and not is_reminder:
+                if projected:
+                    bal_line = (
+                        f"If approved: Vac: {projected['CurrentVacationBalance']}, "
+                        f"Sick: {projected['CurrentSickDayBalance']}, "
+                        f"MU: {projected['CurrentOvertimeBalance']}, "
+                        f"CO: {projected['CarryOver']}.\n"
+                    )
+                else:
+                    bal_line = "No balance change.\n"
+                _s = _parse_date(start_str)
+                _e = _parse_date(end_str)
+                if _s and _e:
+                    if _s == _e:
+                        date_line = f"{_s.strftime('%b %d, %Y')}\n"
+                    else:
+                        date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
+                elif start_str:
+                    date_line = f"{start_str[:10]}\n"
+                else:
+                    date_line = ""
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
+                        f"{date_line}"
+                        f"{bal_line}"
+                        f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
+                    ),
+                )
+        except Exception:
+            logger.exception(
+                "Failed to notify manager %s for leave request #%s — continuing with remaining managers",
+                mgr_fields.get("Title"), leave_request_id,
+            )
+            continue
 
         logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
 

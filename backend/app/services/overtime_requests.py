@@ -186,38 +186,46 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
 
-        approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
-        reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
+        # One manager's failure must not cost the others their notification —
+        # see the matching guard in leave_requests.send_approval_email.
+        try:
+            approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
+            reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
 
-        html = render_overtime_approval_email(
-            fields, submitter_name, approve_url, reject_url, is_hf,
-            emp_fields=emp_fields, projected=projected,
-            previous_snapshot=previous_snapshot,
-        )
+            html = render_overtime_approval_email(
+                fields, submitter_name, approve_url, reject_url, is_hf,
+                emp_fields=emp_fields, projected=projected,
+                previous_snapshot=previous_snapshot,
+            )
 
-        await send_email_with_dashboard(
-            to=[mgr_fields.get("EmailAddress", "")],
-            subject=subject,
-            html_body=html,
-            primary_employee_id=manager_id,
-        )
+            await send_email_with_dashboard(
+                to=[mgr_fields.get("EmailAddress", "")],
+                subject=subject,
+                html_body=html,
+                primary_employee_id=manager_id,
+            )
 
-        # Send SMS to manager if they have a cell number (skipped on reminders)
-        cell = mgr_fields.get("CellNumber", "")
-        if cell and not is_reminder:
-            ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
-            if projected:
-                bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
-            else:
-                bal_line = ""
-            await send_sms(
-                to=cell,
-                body=(
-                    f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
-                    f"{ot_date}\n"
-                    f"{bal_line}"
-                    f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
-                ),
+            # Send SMS to manager if they have a cell number (skipped on reminders)
+            cell = mgr_fields.get("CellNumber", "")
+            if cell and not is_reminder:
+                ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
+                if projected:
+                    bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
+                else:
+                    bal_line = ""
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
+                        f"{ot_date}\n"
+                        f"{bal_line}"
+                        f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
+                    ),
+                )
+        except Exception:
+            logger.exception(
+                "Failed to notify manager %s for overtime request #%s — continuing with remaining managers",
+                mgr_fields.get("Title"), request_id,
             )
 
     logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))

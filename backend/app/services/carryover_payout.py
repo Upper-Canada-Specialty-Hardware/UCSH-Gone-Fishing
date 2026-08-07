@@ -278,33 +278,41 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
         mgr_id = mgr["id"]
         mgr_email = mgr["fields"].get("EmailAddress", "")
 
-        approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
-        reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
+        # One manager's failure must not cost the others their notification —
+        # see the matching guard in leave_requests.send_approval_email.
+        try:
+            approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
+            reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
 
-        html = render_carryover_payout_approval_email(
-            request_id, request_type, employee_name, days,
-            current_vacation, current_carryover, current_payout,
-            new_vacation, new_carryover, new_payout,
-            approve_url, reject_url,
-            previous_snapshot=previous_snapshot,
-        )
-        subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
-        await send_email_with_dashboard(
-            to=[mgr_email, "mandyl@ucsh.com"],
-            subject=subject,
-            html_body=html,
-            primary_employee_id=mgr_id,
-        )
+            html = render_carryover_payout_approval_email(
+                request_id, request_type, employee_name, days,
+                current_vacation, current_carryover, current_payout,
+                new_vacation, new_carryover, new_payout,
+                approve_url, reject_url,
+                previous_snapshot=previous_snapshot,
+            )
+            subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
+            await send_email_with_dashboard(
+                to=[mgr_email, "mandyl@ucsh.com"],
+                subject=subject,
+                html_body=html,
+                primary_employee_id=mgr_id,
+            )
 
-        cell = mgr["fields"].get("CellNumber", "")
-        if cell and not is_reminder:
-            await send_sms(
-                to=cell,
-                body=(
-                    f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
-                    f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
-                    f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
-                ),
+            cell = mgr["fields"].get("CellNumber", "")
+            if cell and not is_reminder:
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
+                        f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
+                        f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
+                    ),
+                )
+        except Exception:
+            logger.exception(
+                "Failed to notify manager %s for CO/PO request #%s — continuing with remaining managers",
+                mgr["fields"].get("Title"), request_id,
             )
 
     logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))

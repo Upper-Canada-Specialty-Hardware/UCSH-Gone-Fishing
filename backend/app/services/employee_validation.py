@@ -34,6 +34,7 @@ from app.services.employee import (
     resolve_person_field,
 )
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.sms import normalize_phone
 from app.services.holidays import get_holidays_for_province, get_half_friday_season
 from app.services.business_days import calculate_business_days
 from app.services.balance import (
@@ -175,6 +176,28 @@ def build_validation_report(
             checks.append(_check(
                 "manager_reachable", "supervisor", "pass",
                 "All supervisors have an email address.",
+            ))
+        # A supervisor whose phone value cannot be dialled loses their approval
+        # texts. The column has no input validation and whitespace is invisible
+        # in the SharePoint UI, so this check is the only place a bad value
+        # surfaces before someone reports missing notifications.
+        unusable_numbers = [
+            m.get("fields", {}).get("Title", "?")
+            for m in managers
+            if (m.get("fields", {}).get("CellNumber") or "").strip()      # a number was entered
+            and not normalize_phone(m.get("fields", {}).get("CellNumber"))  # but it won't dial
+        ]
+        if unusable_numbers:
+            checks.append(_check(
+                "manager_phone_valid", "supervisor", "warn",
+                "Supervisor(s) whose phone number is not in a usable format, so "
+                "approval texts cannot reach them (email still works). Enter it as "
+                "10 digits, e.g. 4165551234: " + ", ".join(unusable_numbers),
+            ))
+        elif managers:
+            checks.append(_check(
+                "manager_phone_valid", "supervisor", "pass",
+                "Every supervisor phone number on file is in a usable format.",
             ))
 
     # --- Location -> province ---
