@@ -5,6 +5,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
+from app.services.notifications import NotificationsFailed
 from app.services.employee import (
     get_employee_by_email,
     get_employee_by_id,
@@ -190,25 +191,34 @@ async def run_approval_pipeline(request_id: str | int):
         logger.info("Auto-rejected CO/PO #%s — vacation would go negative", request_id)
         return
 
-    # Send confirmation to employee
+    # Send confirmation to employee. Guarded because it runs BEFORE the manager
+    # fan-out below: an unguarded failure here (bad submitter address, throttled
+    # provider) would stop every manager being notified, which is the same blast
+    # radius the per-manager guards exist to prevent.
     from app.templates_render import render_carryover_confirmation, render_payout_confirmation
-    if request_type == "Carry Over":
-        html = render_carryover_confirmation(
-            request_id, emp_fields, days, new_vacation, new_carryover, current_payout
-        )
-        await send_email(
-            to=[emp_fields.get("EmailAddress", "")],
-            subject="Request Received for Carry Over",
-            html_body=html,
-        )
-    else:
-        html = render_payout_confirmation(
-            request_id, emp_fields, days, new_vacation, current_carryover, new_payout
-        )
-        await send_email(
-            to=[emp_fields.get("EmailAddress", "")],
-            subject="Request Received for Payout",
-            html_body=html,
+    try:
+        if request_type == "Carry Over":
+            html = render_carryover_confirmation(
+                request_id, emp_fields, days, new_vacation, new_carryover, current_payout
+            )
+            await send_email(
+                to=[emp_fields.get("EmailAddress", "")],
+                subject="Request Received for Carry Over",
+                html_body=html,
+            )
+        else:
+            html = render_payout_confirmation(
+                request_id, emp_fields, days, new_vacation, current_carryover, new_payout
+            )
+            await send_email(
+                to=[emp_fields.get("EmailAddress", "")],
+                subject="Request Received for Payout",
+                html_body=html,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to send the submitter confirmation for CO/PO #%s — continuing to notify managers",
+            request_id,
         )
 
     await send_approval_email(request_id)
@@ -291,6 +301,7 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
 
     from app.templates_render import render_carryover_payout_approval_email
 
+    notified = 0  # counts managers actually reached, so a total failure is detectable
     for mgr in all_managers:
         mgr_id = mgr["id"]
         mgr_email = mgr["fields"].get("EmailAddress", "")
@@ -331,8 +342,20 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
                 "Failed to notify manager %s for CO/PO request #%s — continuing with remaining managers",
                 mgr["fields"].get("Title"), request_id,
             )
+            continue
 
-    logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
+        notified += 1  # only past the try, so it counts deliveries, not attempts
+
+    if not notified:
+        # See leave_requests.send_approval_email: raising is what makes
+        # change_processor withhold the processed marker and retry.
+        raise NotificationsFailed(f"CO/PO request #{request_id}", len(all_managers))
+
+    # Report what actually happened, not how many managers were on the list.
+    logger.info(
+        "Sent approval email for CO/PO #%s to %d of %d manager(s)",
+        request_id, notified, len(all_managers),
+    )
 
 
 ALLOWED_CARRYOVER_TYPES = {"Carry Over", "Payout"}

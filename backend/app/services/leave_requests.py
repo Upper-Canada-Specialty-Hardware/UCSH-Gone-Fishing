@@ -33,6 +33,7 @@ from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import bump_and_snapshot, MATERIAL_FIELDS_LEAVE
 from app.services.sms import send_sms
+from app.services.notifications import NotificationsFailed
 from app.services.audit_trail import (
     AuditTrailBuilder,
     snapshot_balances,
@@ -355,6 +356,29 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
         if version > 1 and not is_reminder else None
     )
 
+    # Identical for every manager, so build them once rather than per iteration.
+    if projected:
+        bal_line = (
+            f"If approved: Vac: {projected['CurrentVacationBalance']}, "
+            f"Sick: {projected['CurrentSickDayBalance']}, "
+            f"MU: {projected['CurrentOvertimeBalance']}, "
+            f"CO: {projected['CarryOver']}.\n"
+        )
+    else:
+        bal_line = "No balance change.\n"
+    _s = _parse_date(start_str)
+    _e = _parse_date(end_str)
+    if _s and _e:
+        if _s == _e:
+            date_line = f"{_s.strftime('%b %d, %Y')}\n"
+        else:
+            date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
+    elif start_str:
+        date_line = f"{start_str[:10]}\n"
+    else:
+        date_line = ""
+
+    notified = 0  # counts managers actually reached, so a total failure is detectable
     for manager in managers:
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
@@ -383,26 +407,6 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
             # reminders are email-only with fresh links)
             cell = mgr_fields.get("CellNumber", "")
             if cell and not is_reminder:
-                if projected:
-                    bal_line = (
-                        f"If approved: Vac: {projected['CurrentVacationBalance']}, "
-                        f"Sick: {projected['CurrentSickDayBalance']}, "
-                        f"MU: {projected['CurrentOvertimeBalance']}, "
-                        f"CO: {projected['CarryOver']}.\n"
-                    )
-                else:
-                    bal_line = "No balance change.\n"
-                _s = _parse_date(start_str)
-                _e = _parse_date(end_str)
-                if _s and _e:
-                    if _s == _e:
-                        date_line = f"{_s.strftime('%b %d, %Y')}\n"
-                    else:
-                        date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
-                elif start_str:
-                    date_line = f"{start_str[:10]}\n"
-                else:
-                    date_line = ""
                 await send_sms(
                     to=cell,
                     body=(
@@ -419,9 +423,19 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
             )
             continue
 
+        notified += 1  # only past the try, so it counts deliveries, not attempts
         logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
 
-    # Send confirmation email to employee (not on reminders - already received once)
+    if not notified:
+        # Every manager failed, so this request reached nobody. Raise rather than
+        # return: change_processor only records an item as processed when dispatch
+        # returns cleanly, so raising is what preserves the retry on the next delta
+        # query. Returning here would mark it done and strand the request forever.
+        raise NotificationsFailed(f"Leave request #{leave_request_id}", len(managers))
+
+    # Send confirmation email to employee (not on reminders - already received once).
+    # Only reached when at least one manager was notified, so "Received" is never
+    # sent for a request nobody has been told about.
     emp_email = emp_fields.get("EmailAddress", "")
     if emp_email and not is_reminder:
         html = render_leave_confirmation(fields, emp_fields, projected)

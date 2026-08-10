@@ -5,6 +5,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
+from app.services.notifications import NotificationsFailed
 from app.services.employee import (
     get_employee_by_id,
     get_all_managers_for_employee,
@@ -147,6 +148,10 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
 
     overtime_date = _parse_date(fields.get("StartDate"))
     if not overtime_date:
+        logger.warning(
+            "OT #%s — no notification: StartDate %r could not be parsed into a date",
+            request_id, fields.get("StartDate"),
+        )
         return
 
     submitter_name = emp_fields.get("Title", "")
@@ -202,6 +207,11 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
         if version > 1 and not is_reminder else None
     )
 
+    # Identical for every manager, so build them once rather than per iteration.
+    ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
+    bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n" if projected else ""
+
+    notified = 0  # counts managers actually reached, so a total failure is detectable
     for manager in managers:
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
@@ -228,11 +238,6 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
             # Send SMS to manager if they have a cell number (skipped on reminders)
             cell = mgr_fields.get("CellNumber", "")
             if cell and not is_reminder:
-                ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
-                if projected:
-                    bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
-                else:
-                    bal_line = ""
                 await send_sms(
                     to=cell,
                     body=(
@@ -247,10 +252,20 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
                 "Failed to notify manager %s for overtime request #%s — continuing with remaining managers",
                 mgr_fields.get("Title"), request_id,
             )
+            continue
 
-    logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
+        notified += 1  # only past the try, so it counts deliveries, not attempts
 
-    # Send confirmation email to employee (not on reminders - already received once)
+    if not notified:
+        # See leave_requests.send_approval_email: raising is what makes
+        # change_processor withhold the processed marker and retry.
+        raise NotificationsFailed(f"Overtime request #{request_id}", len(managers))
+
+    # Report what actually happened, not how many managers were on the list.
+    logger.info("Sent approval email for overtime #%s to %d of %d manager(s)", request_id, notified, len(managers))
+
+    # Send confirmation email to employee (not on reminders - already received once).
+    # Only reached when at least one manager was notified.
     emp_email = emp_fields.get("EmailAddress", "")
     if emp_email and not is_reminder:
         html = render_overtime_confirmation(fields, emp_fields, projected)

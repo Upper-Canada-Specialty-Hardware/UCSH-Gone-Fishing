@@ -50,6 +50,10 @@ const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'A supervisor has no email address',
     fix: 'Add an email address for the supervisor so approval emails can reach them.',
   },
+  manager_phone_valid: {
+    title: 'A supervisor phone number cannot receive texts',
+    fix: 'Correct the supervisor’s cell number in the Staff Directory — ten digits, no extension. They still get approval emails, but no texts until this is fixed.',
+  },
   location_province: {
     title: 'Office location not recognized',
     fix: 'Choose a valid office location so vacation and leave days calculate correctly.',

@@ -18,6 +18,7 @@ import logging
 import pytest
 
 from app.services.employee import LOCATION_PROVINCE_MAP
+from app.services.notifications import NotificationsFailed
 from app.services.sms import normalize_phone
 
 #: A fictional number, used to build every format variant below.
@@ -41,6 +42,11 @@ _E164 = f"+1{_DIGITS}"
         ("416.555.0101", _E164),
         ("416 555 0101", _E164),
         ("1 (416) 555-0101", _E164),
+        # Already-international numbers pass through with their own country code.
+        # The national part varies in length outside North America, so a plausible
+        # E.164 number must not be rejected for being shorter than a NANP one.
+        ("+442071234567", "+442071234567"),
+        ("+4791234567", "+4791234567"),
     ],
 )
 def test_normalize_phone_accepts_every_format_staff_actually_type(raw, expected):
@@ -54,8 +60,13 @@ def test_normalize_phone_accepts_every_format_staff_actually_type(raw, expected)
         "",
         "   ",                  # whitespace-only, which is truthy in the caller's `if cell` guard
         f"{_DIGITS}x22",        # extension: the digits no longer form a valid number
+        "+1 (416) 555-0101 x22",    # same, but leading "+" — must refuse alike
+        f"+1 {_DIGITS} ext. 4",
+        f"{_DIGITS},,99",
+        f"{_DIGITS} #5",
         "555",
         "not a phone",
+        "+1",                   # a country code and nothing to dial
     ],
 )
 def test_normalize_phone_refuses_to_guess(raw):
@@ -181,7 +192,13 @@ def _drive_leave_approval(monkeypatch, *, email_raises_for=None, sms_raises_for=
 
     async def fake_email(to, **kwargs):
         recipient = to[0]
-        if recipient == email_raises_for:
+        # A collection lets a test fail several recipients at once, which is how
+        # the "nobody was notified" case is set up.
+        failing = (
+            email_raises_for if isinstance(email_raises_for, (list, tuple, set))
+            else {email_raises_for}
+        )
+        if recipient in failing:
             raise RuntimeError("provider rejected recipient")
         emailed.append(recipient)
 
@@ -244,6 +261,33 @@ def test_no_failures_notifies_everyone(monkeypatch):
 
     assert emailed == _all_manager_emails() + [_submitter_email()]
     assert texted == [_manager_cell(0), _manager_cell(1)]
+
+
+def test_total_failure_raises_and_skips_the_submitter_confirmation(monkeypatch):
+    """Every manager failing must stay loud, or the request is stranded.
+
+    `change_processor` records an item as processed only when dispatch returns
+    cleanly, so a swallowed total failure would mark the request done and forfeit
+    the retry on the next delta query — nobody notified, and no second attempt.
+    Raising preserves the retry. The submitter must also NOT be told "Received",
+    because no manager has heard about it.
+    """
+    with pytest.raises(NotificationsFailed) as excinfo:
+        _drive_leave_approval(monkeypatch, email_raises_for=_all_manager_emails())
+
+    assert excinfo.value.attempted == len(_MANAGERS)
+    assert "#3402" in str(excinfo.value)
+
+
+def test_partial_failure_still_confirms_the_submitter(monkeypatch):
+    """One manager reached is enough — the request is genuinely in flight.
+
+    Pins the boundary of the test above: the raise must trigger on zero
+    notifications, not on any failure.
+    """
+    emailed, _ = _drive_leave_approval(monkeypatch, email_raises_for=_manager_email(0))
+
+    assert _submitter_email() in emailed
 
 
 # ----- the same guard on the other two request types -----

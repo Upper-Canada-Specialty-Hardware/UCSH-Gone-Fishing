@@ -12,6 +12,19 @@ logger = logging.getLogger(__name__)
 
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01"
 
+# A trailing "x22" / "ext. 4" / "#5" / ",,123" is a desk-phone extension, not part
+# of the number. It has to be caught on the raw string before the digits are
+# joined up, because once punctuation is stripped an extension is indistinguishable
+# from a longer number — "+1 416 555 0101 x22" and a real 13-digit number both
+# reduce to 13 digits.
+_EXTENSION_SUFFIX = re.compile(r"(?:x|ext\.?|#|,)\s*\d+\s*$", re.IGNORECASE)
+
+# E.164 allows at most 15 digits including the country code. The lower bound is
+# deliberately loose: national number lengths vary widely outside North America,
+# and rejecting a real number costs a manager their texts.
+_E164_MIN_DIGITS = 8
+_E164_MAX_DIGITS = 15
+
 
 def normalize_phone(raw: str | None) -> str | None:
     """Convert a Staff Directory phone value into an E.164 number for Twilio.
@@ -28,19 +41,28 @@ def normalize_phone(raw: str | None) -> str | None:
 
     Returns:
         The number as E.164 (e.g. "+14165551234"), or None when the value
-        cannot be resolved to a valid number. Callers treat None as "this person
-        has no reachable number" and skip the text.
+        cannot be resolved to a valid number — too few digits, junk, or a desk
+        extension appended to it. Callers treat None as "this person has no
+        reachable number" and skip the text.
     """
     if not raw:
         # Blank or None: nothing to dial. Caller skips.
+        return None
+
+    if _EXTENSION_SUFFIX.search(raw.strip()):
+        # An extension can't be reached by SMS, and the digits before it are a
+        # real number belonging to someone — texting it would reach a stranger.
+        # Checked ahead of the +/national split so both formats refuse alike.
         return None
 
     digits = re.sub(r"\D", "", raw)  # keep digits only; drops spaces, dashes, parens
 
     if raw.strip().startswith("+"):
         # Already international — the country code is in the digits, so don't
-        # prepend one. Bound the length to reject obvious junk.
-        return f"+{digits}" if 11 <= len(digits) <= 15 else None
+        # prepend one. Any plausible E.164 length passes; junk is rejected.
+        if _E164_MIN_DIGITS <= len(digits) <= _E164_MAX_DIGITS:
+            return f"+{digits}"
+        return None
 
     if len(digits) == 11 and digits.startswith("1"):
         digits = digits[1:]  # drop a North American trunk prefix, e.g. "14165551234"
