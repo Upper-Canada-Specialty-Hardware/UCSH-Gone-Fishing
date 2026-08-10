@@ -16,9 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models import Employee, Holiday
+from app.models import Employee, Holiday, ManagerAssignment
 from app.backfill import mappers
-from app.backfill.core import DOMAINS, diff_domain, upsert_domain
+from app.backfill.core import (
+    DOMAINS,
+    diff_domain,
+    diff_manager_assignments,
+    resolve_domains,
+    upsert_domain,
+    upsert_manager_assignments,
+)
 from app.backfill.__main__ import main
 
 
@@ -159,6 +166,136 @@ def test_diff_reports_parity_then_drift_missing_and_orphan():
     assert gapped["in_parity"] is False
     assert gapped["missing_in_postgres"] == ["3"]   # in SP, not yet in PG
     assert gapped["orphans_in_postgres"] == ["2"]   # in PG, no longer in SP
+
+
+# ------------------- derived domain: manager_assignments -------------------
+
+def test_map_manager_assignments_keeps_order_and_drops_unusable_entries():
+    rows = mappers.map_manager_assignments({
+        "id": "1",
+        "fields": {"AllManagers": [
+            {"LookupId": 11, "LookupValue": "Primary Boss"},
+            {"LookupId": "22", "LookupValue": ""},   # str id; blank name
+            {"LookupId": 11, "LookupValue": "Dupe"}, # would break the unique constraint
+            {"LookupValue": "No id at all"},         # unusable — no LookupId
+            "not-a-dict",
+        ]},
+    })
+    # Order preserved and positions contiguous despite the skipped entries.
+    assert [(r["manager_sp_user_lookup_id"], r["position"]) for r in rows] == [(11, 0), (22, 1)]
+    assert rows[0]["manager_name"] == "Primary Boss"
+    assert rows[1]["manager_name"] is None            # "" normalizes to None
+    # No managers / absent field -> no edges rather than an error.
+    assert mappers.map_manager_assignments({"id": "2", "fields": {}}) == []
+
+
+def _employee_item(sp_id, name, managers):
+    """A Staff Directory item carrying an AllManagers person field."""
+    return {"id": sp_id, "fields": {"Title": name, "AllManagers": managers}}
+
+
+def test_manager_assignments_replace_the_set_and_are_idempotent():
+    """A manager removed in SharePoint must be removed here, not just skipped.
+
+    Insert-only would leave an ex-manager approving that employee's requests
+    forever, so the upsert replaces each employee's whole set of edges.
+    """
+    def _run():
+        async def inner():
+            Session = await _make_sessionmaker()
+            sp_items = [_employee_item("1", "Jo Worker", [
+                {"LookupId": 11, "LookupValue": "Boss One"},
+                {"LookupId": 22, "LookupValue": "Boss Two"},
+            ])]
+            async with Session() as s:
+                await upsert_domain(s, DOMAINS["employees"], sp_items)  # FK targets first
+                first = await upsert_manager_assignments(s, sp_items)
+            async with Session() as s:
+                second = await upsert_manager_assignments(s, sp_items)  # unchanged re-run
+
+            # SharePoint drops Boss Two and re-titles the survivor.
+            sp_items[0]["fields"]["AllManagers"] = [{"LookupId": 22, "LookupValue": "Boss Two Renamed"}]
+            async with Session() as s:
+                third = await upsert_manager_assignments(s, sp_items)
+            async with Session() as s:
+                rows = (await s.execute(select(ManagerAssignment))).scalars().all()
+                remaining = [(r.manager_sp_user_lookup_id, r.position, r.manager_name) for r in rows]
+            return first, second, third, remaining
+        return asyncio.run(inner())
+
+    first, second, third, remaining = _run()
+    assert (first["inserted"], first["deleted"]) == (2, 0)
+    assert (second["inserted"], second["updated"], second["deleted"]) == (0, 2, 0)
+    assert second["employees_missing_in_postgres"] == []
+    assert third["deleted"] == 1                       # Boss One's edge removed
+    # Survivor kept, renamed, and promoted to primary (position 0).
+    assert remaining == [(22, 0, "Boss Two Renamed")]
+
+
+def test_manager_assignment_diff_reports_parity_then_missing_and_orphan():
+    def _run():
+        async def inner():
+            Session = await _make_sessionmaker()
+            sp_items = [_employee_item("1", "Jo Worker", [{"LookupId": 11, "LookupValue": "Boss One"}])]
+            async with Session() as s:
+                await upsert_domain(s, DOMAINS["employees"], sp_items)
+                await upsert_manager_assignments(s, sp_items)
+            async with Session() as s:
+                clean = await diff_manager_assignments(s, sp_items)
+
+            # SharePoint swaps the manager: 99 is missing in PG, 11 is now orphaned.
+            swapped = [_employee_item("1", "Jo Worker", [{"LookupId": 99, "LookupValue": "New Boss"}])]
+            async with Session() as s:
+                gapped = await diff_manager_assignments(s, swapped)
+            return clean, gapped
+        return asyncio.run(inner())
+
+    clean, gapped = _run()
+    assert clean["in_parity"] is True
+
+    assert gapped["in_parity"] is False
+    assert gapped["missing_in_postgres"] == [
+        {"employee_sp_item_id": "1", "manager_sp_user_lookup_id": 99}
+    ]
+    # Reported by SP item id, not the internal employees.id primary key.
+    assert gapped["orphans_in_postgres"] == [
+        {"employee_sp_item_id": "1", "manager_sp_user_lookup_id": 11}
+    ]
+
+
+def test_manager_assignment_diff_fails_parity_when_employees_are_not_backfilled():
+    """The gap that would silently break approval routing.
+
+    Edges cannot be derived without an employees row to point at. If verify
+    passed in that state, flipping the employees flag would serve every employee
+    with zero managers and requests would reach no approver.
+    """
+    def _run():
+        async def inner():
+            Session = await _make_sessionmaker()
+            sp_items = [_employee_item("1", "Jo Worker", [{"LookupId": 11, "LookupValue": "Boss One"}])]
+            async with Session() as s:                    # note: employees NOT upserted
+                report = await diff_manager_assignments(s, sp_items)
+                applied = await upsert_manager_assignments(s, sp_items)
+                rows = (await s.execute(select(ManagerAssignment))).scalars().all()
+            return report, applied, len(rows)
+        return asyncio.run(inner())
+
+    report, applied, row_count = _run()
+    assert report["employees_missing_in_postgres"] == ["1"]
+    assert report["in_parity"] is False                   # gates the cutover
+    # Apply skips rather than crashing, and writes nothing it cannot key.
+    assert applied["employees_missing_in_postgres"] == ["1"]
+    assert row_count == 0
+
+
+def test_resolve_domains_runs_employees_before_manager_assignments():
+    """Dependency order beats the order the flags were passed in."""
+    ordered = [d.name for d in resolve_domains(["manager_assignments", "employees"])]
+    assert ordered == ["employees", "manager_assignments"]
+    # A default (all-domains) run must satisfy the same constraint.
+    all_names = [d.name for d in resolve_domains(None)]
+    assert all_names.index("employees") < all_names.index("manager_assignments")
 
 
 # --------------------------- CLI exit-code gate ---------------------------

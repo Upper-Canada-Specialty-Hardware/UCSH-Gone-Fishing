@@ -154,6 +154,62 @@ def map_overtime_request(item: dict) -> dict:
     }
 
 
+def map_manager_assignments(item: dict) -> list[dict]:
+    """Derive one (employee -> manager) edge per entry in ``AllManagers``.
+
+    Unlike the other mappers this returns a *list*: in SharePoint an employee's
+    managers are a multi-value person field inline on the Staff Directory record,
+    while Postgres stores them as their own rows in ``manager_assignments``. So
+    one SP item yields N rows rather than one.
+
+    ``position`` preserves the SharePoint list order, because the app treats
+    ``managers[0]`` as the primary manager — the one a new request is assigned
+    to. Losing that order would silently re-point approvals at a different
+    person, so it is carried explicitly rather than left to row insertion order.
+
+    Args:
+        item: A Staff Directory list item, ``{"id": ..., "fields": {...}}``.
+
+    Returns:
+        A list of column-value dicts (``manager_sp_user_lookup_id``,
+        ``manager_name``, ``position``), ordered primary-manager-first. Empty
+        when the employee has no managers or the field is absent/malformed.
+        ``employee_id`` is NOT set here — it is a Postgres foreign key the
+        caller resolves from the backfilled ``employees`` table.
+    """
+    f = item.get("fields", {})
+    entries = f.get("AllManagers")
+    # Absent or a non-list (e.g. a single object) means no usable edges.
+    if not isinstance(entries, list):
+        return []
+
+    rows: list[dict] = []
+    seen: set[int] = set()  # guards the (employee, manager) unique constraint
+    for entry in entries:
+        # Graph returns each person as {"LookupId": ..., "LookupValue": ...}.
+        if not isinstance(entry, dict):
+            continue
+        try:
+            lookup_id = int(entry["LookupId"])
+        except (KeyError, TypeError, ValueError):
+            # No resolvable user id — the edge cannot be stored, so drop it.
+            continue
+        # A manager listed twice would violate uq_manager_assignment on insert.
+        if lookup_id in seen:
+            continue
+        seen.add(lookup_id)
+        rows.append({
+            "manager_sp_user_lookup_id": lookup_id,
+            # Graph often omits LookupValue on person fields; "" normalizes to
+            # None so the app falls back to its User Information List name map.
+            "manager_name": entry.get("LookupValue") or None,
+            # len(rows), not the loop index, keeps positions contiguous after
+            # malformed/duplicate entries are skipped.
+            "position": len(rows),
+        })
+    return rows
+
+
 def map_carryover_payout_request(item: dict) -> dict:
     f = item.get("fields", {})
     return {

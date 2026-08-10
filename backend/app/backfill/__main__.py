@@ -5,6 +5,12 @@
   python -m app.backfill --domain leave_requests --domain overtime_requests
   python -m app.backfill --apply                  # WRITE: upsert SP -> Postgres
 
+``manager_assignments`` is derived from each employee's AllManagers field, so it
+needs ``employees`` in Postgres first. Domains always run in dependency order, so
+a full ``--apply`` handles that on its own; selecting manager_assignments alone
+before employees have been backfilled reports them as missing instead of writing
+partial data.
+
 Verify mode prints the diff report and exits non-zero if any domain is out of
 parity, so it can gate a cutover. Apply mode performs the idempotent upsert and
 is safe to re-run. Like uvicorn/alembic, this imports ``app`` and therefore needs
@@ -17,7 +23,7 @@ import asyncio
 import json
 import sys
 
-from app.backfill.core import DOMAINS, run
+from app.backfill.core import ALL_DOMAINS, run
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -30,8 +36,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="write SP -> Postgres (idempotent upsert). Default is verify-only (no writes).",
     )
     parser.add_argument(
-        "--domain", action="append", dest="domains", choices=list(DOMAINS), metavar="DOMAIN",
-        help="limit to this domain (repeatable). Default: all. One of: " + ", ".join(DOMAINS),
+        "--domain", action="append", dest="domains", choices=list(ALL_DOMAINS), metavar="DOMAIN",
+        help="limit to this domain (repeatable). Default: all. One of: " + ", ".join(ALL_DOMAINS),
     )
     return parser.parse_args(argv)
 
