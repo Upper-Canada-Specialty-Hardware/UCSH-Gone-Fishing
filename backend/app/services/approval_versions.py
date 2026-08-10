@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime
+
+from app.time_utils import utcnow_naive
 
 from app.database import async_session
 from app.models import RequestApprovalState
@@ -35,7 +36,7 @@ async def bump_and_snapshot(
     """
     new_snapshot = extract_snapshot(current_fields, material_keys)
     item_id_str = str(item_id)
-    now = datetime.utcnow()
+    now = utcnow_naive()
 
     async with async_session() as session:
         row = await session.get(RequestApprovalState, (list_id, item_id_str))

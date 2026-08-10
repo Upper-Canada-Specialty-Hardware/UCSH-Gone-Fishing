@@ -2,6 +2,8 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 
+from app.time_utils import utcnow_naive
+
 from app.config import settings
 from app.graph.client import graph_client
 from app.graph.sharepoint import sp_client
@@ -11,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 async def create_subscription(list_id: str) -> dict:
     client_state = secrets.token_hex(16)
-    expiration = datetime.utcnow() + timedelta(days=29)
+    expiration = utcnow_naive() + timedelta(days=29)
     path = f"/sites/{sp_client.site_id}/lists/{list_id}/subscriptions"
     body = {
         "changeType": "updated,created",
@@ -30,7 +32,7 @@ async def create_subscription(list_id: str) -> dict:
 
 
 async def renew_subscription(subscription_id: str, list_id: str) -> datetime:
-    expiration = datetime.utcnow() + timedelta(days=29)
+    expiration = utcnow_naive() + timedelta(days=29)
     path = f"/sites/{sp_client.site_id}/lists/{list_id}/subscriptions/{subscription_id}"
     await graph_client.patch(path, json={"expirationDateTime": expiration.isoformat() + "Z"})
     logger.info("Renewed subscription %s, new expiration: %s", subscription_id, expiration)

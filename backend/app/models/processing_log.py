@@ -4,6 +4,7 @@ from sqlalchemy import Integer, String, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.time_utils import utcnow_naive
 
 
 class ProcessingLog(Base):
@@ -16,4 +17,4 @@ class ProcessingLog(Base):
     list_id: Mapped[str] = mapped_column(String, nullable=False)
     item_id: Mapped[str] = mapped_column(String, nullable=False)
     action: Mapped[str] = mapped_column(String, nullable=False)
-    processed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    processed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
