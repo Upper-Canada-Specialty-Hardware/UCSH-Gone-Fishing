@@ -326,9 +326,27 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
                 html_body=html,
                 primary_employee_id=mgr_id,
             )
+        except Exception:
+            logger.exception(
+                "Failed to email manager %s for CO/PO request #%s — continuing with remaining managers",
+                mgr["fields"].get("Title"), request_id,
+            )
+            continue
 
-            cell = mgr["fields"].get("CellNumber", "")
-            if cell and not is_reminder:
+        # Counted on the email alone — see leave_requests.send_approval_email.
+        notified += 1
+
+        # Texted separately and after the count, so a Twilio outage cannot cost
+        # this manager their email or the submitter their confirmation.
+        cell = mgr["fields"].get("CellNumber", "")
+        if not cell and not is_reminder:
+            # Skipped, not failed — nothing else would record it.
+            logger.warning(
+                "No cell number for manager %s — %s request #%s sent by email only",
+                mgr["fields"].get("Title"), request_type, request_id,
+            )
+        elif cell and not is_reminder:
+            try:
                 await send_sms(
                     to=cell,
                     body=(
@@ -337,22 +355,12 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
                         f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
                     ),
                 )
-            elif not cell and not is_reminder:
-                # No number on file, so the text is skipped, not failed. Nothing
-                # raises and nothing is logged otherwise, which makes an email-only
-                # manager indistinguishable from one who was texted successfully.
-                logger.warning(
-                    "No cell number for manager %s — %s request #%s sent by email only",
-                    mgr["fields"].get("Title"), request_type, request_id,
+            except Exception:
+                logger.exception(
+                    "Approval text to manager %s failed for CO/PO request #%s — "
+                    "they still have the email, so the request is actionable",
+                    mgr["fields"].get("Title"), request_id,
                 )
-        except Exception:
-            logger.exception(
-                "Failed to notify manager %s for CO/PO request #%s — continuing with remaining managers",
-                mgr["fields"].get("Title"), request_id,
-            )
-            continue
-
-        notified += 1  # only past the try, so it counts deliveries, not attempts
 
     if not notified:
         # See leave_requests.send_approval_email: raising is what makes

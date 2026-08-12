@@ -145,7 +145,7 @@ def _submitter_email() -> str:
     return _SUBMITTER["fields"]["EmailAddress"]
 
 
-def _drive_leave_approval(monkeypatch, *, email_raises_for=None, sms_raises_for=None):
+def _drive_leave_approval(monkeypatch, *, email_raises_for=None, sms_raises_for=None, managers=None):
     """Run the real leave send_approval_email with the provider calls stubbed.
 
     Everything outside the two send calls is replaced so the test observes only
@@ -185,7 +185,9 @@ def _drive_leave_approval(monkeypatch, *, email_raises_for=None, sms_raises_for=
         return _SUBMITTER
 
     async def fake_managers(_employee):
-        return _MANAGERS
+        # Overridable so a test can pin the single-supervisor case, which is what
+        # production actually looks like for most employees.
+        return _MANAGERS if managers is None else managers
 
     async def fake_bump(*a, **k):
         return 1  # version 1 keeps previous_snapshot None, so no extra patching
@@ -203,7 +205,13 @@ def _drive_leave_approval(monkeypatch, *, email_raises_for=None, sms_raises_for=
         emailed.append(recipient)
 
     async def fake_sms(to=None, body=None):
-        if to == sms_raises_for:
+        # A collection lets a test fail every number at once, which is what a
+        # suspended Twilio account does to the whole fan-out.
+        failing = (
+            sms_raises_for if isinstance(sms_raises_for, (list, tuple, set))
+            else {sms_raises_for}
+        )
+        if to in failing:
             # Mirrors send_sms letting a Twilio HTTPStatusError escape, which is
             # what a STOP reply or a suspended account produces in production.
             raise RuntimeError("twilio rejected recipient")
@@ -264,19 +272,59 @@ def test_no_failures_notifies_everyone(monkeypatch):
 
 
 def test_total_failure_raises_and_skips_the_submitter_confirmation(monkeypatch):
-    """Every manager failing must stay loud, or the request is stranded.
+    """Every manager's email failing must stay loud, or the request is stranded.
 
     `change_processor` records an item as processed only when dispatch returns
-    cleanly, so a swallowed total failure would mark the request done and forfeit
-    the retry on the next delta query — nobody notified, and no second attempt.
-    Raising preserves the retry. The submitter must also NOT be told "Received",
-    because no manager has heard about it.
+    cleanly, so a swallowed total failure would mark the request done — nobody
+    notified, and no record that anything went wrong. Raising keeps the item
+    unmarked and the error visible. The submitter must also NOT be told
+    "Received", because no manager has heard about it.
+
+    Note this is the *email* transport failing. A text-only failure is not a
+    total failure — see the test above.
     """
     with pytest.raises(NotificationsFailed) as excinfo:
         _drive_leave_approval(monkeypatch, email_raises_for=_all_manager_emails())
 
     assert excinfo.value.attempted == len(_MANAGERS)
     assert "#3402" in str(excinfo.value)
+
+
+def test_every_text_failing_is_not_a_total_failure(monkeypatch):
+    """A dead SMS transport must not look like "nobody was notified".
+
+    This is the July outage's exact shape: Twilio rejecting every message while
+    email worked normally. The managers all hold the approve/reject links, so
+    the request is fully actionable and the submitter is owed their confirmation.
+    Counting a manager as unreached on a failed text would raise here, suppress
+    that confirmation, and leave the item unmarked — which re-sends every
+    manager a duplicate approval email the next time the item is edited.
+    """
+    emailed, texted = _drive_leave_approval(
+        monkeypatch, sms_raises_for=[_manager_cell(0), _manager_cell(1)],
+    )
+
+    assert emailed == _all_manager_emails() + [_submitter_email()]
+    assert texted == []  # both numbers rejected, the third supervisor has none
+
+
+def test_sole_supervisors_text_failing_is_not_a_total_failure(monkeypatch):
+    """The sharp version of the test above, with one supervisor and no backstop.
+
+    Most employees have a single supervisor, so "their text failed" and "every
+    manager failed" are the same iteration. Counting a manager as reached only
+    after their text would raise here even though they hold the approve/reject
+    links — the multi-supervisor test cannot catch that, because a colleague
+    with no number on file still increments the count and hides the error.
+    """
+    sole = [_MANAGERS[0]]
+
+    emailed, texted = _drive_leave_approval(
+        monkeypatch, managers=sole, sms_raises_for=_manager_cell(0),
+    )
+
+    assert emailed == [_manager_email(0), _submitter_email()]  # no raise, and confirmed
+    assert texted == []
 
 
 def test_partial_failure_still_confirms_the_submitter(monkeypatch):

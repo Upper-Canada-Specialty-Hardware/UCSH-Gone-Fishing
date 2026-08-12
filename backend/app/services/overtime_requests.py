@@ -234,10 +234,27 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
                 html_body=html,
                 primary_employee_id=manager_id,
             )
+        except Exception:
+            logger.exception(
+                "Failed to email manager %s for overtime request #%s — continuing with remaining managers",
+                mgr_fields.get("Title"), request_id,
+            )
+            continue
 
-            # Send SMS to manager if they have a cell number (skipped on reminders)
-            cell = mgr_fields.get("CellNumber", "")
-            if cell and not is_reminder:
+        # Counted on the email alone — see leave_requests.send_approval_email.
+        notified += 1
+
+        # Texted separately and after the count, so a Twilio outage cannot cost
+        # this manager their email or the submitter their confirmation.
+        cell = mgr_fields.get("CellNumber", "")
+        if not cell and not is_reminder:
+            # Skipped, not failed — nothing else would record it.
+            logger.warning(
+                "No cell number for manager %s — overtime request #%s sent by email only",
+                mgr_fields.get("Title"), request_id,
+            )
+        elif cell and not is_reminder:
+            try:
                 await send_sms(
                     to=cell,
                     body=(
@@ -247,22 +264,12 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
                         f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
                     ),
                 )
-            elif not cell and not is_reminder:
-                # No number on file, so the text is skipped, not failed. Nothing
-                # raises and nothing is logged otherwise, which makes an email-only
-                # manager indistinguishable from one who was texted successfully.
-                logger.warning(
-                    "No cell number for manager %s — overtime request #%s sent by email only",
+            except Exception:
+                logger.exception(
+                    "Approval text to manager %s failed for overtime request #%s — "
+                    "they still have the email, so the request is actionable",
                     mgr_fields.get("Title"), request_id,
                 )
-        except Exception:
-            logger.exception(
-                "Failed to notify manager %s for overtime request #%s — continuing with remaining managers",
-                mgr_fields.get("Title"), request_id,
-            )
-            continue
-
-        notified += 1  # only past the try, so it counts deliveries, not attempts
 
     if not notified:
         # See leave_requests.send_approval_email: raising is what makes

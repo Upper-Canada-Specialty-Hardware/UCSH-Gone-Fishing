@@ -402,11 +402,34 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
                 html_body=html,
                 primary_employee_id=manager_id,
             )
+        except Exception:
+            logger.exception(
+                "Failed to email manager %s for leave request #%s — continuing with remaining managers",
+                mgr_fields.get("Title"), leave_request_id,
+            )
+            continue
 
-            # Send SMS to manager if they have a cell number (skipped on reminders -
-            # reminders are email-only with fresh links)
-            cell = mgr_fields.get("CellNumber", "")
-            if cell and not is_reminder:
+        # Counted on the email alone. The email carries the approve/reject links,
+        # so a manager who received it can action the request — which is what
+        # "notified" has to mean, or a text failure would strand a request the
+        # manager is already able to approve.
+        notified += 1
+        logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
+
+        # Texted separately, and after the count, so a Twilio outage cannot cost
+        # this manager their email, the later managers theirs, or the submitter
+        # their confirmation. The text duplicates links the email already carried.
+        cell = mgr_fields.get("CellNumber", "")
+        if not cell and not is_reminder:
+            # No number on file, so the text is skipped, not failed. Nothing
+            # raises and nothing is logged otherwise, which makes an email-only
+            # manager indistinguishable from one who was texted successfully.
+            logger.warning(
+                "No cell number for manager %s — leave request #%s sent by email only",
+                mgr_fields.get("Title"), leave_request_id,
+            )
+        elif cell and not is_reminder:
+            try:
                 await send_sms(
                     to=cell,
                     body=(
@@ -416,23 +439,12 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
                         f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
                     ),
                 )
-            elif not cell and not is_reminder:
-                # No number on file, so the text is skipped, not failed. Nothing
-                # raises and nothing is logged otherwise, which makes an email-only
-                # manager indistinguishable from one who was texted successfully.
-                logger.warning(
-                    "No cell number for manager %s — leave request #%s sent by email only",
+            except Exception:
+                logger.exception(
+                    "Approval text to manager %s failed for leave request #%s — "
+                    "they still have the email, so the request is actionable",
                     mgr_fields.get("Title"), leave_request_id,
                 )
-        except Exception:
-            logger.exception(
-                "Failed to notify manager %s for leave request #%s — continuing with remaining managers",
-                mgr_fields.get("Title"), leave_request_id,
-            )
-            continue
-
-        notified += 1  # only past the try, so it counts deliveries, not attempts
-        logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
 
     if not notified:
         # Every manager failed, so this request reached nobody. Raise rather than
