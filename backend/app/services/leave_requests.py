@@ -33,6 +33,7 @@ from app.services.idempotency import claim_action
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import bump_and_snapshot, MATERIAL_FIELDS_LEAVE
 from app.services.sms import send_sms
+from app.services.notifications import NotificationsFailed
 from app.services.audit_trail import (
     AuditTrailBuilder,
     snapshot_balances,
@@ -226,6 +227,16 @@ async def auto_assign_manager(leave_request_id: str | int):
     manager_lookup_id = await _resolve_user_lookup_id(manager_email)
     if manager_lookup_id:
         update_fields["ManagerLookupId"] = manager_lookup_id
+    else:
+        # Without this field send_approval_email returns at its own guard, so the
+        # request notifies nobody AND stays hidden from the dashboards, which
+        # treat "no manager assigned" as not-yet-processed. Warn loudly: the
+        # success line below fires either way and would otherwise read as fine.
+        logger.warning(
+            "LR #%s — supervisor %s (%s) has no Microsoft 365 match, so ManagerLookupId "
+            "cannot be set and no approval notification will be sent",
+            leave_request_id, mgr_fields.get("Title"), manager_email,
+        )
 
     # Set AllManagers from employee's AllManagers field (multi-value Person/Group)
     # Graph API requires LookupId array format for writing multi-value Person fields
@@ -269,25 +280,52 @@ async def send_bereavement_alert(leave_request_id: str | int):
 
 
 async def send_approval_email(leave_request_id: str | int, is_reminder: bool = False):
-    """Send approval email with HMAC links to all managers."""
+    """Send approval email with HMAC links to all managers.
+
+    Every early return below means nobody is notified. Each one logs why, because
+    a request that silently notifies no one is indistinguishable from one that
+    was never submitted — that ambiguity is what made the July outage take a full
+    code audit to diagnose. "Skipped" reasons log at info, "should have worked"
+    reasons at warning.
+    """
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
     if fields.get("ApproveProcessedFlag") == "Processed":
+        logger.info("LR #%s — no notification: already processed", leave_request_id)
         return
     if fields.get("Status") != "Pending":
+        logger.info(
+            "LR #%s — no notification: status is %s, not Pending",
+            leave_request_id, fields.get("Status"),
+        )
         return
     if not fields.get("ManagerLookupId"):
+        # The single most likely cause of "nobody was notified and the request is
+        # invisible" — see the matching warning in auto_assign_manager.
+        logger.warning(
+            "LR #%s — no notification: ManagerLookupId is not set, so no manager is assigned",
+            leave_request_id,
+        )
         return
 
     employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
     if not employee:
+        logger.warning(
+            "LR #%s — no notification: submitter could not be resolved to a Staff Directory record",
+            leave_request_id,
+        )
         return
     emp_fields = employee["fields"]
     submitter_name = emp_fields.get("Title", "")
 
     managers = await get_all_managers_for_employee(employee)
     if not managers:
+        # get_all_managers_for_employee already warns; name the consequence here.
+        logger.warning(
+            "LR #%s — no notification: no supervisor resolved for %s",
+            leave_request_id, submitter_name,
+        )
         return
 
     from app.templates_render import render_leave_approval_email, render_leave_confirmation
@@ -318,62 +356,110 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
         if version > 1 and not is_reminder else None
     )
 
+    # Identical for every manager, so build them once rather than per iteration.
+    if projected:
+        bal_line = (
+            f"If approved: Vac: {projected['CurrentVacationBalance']}, "
+            f"Sick: {projected['CurrentSickDayBalance']}, "
+            f"MU: {projected['CurrentOvertimeBalance']}, "
+            f"CO: {projected['CarryOver']}.\n"
+        )
+    else:
+        bal_line = "No balance change.\n"
+    _s = _parse_date(start_str)
+    _e = _parse_date(end_str)
+    if _s and _e:
+        if _s == _e:
+            date_line = f"{_s.strftime('%b %d, %Y')}\n"
+        else:
+            date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
+    elif start_str:
+        date_line = f"{start_str[:10]}\n"
+    else:
+        date_line = ""
+
+    notified = 0  # counts managers actually reached, so a total failure is detectable
     for manager in managers:
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
 
-        approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
-        reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
+        # One manager's failure must not cost the others their notification. Every
+        # send in here can raise (a rejected recipient, a throttled provider), and
+        # an escape would skip every remaining manager AND the submitter's
+        # confirmation email below.
+        try:
+            approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
+            reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
 
-        html = render_leave_approval_email(
-            fields, emp_fields, approve_url, reject_url, submitter_name, projected,
-            previous_snapshot=previous_snapshot,
-        )
-
-        await send_email_with_dashboard(
-            to=[mgr_fields.get("EmailAddress", "")],
-            subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
-            html_body=html,
-            primary_employee_id=manager_id,
-        )
-
-        # Send SMS to manager if they have a cell number (skipped on reminders -
-        # reminders are email-only with fresh links)
-        cell = mgr_fields.get("CellNumber", "")
-        if cell and not is_reminder:
-            if projected:
-                bal_line = (
-                    f"If approved: Vac: {projected['CurrentVacationBalance']}, "
-                    f"Sick: {projected['CurrentSickDayBalance']}, "
-                    f"MU: {projected['CurrentOvertimeBalance']}, "
-                    f"CO: {projected['CarryOver']}.\n"
-                )
-            else:
-                bal_line = "No balance change.\n"
-            _s = _parse_date(start_str)
-            _e = _parse_date(end_str)
-            if _s and _e:
-                if _s == _e:
-                    date_line = f"{_s.strftime('%b %d, %Y')}\n"
-                else:
-                    date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
-            elif start_str:
-                date_line = f"{start_str[:10]}\n"
-            else:
-                date_line = ""
-            await send_sms(
-                to=cell,
-                body=(
-                    f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
-                    f"{date_line}"
-                    f"{bal_line}"
-                    f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
-                ),
+            html = render_leave_approval_email(
+                fields, emp_fields, approve_url, reject_url, submitter_name, projected,
+                previous_snapshot=previous_snapshot,
             )
 
+            await send_email_with_dashboard(
+                to=[mgr_fields.get("EmailAddress", "")],
+                subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
+                html_body=html,
+                primary_employee_id=manager_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to email manager %s for leave request #%s — continuing with remaining managers",
+                mgr_fields.get("Title"), leave_request_id,
+            )
+            continue
+
+        # Counted on the email alone. The email carries the approve/reject links,
+        # so a manager who received it can action the request — which is what
+        # "notified" has to mean, or a text failure would strand a request the
+        # manager is already able to approve.
+        notified += 1
         logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
 
-    # Send confirmation email to employee (not on reminders - already received once)
+        # Texted separately, and after the count, so a Twilio outage cannot cost
+        # this manager their email, the later managers theirs, or the submitter
+        # their confirmation. The text duplicates links the email already carried.
+        cell = mgr_fields.get("CellNumber", "")
+        if not cell and not is_reminder:
+            # No number on file, so the text is skipped, not failed. Nothing
+            # raises and nothing is logged otherwise, which makes an email-only
+            # manager indistinguishable from one who was texted successfully.
+            logger.warning(
+                "No cell number for manager %s — leave request #%s sent by email only",
+                mgr_fields.get("Title"), leave_request_id,
+            )
+        elif cell and not is_reminder:
+            try:
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
+                        f"{date_line}"
+                        f"{bal_line}"
+                        f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Approval text to manager %s failed for leave request #%s — "
+                    "they still have the email, so the request is actionable",
+                    mgr_fields.get("Title"), leave_request_id,
+                )
+
+    if not notified:
+        # Every manager failed, so this request reached nobody. Raise rather than
+        # return: change_processor only records an item as processed when dispatch
+        # returns cleanly, so raising leaves the item unmarked and eligible to be
+        # dispatched again the next time anything edits it. Note this is not an
+        # automatic retry — the delta token is advanced before the dispatch loop,
+        # so the same delta never re-delivers the item, and startup catch-up only
+        # re-drives items with no manager assigned. Returning instead would mark
+        # it processed and additionally lose the error, so raise.
+        raise NotificationsFailed(f"Leave request #{leave_request_id}", len(managers))
+
+    # Send confirmation email to employee (not on reminders - already received once).
+    # Only reached when at least one manager was notified, so "Received" is never
+    # sent for a request nobody has been told about.
     emp_email = emp_fields.get("EmailAddress", "")
     if emp_email and not is_reminder:
         html = render_leave_confirmation(fields, emp_fields, projected)

@@ -5,6 +5,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
+from app.services.notifications import NotificationsFailed
 from app.services.employee import (
     get_employee_by_email,
     get_employee_by_id,
@@ -190,25 +191,34 @@ async def run_approval_pipeline(request_id: str | int):
         logger.info("Auto-rejected CO/PO #%s — vacation would go negative", request_id)
         return
 
-    # Send confirmation to employee
+    # Send confirmation to employee. Guarded because it runs BEFORE the manager
+    # fan-out below: an unguarded failure here (bad submitter address, throttled
+    # provider) would stop every manager being notified, which is the same blast
+    # radius the per-manager guards exist to prevent.
     from app.templates_render import render_carryover_confirmation, render_payout_confirmation
-    if request_type == "Carry Over":
-        html = render_carryover_confirmation(
-            request_id, emp_fields, days, new_vacation, new_carryover, current_payout
-        )
-        await send_email(
-            to=[emp_fields.get("EmailAddress", "")],
-            subject="Request Received for Carry Over",
-            html_body=html,
-        )
-    else:
-        html = render_payout_confirmation(
-            request_id, emp_fields, days, new_vacation, current_carryover, new_payout
-        )
-        await send_email(
-            to=[emp_fields.get("EmailAddress", "")],
-            subject="Request Received for Payout",
-            html_body=html,
+    try:
+        if request_type == "Carry Over":
+            html = render_carryover_confirmation(
+                request_id, emp_fields, days, new_vacation, new_carryover, current_payout
+            )
+            await send_email(
+                to=[emp_fields.get("EmailAddress", "")],
+                subject="Request Received for Carry Over",
+                html_body=html,
+            )
+        else:
+            html = render_payout_confirmation(
+                request_id, emp_fields, days, new_vacation, current_carryover, new_payout
+            )
+            await send_email(
+                to=[emp_fields.get("EmailAddress", "")],
+                subject="Request Received for Payout",
+                html_body=html,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to send the submitter confirmation for CO/PO #%s — continuing to notify managers",
+            request_id,
         )
 
     await send_approval_email(request_id)
@@ -223,17 +233,29 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
     item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
+    # Every early return here means nobody is notified; each logs why, so silence
+    # is never ambiguous with "no request was submitted".
     if fields.get("Status") != "Pending":
+        logger.info(
+            "CO/PO #%s — no notification: status is %s, not Pending",
+            request_id, fields.get("Status"),
+        )
         return
     if fields.get("SystemState") == "Processed":
+        logger.info("CO/PO #%s — no notification: already processed", request_id)
         return
 
     employee_id = fields.get("EmployeeID")
     if not employee_id:
+        logger.warning("CO/PO #%s — no notification: request carries no EmployeeID", request_id)
         return
 
     employee = await get_employee_by_id(employee_id)
     if not employee:
+        logger.warning(
+            "CO/PO #%s — no notification: EmployeeID %s matches no Staff Directory record",
+            request_id, employee_id,
+        )
         return
 
     emp_fields = employee["fields"]
@@ -261,6 +283,11 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
             if mgr:
                 all_managers = [mgr]
     if not all_managers:
+        logger.warning(
+            "CO/PO #%s — no notification: no supervisor resolved for %s, and the "
+            "ManagerID fallback did not resolve either",
+            request_id, employee_name,
+        )
         return
 
     version = await bump_and_snapshot(
@@ -274,40 +301,78 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
 
     from app.templates_render import render_carryover_payout_approval_email
 
+    notified = 0  # counts managers actually reached, so a total failure is detectable
     for mgr in all_managers:
         mgr_id = mgr["id"]
         mgr_email = mgr["fields"].get("EmailAddress", "")
 
-        approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
-        reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
+        # One manager's failure must not cost the others their notification —
+        # see the matching guard in leave_requests.send_approval_email.
+        try:
+            approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
+            reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
 
-        html = render_carryover_payout_approval_email(
-            request_id, request_type, employee_name, days,
-            current_vacation, current_carryover, current_payout,
-            new_vacation, new_carryover, new_payout,
-            approve_url, reject_url,
-            previous_snapshot=previous_snapshot,
-        )
-        subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
-        await send_email_with_dashboard(
-            to=[mgr_email, "mandyl@ucsh.com"],
-            subject=subject,
-            html_body=html,
-            primary_employee_id=mgr_id,
-        )
-
-        cell = mgr["fields"].get("CellNumber", "")
-        if cell and not is_reminder:
-            await send_sms(
-                to=cell,
-                body=(
-                    f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
-                    f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
-                    f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
-                ),
+            html = render_carryover_payout_approval_email(
+                request_id, request_type, employee_name, days,
+                current_vacation, current_carryover, current_payout,
+                new_vacation, new_carryover, new_payout,
+                approve_url, reject_url,
+                previous_snapshot=previous_snapshot,
             )
+            subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
+            await send_email_with_dashboard(
+                to=[mgr_email, "mandyl@ucsh.com"],
+                subject=subject,
+                html_body=html,
+                primary_employee_id=mgr_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to email manager %s for CO/PO request #%s — continuing with remaining managers",
+                mgr["fields"].get("Title"), request_id,
+            )
+            continue
 
-    logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
+        # Counted on the email alone — see leave_requests.send_approval_email.
+        notified += 1
+
+        # Texted separately and after the count, so a Twilio outage cannot cost
+        # this manager their email or the submitter their confirmation.
+        cell = mgr["fields"].get("CellNumber", "")
+        if not cell and not is_reminder:
+            # Skipped, not failed — nothing else would record it.
+            logger.warning(
+                "No cell number for manager %s — %s request #%s sent by email only",
+                mgr["fields"].get("Title"), request_type, request_id,
+            )
+        elif cell and not is_reminder:
+            try:
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
+                        f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
+                        f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Approval text to manager %s failed for CO/PO request #%s — "
+                    "they still have the email, so the request is actionable",
+                    mgr["fields"].get("Title"), request_id,
+                )
+
+    if not notified:
+        # See leave_requests.send_approval_email: raising is what makes
+        # change_processor withhold the processed marker, and keeps the failure
+        # visible in the logs.
+        raise NotificationsFailed(f"CO/PO request #{request_id}", len(all_managers))
+
+    # Report what actually happened, not how many managers were on the list.
+    logger.info(
+        "Sent approval email for CO/PO #%s to %d of %d manager(s)",
+        request_id, notified, len(all_managers),
+    )
 
 
 ALLOWED_CARRYOVER_TYPES = {"Carry Over", "Payout"}

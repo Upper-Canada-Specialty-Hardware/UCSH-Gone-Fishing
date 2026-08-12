@@ -5,6 +5,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
+from app.services.notifications import NotificationsFailed
 from app.services.employee import (
     get_employee_by_id,
     get_all_managers_for_employee,
@@ -91,6 +92,10 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
 
     managers = await get_all_managers_for_employee(employee)
     if not managers:
+        logger.warning(
+            "OT #%s — no notification: no supervisor resolved for %s",
+            request_id, employee.get("fields", {}).get("Title"),
+        )
         return
 
     # Assign primary manager (first) to SP item
@@ -102,6 +107,14 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     update = {"Status": "Pending"}
     if manager_lookup_id:
         update["ManagerLookupId"] = manager_lookup_id
+    else:
+        # Overtime still notifies without this field, but the request stays hidden
+        # from the dashboards, which treat "no manager assigned" as unprocessed.
+        logger.warning(
+            "OT #%s — supervisor %s (%s) has no Microsoft 365 match, so ManagerLookupId "
+            "cannot be set and the request stays hidden from the dashboards",
+            request_id, mgr_fields.get("Title"), mgr_email,
+        )
 
     await sp_client.update_list_item_fields(settings.SP_LIST_OVERTIME_REQUESTS, request_id, update)
     logger.info("Assigned manager %s to overtime request #%s", mgr_fields.get("Title"), request_id)
@@ -111,11 +124,19 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
 
 
 async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict], is_reminder: bool = False):
-    """Holiday check, half-friday detection, send approval email to all managers."""
+    """Holiday check, half-friday detection, send approval email to all managers.
+
+    Early returns log why, so a request that notifies nobody is distinguishable
+    from one that was never submitted.
+    """
     item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
+        logger.info(
+            "OT #%s — no notification: status is %s, not Pending",
+            request_id, fields.get("Status"),
+        )
         return
 
     emp_fields = employee["fields"]
@@ -127,6 +148,10 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
 
     overtime_date = _parse_date(fields.get("StartDate"))
     if not overtime_date:
+        logger.warning(
+            "OT #%s — no notification: StartDate %r could not be parsed into a date",
+            request_id, fields.get("StartDate"),
+        )
         return
 
     submitter_name = emp_fields.get("Title", "")
@@ -182,47 +207,81 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
         if version > 1 and not is_reminder else None
     )
 
+    # Identical for every manager, so build them once rather than per iteration.
+    ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
+    bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n" if projected else ""
+
+    notified = 0  # counts managers actually reached, so a total failure is detectable
     for manager in managers:
         mgr_fields = manager["fields"]
         manager_id = manager["id"]
 
-        approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
-        reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
+        # One manager's failure must not cost the others their notification —
+        # see the matching guard in leave_requests.send_approval_email.
+        try:
+            approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
+            reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
 
-        html = render_overtime_approval_email(
-            fields, submitter_name, approve_url, reject_url, is_hf,
-            emp_fields=emp_fields, projected=projected,
-            previous_snapshot=previous_snapshot,
-        )
-
-        await send_email_with_dashboard(
-            to=[mgr_fields.get("EmailAddress", "")],
-            subject=subject,
-            html_body=html,
-            primary_employee_id=manager_id,
-        )
-
-        # Send SMS to manager if they have a cell number (skipped on reminders)
-        cell = mgr_fields.get("CellNumber", "")
-        if cell and not is_reminder:
-            ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
-            if projected:
-                bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
-            else:
-                bal_line = ""
-            await send_sms(
-                to=cell,
-                body=(
-                    f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
-                    f"{ot_date}\n"
-                    f"{bal_line}"
-                    f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
-                ),
+            html = render_overtime_approval_email(
+                fields, submitter_name, approve_url, reject_url, is_hf,
+                emp_fields=emp_fields, projected=projected,
+                previous_snapshot=previous_snapshot,
             )
 
-    logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
+            await send_email_with_dashboard(
+                to=[mgr_fields.get("EmailAddress", "")],
+                subject=subject,
+                html_body=html,
+                primary_employee_id=manager_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to email manager %s for overtime request #%s — continuing with remaining managers",
+                mgr_fields.get("Title"), request_id,
+            )
+            continue
 
-    # Send confirmation email to employee (not on reminders - already received once)
+        # Counted on the email alone — see leave_requests.send_approval_email.
+        notified += 1
+
+        # Texted separately and after the count, so a Twilio outage cannot cost
+        # this manager their email or the submitter their confirmation.
+        cell = mgr_fields.get("CellNumber", "")
+        if not cell and not is_reminder:
+            # Skipped, not failed — nothing else would record it.
+            logger.warning(
+                "No cell number for manager %s — overtime request #%s sent by email only",
+                mgr_fields.get("Title"), request_id,
+            )
+        elif cell and not is_reminder:
+            try:
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
+                        f"{ot_date}\n"
+                        f"{bal_line}"
+                        f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Approval text to manager %s failed for overtime request #%s — "
+                    "they still have the email, so the request is actionable",
+                    mgr_fields.get("Title"), request_id,
+                )
+
+    if not notified:
+        # See leave_requests.send_approval_email: raising is what makes
+        # change_processor withhold the processed marker, and keeps the failure
+        # visible in the logs.
+        raise NotificationsFailed(f"Overtime request #{request_id}", len(managers))
+
+    # Report what actually happened, not how many managers were on the list.
+    logger.info("Sent approval email for overtime #%s to %d of %d manager(s)", request_id, notified, len(managers))
+
+    # Send confirmation email to employee (not on reminders - already received once).
+    # Only reached when at least one manager was notified.
     emp_email = emp_fields.get("EmailAddress", "")
     if emp_email and not is_reminder:
         html = render_overtime_confirmation(fields, emp_fields, projected)

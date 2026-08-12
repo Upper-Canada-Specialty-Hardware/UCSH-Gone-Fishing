@@ -18,6 +18,8 @@ import ast
 import inspect
 from datetime import date
 
+import pytest
+
 from app.services import employee_validation as ev
 from app.services.employee_validation import build_validation_report
 
@@ -34,7 +36,12 @@ GOOD_FIELDS = {
     "AllManagers": [{"LookupId": 5, "LookupValue": "Boss"}],
 }
 
-MANAGERS = [{"id": "5", "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca"}}]
+# A fully healthy supervisor now needs a cell number too — without one they are
+# only ever emailed, which the presence check reports.
+MANAGERS = [{
+    "id": "5",
+    "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": "4165550101"},
+}]
 HOLIDAYS = [{"Title": "Canada Day", "Date": "2026-07-01", "Province": "ON"}]
 PASS_IDENTITY = {"status": "pass", "detail": "round-trip ok"}
 SAMPLE = (date(2026, 7, 6), date(2026, 7, 7))  # a Monday..Tuesday
@@ -98,6 +105,75 @@ def test_unresolved_manager_fails():
 def test_manager_without_email_warns():
     report = _report(managers=[{"id": "5", "fields": {"Title": "Boss", "EmailAddress": ""}}])
     assert _by_code(report, "manager_reachable")["status"] == "warn"
+
+
+@pytest.mark.parametrize("stored", ["4165550101x22", "555-0101", "n/a"])
+def test_manager_with_undiallable_phone_warns(stored):
+    """A number that cannot be dialled reports warn instead of passing silently.
+
+    These are values normalization cannot rescue — an appended extension, too
+    few digits, free text. Without this check the record validates green while
+    the supervisor's approval texts are never delivered.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": stored},
+    }])
+    check = _by_code(report, "manager_phone_valid")
+    assert check["status"] == "warn"
+    assert "Boss" in check["detail"]
+
+
+@pytest.mark.parametrize(
+    "stored",
+    ["4165550101", "(416) 555-0101", "416-555-0101", "4165550101 ", "+14165550101"],
+)
+def test_manager_phone_passes_for_anything_normalization_handles(stored):
+    """Human formatting is fine — the send path normalizes it before dialling.
+
+    Only genuinely undialable values are worth a supervisor's attention, so a
+    number typed with punctuation or a trailing space is not flagged.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": stored},
+    }])
+    assert _by_code(report, "manager_phone_valid")["status"] == "pass"
+
+
+def test_manager_without_a_phone_warns_on_presence_not_format():
+    """An absent number is reported, but by the presence check, not the format one.
+
+    The two are split because the remedy differs — add a number versus correct
+    one — and because a blank value is genuinely unformattable, so folding it
+    into the format check would give the supervisor misleading advice.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": ""},
+    }])
+    # Nothing was entered, so there is no format to fault.
+    assert _by_code(report, "manager_phone_valid")["status"] == "pass"
+    # But the supervisor still never receives an approval text.
+    present = _by_code(report, "manager_phone_present")
+    assert present["status"] == "warn"
+    assert "Boss" in present["detail"]
+
+
+@pytest.mark.parametrize("stored", ["4165550101", "   ", "4165550101x22"])
+def test_manager_phone_presence_tracks_whether_anything_was_entered(stored):
+    """Presence is about a value existing, independent of whether it can dial.
+
+    Whitespace counts as absent because it is invisible in the SharePoint UI and
+    reaches the send path as a skip; an undialable number counts as present so
+    the two checks do not both fire for the same underlying problem.
+    """
+    report = _report(managers=[{
+        "id": "5",
+        "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.ca", "CellNumber": stored},
+    }])
+    expected = "warn" if not stored.strip() else "pass"
+    assert _by_code(report, "manager_phone_present")["status"] == expected
 
 
 # ----- location / province -----
