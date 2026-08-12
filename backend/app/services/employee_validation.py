@@ -177,6 +177,26 @@ def build_validation_report(
                 "manager_reachable", "supervisor", "pass",
                 "All supervisors have an email address.",
             ))
+        # A supervisor with no number at all gets email and never a text. The
+        # send is skipped rather than attempted, so nothing fails and nothing is
+        # logged — checked separately from the bad-format case below because the
+        # fix is different: add a number, rather than correct one.
+        absent_numbers = [
+            m.get("fields", {}).get("Title", "?")
+            for m in managers
+            if not (m.get("fields", {}).get("CellNumber") or "").strip()
+        ]
+        if absent_numbers:
+            checks.append(_check(
+                "manager_phone_present", "supervisor", "warn",
+                "Supervisor(s) with no cell number on file, so they are never sent "
+                "approval texts — only email: " + ", ".join(absent_numbers),
+            ))
+        elif managers:
+            checks.append(_check(
+                "manager_phone_present", "supervisor", "pass",
+                "Every supervisor has a cell number on file.",
+            ))
         # A supervisor whose phone value cannot be dialled loses their approval
         # texts. The column has no input validation and whitespace is invisible
         # in the SharePoint UI, so this check is the only place a bad value

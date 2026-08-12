@@ -337,6 +337,14 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
                         f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
                     ),
                 )
+            elif not cell and not is_reminder:
+                # No number on file, so the text is skipped, not failed. Nothing
+                # raises and nothing is logged otherwise, which makes an email-only
+                # manager indistinguishable from one who was texted successfully.
+                logger.warning(
+                    "No cell number for manager %s — %s request #%s sent by email only",
+                    mgr["fields"].get("Title"), request_type, request_id,
+                )
         except Exception:
             logger.exception(
                 "Failed to notify manager %s for CO/PO request #%s — continuing with remaining managers",
@@ -348,7 +356,8 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
 
     if not notified:
         # See leave_requests.send_approval_email: raising is what makes
-        # change_processor withhold the processed marker and retry.
+        # change_processor withhold the processed marker, and keeps the failure
+        # visible in the logs.
         raise NotificationsFailed(f"CO/PO request #{request_id}", len(all_managers))
 
     # Report what actually happened, not how many managers were on the list.

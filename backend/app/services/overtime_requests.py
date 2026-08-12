@@ -247,6 +247,14 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
                         f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
                     ),
                 )
+            elif not cell and not is_reminder:
+                # No number on file, so the text is skipped, not failed. Nothing
+                # raises and nothing is logged otherwise, which makes an email-only
+                # manager indistinguishable from one who was texted successfully.
+                logger.warning(
+                    "No cell number for manager %s — overtime request #%s sent by email only",
+                    mgr_fields.get("Title"), request_id,
+                )
         except Exception:
             logger.exception(
                 "Failed to notify manager %s for overtime request #%s — continuing with remaining managers",
@@ -258,7 +266,8 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
 
     if not notified:
         # See leave_requests.send_approval_email: raising is what makes
-        # change_processor withhold the processed marker and retry.
+        # change_processor withhold the processed marker, and keeps the failure
+        # visible in the logs.
         raise NotificationsFailed(f"Overtime request #{request_id}", len(managers))
 
     # Report what actually happened, not how many managers were on the list.

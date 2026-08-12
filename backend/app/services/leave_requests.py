@@ -416,6 +416,14 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
                         f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
                     ),
                 )
+            elif not cell and not is_reminder:
+                # No number on file, so the text is skipped, not failed. Nothing
+                # raises and nothing is logged otherwise, which makes an email-only
+                # manager indistinguishable from one who was texted successfully.
+                logger.warning(
+                    "No cell number for manager %s — leave request #%s sent by email only",
+                    mgr_fields.get("Title"), leave_request_id,
+                )
         except Exception:
             logger.exception(
                 "Failed to notify manager %s for leave request #%s — continuing with remaining managers",
@@ -429,8 +437,12 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
     if not notified:
         # Every manager failed, so this request reached nobody. Raise rather than
         # return: change_processor only records an item as processed when dispatch
-        # returns cleanly, so raising is what preserves the retry on the next delta
-        # query. Returning here would mark it done and strand the request forever.
+        # returns cleanly, so raising leaves the item unmarked and eligible to be
+        # dispatched again the next time anything edits it. Note this is not an
+        # automatic retry — the delta token is advanced before the dispatch loop,
+        # so the same delta never re-delivers the item, and startup catch-up only
+        # re-drives items with no manager assigned. Returning instead would mark
+        # it processed and additionally lose the error, so raise.
         raise NotificationsFailed(f"Leave request #{leave_request_id}", len(managers))
 
     # Send confirmation email to employee (not on reminders - already received once).

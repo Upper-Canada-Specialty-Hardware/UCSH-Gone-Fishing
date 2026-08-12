@@ -6,9 +6,13 @@ but every send failing is not, because it leaves a Pending request that no one
 has been told about.
 
 `change_processor` treats a raised exception as "do not record this item as
-processed", which is what makes SharePoint re-deliver it on the next delta
-query. Swallowing a total failure would forfeit that retry, so the services
-raise this instead.
+processed", leaving it eligible to be dispatched again the next time anything
+edits it. That is weaker than a true retry: the delta token is advanced before
+the dispatch loop, so the failed item is never re-delivered by a later delta
+query, and startup catch-up only re-drives items that have no manager assigned
+— which a request failing at the notification step already does. Raising is
+therefore mainly what keeps the failure loud and the item unmarked; swallowing
+it would record the request as done with nobody told.
 """
 
 
