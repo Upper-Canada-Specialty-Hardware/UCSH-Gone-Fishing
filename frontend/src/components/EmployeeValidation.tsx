@@ -11,17 +11,28 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { validateEmployee } from '../api/client';
 
 // Matches the backend employee_validation.build_validation_report shape.
+// What a check measured and what it was held against. `comparison` is
+// 'reported' for rows that carry a number but no expectation, which are shown
+// but never graded.
+interface Measure {
+  label: string;
+  actual: number | null;
+  expected: number | number[] | null;
+  comparison: 'equals' | 'at_least' | 'at_most' | 'within' | 'reported';
+}
 interface Check {
   code: string;
   category: string;
   status: 'pass' | 'warn' | 'fail';
   detail: string;
   projected: Record<string, number> | null;
+  measure: Measure | null;
 }
 interface Report {
   employee_id: string;
   employee_name: string;
   overall: 'pass' | 'warn' | 'fail';
+  measurements: { total: number; within_range: number };
   current_balances: Record<string, number | null>;
   checks: Check[];
 }
@@ -62,7 +73,69 @@ const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'A balance value is not a number',
     fix: 'Correct the balance value on their Staff Directory record.',
   },
+  identity_unique_name: {
+    title: 'Someone else has the same name',
+    fix: 'Two staff records share this name. Requests are matched back to a person by name, so one of the records needs a distinguishing name before their requests can be routed reliably.',
+  },
+  manager_m365_match: {
+    title: 'A supervisor’s email does not match a Microsoft 365 account',
+    fix: 'Correct the supervisor’s email so it matches their Microsoft 365 account. Until it does, their requests cannot record a manager — nobody is asked to approve, and the request stays hidden from the dashboards.',
+  },
+  supervisor_not_self: {
+    title: 'They are listed as their own supervisor',
+    fix: 'Change their supervisor in the Staff Directory, otherwise their requests are sent to them to approve.',
+  },
+  holidays_current_year: {
+    title: 'No holidays for the current year',
+    fix: 'Add this year’s holidays for their province. Without them, holidays are counted as ordinary workdays and leave is over-deducted.',
+  },
+  balances_in_range: {
+    title: 'A balance value looks wrong',
+    fix: 'Check the balance against their history — a value outside the expected range usually means an approval only half-applied.',
+  },
+  entitlements_set: {
+    title: 'A yearly entitlement is missing',
+    fix: 'Set their yearly vacation and sick entitlements in the Staff Directory so their annual grant can be worked out.',
+  },
+  requests_missing_days: {
+    title: 'A request never got its days worked out',
+    fix: 'Reprocess the request from Stuck Requests. Until then it is hidden from every dashboard and nobody can action it.',
+  },
+  requests_missing_manager: {
+    title: 'A request never got a manager',
+    fix: 'Reprocess the request from Stuck Requests. Nobody was asked to approve it, and it does not appear on any dashboard.',
+  },
+  requests_not_notified: {
+    title: 'A request was never sent to its manager',
+    fix: 'The request has a manager but the approval was never sent. Reprocess it from Stuck Requests to send it.',
+  },
+  requests_auto_rejected: {
+    title: 'The system rejected a request on its own',
+    fix: 'Read the reason shown above. If it is wrong, the employee can submit again once the cause is cleared.',
+  },
+  requests_approved_dates: {
+    title: 'Dates already booked',
+    fix: 'These approved requests hold their dates. A new request covering the same days will be refused at approval.',
+  },
 };
+
+/**
+ * Render a measurement as "actual / expected" for the technical breakdown.
+ *
+ * @param measure - The measurement carried by a check, if it has one.
+ * @returns A short comparison string, or an empty string when there is nothing
+ *   meaningful to compare against.
+ */
+function measureSummary(measure: Measure | null): string {
+  if (!measure || measure.actual == null) return '';
+  if (measure.comparison === 'reported' || measure.expected == null) return `${measure.actual}`;
+  const expected = Array.isArray(measure.expected)
+    ? `${measure.expected[0]}–${measure.expected[1]}`
+    : measure.expected;
+  const operator = measure.comparison === 'at_least' ? '≥'
+    : measure.comparison === 'at_most' ? '≤' : '';
+  return `${measure.actual} / ${operator}${expected}`;
+}
 
 function problemInfo(check: Check): { title: string; fix: string } {
   return PROBLEM_INFO[check.code] || {
@@ -93,13 +166,14 @@ const PREVIEW_ROWS = [
 ];
 
 // Technical-details grouping (for the one admin who wants the raw checks).
-const CATEGORY_ORDER = ['identity', 'supervisor', 'location', 'balances', 'simulation'];
+const CATEGORY_ORDER = ['identity', 'supervisor', 'location', 'balances', 'simulation', 'requests'];
 const CATEGORY_LABELS: Record<string, string> = {
   identity: 'Identity',
   supervisor: 'Supervisor',
   location: 'Location & holidays',
   balances: 'Balances',
   simulation: 'Request simulations',
+  requests: 'Requests already in flight',
 };
 const STATUS: Record<Check['status'], { color: 'success' | 'warning' | 'error'; label: string }> = {
   pass: { color: 'success', label: 'OK' },
@@ -220,10 +294,13 @@ export default function EmployeeValidation({ employees }: Props) {
         sub: 'These will not block requests, but are worth a look below.',
       };
     } else {
+      // Deliberately reports what was measured rather than promising that every
+      // request will work — the promise was what made a green result misleading
+      // while a stalled request was blocking the employee.
       verdict = {
         severity: 'success',
         headline: `${name} is fully set up.`,
-        sub: 'All leave, overtime, and payout requests will work.',
+        sub: `All ${report.measurements.total} checks on their record and their existing requests are in range.`,
       };
     }
   }
@@ -268,6 +345,11 @@ export default function EmployeeValidation({ employees }: Props) {
             </Typography>
             <Typography variant="body2">{verdict.sub}</Typography>
           </Alert>
+
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+            {report.measurements.within_range} of {report.measurements.total} measurements within
+            the expected range.
+          </Typography>
 
           {problems.length > 0 && (
             <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
@@ -349,6 +431,7 @@ export default function EmployeeValidation({ employees }: Props) {
                 <Stack spacing={0.75}>
                   {grouped[cat].map((c) => {
                     const st = STATUS[c.status] || STATUS.warn;
+                    const summary = measureSummary(c.measure);
                     return (
                       <Box key={c.code} sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
                         <Chip
@@ -357,7 +440,18 @@ export default function EmployeeValidation({ employees }: Props) {
                           label={st.label}
                           sx={{ minWidth: 60, height: 20, fontSize: 11, fontWeight: 600 }}
                         />
-                        <Typography variant="body2" color="text.secondary">{c.detail}</Typography>
+                        <Box>
+                          <Typography variant="body2" color="text.secondary">{c.detail}</Typography>
+                          {summary && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ display: 'block', fontFamily: 'monospace', opacity: 0.75 }}
+                            >
+                              {c.measure?.label}: {summary}
+                            </Typography>
+                          )}
+                        </Box>
                       </Box>
                     );
                   })}
