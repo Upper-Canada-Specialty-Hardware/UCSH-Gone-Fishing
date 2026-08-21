@@ -26,6 +26,7 @@ from app.services.balance import (
 )
 from app.services.concurrency import lock_manager
 from app.services.idempotency import claim_action
+from app.services.overlap_detection import find_overtime_approval_conflict
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import (
     bump_and_snapshot,
@@ -57,14 +58,9 @@ async def process_new_overtime_request(form_data: dict, submitter_email: str) ->
     if lookup_id:
         fields["SubmittedByLookupId"] = lookup_id
 
-        # Duplicate detection — block same-date requests
-        from app.services.overlap_detection import check_overtime_overlap, OverlapError
-        overlap = await check_overtime_overlap(
-            submitter_lookup_id=lookup_id,
-            overtime_date=form_data["date"],
-        )
-        if overlap:
-            raise OverlapError("overtime", overlap)
+    # No duplicate check here, deliberately — a clash with an already-approved
+    # entry is raised when a manager tries to approve. See the module docstring
+    # in app/services/overlap_detection.py.
 
     item = await sp_client.create_list_item(settings.SP_LIST_OVERTIME_REQUESTS, fields)
     item_id = item["id"]
@@ -308,7 +304,24 @@ async def admin_edit_overtime_request(
 
 
 async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
-    """Process overtime approval — update balance, vacation offset, recalc RAD."""
+    """Process overtime approval — update balance, vacation offset, recalc RAD.
+
+    Args:
+        request_id: SharePoint item id of the overtime request being approved.
+        manager_id: Staff Directory id of whoever is approving.
+
+    Returns:
+        A result dict describing the approval. An "error" key means nothing was
+        written and the request is unchanged.
+    """
+    # Conflict check runs BEFORE the idempotency claim so a blocked approval
+    # stays retryable — same reasoning as approve_leave_request.
+    pre_claim = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    conflict = await find_overtime_approval_conflict(request_id, pre_claim["fields"])
+    if conflict:
+        # Nothing written; the request stays Pending for the manager to decide.
+        return {"error": conflict}
+
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "approve"):
         return {"error": "Already processed"}
 

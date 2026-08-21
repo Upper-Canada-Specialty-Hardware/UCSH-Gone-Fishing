@@ -132,16 +132,26 @@ async def receive_sms(request: Request):
         await send_sms(from_number, f"Invalid response - you do not have access to request #{item_id}.")
         return ""
 
-    # Process
+    # Process. The handlers report a refusal in their result rather than raising
+    # — a clash with an approved absence, or an action another channel already
+    # took — so read it before telling the manager their reply went through.
+    # Replying "response has been received" regardless made a refused approval
+    # indistinguishable from a successful one.
     if decision == "Approve":
-        await config["approve"](item_id, sender_id)
+        result = await config["approve"](item_id, sender_id) or {}
+        if result.get("error"):
+            await send_sms(from_number, f"Request #{item_id} was not approved. {result['error']}")
+            return ""
         manager_email = sender["fields"].get("EmailAddress", "")
         await send_sms(
             from_number,
             f"Response has been received. An email will be sent to ({manager_email}) once the process is completed.",
         )
     else:
-        await config["reject"](item_id, sender_id)
+        result = await config["reject"](item_id, sender_id) or {}
+        if result.get("error"):
+            await send_sms(from_number, f"Request #{item_id} was not rejected. {result['error']}")
+            return ""
         await send_sms(from_number, f"Response has been received. Cancelling request #{item_id}.")
 
     return ""

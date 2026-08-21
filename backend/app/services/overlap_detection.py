@@ -1,4 +1,22 @@
-"""Duplicate request detection — prevents overlapping date ranges for the same employee."""
+"""Duplicate request detection — stops an employee holding the same dates twice.
+
+Two rules define this module, and both changed deliberately:
+
+1. Only an APPROVED request reserves dates. Balance is spent at approval, so a
+   request still awaiting a manager has no claim on the dates yet. Treating
+   Pending as blocking meant a request that stalled before reaching a manager
+   held those dates permanently — and, because dashboards hide a pending
+   request until it has both its day count and its manager, held them
+   invisibly.
+
+2. A conflict is raised when a manager attempts to APPROVE, not when the
+   request is created. Blocking at creation ran ahead of the day calculation
+   and the manager assignment, so a request rejected as a duplicate was left
+   with no days, no manager and no location, and never reached anybody.
+   Checking at approval also closes the opposite gap: two overlapping requests
+   created before either is actioned can otherwise both be approved and both
+   deduct balance.
+"""
 
 import logging
 from datetime import date, datetime
@@ -8,16 +26,8 @@ from app.graph.sharepoint import sp_client
 
 logger = logging.getLogger(__name__)
 
-BLOCKING_STATUSES = {"Pending", "Approved"}
-
-
-class OverlapError(Exception):
-    """Raised when a new request overlaps an existing one."""
-
-    def __init__(self, request_type: str, conflicting_request: dict):
-        self.request_type = request_type
-        self.conflicting_request = conflicting_request
-        super().__init__(f"Overlapping {request_type} request found")
+# Only an approved absence reserves its dates — see rule 1 in the module docstring.
+BLOCKING_STATUSES = {"Approved"}
 
 
 def _parse_date(value) -> date | None:
@@ -139,3 +149,89 @@ async def check_overtime_overlap(
             }
 
     return None
+
+
+# --- Approval-time entry points -------------------------------------------------
+#
+# The shared approve handlers call these, so all three approval channels — the
+# emailed link, the text reply and the dashboard button — are covered by one
+# check rather than three copies of it.
+
+
+async def find_leave_approval_conflict(request_id: str | int, fields: dict) -> str | None:
+    """Check a leave request against the employee's already-approved absences.
+
+    Args:
+        request_id: Id of the request being approved. Excluded from its own search.
+        fields: SharePoint field values already fetched for that request.
+
+    Returns:
+        A sentence naming the conflicting request, written for the manager who
+        is trying to approve, or None when the dates are free.
+    """
+    submitter_lookup_id = _extract_lookup_id(fields, "SubmittedTest")  # who the leave is for
+    if not submitter_lookup_id:
+        # No identifiable submitter means nothing to compare against. Let the
+        # approval through rather than blocking on a lookup failure, but say so:
+        # silence here would read as "checked, no conflict".
+        logger.warning(
+            "LR #%s — approval conflict check skipped: submitter could not be identified",
+            request_id,
+        )
+        return None
+
+    conflict = await check_leave_overlap(  # approved-only, and never matches itself
+        submitter_lookup_id=submitter_lookup_id,
+        start_date=fields.get("StartDate", ""),
+        end_date=fields.get("EndDate", ""),
+        exclude_item_id=str(request_id),
+    )
+    if not conflict:
+        return None
+
+    logger.info(
+        "LR #%s — approval blocked: overlaps approved leave request #%s",
+        request_id, conflict["item_id"],
+    )
+    return (
+        f"This overlaps leave request #{conflict['item_id']}, already approved for "
+        f"{conflict['start_date']} to {conflict['end_date']}. Reject this request, "
+        "or cancel the approved one first."
+    )
+
+
+async def find_overtime_approval_conflict(request_id: str | int, fields: dict) -> str | None:
+    """Check an overtime request against the employee's already-approved entries.
+
+    Args:
+        request_id: Id of the request being approved. Excluded from its own search.
+        fields: SharePoint field values already fetched for that request.
+
+    Returns:
+        A sentence naming the conflicting entry, written for the manager who is
+        trying to approve, or None when that date is free.
+    """
+    submitter_lookup_id = _extract_lookup_id(fields, "SubmittedBy")  # overtime uses a different person column
+    if not submitter_lookup_id:
+        logger.warning(
+            "OT #%s — approval conflict check skipped: submitter could not be identified",
+            request_id,
+        )
+        return None
+
+    conflict = await check_overtime_overlap(  # same date, approved only, self excluded
+        submitter_lookup_id=submitter_lookup_id,
+        overtime_date=fields.get("StartDate", ""),
+        exclude_item_id=str(request_id),
+    )
+    if not conflict:
+        return None
+
+    logger.info(
+        "OT #%s — approval blocked: conflicts with approved overtime request #%s",
+        request_id, conflict["item_id"],
+    )
+    return (
+        f"Overtime request #{conflict['item_id']} for {conflict['date']} is already "
+        "approved. Reject this request, or cancel the approved one first."
+    )

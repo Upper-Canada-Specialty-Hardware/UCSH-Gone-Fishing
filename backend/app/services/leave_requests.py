@@ -30,6 +30,7 @@ from app.services.balance import (
 )
 from app.services.concurrency import lock_manager
 from app.services.idempotency import claim_action
+from app.services.overlap_detection import find_leave_approval_conflict
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import bump_and_snapshot, MATERIAL_FIELDS_LEAVE
 from app.services.sms import send_sms
@@ -72,17 +73,11 @@ async def process_new_leave_request(form_data: dict, submitter_email: str) -> di
     # Set SubmittedTest via Claims lookup
     fields["SubmittedTestLookupId"] = await _resolve_user_lookup_id(submitter_email)
 
-    # Duplicate detection — block overlapping date ranges
-    lookup_id = fields["SubmittedTestLookupId"]
-    if lookup_id:
-        from app.services.overlap_detection import check_leave_overlap, OverlapError
-        overlap = await check_leave_overlap(
-            submitter_lookup_id=lookup_id,
-            start_date=fields["StartDate"],
-            end_date=fields["EndDate"],
-        )
-        if overlap:
-            raise OverlapError("leave", overlap)
+    # No duplicate check here, deliberately. A clash with an approved absence is
+    # raised when a manager tries to approve, not at intake — blocking here ran
+    # ahead of the day calculation and the manager assignment below, so a request
+    # rejected as a duplicate was left with no days and no manager, and reached
+    # nobody. See app/services/overlap_detection.py.
 
     item = await sp_client.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, fields)
     item_id = item["id"]
@@ -477,7 +472,27 @@ async def admin_edit_leave_request(
 
 
 async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:
-    """Process leave approval — update SP, deduct balance, cascade, email."""
+    """Process leave approval — update SP, deduct balance, cascade, email.
+
+    Args:
+        request_id: SharePoint item id of the leave request being approved.
+        manager_id: Staff Directory id of whoever is approving.
+
+    Returns:
+        A result dict describing the approval. An "error" key means nothing was
+        written and the request is unchanged.
+    """
+    # Conflict check runs BEFORE the idempotency claim, on its own read of the
+    # item. Claiming first would consume the one-shot claim on a blocked
+    # approval, and the manager would then get "Already processed" forever, even
+    # after clearing the conflict. Costs one extra read per approval.
+    pre_claim = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    conflict = await find_leave_approval_conflict(request_id, pre_claim["fields"])
+    if conflict:
+        # Nothing is written: the request stays Pending and the manager decides
+        # whether to reject it. The system does not cancel on their behalf.
+        return {"error": conflict}
+
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "approve"):
         return {"error": "Already processed"}
 
