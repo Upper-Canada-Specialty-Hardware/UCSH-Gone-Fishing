@@ -15,7 +15,9 @@ it's exercised via the /admin/validate-employee endpoint and the dashboard UI
 """
 
 import ast
+import asyncio
 import inspect
+import uuid
 from datetime import date, timedelta
 
 from app.services import employee_validation as ev
@@ -520,6 +522,45 @@ def test_rows_that_could_not_be_measured_are_left_out_of_the_tally():
     graded = _report()
     ungraded = _report(manager_m365_matches=None)
     assert ungraded["measurements"]["total"] == graded["measurements"]["total"] - 1
+
+
+# ----- the send record is read from the database, not guessed -----
+#
+# This is the query the whole "was the manager asked?" check rests on, so it is
+# exercised against a real session rather than trusted.
+
+def test_approval_email_records_returns_only_the_requests_that_have_a_row():
+    asyncio.run(_approval_record_flow())
+
+
+async def _approval_record_flow():
+    from app.database import Base, async_session, engine
+    from app.models import RequestApprovalState
+    from app.services.approval_versions import bump_and_snapshot
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    list_id = "list-for-setup-check"
+    emailed_id = f"sent-{uuid.uuid4().hex}"
+    silent_id = f"unsent-{uuid.uuid4().hex}"
+
+    # Composing an approval email is what writes the row; nothing else does.
+    await bump_and_snapshot(list_id, emailed_id, {"Days": 1}, ("Days",))
+    async with async_session() as session:
+        assert await session.get(RequestApprovalState, (list_id, emailed_id)) is not None
+
+    matched = [
+        ("leave", list_id, {"id": emailed_id}),
+        ("leave", list_id, {"id": silent_id}),
+    ]
+    found = await ev._fetch_approval_email_records(matched)
+
+    assert found == {(list_id, emailed_id)}
+
+
+def test_approval_email_records_is_empty_for_no_requests():
+    assert asyncio.run(ev._fetch_approval_email_records([])) == set()
 
 
 # ----- SAFETY: no side effects -----
