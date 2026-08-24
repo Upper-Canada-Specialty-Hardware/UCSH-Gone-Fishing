@@ -1,6 +1,7 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #1e40af;">Leave Request Received</h2>
   <p>Your leave request has been received and is pending manager approval.</p>
+  {% include "conflict_warning.html" %}
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
     <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>

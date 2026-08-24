@@ -17,6 +17,7 @@ def render_leave_approval_email(
     fields: dict, emp_fields: dict, approve_url: str, reject_url: str,
     submitter_name: str = "", projected: dict | None = None,
     previous_snapshot: dict | None = None,
+    conflict_warning: dict | None = None,
 ) -> str:
     return _render(
         "leave_approval_email.html",
@@ -24,6 +25,7 @@ def render_leave_approval_email(
         approve_url=approve_url, reject_url=reject_url,
         submitter_name=submitter_name, projected=projected,
         previous_snapshot=previous_snapshot,
+        conflict_warning=conflict_warning,
     )
 
 
@@ -55,10 +57,14 @@ def render_partial_day_halffriday_rejected(fields: dict, reason: str) -> str:
     return _render("partial_day_halffriday_rejected.html", fields=fields, reason=reason)
 
 
-def render_leave_confirmation(fields: dict, emp_fields: dict, projected: dict | None = None) -> str:
+def render_leave_confirmation(
+    fields: dict, emp_fields: dict, projected: dict | None = None,
+    conflict_warning: dict | None = None,
+) -> str:
     return _render(
         "leave_confirmation.html",
         fields=fields, emp_fields=emp_fields, projected=projected,
+        conflict_warning=conflict_warning,
     )
 
 
@@ -72,6 +78,7 @@ def render_overtime_approval_email(
     fields: dict, submitter_name: str, approve_url: str, reject_url: str,
     is_half_friday: bool, emp_fields: dict | None = None, projected: dict | None = None,
     previous_snapshot: dict | None = None,
+    conflict_warning: dict | None = None,
 ) -> str:
     return _render(
         "overtime_approval_email.html",
@@ -79,6 +86,7 @@ def render_overtime_approval_email(
         approve_url=approve_url, reject_url=reject_url,
         is_half_friday=is_half_friday, emp_fields=emp_fields, projected=projected,
         previous_snapshot=previous_snapshot,
+        conflict_warning=conflict_warning,
     )
 
 
@@ -96,10 +104,14 @@ def render_overtime_rejected(fields: dict, submitter_name: str, manager_name: st
     )
 
 
-def render_overtime_confirmation(fields: dict, emp_fields: dict, projected: dict | None = None) -> str:
+def render_overtime_confirmation(
+    fields: dict, emp_fields: dict, projected: dict | None = None,
+    conflict_warning: dict | None = None,
+) -> str:
     return _render(
         "overtime_confirmation.html",
         fields=fields, emp_fields=emp_fields, projected=projected,
+        conflict_warning=conflict_warning,
     )
 
 
@@ -216,16 +228,25 @@ def render_system_override_reject_at_approval(
     )
 
 
-# --- Duplicate Request ---
-
-def render_duplicate_request_rejected(
-    request_type: str, fields: dict, overlap: dict, reason: str,
+def render_request_now_blocked(
+    request_type: str, request_id, fields: dict, conflict_warning: dict,
 ) -> str:
-    request_type_display = "Leave" if request_type == "leave" else "Time Make-Up"
+    """Render the notice sent when an approval strands another request.
+
+    Args:
+        request_type: "leave" or "overtime", picking the detail table.
+        request_id: The stranded request.
+        fields: Its SharePoint field values.
+        conflict_warning: The employee-facing warning block.
+
+    Returns:
+        The rendered HTML body.
+    """
     return _render(
-        "duplicate_request_rejected.html",
-        request_type=request_type, request_type_display=request_type_display,
-        fields=fields, overlap=overlap, reason=reason,
+        "request_now_blocked.html",
+        request_type=request_type,
+        request_type_display="Leave" if request_type == "leave" else "Time Make-Up",
+        request_id=request_id, fields=fields, conflict_warning=conflict_warning,
     )
 
 

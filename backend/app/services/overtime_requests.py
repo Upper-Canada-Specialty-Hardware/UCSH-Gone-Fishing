@@ -26,6 +26,12 @@ from app.services.balance import (
 )
 from app.services.concurrency import lock_manager
 from app.services.idempotency import claim_action
+from app.services.notify_blocked import notify_requests_blocked_by_approval
+from app.services.overlap_detection import (
+    conflict_warning,
+    find_overtime_approval_conflict,
+    find_overtime_conflict_for_request,
+)
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import (
     bump_and_snapshot,
@@ -57,14 +63,9 @@ async def process_new_overtime_request(form_data: dict, submitter_email: str) ->
     if lookup_id:
         fields["SubmittedByLookupId"] = lookup_id
 
-        # Duplicate detection — block same-date requests
-        from app.services.overlap_detection import check_overtime_overlap, OverlapError
-        overlap = await check_overtime_overlap(
-            submitter_lookup_id=lookup_id,
-            overtime_date=form_data["date"],
-        )
-        if overlap:
-            raise OverlapError("overtime", overlap)
+    # No duplicate check here, deliberately — a clash with an already-approved
+    # entry is raised when a manager tries to approve. See the module docstring
+    # in app/services/overlap_detection.py.
 
     item = await sp_client.create_list_item(settings.SP_LIST_OVERTIME_REQUESTS, fields)
     item_id = item["id"]
@@ -163,6 +164,23 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
 
     from app.templates_render import render_overtime_approval_email, render_overtime_confirmation
 
+    # Does this clash with an absence the employee already has approved?
+    # Worked out once here and shown to both audiences: the manager, so the
+    # Approve button is not presented as the obvious next click when it cannot
+    # work, and the employee, who otherwise hears nothing at all until someone
+    # chases it. Nothing is written and nothing is rejected - the decision
+    # stays with the manager.
+    #
+    # Costs one list read per approval email. A failure here drops the warning,
+    # never the email: an unsent approval is far worse than a missing notice.
+    try:
+        conflict = await find_overtime_conflict_for_request(request_id, fields)
+    except Exception:  # noqa: BLE001 - a failed check must not stop the email
+        logger.exception("Could not check overtime request #%s for conflicts", request_id)
+        conflict = None
+    manager_warning = conflict_warning(conflict, "overtime", "manager")
+    employee_warning = conflict_warning(conflict, "overtime", "employee")
+
     # Compute projected balances
     hours = float(fields.get("Hours", 0) or 0)
     projected = simulate_overtime_impact(emp_fields, hours)
@@ -193,6 +211,7 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
             fields, submitter_name, approve_url, reject_url, is_hf,
             emp_fields=emp_fields, projected=projected,
             previous_snapshot=previous_snapshot,
+            conflict_warning=manager_warning,
         )
 
         await send_email_with_dashboard(
@@ -225,7 +244,9 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
     # Send confirmation email to employee (not on reminders - already received once)
     emp_email = emp_fields.get("EmailAddress", "")
     if emp_email and not is_reminder:
-        html = render_overtime_confirmation(fields, emp_fields, projected)
+        html = render_overtime_confirmation(
+            fields, emp_fields, projected, conflict_warning=employee_warning,
+        )
         await send_email_with_dashboard(
             to=[emp_email],
             subject=f"Time Make-Up Request Received - {submitter_name}",
@@ -308,7 +329,28 @@ async def admin_edit_overtime_request(
 
 
 async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
-    """Process overtime approval — update balance, vacation offset, recalc RAD."""
+    """Process overtime approval — update balance, vacation offset, recalc RAD.
+
+    Args:
+        request_id: SharePoint item id of the overtime request being approved.
+        manager_id: Staff Directory id of whoever is approving.
+
+    Returns:
+        A result dict describing the approval. An "error" key means nothing was
+        written and the request is unchanged.
+    """
+    # Conflict check runs BEFORE the idempotency claim so a blocked approval
+    # stays retryable — same reasoning as approve_leave_request.
+    pre_claim = await sp_client.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    if pre_claim is None:
+        # Deleted between the email going out and the manager acting on it.
+        # A missing item is a terminal state, not a transient failure.
+        return {"error": "This request no longer exists."}
+    conflict = await find_overtime_approval_conflict(request_id, pre_claim["fields"])
+    if conflict:
+        # Nothing written; the request stays Pending for the manager to decide.
+        return {"error": conflict}
+
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "approve"):
         return {"error": "Already processed"}
 
@@ -338,6 +380,13 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
             settings.SP_LIST_OVERTIME_REQUESTS, request_id,
             {"Status": "Approved", "ApprovedDate": date.today().isoformat()},
         )
+
+        # Same as the salaried branch below - an approved entry reserves the
+        # date whether or not it moves a balance.
+        await notify_requests_blocked_by_approval(
+            "overtime", request_id, fields, emp_fields.get("EmailAddress", ""),
+        )
+
         from app.templates_render import render_overtime_hourly_approved
         html = render_overtime_hourly_approved(fields, submitter_name, mgr_fields.get("Title", ""))
         await send_email(
@@ -374,6 +423,12 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         await sp_client.update_list_item_fields(
             settings.SP_LIST_OVERTIME_REQUESTS, request_id,
             {"Status": "Approved", "ApprovedDate": date.today().isoformat()},
+        )
+
+        # This date is now reserved, which may have stranded another entry the
+        # employee already had in. Reads only and swallows its own failures.
+        await notify_requests_blocked_by_approval(
+            "overtime", request_id, fields, emp_fields.get("EmailAddress", ""),
         )
 
         # Vacation offset logic

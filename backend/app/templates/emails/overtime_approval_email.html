@@ -3,6 +3,7 @@
   <p style="color: #b45309; font-weight: bold;">Half-Day Friday detected from the requested date.</p>
   {% endif %}
   <h2 style="color: #1e40af;">Time Make-Up Request</h2>
+  {% include "conflict_warning.html" %}
   {% if previous_snapshot %}
   {% set edited_keys = [] %}
   {% if previous_snapshot.get('Hours') != fields.get('Hours') %}{% set _ = edited_keys.append('Hours') %}{% endif %}

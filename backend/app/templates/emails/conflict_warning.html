@@ -1,0 +1,16 @@
+{# Shown when a request clashes with an absence that is already approved.
+
+   Included by both approval emails and both employee confirmations. Nothing is
+   rejected and nothing is cancelled - this only says what is already booked and
+   what the reader can do about it. The three strings are built in
+   app/services/overlap_detection.py so every channel words it the same way.
+
+   Renders nothing at all when conflict_warning is undefined or None, which is
+   the normal case. #}
+{% if conflict_warning %}
+<p style="background:#fffbeb;border-left:4px solid #d97706;padding:12px;margin:16px 0;color:#78350f;">
+  <strong>{{ conflict_warning.heading }}</strong><br>
+  {{ conflict_warning.detail }}<br>
+  {{ conflict_warning.action }}
+</p>
+{% endif %}

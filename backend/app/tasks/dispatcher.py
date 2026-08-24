@@ -46,19 +46,11 @@ async def _handle_leave_request_change(item_id: str, fields: dict):
         )
         return
 
-    # Duplicate detection — auto-reject overlapping requests
-    from app.services.overlap_detection import check_leave_overlap, _extract_lookup_id
-    submitter_lid = _extract_lookup_id(f, "SubmittedTest")
-    if submitter_lid:
-        overlap = await check_leave_overlap(
-            submitter_lookup_id=submitter_lid,
-            start_date=f.get("StartDate", ""),
-            end_date=f.get("EndDate", ""),
-            exclude_item_id=str(item_id),
-        )
-        if overlap:
-            await _auto_reject_duplicate(item_id, "leave", f, overlap)
-            return
+    # Every pending request now runs the three steps below and reaches a manager.
+    # The duplicate check that used to sit here rejected the request and returned
+    # before any of them, which is why such requests carried no days, no manager
+    # and no location. Clashes with an approved absence are raised at approval
+    # instead — see app/services/overlap_detection.py.
 
     from app.services.leave_requests import (
         auto_calculate_days,
@@ -102,18 +94,8 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
         logger.warning("Overtime #%s missing Hours — skipping auto-process", item_id)
         return
 
-    # Duplicate detection — auto-reject overlapping requests
-    from app.services.overlap_detection import check_overtime_overlap, _extract_lookup_id
-    submitter_lid = _extract_lookup_id(f, "SubmittedBy")
-    if submitter_lid:
-        overlap = await check_overtime_overlap(
-            submitter_lookup_id=submitter_lid,
-            overtime_date=f.get("StartDate", ""),
-            exclude_item_id=str(item_id),
-        )
-        if overlap:
-            await _auto_reject_duplicate(item_id, "overtime", f, overlap)
-            return
+    # As with leave: no duplicate check here, so processing always continues to
+    # manager assignment. Clashes are raised at approval time instead.
 
     # Resolve submitter email from SubmittedBy Person field via Staff Directory
     submitter_email = None
@@ -165,57 +147,3 @@ async def _handle_carryover_payout_change(item_id: str, fields: dict):
     from app.services.carryover_payout import auto_assign_manager
     logger.info("Auto-processing SP-created carryover/payout request #%s", item_id)
     await auto_assign_manager(item_id, submitter_email)
-
-
-async def _auto_reject_duplicate(item_id: str, request_type: str, fields: dict, overlap: dict):
-    """Auto-reject a duplicate request and notify the employee."""
-    from app.services.auto_reject_titles import append_auto_reject_tag
-
-    if request_type == "leave":
-        list_id = settings.SP_LIST_LEAVE_REQUESTS
-        reason = (
-            f"This request overlaps with leave request #{overlap['item_id']} "
-            f"covering {overlap['start_date']} to {overlap['end_date']}."
-        )
-        update_fields = {
-            "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
-            "Status": "Rejected",
-            "ApproveProcessedFlag": "Processed",
-        }
-        person_field = fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId")
-    else:
-        list_id = settings.SP_LIST_OVERTIME_REQUESTS
-        reason = (
-            f"This request conflicts with overtime request #{overlap['item_id']} "
-            f"on {overlap['date']}."
-        )
-        update_fields = {
-            "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
-            "Status": "Rejected",
-        }
-        person_field = fields.get("SubmittedBy") or fields.get("SubmittedByLookupId")
-
-    await sp_client.update_list_item_fields(list_id, item_id, update_fields)
-    logger.info(
-        "Auto-rejected duplicate %s request #%s — overlaps with #%s",
-        request_type, item_id, overlap.get("item_id"),
-    )
-
-    # Notify employee
-    from app.services.employee import resolve_person_field
-    employee = await resolve_person_field(person_field)
-    if not employee:
-        return
-    emp_email = employee["fields"].get("EmailAddress", "")
-    if not emp_email:
-        return
-
-    from app.templates_render import render_duplicate_request_rejected
-    from app.graph.email import send_email
-
-    html = render_duplicate_request_rejected(request_type, fields, overlap, reason)
-    await send_email(
-        to=[emp_email],
-        subject=f"{'Leave' if request_type == 'leave' else 'Time Make-Up'} Request - Auto Rejected (Duplicate)",
-        html_body=html,
-    )
