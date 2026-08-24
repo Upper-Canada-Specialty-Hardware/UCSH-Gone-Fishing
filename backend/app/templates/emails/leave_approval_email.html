@@ -1,5 +1,6 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #1e40af;">Leave Request</h2>
+  {% include "conflict_warning.html" %}
   {% if previous_snapshot %}
   {% set edited_keys = [] %}
   {% if previous_snapshot.get('Days') != fields.get('Days') %}{% set _ = edited_keys.append('Days') %}{% endif %}

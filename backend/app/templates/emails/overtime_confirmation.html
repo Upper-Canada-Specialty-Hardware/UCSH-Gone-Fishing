@@ -1,6 +1,7 @@
 <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
   <h2 style="color: #1e40af;">Time Make-Up Request Received</h2>
   <p>Your overtime request has been received and is pending manager approval.</p>
+  {% include "conflict_warning.html" %}
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
     <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }}</td></tr>

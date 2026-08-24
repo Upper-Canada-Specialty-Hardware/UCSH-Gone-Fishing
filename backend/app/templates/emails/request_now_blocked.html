@@ -1,0 +1,25 @@
+{# Sent to the employee when an approval has just stranded another request of
+   theirs. Their request is untouched and still pending - this only tells them
+   it can no longer be approved as it stands, which nothing else would.
+
+   Carries the same warning block every other email uses, so the wording of the
+   clash is identical wherever it appears. #}
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #b45309;">{{ request_type_display }} Request #{{ request_id }} Cannot Be Approved</h2>
+  {% include "conflict_warning.html" %}
+
+  <h3>Your Request</h3>
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    {% if request_type == "leave" %}
+    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '')[:10] }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '')[:10] }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
+    {% else %}
+    <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '')[:10] }}</td></tr>
+    <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }}</td></tr>
+    {% endif %}
+  </table>
+
+  <p style="color: #6b7280;">Nothing has been cancelled. This request is still with your manager, who decides whether to reject it.</p>
+</div>
