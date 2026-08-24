@@ -110,7 +110,7 @@ const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     fix: 'The request has a manager but the approval was never sent. Reprocess it from Stuck Requests to send it.',
   },
   requests_auto_rejected: {
-    title: 'The system rejected a request on its own',
+    title: 'The system recently rejected a request on its own',
     fix: 'Read the reason shown above. If it is wrong, the employee can submit again once the cause is cleared.',
   },
   requests_approved_dates: {
@@ -137,7 +137,34 @@ function measureSummary(measure: Measure | null): string {
   return `${measure.actual} / ${operator}${expected}`;
 }
 
+/**
+ * True when a check could not be run at all, as opposed to running and failing.
+ *
+ * The backend marks these by carrying a measurement with nothing in it: the
+ * 'reported' comparison and a null reading. They must not be dressed up in the
+ * wording for a misconfigured record, because the record may be fine — the
+ * lookup behind the check is what failed.
+ *
+ * @param check - One row of the report.
+ * @returns Whether the row represents an unavailable reading.
+ */
+function isUnavailable(check: Check): boolean {
+  return check.measure?.comparison === 'reported' && check.measure?.actual == null;
+}
+
+/**
+ * Resolve the heading and remedy shown for a problem row.
+ *
+ * @param check - One row of the report.
+ * @returns The title and fix wording to display.
+ */
 function problemInfo(check: Check): { title: string; fix: string } {
+  if (isUnavailable(check)) {
+    return {
+      title: 'This check could not be run',
+      fix: 'A lookup this check depends on could not be read. Run the check again; if it keeps happening the Microsoft 365 connection is the place to look.',
+    };
+  }
   return PROBLEM_INFO[check.code] || {
     title: 'Setup issue',
     fix: 'Review this record in the Staff Directory.',

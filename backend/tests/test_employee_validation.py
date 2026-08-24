@@ -16,7 +16,7 @@ it's exercised via the /admin/validate-employee endpoint and the dashboard UI
 
 import ast
 import inspect
-from datetime import date
+from datetime import date, timedelta
 
 from app.services import employee_validation as ev
 from app.services.employee_validation import build_validation_report, summarise_request
@@ -43,10 +43,16 @@ MANAGERS = [{"id": "5", "fields": {"Title": "Boss", "EmailAddress": "boss@ucsh.c
 HOLIDAYS = [{"Title": "Canada Day", "Date": "2026-07-01", "Province": "ON"}]
 PASS_IDENTITY = {"status": "pass", "detail": "round-trip ok", "account_count": 1}
 SAMPLE = (date(2026, 7, 6), date(2026, 7, 7))  # a Monday..Tuesday
+TODAY = date(2026, 7, 6)  # fixed, so the automatic-rejection window is not clock-dependent
 
 
 def _request(kind="leave", **overrides):
-    """A request summary in the shape summarise_request produces."""
+    """A request summary in the shape summarise_request produces.
+
+    `notified` defaults to True because that is what a healthy pending request
+    looks like: it has a row in the approval-state table, written when its
+    approval email was composed.
+    """
     summary = {
         "kind": kind,
         "item_id": "12",
@@ -54,6 +60,7 @@ def _request(kind="leave", **overrides):
         "has_amount": True,
         "has_manager": True,
         "notified": True,
+        "created_date": TODAY.isoformat(),
         "start_date": "2026-09-01",
         "end_date": "2026-09-05",
         "auto_rejected": False,
@@ -79,6 +86,7 @@ def _report(**overrides):
         requests=[],
         sample_start=SAMPLE[0],
         sample_end=SAMPLE[1],
+        today=TODAY,
     )
     kwargs.update(overrides)
     return build_validation_report(**kwargs)
@@ -368,7 +376,8 @@ def test_summarise_leave_request_reads_the_processing_state():
     summary = summarise_request("leave", item)
     assert summary["has_amount"] is False       # zero days is not calculated
     assert summary["has_manager"] is False
-    assert summary["notified"] is False
+    # Not passed in, so it stays unknown — never guessed at from the item.
+    assert summary["notified"] is None
     assert summary["start_date"] == "2026-09-01"
     assert summary["auto_rejected"] is False
 
@@ -386,13 +395,131 @@ def test_summarise_extracts_the_automatic_rejection_reason():
     assert "#11" in summary["auto_reject_reason"]
 
 
-def test_summarise_overtime_reads_hours_and_has_no_notified_state():
+def test_summarise_overtime_reads_hours_and_takes_its_notified_state():
     item = {"id": "21", "fields": {"Status": "Pending", "Hours": 8, "ManagerLookupId": 5}}
-    summary = summarise_request("overtime", item)
+    summary = summarise_request("overtime", item, notified=True)
     assert summary["has_amount"] is True
     assert summary["has_manager"] is True
-    # The overtime list has no flag recording whether the approval went out.
-    assert summary["notified"] is None
+    # Overtime is graded on this too now: the approval-state table records the
+    # send for all three request types, not just leave.
+    assert summary["notified"] is True
+
+
+# ----- the seam between a raw row and the report -----
+#
+# The two halves used to be tested apart: the report against a hand-written
+# summary, the summariser against a raw row. That let "was the manager asked?"
+# be answered from ApproveProcessedFlag, which is set only when a decision is
+# applied — so every healthy pending request was reported as never sent, and no
+# test carried a realistic row far enough to notice. These run a raw row all the
+# way through.
+
+HEALTHY_PENDING_LEAVE = {
+    "id": "12",
+    "fields": {
+        "Status": "Pending",
+        "Days": 3,
+        "ManagerLookupId": 5,
+        # Set at creation and only flipped to "Processed" once a decision is
+        # applied, so on a live pending request it always reads like this.
+        "ApproveProcessedFlag": "Not Processed",
+        "StartDate": "2026-09-01T00:00:00Z",
+        "EndDate": "2026-09-03T00:00:00Z",
+    },
+    "createdDateTime": "2026-07-01T09:00:00Z",
+}
+
+
+def test_a_healthy_pending_request_does_not_fail_the_check():
+    # The regression this file exists to prevent: a live request awaiting its
+    # manager is normal, not a setup problem.
+    summary = summarise_request("leave", HEALTHY_PENDING_LEAVE, notified=True)
+    report = _report(requests=[summary])
+
+    assert _by_code(report, "requests_not_notified")["status"] == "pass"
+    assert _by_code(report, "requests_missing_days")["status"] == "pass"
+    assert _by_code(report, "requests_missing_manager")["status"] == "pass"
+    assert report["overall"] == "pass"
+
+
+def test_notified_is_never_read_off_the_sharepoint_item():
+    # Whichever way ApproveProcessedFlag reads, the answer comes from the caller.
+    sent = summarise_request("leave", HEALTHY_PENDING_LEAVE, notified=True)
+    assert sent["notified"] is True
+
+    decided = {"id": "13", "fields": {"Status": "Approved", "ApproveProcessedFlag": "Processed"}}
+    assert summarise_request("leave", decided, notified=False)["notified"] is False
+
+
+def test_unreadable_send_record_warns_rather_than_accusing():
+    # None means "could not look", which must not be reported as "never sent".
+    report = _report(requests=[_request(notified=None)])
+    row = _by_code(report, "requests_not_notified")
+
+    assert row["status"] == "warn"
+    assert row["measure"]["comparison"] == "reported"   # kept out of the tally
+    assert report["overall"] == "warn"
+
+
+def test_a_proven_unsent_request_still_fails_alongside_an_unknown_one():
+    # One unknown must not mask a request that is genuinely stuck.
+    report = _report(requests=[_request(notified=None), _request(item_id="99", notified=False)])
+    assert _by_code(report, "requests_not_notified")["status"] == "fail"
+
+
+# ----- automatic rejections age out -----
+
+def test_a_recent_automatic_rejection_warns():
+    recent = _request(
+        status="Rejected", auto_rejected=True, auto_reject_reason="overlaps #11",
+        created_date=(TODAY - timedelta(days=10)).isoformat(),
+    )
+    assert _by_code(_report(requests=[recent]), "requests_auto_rejected")["status"] == "warn"
+
+
+def test_an_old_automatic_rejection_is_not_graded():
+    # Otherwise every employee who ever hit one shows amber for good.
+    old = _request(
+        status="Rejected", auto_rejected=True, auto_reject_reason="overlaps #11",
+        created_date=(TODAY - timedelta(days=400)).isoformat(),
+    )
+    report = _report(requests=[old])
+    assert _by_code(report, "requests_auto_rejected")["status"] == "pass"
+    assert report["overall"] == "pass"
+
+
+def test_an_automatic_rejection_with_no_creation_date_is_kept():
+    # Nothing should vanish because a field was empty.
+    unknown_age = _request(
+        status="Rejected", auto_rejected=True, auto_reject_reason="overlaps #11",
+        created_date="",
+    )
+    assert _by_code(_report(requests=[unknown_age]), "requests_auto_rejected")["status"] == "warn"
+
+
+# ----- a failed read is not a failed measurement -----
+
+def test_unreadable_m365_directory_warns_rather_than_failing_the_supervisor():
+    report = _report(manager_m365_matches=None)
+    row = _by_code(report, "manager_m365_match")
+
+    assert row["status"] == "warn"
+    assert row["measure"]["comparison"] == "reported"
+    assert report["overall"] == "warn"
+
+
+def test_unreadable_staff_directory_warns_rather_than_claiming_a_unique_name():
+    report = _report(same_name_others=None)
+    row = _by_code(report, "identity_unique_name")
+
+    assert row["status"] == "warn"
+    assert row["measure"]["comparison"] == "reported"
+
+
+def test_rows_that_could_not_be_measured_are_left_out_of_the_tally():
+    graded = _report()
+    ungraded = _report(manager_m365_matches=None)
+    assert ungraded["measurements"]["total"] == graded["measurements"]["total"] - 1
 
 
 # ----- SAFETY: no side effects -----
