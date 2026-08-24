@@ -486,7 +486,11 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     # item. Claiming first would consume the one-shot claim on a blocked
     # approval, and the manager would then get "Already processed" forever, even
     # after clearing the conflict. Costs one extra read per approval.
-    pre_claim = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    pre_claim = await sp_client.get_list_item_or_none(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    if pre_claim is None:
+        # Deleted between the email going out and the manager acting on it.
+        # A missing item is a terminal state, not a transient failure.
+        return {"error": "This request no longer exists."}
     conflict = await find_leave_approval_conflict(request_id, pre_claim["fields"])
     if conflict:
         # Nothing is written: the request stays Pending and the manager decides

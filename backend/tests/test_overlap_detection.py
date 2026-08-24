@@ -245,3 +245,40 @@ def test_overtime_approval_conflict_is_none_when_date_is_free(monkeypatch):
     fields = {"SubmittedByLookupId": 7, "StartDate": "2026-09-02"}
 
     assert asyncio.run(od.find_overtime_approval_conflict("22", fields)) is None
+
+
+# ----- the message has to survive the SMS channel -----
+
+# One GSM-7 text. Past this the carrier splits the message and bills twice, so
+# the sentence these helpers return is written to fit inside the wrapper the SMS
+# handler puts around it.
+SMS_SEGMENT_CHARS = 160
+
+
+def _sms_text(item_id, message):
+    """Reproduce the wrapper app/routes/twilio.py puts around a refusal."""
+    return f"Request #{item_id} was not approved. {message}"
+
+
+def test_leave_conflict_message_fits_one_text(monkeypatch):
+    monkeypatch.setattr(
+        od.sp_client, "get_list_items",
+        _fake_list_items([_leave(11, "Approved", "2026-09-01", "2026-09-05")]),
+    )
+    fields = {"SubmittedTestLookupId": 7, "StartDate": "2026-09-02", "EndDate": "2026-09-04"}
+
+    message = asyncio.run(od.find_leave_approval_conflict("12", fields))
+
+    assert len(_sms_text("12", message)) <= SMS_SEGMENT_CHARS
+
+
+def test_overtime_conflict_message_fits_one_text(monkeypatch):
+    monkeypatch.setattr(
+        od.sp_client, "get_list_items",
+        _fake_list_items([_overtime(21, "Approved", "2026-09-02")]),
+    )
+    fields = {"SubmittedByLookupId": 7, "StartDate": "2026-09-02"}
+
+    message = asyncio.run(od.find_overtime_approval_conflict("22", fields))
+
+    assert len(_sms_text("22", message)) <= SMS_SEGMENT_CHARS

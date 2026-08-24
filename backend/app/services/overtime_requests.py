@@ -316,7 +316,11 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     """
     # Conflict check runs BEFORE the idempotency claim so a blocked approval
     # stays retryable — same reasoning as approve_leave_request.
-    pre_claim = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    pre_claim = await sp_client.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    if pre_claim is None:
+        # Deleted between the email going out and the manager acting on it.
+        # A missing item is a terminal state, not a transient failure.
+        return {"error": "This request no longer exists."}
     conflict = await find_overtime_approval_conflict(request_id, pre_claim["fields"])
     if conflict:
         # Nothing written; the request stays Pending for the manager to decide.

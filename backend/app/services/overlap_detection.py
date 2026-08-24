@@ -193,10 +193,12 @@ async def find_leave_approval_conflict(request_id: str | int, fields: dict) -> s
         "LR #%s — approval blocked: overlaps approved leave request #%s",
         request_id, conflict["item_id"],
     )
+    # Kept short on purpose: the SMS channel sends this same sentence, and a
+    # text over 160 characters is billed as two.
     return (
-        f"This overlaps leave request #{conflict['item_id']}, already approved for "
+        f"This overlaps leave request #{conflict['item_id']}, approved for "
         f"{conflict['start_date']} to {conflict['end_date']}. Reject this request, "
-        "or cancel the approved one first."
+        f"or cancel #{conflict['item_id']} first."
     )
 
 
@@ -231,7 +233,8 @@ async def find_overtime_approval_conflict(request_id: str | int, fields: dict) -
         "OT #%s — approval blocked: conflicts with approved overtime request #%s",
         request_id, conflict["item_id"],
     )
+    # Same length constraint as the leave message above.
     return (
         f"Overtime request #{conflict['item_id']} for {conflict['date']} is already "
-        "approved. Reject this request, or cancel the approved one first."
+        f"approved. Reject this request, or cancel #{conflict['item_id']} first."
     )
