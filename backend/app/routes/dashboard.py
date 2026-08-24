@@ -16,6 +16,7 @@ from app.services.balance import (
     is_next_year_request,
 )
 from app.services.employee_validation import validate_employee_setup
+from app.services.overlap_detection import find_conflict_for_row
 from app.routes.approval import HANDLERS
 
 logger = logging.getLogger(__name__)
@@ -800,10 +801,46 @@ async def admin_pending():
 # Admin stuck requests
 # ============================
 
-def _diagnose_stuck_leave(fields: dict, staff_by_name: dict, sp_user_to_name: dict) -> tuple[list[str], str]:
-    """Inspect a stuck leave request and return (diagnostic_codes, detail_string)."""
+def _diagnose_stuck_leave(
+    fields: dict, staff_by_name: dict, sp_user_to_name: dict,
+    blocked_by: dict | None = None,
+) -> tuple[list[str], str]:
+    """Inspect a stuck leave request and return (diagnostic_codes, detail_string).
+
+    Args:
+        fields: The request's SharePoint field values.
+        staff_by_name: Staff Directory records keyed by lowercased name.
+        sp_user_to_name: Microsoft 365 lookup id to display name.
+        blocked_by: The approved request this one clashes with, when it has
+            one. Passed in rather than looked up here, because the caller
+            already holds every row needed to work it out.
+
+    Returns:
+        The diagnostic codes and a single sentence joining their details.
+    """
     codes = []
     details = []
+
+    # Blocked at approval. The manager is shown a refusal and nothing is
+    # written — by design, the decision to reject is theirs — so this request
+    # is otherwise indistinguishable from one nobody has opened yet. Listed
+    # first because it is the reason the others cannot progress.
+    if blocked_by:
+        codes.append("blocked_by_overlap")
+        if "day_already_booked" in blocked_by:
+            details.append(
+                f"Cannot be approved: {blocked_by['day_already_booked']} day is already "
+                f"approved for {blocked_by['start_date']} (request #{blocked_by['item_id']}), "
+                "so together they exceed one day. Reprocessing will not clear this - "
+                "the manager must reject it, or the approved request must be cancelled."
+            )
+        else:
+            details.append(
+                f"Cannot be approved: overlaps request #{blocked_by['item_id']}, already "
+                f"approved for {blocked_by['start_date']} to {blocked_by['end_date']}. "
+                "Reprocessing will not clear this - the manager must reject it, or the "
+                "approved request must be cancelled."
+            )
 
     # Missing dates — blocks auto_calculate_days entirely
     if not fields.get("StartDate") or not fields.get("EndDate"):
@@ -862,18 +899,28 @@ async def admin_stuck_requests():
         if f.get("Status") != "Pending":
             continue
 
-        # Two stuck conditions:
+        # A request that cannot be approved because it clashes with an
+        # already-approved absence. Worked out from the rows fetched above, so
+        # it costs no extra SharePoint calls, and derived rather than stored so
+        # it disappears by itself once the approved request is cancelled.
+        blocked_by = find_conflict_for_row(items, item)
+
+        # Three stuck conditions:
         # 1. Not fully processed (no Days or no Manager)
         # 2. Has manager but approval email never sent
+        # 3. Blocked at approval by an already-approved absence
         is_stuck = (
             not _is_fully_processed(f, "leave")
             or (f.get("ManagerLookupId") and f.get("ApproveProcessedFlag") != "Processed")
+            or blocked_by is not None
         )
         if not is_stuck:
             continue
 
         emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
-        diagnostics, diagnostic_detail = _diagnose_stuck_leave(f, staff_by_name, sp_user_to_name)
+        diagnostics, diagnostic_detail = _diagnose_stuck_leave(
+            f, staff_by_name, sp_user_to_name, blocked_by=blocked_by,
+        )
 
         stuck.append({
             "id": item.get("id"),

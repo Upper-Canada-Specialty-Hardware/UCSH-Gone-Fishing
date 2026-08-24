@@ -32,14 +32,18 @@ def _fake_list_items(items):
     return _get_list_items
 
 
-def _leave(item_id, status, start, end, submitter=7):
-    """One leave row in the shape Graph returns for the leave requests list."""
+def _leave(item_id, status, start, end, submitter=7, days=1.0):
+    """One leave row in the shape Graph returns for the leave requests list.
+
+    Days matters now: a fraction marks a part-day, which can share its date.
+    """
     return {
         "id": str(item_id),
         "fields": {
             "Status": status,
             "StartDate": start,
             "EndDate": end,
+            "Days": days,
             "SubmittedTestLookupId": submitter,
         },
     }
@@ -282,3 +286,153 @@ def test_overtime_conflict_message_fits_one_text(monkeypatch):
     message = asyncio.run(od.find_overtime_approval_conflict("22", fields))
 
     assert len(_sms_text("22", message)) <= SMS_SEGMENT_CHARS
+
+
+# ----- part-days share a date; whole days do not -----
+#
+# A half day leaves the other half of that date free. Comparing date ranges
+# alone treated a second half day exactly like booking the whole date twice,
+# which blocked a split day an employee is entitled to take.
+
+
+def test_two_half_days_on_one_date_fit_together(monkeypatch):
+    existing = [_leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.5)]
+    assert _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0.5,
+    ) is None
+
+
+def test_a_third_half_day_on_one_date_does_not_fit(monkeypatch):
+    # Totalled across every approved part-day, not compared one at a time —
+    # pairwise each of these looks like it fits.
+    existing = [
+        _leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.5),
+        _leave(12, "Approved", "2026-09-02", "2026-09-02", days=0.5),
+    ]
+    conflict = _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0.5,
+    )
+    assert conflict is not None
+    assert conflict["day_already_booked"] == 1.0
+
+
+def test_uneven_part_days_fit_up_to_a_full_day(monkeypatch):
+    existing = [_leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.25)]
+    assert _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0.75,
+    ) is None
+
+
+def test_a_part_day_still_clashes_with_a_whole_day(monkeypatch):
+    existing = [_leave(11, "Approved", "2026-09-02", "2026-09-02", days=1.0)]
+    conflict = _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0.5,
+    )
+    assert conflict is not None
+    assert "day_already_booked" not in conflict   # a whole-day clash, not a total
+
+
+def test_a_part_day_still_clashes_with_a_multi_day_absence(monkeypatch):
+    # The approved leave covers the whole of that date, part-day or not.
+    existing = [_leave(11, "Approved", "2026-09-01", "2026-09-05", days=5.0)]
+    assert _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0.5,
+    ) is not None
+
+
+def test_a_whole_day_clashes_with_an_approved_part_day(monkeypatch):
+    # The candidate is the whole day here, so there is nothing left to share.
+    existing = [_leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.5)]
+    assert _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=1.0,
+    ) is not None
+
+
+def test_an_uncalculated_day_count_is_treated_as_a_whole_day(monkeypatch):
+    # Days not worked out yet reads as whole-day, which blocks. The conservative
+    # reading: better to stop a manager than to let a date be double-booked.
+    existing = [_leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.5)]
+    assert _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0,
+    ) is not None
+
+
+def test_part_days_on_different_dates_never_interact(monkeypatch):
+    existing = [_leave(11, "Approved", "2026-09-03", "2026-09-03", days=0.5)]
+    assert _leave_overlap(
+        monkeypatch, existing,
+        start_date="2026-09-02", end_date="2026-09-02", days=0.5,
+    ) is None
+
+
+def test_the_part_day_refusal_says_how_much_is_booked_and_fits_one_text(monkeypatch):
+    monkeypatch.setattr(
+        od.sp_client, "get_list_items",
+        _fake_list_items([_leave(1043, "Approved", "2026-09-02", "2026-09-02", days=0.75)]),
+    )
+    fields = {
+        "SubmittedTestLookupId": 7,
+        "StartDate": "2026-09-02",
+        "EndDate": "2026-09-02",
+        "Days": 0.75,
+    }
+
+    message = asyncio.run(od.find_leave_approval_conflict("2099", fields))
+
+    assert message is not None
+    assert "#1043" in message and "0.75" in message
+    # Four-digit ids and a two-decimal figure, to leave the wording some margin.
+    assert len(_sms_text("2099", message)) <= SMS_SEGMENT_CHARS
+
+
+# ----- testing a row against rows already in hand -----
+#
+# The admin stuck-request view reads the whole leave list anyway, so it works
+# out what is blocked from those rows instead of fetching again. Nothing here
+# touches sp_client at all.
+
+
+def test_find_conflict_for_row_matches_an_approved_absence():
+    pending = _leave(12, "Pending", "2026-09-02", "2026-09-04")
+    items = [pending, _leave(11, "Approved", "2026-09-01", "2026-09-05")]
+
+    conflict = od.find_conflict_for_row(items, pending)
+
+    assert conflict is not None
+    assert conflict["item_id"] == "11"
+
+
+def test_find_conflict_for_row_ignores_other_pending_requests():
+    # Two pending requests do not block each other — neither has spent anything.
+    pending = _leave(12, "Pending", "2026-09-02", "2026-09-04")
+    items = [pending, _leave(11, "Pending", "2026-09-01", "2026-09-05")]
+
+    assert od.find_conflict_for_row(items, pending) is None
+
+
+def test_find_conflict_for_row_never_matches_itself():
+    approved = _leave(11, "Approved", "2026-09-01", "2026-09-05")
+    assert od.find_conflict_for_row([approved], approved) is None
+
+
+def test_find_conflict_for_row_stands_aside_without_a_submitter():
+    orphan = {"id": "12", "fields": {"Status": "Pending", "StartDate": "2026-09-02",
+                                     "EndDate": "2026-09-04", "Days": 1}}
+    items = [orphan, _leave(11, "Approved", "2026-09-01", "2026-09-05")]
+
+    # Unidentifiable, so there is nothing to compare — not evidence of a clash.
+    assert od.find_conflict_for_row(items, orphan) is None
+
+
+def test_find_conflict_for_row_lets_part_days_share_a_date():
+    pending = _leave(12, "Pending", "2026-09-02", "2026-09-02", days=0.5)
+    items = [pending, _leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.5)]
+
+    assert od.find_conflict_for_row(items, pending) is None
