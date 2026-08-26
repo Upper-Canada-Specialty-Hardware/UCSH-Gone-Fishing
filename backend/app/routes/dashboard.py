@@ -1015,6 +1015,12 @@ async def admin_send_dashboard_link(target_id: str):
         logger.exception("Failed to send dashboard link email to %s", email)
         raise HTTPException(status_code=502, detail=f"Email delivery failed: {e}")
 
+    # This route builds its own link rather than going through the footer, so
+    # it has to record the send itself or the renewal task would treat a person
+    # an admin just helped as though nothing had reached them.
+    from app.services.dashboard_link_tracking import record_link_sent
+    await record_link_sent(target_id)
+
     return {"status": "sent", "email": email}
 
 

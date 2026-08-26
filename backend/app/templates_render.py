@@ -252,6 +252,25 @@ def render_request_now_blocked(
 
 # --- Dashboard ---
 
+def render_dashboard_link_renewal(employee_name: str, expiry_days: int) -> str:
+    """Render the notice sent shortly before someone's dashboard link expires.
+
+    Carries no links itself — send it through send_email_with_dashboard, which
+    appends the footer holding whichever dashboards this person has.
+
+    Args:
+        employee_name: Their display name, for the greeting.
+        expiry_days: How long a link lasts, so the wording matches the setting.
+
+    Returns:
+        The rendered HTML body.
+    """
+    return _render(
+        "dashboard_link_renewal.html",
+        employee_name=employee_name, expiry_days=expiry_days,
+    )
+
+
 def render_dashboard_link_email(manager_name: str, dashboard_url: str) -> str:
     return _render("dashboard_link_email.html", manager_name=manager_name, dashboard_url=dashboard_url)
 

@@ -15,6 +15,7 @@ from app.graph.sharepoint import sp_client
 from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
+from app.tasks.dashboard_links import start_dashboard_link_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
     renewal_task = None
     carryover_reset_task = None
     reminder_task = None
+    dashboard_link_task = None
     try:
         await token_manager.get_token()
         logger.info("Graph API token acquired")
@@ -66,6 +68,7 @@ async def lifespan(app: FastAPI):
         renewal_task = start_subscription_renewal_task()
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
+        dashboard_link_task = start_dashboard_link_task()
 
         # Defer catch-up and subscription registration — both can be slow under
         # backlog/rate-limit conditions, and Graph webhook validation needs the
@@ -103,6 +106,8 @@ async def lifespan(app: FastAPI):
         carryover_reset_task.cancel()
     if reminder_task:
         reminder_task.cancel()
+    if dashboard_link_task:
+        dashboard_link_task.cancel()
     await sp_client.close()
     logger.info("Shutdown complete")
 
