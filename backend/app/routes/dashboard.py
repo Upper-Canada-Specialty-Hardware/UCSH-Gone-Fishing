@@ -737,6 +737,49 @@ async def team_create_employee(user: AuthUser, body: dict):
 # Admin endpoints
 # ============================
 
+@router.post("/admin/employees")
+async def admin_create_employee(body: dict):
+    """Create a new Staff Directory record from the admin dashboard.
+
+    The same creation as the manager version (`POST /team/employees`), sharing
+    the same service, with two differences that follow from where it lives:
+    the admin dashboard carries no signed-in identity, so this is unauthenticated
+    like every other /admin/* route, and there is no implicit team — the admin
+    chooses the supervisor(s), passed as `manager_ids` (SharePoint user ids from
+    the /admin/sp-users picker), rather than the record being assigned to the
+    caller.
+
+    Args:
+        body: The submitted employee form plus `manager_ids` — a list of the
+            chosen supervisors' SharePoint user ids.
+
+    Returns:
+        The created record in the {"id", "fields"} shape.
+
+    Raises:
+        HTTPException: 503 when processing is off, 400 with a readable reason
+            when the submission cannot become a working record (including no
+            supervisor chosen).
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    # Coerce the chosen supervisor ids to ints, dropping anything unparseable,
+    # so a stray value in the picker payload cannot break the Person-field write.
+    manager_ids: list[int] = []
+    for raw in body.get("manager_ids") or []:
+        try:
+            manager_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+
+    from app.services.employee_creation import EmployeeValidationError, create_employee
+    try:
+        return await create_employee(body, manager_ids)
+    except EmployeeValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/admin/balances")
 async def admin_balances(group_by: str | None = Query(None)):
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
