@@ -1,0 +1,23 @@
+{# Sent by the renewal task shortly before someone's dashboard link expires.
+
+   Deliberately carries no links of its own. It goes out through
+   send_email_with_dashboard, which appends the standard footer holding
+   whichever dashboards this person actually has — their own, their team's if
+   they manage anyone, the admin one if they are an administrator. That keeps
+   one source of truth for link building and makes this email look like the
+   footer people already see on every approval and confirmation, which matters
+   for something that arrives unprompted. #}
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #1e40af;">Your Dashboard Access</h2>
+  <p>Hi {{ employee_name }},</p>
+  <p>
+    Dashboard links stop working after {{ expiry_days }} days. Yours is close to
+    expiring, so here is a fresh one — no action needed, just use the button
+    below from now on.
+  </p>
+  <p style="color: #6b7280; font-size: 14px;">
+    You are receiving this because nothing else has sent you a link recently.
+    Whenever you submit a request, or a request needs your approval, those
+    emails carry a new link too.
+  </p>
+</div>

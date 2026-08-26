@@ -35,6 +35,14 @@ async def send_email_with_dashboard(
             logger.debug("Could not build dashboard footer: %s", e)
     await send_email(to=to, subject=subject, html_body=html_body, dashboard_footer=footer, **kwargs)
 
+    # Only now is it true that this person holds a working link. Recording any
+    # earlier would cover people who received nothing: the footer is skipped
+    # when the employee lookup fails, swallowed on exception above, and
+    # send_email raises on a delivery failure before reaching this line.
+    if footer:
+        from app.services.dashboard_link_tracking import record_link_sent
+        await record_link_sent(primary_employee_id)
+
 
 async def send_email(
     to: list[str],
