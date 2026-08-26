@@ -30,6 +30,10 @@
     {% if fields.get('LeaveType') == 'Half Day or Partial Day Off' %}
     <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ (fields.get('Days', 0) or 0) * 8 }} hours</td></tr>
     {% endif %}
+    {% set description = fields.get('Title', '') | request_description('leave') %}
+    {% if description %}
+    <tr><td style="padding: 8px; font-weight: bold;">Description:</td><td style="padding: 8px;">{{ description }}</td></tr>
+    {% endif %}
   </table>
   {% if emp_fields %}
   <h3>Current Balances</h3>
