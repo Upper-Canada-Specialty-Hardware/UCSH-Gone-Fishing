@@ -5,6 +5,7 @@ import TeamBalanceTable from '../components/TeamBalanceTable';
 import TeamCalendar from '../components/TeamCalendar';
 import TeamTimeline from '../components/TeamTimeline';
 import RequestHistory from '../components/RequestHistory';
+import AddEmployee from '../components/AddEmployee';
 import {
   getMyBalances,
   getTeamMembers,
@@ -110,6 +111,7 @@ export default function ManagerDashboard() {
         <Tab label="Team Balances" />
         <Tab label="Calendar" />
         <Tab label="Request History" />
+        <Tab label="Add Employee" />
       </Tabs>
 
       {tab === 0 && (
@@ -152,6 +154,15 @@ export default function ManagerDashboard() {
         <Paper sx={{ p: 3 }}>
           <RequestHistory requests={requests} showEmployee />
         </Paper>
+      )}
+
+      {tab === 4 && (
+        <AddEmployee
+          processingEnabled={processingEnabled}
+          onCreated={(name) =>
+            setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
+          }
+        />
       )}
 
       <Snackbar
