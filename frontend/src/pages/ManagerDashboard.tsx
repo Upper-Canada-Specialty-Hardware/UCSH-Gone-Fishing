@@ -15,6 +15,7 @@ import {
   getConfig,
   approveRequest,
   rejectRequest,
+  createEmployee,
 } from '../api/client';
 
 export default function ManagerDashboard() {
@@ -159,6 +160,7 @@ export default function ManagerDashboard() {
       {tab === 4 && (
         <AddEmployee
           processingEnabled={processingEnabled}
+          submitEmployee={createEmployee}
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
           }

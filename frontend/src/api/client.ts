@@ -110,6 +110,10 @@ export const validateEmployee = (id: string) =>
 export const createEmployee = (payload: Record<string, unknown>) =>
   api.post('/team/employees', payload);
 
+// Admin — create a new employee, choosing the supervisor(s) via manager_ids
+export const createEmployeeAdmin = (payload: Record<string, unknown>) =>
+  api.post('/admin/employees', payload);
+
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
 export const adminReprocessRequest = (id: string, reason: string) =>

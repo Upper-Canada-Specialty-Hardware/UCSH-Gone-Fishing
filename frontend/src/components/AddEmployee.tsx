@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import {
-  Box, Paper, Typography, TextField, MenuItem, Button, Alert, Stack,
-  Divider, CircularProgress,
+  Paper, Typography, TextField, MenuItem, Button, Alert, Stack,
+  Divider, CircularProgress, Box, Select, InputLabel, FormControl,
+  OutlinedInput, Chip,
 } from '@mui/material';
-import { createEmployee } from '../api/client';
 
 /**
  * The Location values the backend maps to a province. Anything outside this set
@@ -24,11 +24,26 @@ const LOCATIONS = [
 /** Employment type drives real balance logic on the backend (`== "Hourly"`). */
 const SALARY_HOURLY = ['Salary', 'Hourly'];
 
+/** One selectable supervisor, as returned by /admin/sp-users. */
+export interface ManagerOption {
+  sp_user_id: number;
+  name: string;
+}
+
 interface Props {
   /** Whether writes are enabled; the form is disabled in reporting-only mode. */
   processingEnabled: boolean;
-  /** Notify the parent so it can toast success and refresh the team. */
+  /** The API call that creates the employee, e.g. createEmployee or createEmployeeAdmin. */
+  submitEmployee: (payload: Record<string, unknown>) => Promise<unknown>;
+  /** Notify the parent so it can toast success and refresh. */
   onCreated: (name: string) => void;
+  /**
+   * When provided, the form shows a supervisor picker and requires at least one
+   * choice, sending the picks as `manager_ids` (admin dashboard). When omitted,
+   * the caller assigns the supervisor itself and no picker is shown (manager
+   * dashboard, which assigns the signed-in manager).
+   */
+  managerOptions?: ManagerOption[];
 }
 
 /** The blank form. Balances default to zero — a new hire starts empty. */
@@ -49,19 +64,25 @@ const EMPTY = {
 };
 
 /**
- * Form to add a new employee to the team — the guided version of typing a new
- * row into the Staff Directory list. It collects exactly the columns the
- * backend needs, and surfaces the backend's validation message inline rather
- * than after the fact. The new hire is assigned to the signed-in manager as
- * their supervisor, so no manager picker is shown here.
+ * Form to add a new employee — the guided version of typing a new row into the
+ * Staff Directory list. It collects exactly the columns the backend needs and
+ * surfaces the backend's validation message inline. Used on both dashboards:
+ * the manager version auto-assigns the signed-in manager as supervisor and
+ * omits `managerOptions`; the admin version passes the staff list so an admin
+ * can choose.
  *
  * @param props - See {@link Props}.
- * @returns The Add Employee tab panel.
+ * @returns The Add Employee panel.
  */
-export default function AddEmployee({ processingEnabled, onCreated }: Props) {
+export default function AddEmployee({
+  processingEnabled, submitEmployee, onCreated, managerOptions,
+}: Props) {
   const [form, setForm] = useState({ ...EMPTY });
+  const [managerIds, setManagerIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const showPicker = Array.isArray(managerOptions);
 
   /** Update one field by name. @param key - form key. @param value - new value. */
   const set = (key: string, value: string) => setForm((f) => ({ ...f, [key]: value }));
@@ -71,9 +92,13 @@ export default function AddEmployee({ processingEnabled, onCreated }: Props) {
     setError('');
     setSaving(true);
     try {
-      await createEmployee(form);
+      // Only the admin path carries manager_ids; the manager path lets the
+      // server assign the supervisor from the signed-in identity.
+      const payload = showPicker ? { ...form, manager_ids: managerIds } : { ...form };
+      await submitEmployee(payload);
       onCreated(form.title.trim());
       setForm({ ...EMPTY });
+      setManagerIds([]);
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'The employee could not be created. Please try again.');
@@ -82,9 +107,10 @@ export default function AddEmployee({ processingEnabled, onCreated }: Props) {
     }
   };
 
-  // The four fields the backend refuses to create a record without. The button
-  // stays disabled until they are present, so the obvious mistakes never reach
-  // the server; the rest of the rules are enforced there and echoed on error.
+  // The fields the backend refuses to create a record without. The button stays
+  // disabled until they are present; the rest of the rules are enforced on the
+  // server and echoed on error. A supervisor is required only when the admin
+  // picker is shown — the manager path supplies one itself.
   const ready =
     !!form.title.trim() &&
     !!form.email_address.trim() &&
@@ -92,14 +118,20 @@ export default function AddEmployee({ processingEnabled, onCreated }: Props) {
     !!form.department.trim() &&
     !!form.salary_hourly &&
     Number(form.vacation_entitlement) > 0 &&
-    Number(form.sick_entitlement) > 0;
+    Number(form.sick_entitlement) > 0 &&
+    (!showPicker || managerIds.length > 0);
+
+  const nameFor = (id: number) => managerOptions?.find((m) => m.sp_user_id === id)?.name ?? String(id);
 
   return (
     <Paper sx={{ p: 3 }}>
       <Typography variant="h6" sx={{ fontWeight: 600, mb: 0.5 }}>Add Employee</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Creates a new staff record set up so their leave and overtime requests work. The new
-        hire is added to your team. Their Microsoft 365 account must already exist.
+        Creates a new staff record set up so their leave and overtime requests work.
+        {showPicker
+          ? ' Choose their supervisor(s) below.'
+          : ' The new hire is added to your team.'}{' '}
+        Their Microsoft 365 account must already exist.
       </Typography>
 
       {!processingEnabled && (
@@ -135,6 +167,33 @@ export default function AddEmployee({ processingEnabled, onCreated }: Props) {
         >
           {SALARY_HOURLY.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
         </TextField>
+
+        {showPicker && (
+          <FormControl required>
+            <InputLabel id="supervisor-label">Supervisor(s)</InputLabel>
+            <Select
+              labelId="supervisor-label"
+              multiple
+              value={managerIds}
+              onChange={(e) => setManagerIds(
+                (typeof e.target.value === 'string'
+                  ? e.target.value.split(',').map(Number)
+                  : e.target.value) as number[],
+              )}
+              input={<OutlinedInput label="Supervisor(s)" />}
+              renderValue={(selected) => (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                  {(selected as number[]).map((id) => <Chip key={id} label={nameFor(id)} size="small" />)}
+                </Box>
+              )}
+            >
+              {(managerOptions ?? []).map((m) => (
+                <MenuItem key={m.sp_user_id} value={m.sp_user_id}>{m.name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+
         <TextField
           label="Cell number (optional)"
           value={form.cell_number} onChange={(e) => set('cell_number', e.target.value)}

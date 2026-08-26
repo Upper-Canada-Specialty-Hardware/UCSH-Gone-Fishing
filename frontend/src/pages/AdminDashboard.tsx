@@ -12,6 +12,7 @@ import ManagerAssignments from '../components/ManagerAssignments';
 import StuckRequests from '../components/StuckRequests';
 import EmployeeValidation from '../components/EmployeeValidation';
 import EditRequestDialog from '../components/EditRequestDialog';
+import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import {
   getAdminBalances,
   getAdminPending,
@@ -19,6 +20,8 @@ import {
   getAdminStats,
   getAdminStuckRequests,
   getConfig,
+  getSpUsers,
+  createEmployeeAdmin,
   adminApproveRequest,
   adminRejectRequest,
   adminRefundRequest,
@@ -56,6 +59,19 @@ export default function AdminDashboard() {
   const managers = useMemo(() => {
     return employees.filter((e: any) => e.is_manager);
   }, [employees]);
+
+  // The supervisor picker for Add Employee. Fetched once, lazily, when that tab
+  // is first opened — not on every poll of loadData, since it is a full staff
+  // read and the dashboard's data loop runs continuously.
+  const [spUsers, setSpUsers] = useState<ManagerOption[]>([]);
+  useEffect(() => {
+    if (tab !== 9 || spUsers.length > 0) return;
+    getSpUsers()
+      .then((r) => setSpUsers(
+        (r.data.users || []).map((u: any) => ({ sp_user_id: u.sp_user_id, name: u.name })),
+      ))
+      .catch(() => { /* the form still submits; the picker is just empty */ });
+  }, [tab, spUsers.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,6 +328,7 @@ export default function AdminDashboard() {
         <Tab label="View Employee" value={4} />
         <Tab label="View Team" value={5} />
         <Tab label="Manager Assignments" value={6} />
+        <Tab label="Add Employee" value={9} />
         <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
       </Tabs>
 
@@ -459,6 +476,17 @@ export default function AdminDashboard() {
         <Paper sx={{ p: 3 }}>
           <EmployeeValidation employees={employees} />
         </Paper>
+      )}
+
+      {tab === 9 && (
+        <AddEmployee
+          processingEnabled={processingEnabled}
+          submitEmployee={createEmployeeAdmin}
+          managerOptions={spUsers}
+          onCreated={(name) =>
+            setSnack({ open: true, message: `${name} created.`, severity: 'success' })
+          }
+        />
       )}
 
       <Snackbar
