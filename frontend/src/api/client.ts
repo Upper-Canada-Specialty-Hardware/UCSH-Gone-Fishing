@@ -106,6 +106,10 @@ export const bulkManagerAssignment = (params: {
 export const validateEmployee = (id: string) =>
   api.get(`/admin/validate-employee/${id}`);
 
+// Manager — create a new employee (Staff Directory record) for their team
+export const createEmployee = (payload: Record<string, unknown>) =>
+  api.post('/team/employees', payload);
+
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
 export const adminReprocessRequest = (id: string, reason: string) =>

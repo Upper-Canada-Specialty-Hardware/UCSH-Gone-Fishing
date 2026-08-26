@@ -9,6 +9,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, is_manager
+from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -684,6 +685,52 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+@router.post("/team/employees")
+async def team_create_employee(user: AuthUser, body: dict):
+    """Create a new Staff Directory record, assigned to the requesting manager.
+
+    The guided, validated version of typing a new row into the Staff Directory
+    list: it writes every column a request needs and refuses input that would
+    not work, so the record passes the setup check the moment it exists. The new
+    hire is assigned to the manager making the request as their supervisor.
+
+    Args:
+        user: The signed-in manager or admin, from the dashboard link.
+        body: The submitted employee form (snake_case fields).
+
+    Returns:
+        The created record in the {"id", "fields"} shape.
+
+    Raises:
+        HTTPException: 503 when processing is off, 400 with a readable reason
+            when the submission cannot become a working record.
+    """
+    _require_role(user, "manager", "admin")
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    # The new hire's supervisor is the manager creating them. AllManagers is a
+    # Person/Group field keyed by Microsoft 365 user id, so resolve the manager's
+    # record to their email and then to that id.
+    manager = await get_employee_by_id(user.user_id)
+    if not manager:
+        raise HTTPException(status_code=404, detail="Your own staff record could not be found")
+    manager_email = (manager["fields"].get("EmailAddress") or "").strip()
+    manager_sp_user_id = await _resolve_user_lookup_id(manager_email)
+    if not manager_sp_user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Your own record does not resolve to a Microsoft 365 account, "
+                   "so it cannot be recorded as the new hire's supervisor.",
+        )
+
+    from app.services.employee_creation import EmployeeValidationError, create_employee
+    try:
+        return await create_employee(body, [manager_sp_user_id])
+    except EmployeeValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============================
