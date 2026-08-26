@@ -4,7 +4,15 @@ Each function accepts data and returns an HTML string using Jinja2 templates.
 """
 from jinja2 import Environment, FileSystemLoader
 
+from app.services.request_descriptions import extract_request_description
+
 _env = Environment(loader=FileSystemLoader("app/templates/emails"), autoescape=True)
+
+# Templates are handed the raw SharePoint `fields` dict, so the Title ->
+# description split lives here as a filter rather than as an extra argument on
+# every render_* function. autoescape is on, so the employee's free text is
+# HTML-escaped on the way into the email.
+_env.filters["request_description"] = extract_request_description
 
 
 def _render(template_name: str, **kwargs) -> str:

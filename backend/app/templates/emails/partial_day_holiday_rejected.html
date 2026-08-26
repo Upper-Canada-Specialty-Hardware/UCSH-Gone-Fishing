@@ -6,6 +6,9 @@
   <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
     <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
     <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Title:</td><td style="padding: 8px;">{{ fields.get('Title', '') }}</td></tr>
+    {% set description = fields.get('Title', '') | request_description('leave') %}
+    {% if description %}
+    <tr><td style="padding: 8px; font-weight: bold;">Description:</td><td style="padding: 8px;">{{ description }}</td></tr>
+    {% endif %}
   </table>
 </div>

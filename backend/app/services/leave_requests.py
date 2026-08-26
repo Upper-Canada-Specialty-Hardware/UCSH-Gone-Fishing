@@ -36,6 +36,7 @@ from app.services.overlap_detection import (
     find_leave_approval_conflict,
     find_leave_conflict_for_request,
 )
+from app.services.request_descriptions import compose_leave_title
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import bump_and_snapshot, MATERIAL_FIELDS_LEAVE
 from app.services.sms import send_sms
@@ -61,19 +62,20 @@ async def process_new_leave_request(form_data: dict, submitter_email: str) -> di
         "ApproveProcessedFlag": "Not Processed",
     }
 
+    notes = form_data.get("notes")
+
     if is_partial:
         partial_hours = float(form_data.get("partial_hours", 0))
         fields["Days"] = partial_hours / 8
         fields["StartDate"] = form_data["start_date"]
         fields["EndDate"] = form_data["start_date"]  # Same date for partial
-        fields["Title"] = form_data.get("employee_name", "")
+        fields["Title"] = compose_leave_title(form_data.get("employee_name"), notes)
     else:
         fields["StartDate"] = form_data["start_date"]
         fields["EndDate"] = form_data["end_date"]
-        first_name = form_data.get("first_name", "")
-        last_name = form_data.get("last_name", "")
-        notes = form_data.get("notes", "")
-        fields["Title"] = f"{first_name} {last_name} /// {notes}".strip(" /")
+        first_name = form_data.get("first_name") or ""
+        last_name = form_data.get("last_name") or ""
+        fields["Title"] = compose_leave_title(f"{first_name} {last_name}", notes)
 
     # Set SubmittedTest via Claims lookup
     fields["SubmittedTestLookupId"] = await _resolve_user_lookup_id(submitter_email)

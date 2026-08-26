@@ -22,15 +22,18 @@ export function getDisplayType(row: any): string {
   return row.request_type;
 }
 
+// Mirrors extract_request_description in backend/app/services/request_descriptions.py,
+// which feeds the same text into the request emails — keep the two in step.
+// Leave Titles are compound ("<name> /// <description>"); other types are the
+// description already. Split before trimming so a Title with an empty name half
+// (" /// Doctor's appointment") keeps the space the separator needs.
 export function getDescription(row: any): string {
-  const title = (row.Title || '').trim();
-  if (!title) return '';
-  if (row.request_type === 'overtime') return title;
+  const title = row.Title || '';
   if (row.request_type === 'leave') {
     const parts = title.split(' /// ');
     return parts.length > 1 ? parts.slice(1).join(' /// ').trim() : '';
   }
-  return title;
+  return title.trim();
 }
 
 export function getStartDate(row: any): string {
