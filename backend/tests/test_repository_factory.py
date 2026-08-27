@@ -43,17 +43,19 @@ def test_request_repos_target_the_right_lists():
 
 
 def test_postgres_flag_raises_until_impl_exists():
-    original = settings.STORAGE_EMPLOYEES
-    settings.STORAGE_EMPLOYEES = "postgres"
+    # Holidays (PR E) and employees (PR G) now have Postgres implementations,
+    # so requests is the remaining domain that must still refuse the flag.
+    original = settings.STORAGE_REQUESTS
+    settings.STORAGE_REQUESTS = "postgres"
     try:
         raised = False
         try:
-            get_employee_repository()
+            get_leave_request_repository()
         except NotImplementedError:
             raised = True
         assert raised, "flipping a flag to an unimplemented backend must fail loudly"
     finally:
-        settings.STORAGE_EMPLOYEES = original
+        settings.STORAGE_REQUESTS = original
 
 
 class _FakeEmployeeRepository(EmployeeRepository):

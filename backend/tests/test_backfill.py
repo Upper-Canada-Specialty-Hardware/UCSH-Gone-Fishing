@@ -62,6 +62,7 @@ def test_map_employee_coerces_balances_and_defaults_blanks_to_zero():
             "CurrentVacationBalance": "8.5", "CurrentSickDayBalance": 4,
             "CurrentOvertimeBalance": "", "CarryOver": None, "Payout": "0",
             "DefaultYearlyVacationDays": "15",
+            "SalaryHourly": "Hourly", "CellNumber": "4165550143",
         },
     })
     assert row["name"] == "Jo Worker"
@@ -71,6 +72,9 @@ def test_map_employee_coerces_balances_and_defaults_blanks_to_zero():
     assert row["carryover_balance"] == 0.0    # None -> 0.0
     assert row["vacation_entitlement"] == 15.0
     assert row["sp_user_lookup_id"] is None   # identity linkage deferred to PR F
+    # 0007 columns: must be carried, or the cutover reintroduces the NULL bugs.
+    assert row["salary_hourly"] == "Hourly"   # else hourly staff get vacation deducted
+    assert row["cell_number"] == "4165550143"  # else managers stop getting approval SMS
 
 
 def test_extract_lookup_id_handles_both_person_field_shapes():
