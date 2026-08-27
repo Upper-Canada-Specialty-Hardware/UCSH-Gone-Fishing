@@ -42,18 +42,19 @@ def test_request_repos_target_the_right_lists():
     assert get_carryover_payout_repository()._list_id == settings.SP_LIST_CARRYOVER_PAYOUT
 
 
-def test_postgres_flag_raises_until_impl_exists():
-    # Holidays (PR E) and employees (PR G) now have Postgres implementations,
-    # so requests is the remaining domain that must still refuse the flag.
+def test_an_invalid_backend_raises_loudly():
+    # Every domain now has a Postgres implementation, so the remaining guard is
+    # that an unrecognised backend name fails loudly rather than silently
+    # falling back to SharePoint.
     original = settings.STORAGE_REQUESTS
-    settings.STORAGE_REQUESTS = "postgres"
+    settings.STORAGE_REQUESTS = "mysql"
     try:
         raised = False
         try:
             get_leave_request_repository()
         except NotImplementedError:
             raised = True
-        assert raised, "flipping a flag to an unimplemented backend must fail loudly"
+        assert raised, "selecting an unimplemented backend must fail loudly"
     finally:
         settings.STORAGE_REQUESTS = original
 

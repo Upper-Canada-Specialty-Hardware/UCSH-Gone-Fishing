@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Integer, String, Float, Date
+from sqlalchemy import Integer, String, Float, Date, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -47,3 +47,8 @@ class LeaveRequest(Base, TimestampMixin):
     # Denormalized org placement stamped onto the request at assignment time.
     staff_location: Mapped[str | None] = mapped_column(String, nullable=True)         # StaffLocation
     staff_department: Mapped[str | None] = mapped_column(String, nullable=True)       # StaffDepartment
+
+    # Written by the approval / audit paths (Alembic 0008).
+    approved_date: Mapped[date | None] = mapped_column(Date, nullable=True)           # ApprovedDate
+    new_balances: Mapped[str | None] = mapped_column(String, nullable=True)           # NewBalances (post-approval snapshot)
+    balance_audit_log: Mapped[str | None] = mapped_column(Text, nullable=True)        # BalanceAuditLog (JSON trail)

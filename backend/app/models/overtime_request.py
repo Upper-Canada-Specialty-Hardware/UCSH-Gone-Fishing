@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Integer, String, Float, Date
+from sqlalchemy import Integer, String, Float, Date, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -31,3 +31,7 @@ class OvertimeRequest(Base, TimestampMixin):
     submitter_sp_user_lookup_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     submitter_name: Mapped[str | None] = mapped_column(String, nullable=True)
     manager_sp_user_lookup_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Written by the approval / audit paths (Alembic 0008).
+    approved_date: Mapped[date | None] = mapped_column(Date, nullable=True)           # ApprovedDate
+    balance_audit_log: Mapped[str | None] = mapped_column(Text, nullable=True)        # BalanceAuditLog (JSON trail)
