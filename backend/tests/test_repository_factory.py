@@ -75,6 +75,13 @@ class _FakeEmployeeRepository(EmployeeRepository):
     async def get_by_email(self, email):
         return next((r for r in self._rows if r["fields"]["EmailAddress"] == email), None)
 
+    async def create(self, fields):
+        # Model a SharePoint insert: assign the next id, store the row, return it.
+        new_id = str(max((int(r["id"]) for r in self._rows), default=0) + 1)
+        row = {"id": new_id, "fields": dict(fields)}
+        self._rows.append(row)
+        return row
+
     async def update_fields(self, item_id, fields):
         row = await self.get_by_id(item_id)
         row["fields"].update(fields)

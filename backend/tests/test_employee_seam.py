@@ -69,6 +69,8 @@ def test_the_balance_engine_no_longer_imports_sp_client():
         "app/services/leave_requests.py",
         "app/services/overtime_requests.py",
         "app/services/carryover_payout.py",
+        "app/services/employee_creation.py",  # the create() write path, rewired through the seam
+        "app/services/employee_validation.py",  # the setup-check Staff Directory read, rewired through the seam
         "app/routes/dashboard.py",
         "app/routes/twilio.py",
         "app/tasks/carryover_reset.py",

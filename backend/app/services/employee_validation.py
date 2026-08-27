@@ -49,6 +49,7 @@ from app.config import settings
 from app.database import async_session
 from app.graph.sharepoint import sp_client
 from app.models import RequestApprovalState
+from app.repositories import get_employee_repository  # seam for Staff Directory reads (sp_client stays for the other lists)
 from app.services.employee import (
     get_all_managers_for_employee,
     get_employee_by_id,
@@ -1099,7 +1100,7 @@ async def _count_same_name_others(employee_id: str | int, name: str) -> int | No
     if not name:
         return 0
     try:
-        staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        staff = await get_employee_repository().get_all()  # Staff Directory through the seam
     except Exception:  # noqa: BLE001 - one unreadable list must not sink the report
         logger.exception("Setup check: could not re-read the Staff Directory")
         return None

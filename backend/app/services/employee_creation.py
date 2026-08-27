@@ -17,8 +17,7 @@ Comments, Extension, Birthday) are deliberately left unset.
 
 import logging
 
-from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository  # data-access seam: SharePoint today, Postgres after cutover
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     get_employee_by_name,
@@ -180,8 +179,8 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     if not manager_sp_user_ids:
         raise EmployeeValidationError("At least one supervisor must be assigned.")
 
-    item = await sp_client.create_list_item(settings.SP_LIST_STAFF_DIRECTORY, fields)
-    employee_id = item["id"]
+    item = await get_employee_repository().create(fields)  # write through the seam, not sp_client
+    employee_id = item["id"]  # SP item id (str), used below for managers + re-read
     logger.info("Created Staff Directory record #%s (%s)", employee_id, fields["Title"])
 
     # Supervisors are a Person/Group field, written separately in the lookup-id
@@ -194,6 +193,11 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
         employee_id, fields["CurrentVacationBalance"], fields["CarryOver"]
     )
 
-    # Return the record as written, re-read so the caller sees the person and
-    # computed fields the two calls above added.
-    return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    # Re-read through the seam so the caller sees the person + computed fields
+    # the two calls above added. get_by_id returns None on a read miss (the old
+    # get_list_item raised); the record was just created, so a miss here is a
+    # real failure, not an empty result to hand back as a "created" employee.
+    created = await get_employee_repository().get_by_id(employee_id)  # {"id","fields"} | None
+    if created is None:  # created but unreadable -> internal error, not user input
+        raise RuntimeError(f"Employee #{employee_id} was created but could not be read back.")
+    return created
