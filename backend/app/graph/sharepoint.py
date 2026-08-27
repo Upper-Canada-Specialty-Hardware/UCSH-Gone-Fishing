@@ -90,6 +90,16 @@ class SharePointClient:
         path = f"{self._list_path(list_id)}/items/{item_id}/fields"
         return await graph_client.patch(path, json=fields)
 
+    async def delete_list_item(self, list_id: str, item_id: str | int) -> None:
+        """Permanently delete a list item via Graph (204 on success).
+
+        Args:
+            list_id: The SharePoint list the item lives in.
+            item_id: The item to delete.
+        """
+        path = f"{self._list_path(list_id)}/items/{item_id}"
+        await graph_client.delete(path)  # Graph returns 204 No Content
+
     async def get_delta(self, list_id: str, token: str | None = None) -> dict:
         """Fetch all pages of a delta query, returning combined items + deltaLink."""
         if token:

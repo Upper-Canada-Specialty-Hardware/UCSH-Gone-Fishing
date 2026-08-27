@@ -738,6 +738,96 @@ async def team_create_employee(user: AuthUser, body: dict):
 # Admin endpoints
 # ============================
 
+# --- Holidays editor ---------------------------------------------------------
+# The app itself never writes holidays during request processing; these exist so
+# HR maintains the calendar from the admin dashboard instead of the SharePoint
+# list (which retires with the Postgres cutover). Unauthenticated like every
+# other /admin/* route; writes sit behind the PROCESSING_ENABLED gate like the
+# other admin writes.
+
+@router.get("/admin/holidays")
+async def admin_list_holidays():
+    """Every holiday row, sorted by date, for the admin grid.
+
+    Returns:
+        {"holidays": [{"id", "fields": {Title, Date, Province}}, ...]}.
+    """
+    from app.services.holidays import list_all_holidays
+    return {"holidays": await list_all_holidays()}
+
+
+@router.post("/admin/holidays")
+async def admin_create_holiday(body: dict):
+    """Add a holiday (or a Half Fridays START/END season marker).
+
+    Args:
+        body: {"title", "date" (YYYY-MM-DD), "province"} — province may be blank.
+
+    Returns:
+        The created holiday in the {"id","fields"} shape.
+
+    Raises:
+        HTTPException: 503 while processing is disabled, 400 on invalid input.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.holidays import HolidayValidationError, create_holiday
+    try:
+        return await create_holiday(body)
+    except HolidayValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/admin/holidays/{item_id}")
+async def admin_update_holiday(item_id: str, body: dict):
+    """Edit a holiday's name, date, or province.
+
+    Args:
+        item_id: The holiday to update.
+        body: {"title", "date", "province"} — the full replacement values.
+
+    Returns:
+        The updated holiday in the {"id","fields"} shape.
+
+    Raises:
+        HTTPException: 503 while processing is disabled, 400 on invalid input,
+            404 when the holiday does not exist.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.holidays import HolidayValidationError, update_holiday
+    try:
+        return await update_holiday(item_id, body)
+    except HolidayValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+
+
+@router.delete("/admin/holidays/{item_id}")
+async def admin_delete_holiday(item_id: str):
+    """Remove a holiday permanently.
+
+    Args:
+        item_id: The holiday to delete.
+
+    Returns:
+        {"status": "deleted"} on success.
+
+    Raises:
+        HTTPException: 503 while processing is disabled, 404 when the holiday
+            does not exist.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.holidays import delete_holiday
+    try:
+        await delete_holiday(item_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    return {"status": "deleted"}
+
+
 @router.post("/admin/employees")
 async def admin_create_employee(body: dict):
     """Create a new Staff Directory record from the admin dashboard.

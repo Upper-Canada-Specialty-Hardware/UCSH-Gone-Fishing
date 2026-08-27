@@ -43,6 +43,17 @@ class _FakeSharePointHolidayRepository(HolidayRepository):
     async def get_by_id(self, item_id):
         return next((i for i in SP_ITEMS if i["id"] == str(item_id)), None)
 
+    # Write stubs so the fake satisfies the ABC (the admin editor added writes);
+    # the parity tests here only exercise reads.
+    async def create(self, fields):
+        raise NotImplementedError
+
+    async def update_fields(self, item_id, fields):
+        raise NotImplementedError
+
+    async def delete(self, item_id):
+        raise NotImplementedError
+
 
 def _seed(items=SP_ITEMS):
     """Load the sample rows into the holidays table, replacing anything there."""
