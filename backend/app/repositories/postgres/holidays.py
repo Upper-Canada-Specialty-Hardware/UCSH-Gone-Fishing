@@ -12,6 +12,7 @@ business days are counted, so ``get_all`` logs a warning if it ever reads zero
 rows.
 """
 import logging
+from datetime import date, datetime
 
 from sqlalchemy import select
 
@@ -20,6 +21,57 @@ from app.models.holiday import Holiday
 from app.repositories.base import HolidayRepository
 
 logger = logging.getLogger(__name__)
+
+# SharePoint column name -> Holiday model attribute; the only writable fields.
+_FIELD_TO_COLUMN = {
+    "Title": "title",
+    "Date": "date",
+    "Province": "province",
+}
+
+
+def _parse_date(value):
+    """Accept what callers send for Date: an ISO string, a date, or empty."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _translate(fields: dict) -> dict:
+    """Translate a SharePoint-shaped field payload into model column values.
+
+    Args:
+        fields: SharePoint column names -> values (Title, Date, Province).
+
+    Returns:
+        Model attribute -> value dict.
+
+    Raises:
+        KeyError: On a field name outside _FIELD_TO_COLUMN — a dropped write
+            would silently lose data, so it fails loudly (same rule as the
+            employee repository).
+    """
+    values = {}
+    unknown = []
+    for sp_name, value in fields.items():
+        column = _FIELD_TO_COLUMN.get(sp_name)
+        if column is None:
+            unknown.append(sp_name)  # collect, then raise once
+            continue
+        values[column] = _parse_date(value) if sp_name == "Date" else value
+    if unknown:
+        raise KeyError(
+            f"Cannot write unmapped holiday field(s) {sorted(unknown)} to Postgres. "
+            f"Add them to _FIELD_TO_COLUMN rather than letting the write be dropped."
+        )
+    return values
 
 
 def _to_sp_shape(row: Holiday) -> dict:
@@ -73,3 +125,71 @@ class PostgresHolidayRepository(HolidayRepository):
             )
             row = result.scalar_one_or_none()
         return _to_sp_shape(row) if row else None
+
+    async def create(self, fields: dict) -> dict:
+        """Insert a holiday row from a SharePoint-shaped payload.
+
+        Args:
+            fields: SharePoint column names -> values (Title, Date, Province).
+
+        Returns:
+            The created holiday as {"id","fields"}.
+
+        Raises:
+            KeyError: On an unmapped field name (see _translate).
+        """
+        values = _translate(fields)  # validate + map before touching the db
+        async with async_session() as session:
+            # A Postgres-native holiday has no SharePoint item backing it; mint
+            # the next numeric id above every existing one so it cannot collide
+            # with a backfilled SharePoint id (same scheme as the employee repo).
+            existing = (await session.execute(select(Holiday.sp_item_id))).scalars()
+            numeric = [int(s) for s in existing if s is not None and str(s).isdigit()]
+            new_id = str(max(numeric, default=0) + 1)  # strictly above the current max
+            session.add(Holiday(sp_item_id=new_id, **values))
+            await session.commit()
+        return await self.get_by_id(new_id)  # return the canonical shape
+
+    async def update_fields(self, item_id: str | int, fields: dict) -> dict:
+        """Patch a holiday row from a SharePoint-shaped payload.
+
+        Args:
+            item_id: The holiday's sp_item_id.
+            fields: SharePoint column names -> new values.
+
+        Returns:
+            The updated holiday as {"id","fields"}.
+
+        Raises:
+            KeyError: If the holiday does not exist, or on an unmapped field.
+        """
+        values = _translate(fields)  # validate + map before touching the db
+        async with async_session() as session:
+            row = (
+                await session.execute(select(Holiday).where(Holiday.sp_item_id == str(item_id)))
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError(f"No holiday with id {item_id}")
+            for column, value in values.items():
+                setattr(row, column, value)  # apply each translated column
+            await session.commit()
+        return await self.get_by_id(item_id)
+
+    async def delete(self, item_id: str | int) -> None:
+        """Delete a holiday row permanently.
+
+        Args:
+            item_id: The holiday's sp_item_id.
+
+        Raises:
+            KeyError: If the holiday does not exist — a delete that silently
+                does nothing would hide a stale admin view.
+        """
+        async with async_session() as session:
+            row = (
+                await session.execute(select(Holiday).where(Holiday.sp_item_id == str(item_id)))
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError(f"No holiday with id {item_id}")
+            await session.delete(row)
+            await session.commit()

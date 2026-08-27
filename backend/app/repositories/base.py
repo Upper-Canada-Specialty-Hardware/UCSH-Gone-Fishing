@@ -36,13 +36,32 @@ class EmployeeRepository(ABC):
 
 
 class HolidayRepository(ABC):
-    """Company Holidays (stat holidays + half-Friday season markers)."""
+    """Company Holidays (stat holidays + half-Friday season markers).
+
+    Writes exist for the admin dashboard's holiday editor — the app itself never
+    writes holidays during request processing.
+    """
 
     @abstractmethod
     async def get_all(self) -> list[dict]: ...
 
     @abstractmethod
     async def get_by_id(self, item_id: str | int) -> dict | None: ...
+
+    @abstractmethod
+    async def create(self, fields: dict) -> dict:
+        """Insert a holiday; returns it in the {"id","fields"} shape."""
+        ...
+
+    @abstractmethod
+    async def update_fields(self, item_id: str | int, fields: dict) -> dict:
+        """Patch a holiday's fields; returns the updated {"id","fields"} shape."""
+        ...
+
+    @abstractmethod
+    async def delete(self, item_id: str | int) -> None:
+        """Remove a holiday permanently. Raises KeyError if it does not exist."""
+        ...
 
 
 class RequestRepository(ABC):

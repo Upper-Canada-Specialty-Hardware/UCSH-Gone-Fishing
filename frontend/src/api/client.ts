@@ -114,6 +114,14 @@ export const createEmployee = (payload: Record<string, unknown>) =>
 export const createEmployeeAdmin = (payload: Record<string, unknown>) =>
   api.post('/admin/employees', payload);
 
+// Admin — Company Holidays editor (the edit surface that replaces the SharePoint list)
+export const getAdminHolidays = () => api.get('/admin/holidays');
+export const createHoliday = (payload: { title: string; date: string; province: string }) =>
+  api.post('/admin/holidays', payload);
+export const updateHoliday = (id: string, payload: { title: string; date: string; province: string }) =>
+  api.patch(`/admin/holidays/${id}`, payload);
+export const deleteHoliday = (id: string) => api.delete(`/admin/holidays/${id}`);
+
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
 export const adminReprocessRequest = (id: string, reason: string) =>
