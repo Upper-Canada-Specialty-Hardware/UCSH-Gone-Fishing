@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
-from app.graph.sharepoint import sp_client
+from app.repositories import get_request_repository_for_list
 from app.models import RequestApprovalState
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ async def send_reminder_now(request_type: str, request_id: str | int) -> dict:
     list_id = _LIST_FOR_TYPE.get(request_type)
     if not list_id:
         return {"error": f"Unknown request type: {request_type}"}
-    item = await sp_client.get_list_item_or_none(list_id, request_id)
+    item = await get_request_repository_for_list(list_id).get_by_id_or_none(request_id)
     if item is None:
         return {"error": "Request no longer exists in SharePoint"}
     fields = item.get("fields", {})
@@ -140,7 +140,7 @@ async def _process_row(row: RequestApprovalState) -> None:
         await _close(row.list_id, row.item_id)
         return
 
-    item = await sp_client.get_list_item_or_none(row.list_id, row.item_id)
+    item = await get_request_repository_for_list(row.list_id).get_by_id_or_none(row.item_id)
     if item is None:
         # Item deleted in SharePoint. Nothing left to remind about, and without
         # closing the row every scan would retry it forever. Warning, not info:

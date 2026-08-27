@@ -2,8 +2,7 @@ import logging
 from datetime import date
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
-from app.repositories import get_employee_repository
+from app.repositories import get_employee_repository, get_overtime_request_repository
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
@@ -68,7 +67,7 @@ async def process_new_overtime_request(form_data: dict, submitter_email: str) ->
     # entry is raised when a manager tries to approve. See the module docstring
     # in app/services/overlap_detection.py.
 
-    item = await sp_client.create_list_item(settings.SP_LIST_OVERTIME_REQUESTS, fields)
+    item = await get_overtime_request_repository().create(fields)
     item_id = item["id"]
     logger.info("Created overtime request #%s", item_id)
 
@@ -79,7 +78,7 @@ async def process_new_overtime_request(form_data: dict, submitter_email: str) ->
 
 async def auto_assign_manager(request_id: str | int, submitter_email: str | None = None):
     """Look up submitter → supervisor → assign manager → trigger approval."""
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    item = await get_overtime_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     # Resolve submitter from SubmittedBy Person/Group field
@@ -105,7 +104,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     if manager_lookup_id:
         update["ManagerLookupId"] = manager_lookup_id
 
-    await sp_client.update_list_item_fields(settings.SP_LIST_OVERTIME_REQUESTS, request_id, update)
+    await get_overtime_request_repository().update_fields(request_id, update)
     logger.info("Assigned manager %s to overtime request #%s", mgr_fields.get("Title"), request_id)
 
     # Trigger approval pipeline with all managers
@@ -114,7 +113,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
 
 async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict], is_reminder: bool = False):
     """Holiday check, half-friday detection, send approval email to all managers."""
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    item = await get_overtime_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -138,8 +137,7 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
     if is_holiday:
         from app.services.auto_reject_titles import append_auto_reject_tag
         reason = f"{overtime_date} is the company holiday {holiday_name}."
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_OVERTIME_REQUESTS, request_id,
+        await get_overtime_request_repository().update_fields(request_id,
             {
                 "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
                 "Status": "Rejected",
@@ -262,7 +260,7 @@ async def admin_edit_overtime_request(
     reason: str,
 ) -> dict:
     """Apply an admin-driven edit to a pending overtime request, re-send approval email."""
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    item = await get_overtime_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -300,12 +298,11 @@ async def admin_edit_overtime_request(
     }
 
     async with lock_manager.lock(employee_id):
-        fresh = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+        fresh = await get_overtime_request_repository().get_by_id(request_id)
         if fresh["fields"].get("Status") != "Pending":
             return {"error": "Request status changed during edit — refresh and try again"}
 
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_OVERTIME_REQUESTS, request_id,
+        await get_overtime_request_repository().update_fields(request_id,
             {
                 "Hours": new_hours,
                 "StartDate": new_start,
@@ -342,7 +339,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     """
     # Conflict check runs BEFORE the idempotency claim so a blocked approval
     # stays retryable — same reasoning as approve_leave_request.
-    pre_claim = await sp_client.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    pre_claim = await get_overtime_request_repository().get_by_id_or_none(request_id)
     if pre_claim is None:
         # Deleted between the email going out and the manager acting on it.
         # A missing item is a terminal state, not a transient failure.
@@ -355,7 +352,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "approve"):
         return {"error": "Already processed"}
 
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    item = await get_overtime_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -377,8 +374,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
 
     # Hourly staff — simplified
     if emp_fields.get("SalaryHourly") == "Hourly":
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_OVERTIME_REQUESTS, request_id,
+        await get_overtime_request_repository().update_fields(request_id,
             {"Status": "Approved", "ApprovedDate": date.today().isoformat()},
         )
 
@@ -421,8 +417,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         )
 
         # Update overtime request
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_OVERTIME_REQUESTS, request_id,
+        await get_overtime_request_repository().update_fields(request_id,
             {"Status": "Approved", "ApprovedDate": date.today().isoformat()},
         )
 
@@ -482,7 +477,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
 
 async def refund_overtime_request(request_id: str | int, admin_id: str | int) -> dict:
     """Reverse an approved overtime request — subtract from OT balance, cascade, recalc RAD."""
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    item = await get_overtime_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Approved":
@@ -499,8 +494,7 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
     days_to_subtract = hours / 8
 
     # Update SP status
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_OVERTIME_REQUESTS, request_id, {"Status": "Refunded"},
+    await get_overtime_request_repository().update_fields(request_id, {"Status": "Refunded"},
     )
 
     # Hourly staff — no balance change
@@ -574,7 +568,7 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    item = await get_overtime_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -587,8 +581,7 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
     manager = await get_employee_by_id(manager_id)
     mgr_fields = manager["fields"] if manager else {}
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_OVERTIME_REQUESTS, request_id, {"Status": "Rejected"}
+    await get_overtime_request_repository().update_fields(request_id, {"Status": "Rejected"}
     )
 
     # Read balances for rejection email

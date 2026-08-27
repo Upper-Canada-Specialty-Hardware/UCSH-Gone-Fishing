@@ -93,6 +93,34 @@ def get_carryover_payout_repository() -> RequestRepository:
     return _request_repository(settings.SP_LIST_CARRYOVER_PAYOUT)
 
 
+def get_request_repository_for_list(list_id: str) -> RequestRepository:
+    """The request repository for a SharePoint list id.
+
+    For code that is generic over the three request lists (the audit trail,
+    reminder re-sends) and carries the list id as data. The SharePoint list ids
+    remain the cross-backend domain keys even once Postgres serves the rows —
+    re-keying them (processing_log etc.) is the cutover's own step, not this
+    seam's.
+
+    Args:
+        list_id: One of the three request list ids from settings.
+
+    Returns:
+        The repository for that list's domain, per STORAGE_REQUESTS.
+
+    Raises:
+        KeyError: If the id is not one of the three request lists.
+    """
+    domains = {
+        settings.SP_LIST_LEAVE_REQUESTS: get_leave_request_repository,
+        settings.SP_LIST_OVERTIME_REQUESTS: get_overtime_request_repository,
+        settings.SP_LIST_CARRYOVER_PAYOUT: get_carryover_payout_repository,
+    }
+    if list_id not in domains:
+        raise KeyError(f"Not a request list id: {list_id}")
+    return domains[list_id]()
+
+
 def _request_repository(list_id: str) -> RequestRepository:
     # SharePoint branch only — the Postgres branch is selected per list above,
     # since each request list maps to a different model.

@@ -20,6 +20,9 @@ class SharePointRequestRepository(RequestRepository):
     async def get_by_id(self, item_id: str | int) -> dict:
         return await sp_client.get_list_item(self._list_id, item_id)
 
+    async def get_by_id_or_none(self, item_id: str | int) -> dict | None:
+        return await sp_client.get_list_item_or_none(self._list_id, item_id)
+
     async def create(self, fields: dict) -> dict:
         return await sp_client.create_list_item(self._list_id, fields)
 
