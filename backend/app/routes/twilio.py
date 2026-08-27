@@ -11,6 +11,7 @@ from app.services.leave_requests import approve_leave_request, reject_leave_requ
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
 from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -95,7 +96,7 @@ async def receive_sms(request: Request):
         return ""
 
     # Look up SMS sender by cell number (not indexed — client-side filter)
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await get_employee_repository().get_all()
     items = [
         s for s in all_staff
         if re.sub(r"\D", "", s.get("fields", {}).get("CellNumber", ""))[-10:] == from_digits

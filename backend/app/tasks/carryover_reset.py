@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.graph.email import send_email
-from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.models.carryover_reset_log import CarryoverResetLog
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
@@ -53,7 +53,7 @@ async def _already_ran_this_year(year: int) -> bool:
 
 async def _execute_carryover_reset(year: int):
     """Fetch employees, zero carryover, send emails, log completion."""
-    all_employees = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_employees = await get_employee_repository().get_all()
 
     affected = []
     for emp in all_employees:
@@ -115,8 +115,7 @@ async def _reset_single_employee(emp_info: dict):
     """Zero out CarryOver for one employee, then recalculate RequestAllowDate."""
     emp_id = emp_info["id"]
     async with lock_manager.lock(emp_id):
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_STAFF_DIRECTORY,
+        await get_employee_repository().update_fields(
             emp_id,
             {"CarryOver": 0},
         )

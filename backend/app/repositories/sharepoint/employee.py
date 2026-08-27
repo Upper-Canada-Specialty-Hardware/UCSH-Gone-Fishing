@@ -37,5 +37,20 @@ class SharePointEmployeeRepository(EmployeeRepository):
                 return item
         return None
 
+    async def create(self, fields: dict) -> dict:
+        """Insert a new Staff Directory list item via Graph and return it.
+
+        Args:
+            fields: SharePoint column names -> values (Title, EmailAddress,
+                balances, entitlements) — the payload build_employee_fields
+                assembles. Person/Group columns (AllManagers) are written
+                separately by the caller, not here.
+
+        Returns:
+            The created item as {"id": <str>, "fields": {...}}, identical to
+            what get_by_id returns for the same record.
+        """
+        return await sp_client.create_list_item(self._list_id, fields)  # thin Graph pass-through, shape unchanged
+
     async def update_fields(self, item_id: str | int, fields: dict) -> dict:
         return await sp_client.update_list_item_fields(self._list_id, item_id, fields)

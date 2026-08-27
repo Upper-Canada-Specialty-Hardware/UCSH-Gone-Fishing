@@ -1,7 +1,6 @@
 import logging
 
-from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.services.employee import _get_sp_user_name_map
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,7 @@ def _extract_all_managers(fields: dict) -> list[dict]:
 
 async def get_all_assignments() -> list[dict]:
     """Fetch all Staff Directory employees with their resolved AllManagers."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await get_employee_repository().get_all()
     sp_user_map = await _get_sp_user_name_map()
 
     assignments = []
@@ -59,7 +58,7 @@ async def get_all_assignments() -> list[dict]:
 
 async def get_staff_as_sp_users() -> list[dict]:
     """Return all staff members with their SP user IDs for autocomplete."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await get_employee_repository().get_all()
     name_to_id = await _get_sp_name_to_id_map()
 
     users = []
@@ -94,13 +93,17 @@ async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[i
         update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
         update_fields["AllManagersLookupId"] = []
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_STAFF_DIRECTORY, employee_id, update_fields
-    )
+    await get_employee_repository().update_fields(employee_id, update_fields)
     logger.info("Updated AllManagers for employee %s: %s", employee_id, manager_sp_user_ids)
 
     # Re-read and return updated data
-    item = await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    item = await get_employee_repository().get_by_id(employee_id)
+    if item is None:
+        # The repo returns None where the old direct Graph call raised. Keep the
+        # failure visible: the AllManagers write above already landed, so
+        # reporting an empty manager list here would read as "the update wiped
+        # their managers" in the admin UI.
+        raise RuntimeError(f"Employee {employee_id} could not be re-read after update")
     fields = item.get("fields", {})
     sp_user_map = await _get_sp_user_name_map()
     managers = _extract_all_managers(fields)
@@ -117,7 +120,7 @@ async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[i
 
 async def preview_bulk_operation(operation: str, params: dict) -> dict:
     """Dry-run a bulk operation and return what would change."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await get_employee_repository().get_all()
     sp_user_map = await _get_sp_user_name_map()
 
     source_id = params.get("source_manager_id")

@@ -1,9 +1,13 @@
 import logging
 
-from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 
 logger = logging.getLogger(__name__)
+
+# sp_client is still imported for _get_sp_user_name_map below: the M365 User
+# Information List is *identity*, which stays in SharePoint after the
+# migration, so it is deliberately not behind the repository seam.
 
 LOCATION_PROVINCE_MAP = {
     "Toronto Victoria Park": "ON",
@@ -26,33 +30,24 @@ def map_location_to_province(location: str) -> str:
 
 
 async def get_employee_by_name(name: str) -> dict | None:
-    # Title is not indexed on Staff Directory — fetch all and match client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    target = name.strip().lower()
-    for item in items:
-        if item.get("fields", {}).get("Title", "").strip().lower() == target:
-            return item
-    logger.warning("Employee not found by name: %s", name)
-    return None
+    employee = await get_employee_repository().get_by_name(name)
+    if employee is None:
+        logger.warning("Employee not found by name: %s", name)
+    return employee
 
 
 async def get_employee_by_email(email: str) -> dict | None:
-    # EmailAddress is not indexed on Staff Directory — fetch all and match client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    target = email.strip().lower()
-    for item in items:
-        if item.get("fields", {}).get("EmailAddress", "").strip().lower() == target:
-            return item
-    logger.warning("Employee not found by email: %s", email)
-    return None
+    employee = await get_employee_repository().get_by_email(email)
+    if employee is None:
+        logger.warning("Employee not found by email: %s", email)
+    return employee
 
 
 async def get_employee_by_id(item_id: str | int) -> dict | None:
-    try:
-        return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
-    except Exception:
+    employee = await get_employee_repository().get_by_id(item_id)
+    if employee is None:
         logger.warning("Employee not found by ID: %s", item_id)
-        return None
+    return employee
 
 
 async def get_all_managers_for_employee(employee: dict) -> list[dict]:
@@ -81,7 +76,7 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
 
 async def is_manager(employee_name: str) -> bool:
     """Check if anyone lists this employee in their AllManagers field."""
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await get_employee_repository().get_all()
     for staff in all_staff:
         all_managers = staff.get("fields", {}).get("AllManagers")
         if all_managers and isinstance(all_managers, list):

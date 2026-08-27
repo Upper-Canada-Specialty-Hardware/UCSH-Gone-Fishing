@@ -1,8 +1,7 @@
 import logging
 from datetime import date
 
-from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories import get_employee_repository
 from app.services.employee import get_employee_by_id
 
 logger = logging.getLogger(__name__)
@@ -82,8 +81,8 @@ async def cascade_current_year(employee_id: str | int) -> dict:
                 and result["CurrentVacationBalance"] == vacation):
             break
 
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_STAFF_DIRECTORY, employee_id, result,
+        await get_employee_repository().update_fields(
+            employee_id, result,
         )
 
     return result
@@ -104,8 +103,8 @@ async def cascade_next_year(employee_id: str | int) -> dict:
                 and ny_result["CarryOver"] == carryover):
             break
 
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+        await get_employee_repository().update_fields(
+            employee_id,
             {"CarryOver": ny_result["CarryOver"], "CurrentOvertimeBalance": ny_result["CurrentOvertimeBalance"]},
         )
 
@@ -151,8 +150,7 @@ async def recalculate_request_allow_date(
         return  # No change needed
 
     # Include Title to avoid clearing it (SP PatchItem behavior)
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_STAFF_DIRECTORY,
+    await get_employee_repository().update_fields(
         employee_id,
         {
             "RequestAllowDate": new_date_str,
@@ -174,8 +172,8 @@ async def apply_vacation_offset(employee_id: str | int) -> None:
     if new_vacation == vacation and new_overtime == overtime:
         return
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+    await get_employee_repository().update_fields(
+        employee_id,
         {"CurrentVacationBalance": new_vacation, "CurrentOvertimeBalance": new_overtime},
     )
 

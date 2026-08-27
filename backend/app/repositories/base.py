@@ -27,6 +27,11 @@ class EmployeeRepository(ABC):
     async def get_by_email(self, email: str) -> dict | None: ...
 
     @abstractmethod
+    async def create(self, fields: dict) -> dict:
+        """Insert a Staff Directory record; returns it in the {"id","fields"} shape."""
+        ...
+
+    @abstractmethod
     async def update_fields(self, item_id: str | int, fields: dict) -> dict: ...
 
 

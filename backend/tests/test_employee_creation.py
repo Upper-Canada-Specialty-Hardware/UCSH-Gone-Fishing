@@ -101,7 +101,7 @@ def test_a_non_numeric_balance_is_refused():
 # ----- the async wrapper -----
 
 def _patch(monkeypatch, *, name_exists=False, email_resolves=True):
-    """Fake the wrapper's SharePoint touchpoints and capture the writes."""
+    """Fake the wrapper's seam + identity touchpoints and capture the writes."""
     calls = {"created": None, "managers": None, "rad": None}
 
     async def _get_by_name(name):
@@ -110,9 +110,15 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True):
     async def _resolve(email):
         return 501 if email_resolves else None
 
-    async def _create(list_id, fields):
-        calls["created"] = fields
-        return {"id": "777", "fields": fields}
+    class _FakeRepo:
+        # Stand-in for the employee repository: records the create and serves
+        # the re-read from what was written, so nothing here touches SharePoint.
+        async def create(self, fields):
+            calls["created"] = fields
+            return {"id": "777", "fields": fields}
+
+        async def get_by_id(self, item_id):
+            return {"id": str(item_id), "fields": calls["created"] or {}}
 
     async def _update_managers(emp_id, ids):
         calls["managers"] = (emp_id, ids)
@@ -120,13 +126,9 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True):
     async def _rad(emp_id, vacation, carryover):
         calls["rad"] = (emp_id, vacation, carryover)
 
-    async def _get_item(list_id, item_id):
-        return {"id": str(item_id), "fields": calls["created"] or {}}
-
     monkeypatch.setattr(ec, "get_employee_by_name", _get_by_name)
     monkeypatch.setattr(ec, "_resolve_user_lookup_id", _resolve)
-    monkeypatch.setattr(ec.sp_client, "create_list_item", _create)
-    monkeypatch.setattr(ec.sp_client, "get_list_item", _get_item)
+    monkeypatch.setattr(ec, "get_employee_repository", lambda: _FakeRepo())  # code writes/reads through the seam
     monkeypatch.setattr(ec, "update_employee_managers", _update_managers)
     monkeypatch.setattr(ec, "recalculate_request_allow_date", _rad)
     return calls
