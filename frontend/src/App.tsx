@@ -5,6 +5,7 @@ import EmployeeDashboard from './pages/EmployeeDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import Expired from './pages/Expired';
+import Login from './pages/Login';
 
 const theme = createTheme({
   typography: {
@@ -69,6 +70,7 @@ export default function App() {
             <Route path="/employee" element={<EmployeeDashboard />} />
             <Route path="/manager" element={<ManagerDashboard />} />
             <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/login" element={<Login />} />
             <Route path="/expired" element={<Expired />} />
             <Route path="*" element={<Navigate to="/expired" replace />} />
           </Routes>

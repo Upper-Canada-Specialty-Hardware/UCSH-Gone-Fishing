@@ -1,5 +1,6 @@
-import { Box, Typography, Paper } from '@mui/material';
+import { Box, Typography, Paper, Button } from '@mui/material';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import { Link as RouterLink } from 'react-router-dom';
 
 export default function Expired() {
   return (
@@ -9,9 +10,14 @@ export default function Expired() {
         <Typography variant="h5" gutterBottom>
           Link Expired
         </Typography>
-        <Typography color="text.secondary">
-          Your dashboard link has expired. Check a recent email for a new link.
+        <Typography color="text.secondary" sx={{ mb: 3 }}>
+          Your dashboard link has expired, or you don't have one yet. Request a
+          fresh link by email.
         </Typography>
+        {/* Self-service replacement for the old "check a recent email" dead end. */}
+        <Button component={RouterLink} to="/login" variant="contained">
+          Email me a sign-in link
+        </Button>
       </Paper>
     </Box>
   );
