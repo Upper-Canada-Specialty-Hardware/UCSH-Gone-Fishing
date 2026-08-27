@@ -49,7 +49,11 @@ from app.config import settings
 from app.database import async_session
 from app.graph.sharepoint import sp_client
 from app.models import RequestApprovalState
-from app.repositories import get_employee_repository  # seam for Staff Directory reads (sp_client stays for the other lists)
+from app.repositories import (  # seam for Staff Directory + request-list reads (sp_client stays for identity)
+    get_carryover_payout_repository,
+    get_employee_repository,
+    get_request_repository_for_list,
+)
 from app.services.employee import (
     get_all_managers_for_employee,
     get_employee_by_id,
@@ -1181,7 +1185,7 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
             ("overtime", settings.SP_LIST_OVERTIME_REQUESTS, "SubmittedBy"),
         ):
             try:
-                items = await sp_client.get_list_items(list_id)
+                items = await get_request_repository_for_list(list_id).get_all()
             except Exception:  # noqa: BLE001 - one unreadable list must not sink the report
                 logger.exception("Setup check: could not read the %s request list", kind)
                 continue
@@ -1192,7 +1196,7 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
     # Carry-over/payout stores the Staff Directory id outright, so it works even
     # when the Microsoft 365 lookup failed.
     try:
-        co_po_items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        co_po_items = await get_carryover_payout_repository().get_all()
     except Exception:  # noqa: BLE001
         logger.exception("Setup check: could not read the carry-over/payout list")
         co_po_items = []

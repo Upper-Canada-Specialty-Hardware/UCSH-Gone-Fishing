@@ -211,6 +211,13 @@ class PostgresRequestRepository(RequestRepository):
             raise KeyError(f"No request with sp_item_id {item_id}")
         return self._to_sp_shape(row)
 
+    async def get_by_id_or_none(self, item_id: str | int) -> dict | None:
+        """Like get_by_id, but absence returns None instead of raising."""
+        try:
+            return await self.get_by_id(item_id)
+        except KeyError:
+            return None
+
     async def create(self, fields: dict) -> dict:
         """Insert a new request row from a SharePoint-shaped payload.
 

@@ -3,8 +3,7 @@ import logging
 from datetime import date
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
-from app.repositories import get_employee_repository
+from app.repositories import get_employee_repository, get_leave_request_repository
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.employee import (
     get_employee_by_id,
@@ -87,7 +86,7 @@ async def process_new_leave_request(form_data: dict, submitter_email: str) -> di
     # rejected as a duplicate was left with no days and no manager, and reached
     # nobody. See app/services/overlap_detection.py.
 
-    item = await sp_client.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, fields)
+    item = await get_leave_request_repository().create(fields)
     item_id = item["id"]
     logger.info("Created leave request #%s", item_id)
 
@@ -104,7 +103,7 @@ async def process_new_leave_request(form_data: dict, submitter_email: str) -> di
 
 async def auto_calculate_days(leave_request_id: str | int):
     """Calculate business days or run partial-day auto-rejection checks."""
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+    item = await get_leave_request_repository().get_by_id(leave_request_id)
     fields = item["fields"]
     leave_type = fields.get("LeaveType", "")
     start_date = _parse_date(fields.get("StartDate"))
@@ -133,8 +132,7 @@ async def auto_calculate_days(leave_request_id: str | int):
 
     # Standard leave — calculate business days
     days = calculate_business_days(start_date, end_date, holidays, half_friday_season)
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, {"Days": days}
+    await get_leave_request_repository().update_fields(leave_request_id, {"Days": days}
     )
     logger.info("Calculated %s business days for leave request #%s", days, leave_request_id)
 
@@ -153,8 +151,7 @@ async def _check_partial_day(
     holiday_match, holiday_name = is_company_holiday(start_date, holidays)
     if holiday_match:
         reason = f"{start_date} is the company holiday {holiday_name}."
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_LEAVE_REQUESTS, request_id,
+        await get_leave_request_repository().update_fields(request_id,
             {
                 "Title": append_auto_reject_tag(original_title, reason),
                 "Status": "Rejected",
@@ -178,8 +175,7 @@ async def _check_partial_day(
             f"Requested {days} days on the half-Friday {start_date}, "
             f"which exceeds the 0.5 day limit."
         )
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_LEAVE_REQUESTS, request_id,
+        await get_leave_request_repository().update_fields(request_id,
             {
                 "Title": append_auto_reject_tag(original_title, reason),
                 "Status": "Rejected",
@@ -203,7 +199,7 @@ async def _check_partial_day(
 
 async def auto_assign_manager(leave_request_id: str | int):
     """Look up submitter → supervisor → patch SP item."""
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+    item = await get_leave_request_repository().get_by_id(leave_request_id)
     fields = item["fields"]
 
     employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
@@ -242,8 +238,7 @@ async def auto_assign_manager(leave_request_id: str | int):
             update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
             update_fields["AllManagersLookupId"] = lookup_ids
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, update_fields
+    await get_leave_request_repository().update_fields(leave_request_id, update_fields
     )
     logger.info("Assigned manager %s to leave request #%s", mgr_fields.get("Title"), leave_request_id)
 
@@ -253,7 +248,7 @@ async def auto_assign_manager(leave_request_id: str | int):
 
 async def send_bereavement_alert(leave_request_id: str | int):
     """Send alert email if bereavement or jury duty."""
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+    item = await get_leave_request_repository().get_by_id(leave_request_id)
     fields = item["fields"]
     leave_type = fields.get("LeaveType", "")
 
@@ -273,7 +268,7 @@ async def send_bereavement_alert(leave_request_id: str | int):
 
 async def send_approval_email(leave_request_id: str | int, is_reminder: bool = False):
     """Send approval email with HMAC links to all managers."""
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+    item = await get_leave_request_repository().get_by_id(leave_request_id)
     fields = item["fields"]
 
     if fields.get("ApproveProcessedFlag") == "Processed":
@@ -423,7 +418,7 @@ async def admin_edit_leave_request(
     reason: str,
 ) -> dict:
     """Apply an admin-driven edit to a pending leave request, re-send approval email."""
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    item = await get_leave_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -470,15 +465,14 @@ async def admin_edit_leave_request(
     }
 
     async with lock_manager.lock(employee_id):
-        fresh = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+        fresh = await get_leave_request_repository().get_by_id(request_id)
         ff = fresh["fields"]
         if ff.get("Status") != "Pending":
             return {"error": "Request status changed during edit — refresh and try again"}
         if ff.get("ApproveProcessedFlag") == "Processed":
             return {"error": "Request was just processed — refresh and try again"}
 
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_LEAVE_REQUESTS, request_id,
+        await get_leave_request_repository().update_fields(request_id,
             {
                 "Days": new_days,
                 "LeaveType": new_leave_type,
@@ -514,7 +508,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     # item. Claiming first would consume the one-shot claim on a blocked
     # approval, and the manager would then get "Already processed" forever, even
     # after clearing the conflict. Costs one extra read per approval.
-    pre_claim = await sp_client.get_list_item_or_none(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    pre_claim = await get_leave_request_repository().get_by_id_or_none(request_id)
     if pre_claim is None:
         # Deleted between the email going out and the manager acting on it.
         # A missing item is a terminal state, not a transient failure.
@@ -528,7 +522,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "approve"):
         return {"error": "Already processed"}
 
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    item = await get_leave_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("ApproveProcessedFlag") == "Processed":
@@ -548,8 +542,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
 
     # Update SP item
     today_str = date.today().isoformat()
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_LEAVE_REQUESTS, request_id,
+    await get_leave_request_repository().update_fields(request_id,
         {"Status": "Approved", "ApproveProcessedFlag": "Processed", "ApprovedDate": today_str},
     )
 
@@ -672,8 +665,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
         f"(CarryOver:{balances['CarryOver']})"
         f"(Make-Up:{balances['CurrentOvertimeBalance']})"
     )
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_LEAVE_REQUESTS, request_id, {"NewBalances": new_balances_str}
+    await get_leave_request_repository().update_fields(request_id, {"NewBalances": new_balances_str}
     )
 
     await write_audit_log(settings.SP_LIST_LEAVE_REQUESTS, request_id, audit)
@@ -686,7 +678,7 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    item = await get_leave_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("ApproveProcessedFlag") == "Processed":
@@ -699,8 +691,7 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     manager = await get_employee_by_id(manager_id)
     mgr_fields = manager["fields"] if manager else {}
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_LEAVE_REQUESTS, request_id,
+    await get_leave_request_repository().update_fields(request_id,
         {"Status": "Rejected", "ApproveProcessedFlag": "Processed"},
     )
 
@@ -719,7 +710,7 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
 
 async def refund_leave_request(request_id: str | int, admin_id: str | int) -> dict:
     """Reverse an approved leave request — restore balance, cascade, recalc RAD."""
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    item = await get_leave_request_repository().get_by_id(request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Approved":
@@ -736,8 +727,7 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
     days = float(fields.get("Days", 0) or 0)
 
     # Update SP status
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_LEAVE_REQUESTS, request_id, {"Status": "Refunded"},
+    await get_leave_request_repository().update_fields(request_id, {"Status": "Refunded"},
     )
 
     # Hourly staff (except sick leave) or bereavement/jury duty — no balance change

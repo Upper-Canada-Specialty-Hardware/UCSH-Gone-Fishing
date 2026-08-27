@@ -16,6 +16,7 @@ The list reads are faked, so nothing here touches SharePoint.
 import asyncio
 
 from app.services import overlap_detection as od
+from app.graph.sharepoint import sp_client
 
 
 def _fake_list_items(items):
@@ -63,7 +64,7 @@ def _overtime(item_id, status, on_date, submitter=7):
 
 def _leave_overlap(monkeypatch, existing, **kwargs):
     """Run check_leave_overlap against a faked list."""
-    monkeypatch.setattr(od.sp_client, "get_list_items", _fake_list_items(existing))
+    monkeypatch.setattr(sp_client, "get_list_items", _fake_list_items(existing))
     params = {"submitter_lookup_id": 7, "start_date": "2026-09-02", "end_date": "2026-09-04"}
     params.update(kwargs)
     return asyncio.run(od.check_leave_overlap(**params))
@@ -71,7 +72,7 @@ def _leave_overlap(monkeypatch, existing, **kwargs):
 
 def _overtime_overlap(monkeypatch, existing, **kwargs):
     """Run check_overtime_overlap against a faked list."""
-    monkeypatch.setattr(od.sp_client, "get_list_items", _fake_list_items(existing))
+    monkeypatch.setattr(sp_client, "get_list_items", _fake_list_items(existing))
     params = {"submitter_lookup_id": 7, "overtime_date": "2026-09-02"}
     params.update(kwargs)
     return asyncio.run(od.check_overtime_overlap(**params))
@@ -164,7 +165,7 @@ def test_overtime_different_date_does_not_block(monkeypatch):
 
 def test_leave_approval_conflict_names_the_approved_request(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(11, "Approved", "2026-09-01", "2026-09-05")]),
     )
     fields = {"SubmittedTestLookupId": 7, "StartDate": "2026-09-02", "EndDate": "2026-09-04"}
@@ -179,7 +180,7 @@ def test_leave_approval_conflict_names_the_approved_request(monkeypatch):
 
 def test_leave_approval_conflict_is_none_when_only_pending_exists(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(11, "Pending", "2026-09-01", "2026-09-05")]),
     )
     fields = {"SubmittedTestLookupId": 7, "StartDate": "2026-09-02", "EndDate": "2026-09-04"}
@@ -191,7 +192,7 @@ def test_leave_approval_conflict_excludes_the_request_being_approved(monkeypatch
     # The request under approval is itself Approved-shaped in the list; it must
     # not be treated as its own conflict.
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(12, "Approved", "2026-09-02", "2026-09-04")]),
     )
     fields = {"SubmittedTestLookupId": 7, "StartDate": "2026-09-02", "EndDate": "2026-09-04"}
@@ -203,7 +204,7 @@ def test_leave_approval_conflict_allows_approval_when_submitter_unknown(monkeypa
     # A lookup failure must not block a manager from approving; the helper logs
     # and stands aside rather than inventing a conflict.
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(11, "Approved", "2026-09-01", "2026-09-05")]),
     )
     fields = {"StartDate": "2026-09-02", "EndDate": "2026-09-04"}  # no person column at all
@@ -215,7 +216,7 @@ def test_leave_approval_conflict_reads_the_nested_person_shape(monkeypatch):
     # SharePoint-created items carry the person field as a nested dict rather
     # than a plain lookup id; both shapes must resolve to the same employee.
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(11, "Approved", "2026-09-01", "2026-09-05")]),
     )
     fields = {
@@ -229,7 +230,7 @@ def test_leave_approval_conflict_reads_the_nested_person_shape(monkeypatch):
 
 def test_overtime_approval_conflict_names_the_approved_entry(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_overtime(21, "Approved", "2026-09-02")]),
     )
     fields = {"SubmittedByLookupId": 7, "StartDate": "2026-09-02"}
@@ -243,7 +244,7 @@ def test_overtime_approval_conflict_names_the_approved_entry(monkeypatch):
 
 def test_overtime_approval_conflict_is_none_when_date_is_free(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_overtime(21, "Approved", "2026-09-03")]),
     )
     fields = {"SubmittedByLookupId": 7, "StartDate": "2026-09-02"}
@@ -266,7 +267,7 @@ def _sms_text(item_id, message):
 
 def test_leave_conflict_message_fits_one_text(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(11, "Approved", "2026-09-01", "2026-09-05")]),
     )
     fields = {"SubmittedTestLookupId": 7, "StartDate": "2026-09-02", "EndDate": "2026-09-04"}
@@ -278,7 +279,7 @@ def test_leave_conflict_message_fits_one_text(monkeypatch):
 
 def test_overtime_conflict_message_fits_one_text(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_overtime(21, "Approved", "2026-09-02")]),
     )
     fields = {"SubmittedByLookupId": 7, "StartDate": "2026-09-02"}
@@ -374,7 +375,7 @@ def test_part_days_on_different_dates_never_interact(monkeypatch):
 
 def test_the_part_day_refusal_says_how_much_is_booked_and_fits_one_text(monkeypatch):
     monkeypatch.setattr(
-        od.sp_client, "get_list_items",
+        sp_client, "get_list_items",
         _fake_list_items([_leave(1043, "Approved", "2026-09-02", "2026-09-02", days=0.75)]),
     )
     fields = {

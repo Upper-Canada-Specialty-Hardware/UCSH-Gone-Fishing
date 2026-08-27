@@ -13,6 +13,7 @@ from app.services.request_descriptions import (
     compose_leave_title,
     extract_request_description,
 )
+from app.graph.sharepoint import sp_client
 from app.templates_render import (
     render_bereavement_alert,
     render_leave_approval_email,
@@ -185,7 +186,7 @@ def _submit_leave(monkeypatch, form_data):
     async def _noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(leave_requests.sp_client, "create_list_item", _fake_create)
+    monkeypatch.setattr(sp_client, "create_list_item", _fake_create)
     # No lookup id -> overlap detection is skipped, so no Graph calls.
     monkeypatch.setattr(leave_requests, "_resolve_user_lookup_id", _noop)
     monkeypatch.setattr(leave_requests, "auto_calculate_days", _noop)

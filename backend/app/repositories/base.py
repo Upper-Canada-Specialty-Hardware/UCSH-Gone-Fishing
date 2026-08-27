@@ -76,6 +76,15 @@ class RequestRepository(ABC):
     async def get_by_id(self, item_id: str | int) -> dict: ...
 
     @abstractmethod
+    async def get_by_id_or_none(self, item_id: str | int) -> dict | None:
+        """Like get_by_id, but a missing/unreadable item returns None.
+
+        Exists for callers that treat absence as a normal state (the leave
+        pre-claim conflict read, reminder re-sends) rather than an error.
+        """
+        ...
+
+    @abstractmethod
     async def create(self, fields: dict) -> dict: ...
 
     @abstractmethod

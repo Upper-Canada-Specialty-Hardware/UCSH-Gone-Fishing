@@ -19,7 +19,7 @@ import logging
 
 from app.config import settings
 from app.graph.email import send_email
-from app.graph.sharepoint import sp_client
+from app.repositories import get_request_repository_for_list
 from app.services.overlap_detection import (
     _extract_lookup_id,
     conflict_warning,
@@ -66,7 +66,7 @@ async def notify_requests_blocked_by_approval(
     try:
         # Fetched after the approval landed, so the approved row already reads
         # as approved and the rows it strands can be seen.
-        items = await sp_client.get_list_items(list_id)
+        items = await get_request_repository_for_list(list_id).get_all()
         blocked = find_requests_blocked_by(
             items, approved_item_id, submitter_lookup_id, person_column, matcher,
         )

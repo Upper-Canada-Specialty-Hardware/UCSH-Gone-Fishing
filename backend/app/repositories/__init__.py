@@ -7,6 +7,7 @@ storage-backed repository for a domain, e.g.:
 """
 from app.repositories.factory import (
     get_carryover_payout_repository,
+    get_request_repository_for_list,
     get_employee_repository,
     get_holiday_repository,
     get_leave_request_repository,
@@ -21,4 +22,5 @@ __all__ = [
     "get_leave_request_repository",
     "get_overtime_request_repository",
     "get_carryover_payout_repository",
+    "get_request_repository_for_list",
 ]

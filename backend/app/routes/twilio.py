@@ -10,8 +10,7 @@ from app.services.employee import get_employee_by_id, ADMIN_NAMES
 from app.services.leave_requests import approve_leave_request, reject_leave_request
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
-from app.graph.sharepoint import sp_client
-from app.repositories import get_employee_repository
+from app.repositories import get_employee_repository, get_request_repository_for_list
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -83,7 +82,7 @@ async def receive_sms(request: Request):
 
     # Look up the request
     try:
-        item = await sp_client.get_list_item(config["list_id"], item_id)
+        item = await get_request_repository_for_list(config["list_id"]).get_by_id(item_id)
     except Exception:
         await send_sms(from_number, f"Request #{item_id} does not exist, please try again.")
         return ""

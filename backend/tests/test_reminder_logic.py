@@ -27,6 +27,7 @@ from app.services.approval_versions import (
     MATERIAL_FIELDS_LEAVE,
 )
 from app.tasks import reminders
+from app.graph.sharepoint import sp_client
 
 
 # ----- non-expiring approval links -----
@@ -183,7 +184,7 @@ def _get_list_item_raises(status_code):
     async def _raise(list_id, item_id):
         raise _http_error(status_code)
 
-    client = reminders.sp_client
+    client = sp_client
     had_own = "get_list_item" in client.__dict__
     previous = client.__dict__.get("get_list_item")
     client.get_list_item = _raise
