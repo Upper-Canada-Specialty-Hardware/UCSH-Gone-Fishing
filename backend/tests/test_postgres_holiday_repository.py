@@ -192,9 +192,9 @@ def test_factory_rejects_an_unknown_backend(monkeypatch):
     assert "mysql" in str(excinfo.value)
 
 
-def test_requests_are_still_sharepoint_only(monkeypatch):
-    # Employees gained a Postgres implementation in PR G; requests is the last
-    # domain still without one, so it must keep refusing the flag.
+def test_requests_now_have_a_postgres_backend(monkeypatch):
+    # Requests gained a Postgres implementation, so the flag now selects it
+    # rather than raising (the last domain to be implemented).
+    from app.repositories.postgres.requests import PostgresRequestRepository
     monkeypatch.setattr(factory.settings, "STORAGE_REQUESTS", "postgres")
-    with pytest.raises(NotImplementedError):
-        factory.get_leave_request_repository()
+    assert isinstance(factory.get_leave_request_repository(), PostgresRequestRepository)

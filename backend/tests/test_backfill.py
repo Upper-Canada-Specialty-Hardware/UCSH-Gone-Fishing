@@ -92,6 +92,35 @@ def test_extract_lookup_id_handles_both_person_field_shapes():
     assert mappers.map_overtime_request({"id": "3", "fields": {}})["manager_sp_user_lookup_id"] is None
 
 
+def test_request_mappers_carry_the_approval_and_audit_fields():
+    # 0008 columns: left NULL, a backfilled approved request has no audit trail,
+    # so the refund path (which reverses balances by parsing BalanceAuditLog)
+    # cannot compute its deltas after the cutover — and a backfilled carryover
+    # loses the Status its refund guard checks.
+    audit = '[{"action": "approve"}]'
+    leave = mappers.map_leave_request({"id": "1", "fields": {
+        "ApprovedDate": "2026-05-01", "NewBalances": "V:9", "BalanceAuditLog": audit,
+    }})
+    assert str(leave["approved_date"]) == "2026-05-01"
+    assert leave["new_balances"] == "V:9"
+    assert leave["balance_audit_log"] == audit
+
+    ot = mappers.map_overtime_request({"id": "2", "fields": {
+        "ApprovedDate": "2026-05-02", "BalanceAuditLog": audit,
+    }})
+    assert str(ot["approved_date"]) == "2026-05-02"
+    assert ot["balance_audit_log"] == audit
+
+    co = mappers.map_carryover_payout_request({"id": "3", "fields": {
+        "Status": "Approved", "ApprovedDate": "2026-05-03",
+        "NewBalance": "CO:2", "BalanceAuditLog": audit,
+    }})
+    assert co["status"] == "Approved"
+    assert str(co["approved_date"]) == "2026-05-03"
+    assert co["new_balance"] == "CO:2"
+    assert co["balance_audit_log"] == audit
+
+
 # --------------------------- upsert (idempotent) ---------------------------
 
 def test_upsert_is_idempotent_and_updates_in_place():

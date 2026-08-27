@@ -325,7 +325,8 @@ def test_factory_still_defaults_to_sharepoint(monkeypatch):
     assert isinstance(factory.get_employee_repository(), SharePointEmployeeRepository)
 
 
-def test_requests_are_still_sharepoint_only(monkeypatch):
+def test_requests_now_have_a_postgres_backend(monkeypatch):
+    # Requests gained a Postgres implementation, so the flag now selects it.
+    from app.repositories.postgres.requests import PostgresRequestRepository
     monkeypatch.setattr(factory.settings, "STORAGE_REQUESTS", "postgres")
-    with pytest.raises(NotImplementedError):
-        factory.get_leave_request_repository()
+    assert isinstance(factory.get_leave_request_repository(), PostgresRequestRepository)

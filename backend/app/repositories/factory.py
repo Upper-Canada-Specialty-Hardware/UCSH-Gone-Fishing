@@ -30,6 +30,11 @@ from app.repositories.postgres.manager_assignments import (
     PostgresManagerAssignmentRepository,
 )
 from app.repositories.sharepoint.requests import SharePointRequestRepository
+from app.repositories.postgres.requests import (
+    carryover_payout_repository as _pg_carryover_payout_repository,
+    leave_request_repository as _pg_leave_request_repository,
+    overtime_request_repository as _pg_overtime_request_repository,
+)
 
 SHAREPOINT = "sharepoint"
 POSTGRES = "postgres"
@@ -71,18 +76,26 @@ def get_holiday_repository() -> HolidayRepository:
 
 
 def get_leave_request_repository() -> RequestRepository:
+    if settings.STORAGE_REQUESTS == POSTGRES:
+        return _pg_leave_request_repository()
     return _request_repository(settings.SP_LIST_LEAVE_REQUESTS)
 
 
 def get_overtime_request_repository() -> RequestRepository:
+    if settings.STORAGE_REQUESTS == POSTGRES:
+        return _pg_overtime_request_repository()
     return _request_repository(settings.SP_LIST_OVERTIME_REQUESTS)
 
 
 def get_carryover_payout_repository() -> RequestRepository:
+    if settings.STORAGE_REQUESTS == POSTGRES:
+        return _pg_carryover_payout_repository()
     return _request_repository(settings.SP_LIST_CARRYOVER_PAYOUT)
 
 
 def _request_repository(list_id: str) -> RequestRepository:
+    # SharePoint branch only — the Postgres branch is selected per list above,
+    # since each request list maps to a different model.
     if settings.STORAGE_REQUESTS == SHAREPOINT:
         return SharePointRequestRepository(list_id)
     _unsupported("requests", settings.STORAGE_REQUESTS)
