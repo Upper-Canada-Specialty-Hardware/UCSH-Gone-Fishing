@@ -92,9 +92,14 @@ def map_employee(item: dict) -> dict:
         # cutover (PR F); backfill leaves it null.
         "sp_user_lookup_id": None,
         "name": f.get("Title") or "",
+        "cell_number": f.get("CellNumber"),        # 0007 col; manager approval-SMS recipient
         "department": f.get("Department"),
         "location": f.get("Location"),
         "employee_type": f.get("EmployeeType"),
+        # 0007 col; the balance engine branches on == "Hourly". A backfill that
+        # left this NULL would read != "Hourly" and silently deduct vacation from
+        # hourly staff — the exact bug 0007 exists to prevent, so populate it here.
+        "salary_hourly": f.get("SalaryHourly"),
         "vacation_balance": _to_float0(f.get("CurrentVacationBalance")),
         "sick_balance": _to_float0(f.get("CurrentSickDayBalance")),
         "overtime_balance": _to_float0(f.get("CurrentOvertimeBalance")),
