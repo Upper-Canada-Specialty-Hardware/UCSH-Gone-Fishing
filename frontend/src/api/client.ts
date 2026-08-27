@@ -38,6 +38,19 @@ api.interceptors.response.use(
 
 export default api;
 
+/**
+ * Request a self-service sign-in link be emailed to a work address.
+ *
+ * Public endpoint, so it bypasses the `api` instance (no dashboard token, no
+ * `/api/dashboard` prefix). The backend always responds the same way whether or
+ * not the email is on file, so the caller must not branch on the result.
+ *
+ * @param email - The @ucsh email to send the sign-in link to.
+ * @returns The axios response (`{ status, detail }`).
+ */
+export const requestSignInLink = (email: string) =>
+  axios.post(`${API_URL}/api/auth/request-link`, { email });
+
 // Config
 export const getConfig = () => api.get('/config');
 
