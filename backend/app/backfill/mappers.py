@@ -142,6 +142,12 @@ def map_leave_request(item: dict) -> dict:
         "manager_sp_user_lookup_id": _extract_lookup_id(f, "Manager"),
         "staff_location": f.get("StaffLocation"),
         "staff_department": f.get("StaffDepartment"),
+        # 0008 columns; without them a backfilled approved request has no audit
+        # trail, and the refund path (which reverses balances by parsing
+        # BalanceAuditLog) cannot compute its deltas after the cutover.
+        "approved_date": _to_date(f.get("ApprovedDate")),
+        "new_balances": f.get("NewBalances"),
+        "balance_audit_log": f.get("BalanceAuditLog"),
     }
 
 
@@ -156,6 +162,9 @@ def map_overtime_request(item: dict) -> dict:
         "submitter_sp_user_lookup_id": _extract_lookup_id(f, "SubmittedBy"),
         "submitter_name": None,
         "manager_sp_user_lookup_id": _extract_lookup_id(f, "Manager"),
+        # 0008 columns; see map_leave_request for why the audit log must carry.
+        "approved_date": _to_date(f.get("ApprovedDate")),
+        "balance_audit_log": f.get("BalanceAuditLog"),
     }
 
 
@@ -225,4 +234,11 @@ def map_carryover_payout_request(item: dict) -> dict:
         "submitter_sp_user_lookup_id": _extract_lookup_id(f, "SubmittedBy"),
         "employee_sp_item_id": _to_str(f.get("EmployeeID")),
         "manager_sp_user_lookup_id": _extract_lookup_id(f, "Manager"),
+        # 0008 columns. This list carries a Status distinct from SystemState;
+        # left NULL, a backfilled approved carryover could never be refunded
+        # (the guard checks Status == "Approved") and history grids lose it.
+        "status": f.get("Status"),
+        "approved_date": _to_date(f.get("ApprovedDate")),
+        "new_balance": f.get("NewBalance"),
+        "balance_audit_log": f.get("BalanceAuditLog"),
     }
