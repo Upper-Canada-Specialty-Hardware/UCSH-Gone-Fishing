@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime
+
+from app.time_utils import utcnow_naive
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -61,9 +62,9 @@ async def process_notification(notification: dict):
             token_record = await session.get(ChangeToken, list_id)
             if token_record:
                 token_record.token = new_token
-                token_record.updated_at = datetime.utcnow()
+                token_record.updated_at = utcnow_naive()
             else:
-                session.add(ChangeToken(list_id=list_id, token=new_token, updated_at=datetime.utcnow()))
+                session.add(ChangeToken(list_id=list_id, token=new_token, updated_at=utcnow_naive()))
             await session.commit()
 
     # Process each changed item
@@ -98,7 +99,7 @@ async def process_notification(notification: dict):
                 list_id=list_id,
                 item_id=item_id,
                 action=action,
-                processed_at=datetime.utcnow(),
+                processed_at=utcnow_naive(),
             ))
             await session.commit()
 
@@ -208,11 +209,11 @@ async def catch_up_all_lists():
                     token_record = await session.get(ChangeToken, list_id)
                     if token_record:
                         token_record.token = new_token
-                        token_record.updated_at = datetime.utcnow()
+                        token_record.updated_at = utcnow_naive()
                     else:
                         session.add(ChangeToken(
                             list_id=list_id, token=new_token,
-                            updated_at=datetime.utcnow(),
+                            updated_at=utcnow_naive(),
                         ))
                     await session.commit()
                 logger.info("Catch-up: refreshed delta token for list %s", list_id)
@@ -240,7 +241,7 @@ async def _dispatch_and_log(list_id: str, items: list[dict], label: str) -> int:
                     list_id=list_id,
                     item_id=item_id,
                     action="webhook_change",
-                    processed_at=datetime.utcnow(),
+                    processed_at=utcnow_naive(),
                 ))
                 await session.commit()
         except IntegrityError:

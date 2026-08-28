@@ -4,6 +4,7 @@ from sqlalchemy import String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.time_utils import utcnow_naive
 
 
 class ChangeToken(Base):
@@ -11,4 +12,4 @@ class ChangeToken(Base):
 
     list_id: Mapped[str] = mapped_column(String, primary_key=True)
     token: Mapped[str] = mapped_column(String, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

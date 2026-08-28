@@ -11,6 +11,8 @@ import asyncio
 import logging
 from datetime import date, datetime, timedelta
 
+from app.time_utils import utcnow_naive
+
 from sqlalchemy import select
 
 from app.config import settings
@@ -170,7 +172,7 @@ async def _process_row(row: RequestApprovalState) -> None:
 
 
 async def send_due_reminders() -> None:
-    now = datetime.utcnow()
+    now = utcnow_naive()
     async with async_session() as session:
         result = await session.execute(
             select(RequestApprovalState).where(RequestApprovalState.reminders_closed.is_(False))

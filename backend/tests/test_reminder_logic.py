@@ -8,13 +8,14 @@ no-expiry sentinel). The actual email send + supersession is verified live.
 import asyncio
 import contextlib
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from app.config import settings
+from app.time_utils import utcnow_naive
 from app.services.approval_links import (
     generate_approval_url,
     validate_approval_token,
@@ -45,7 +46,7 @@ def test_past_real_expiry_still_rejected():
 
 
 def test_future_real_expiry_valid():
-    future = str(int(datetime.utcnow().timestamp()) + 3600)
+    future = str(int(utcnow_naive().timestamp()) + 3600)
     token = _sign("leave", "123", "approve", "45", future, 1)
     ok, _ = validate_approval_token("leave", "123", "approve", "45", token, future, 1)
     assert ok
@@ -64,7 +65,7 @@ def test_generate_url_defaults_to_no_expiry():
 def test_generate_url_with_hours_sets_real_future_expiry():
     url = generate_approval_url("leave", 123, "approve", 45, expiry_hours=72)
     exp = int(url.split("exp=")[1].split("&")[0])
-    assert exp > int(datetime.utcnow().timestamp())
+    assert exp > int(utcnow_naive().timestamp())
 
 
 # ----- version / force-bump math -----
@@ -117,18 +118,18 @@ async def _bump_flow():
 def _row(count, days_ago):
     return SimpleNamespace(
         reminder_count=count,
-        last_emailed_at=datetime.utcnow() - timedelta(days=days_ago),
+        last_emailed_at=utcnow_naive() - timedelta(days=days_ago),
     )
 
 
 def test_first_reminder_due_at_30_days():
-    now = datetime.utcnow()
+    now = utcnow_naive()
     assert reminders._is_due(_row(0, 31), now) is True
     assert reminders._is_due(_row(0, 29), now) is False
 
 
 def test_repeat_reminder_due_at_7_days():
-    now = datetime.utcnow()
+    now = utcnow_naive()
     assert reminders._is_due(_row(1, 8), now) is True
     assert reminders._is_due(_row(1, 6), now) is False
 
