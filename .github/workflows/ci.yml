@@ -5,6 +5,10 @@ name: CI
 # master with no test gate, so this is what catches a broken change BEFORE it can
 # be merged. The lint job matters for cost too: Railway fails a build outright on
 # lint errors, so catching them here avoids wasting deploy credits.
+#
+# The gate only means something if it runs what production runs. The runtime
+# versions below are therefore checked against the Dockerfiles on every run —
+# see the runtime-sync job.
 on:
   push:
     branches: [master]
@@ -15,7 +19,59 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Single source of truth for the runtimes this workflow installs. Every job reads
+# these instead of repeating a literal, and runtime-sync fails the build if either
+# drifts from the Dockerfile it mirrors — so a dependency bump can no longer move
+# production's runtime without moving the gate with it.
+env:
+  PYTHON_VERSION: "3.14" # must equal backend/Dockerfile
+  NODE_VERSION: "26" # must equal frontend/Dockerfile
+
 jobs:
+  runtime-sync:
+    name: Runtime pins match the Dockerfiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the workflow pins against the images Railway builds
+        run: |
+          # Read the versions the Dockerfiles actually build on. These are the
+          # runtimes production gets; the env values above are what CI tests on.
+          docker_python=$(sed -n 's/^FROM python:\([0-9.]*\)-slim.*/\1/p' backend/Dockerfile | head -1)
+          docker_node=$(sed -n 's/^FROM node:\([0-9]*\)-alpine.*/\1/p' frontend/Dockerfile | head -1)
+
+          # A missing value means the FROM line was reformatted; fail loudly
+          # rather than silently comparing against an empty string.
+          if [ -z "$docker_python" ] || [ -z "$docker_node" ]; then
+            echo "Could not read a version out of the Dockerfiles."
+            echo "  backend/Dockerfile  -> '${docker_python}'"
+            echo "  frontend/Dockerfile -> '${docker_node}'"
+            echo "If the FROM lines changed shape, update the patterns in this job."
+            exit 1
+          fi
+
+          status=0
+          if [ "$docker_python" != "$PYTHON_VERSION" ]; then
+            echo "Python mismatch: CI tests on ${PYTHON_VERSION}, backend/Dockerfile builds ${docker_python}."
+            status=1
+          fi
+          if [ "$docker_node" != "$NODE_VERSION" ]; then
+            echo "Node mismatch: CI builds on ${NODE_VERSION}, frontend/Dockerfile builds ${docker_node}."
+            status=1
+          fi
+
+          # Explain the consequence, so whoever hits this knows why it blocks.
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "CI would be testing a runtime production does not run, so a failure"
+            echo "that only appears on the deployed version would pass this gate."
+            echo "Update the env block at the top of .github/workflows/ci.yml to match,"
+            echo "or revert the Dockerfile bump."
+            exit 1
+          fi
+
+          echo "Runtimes match: python ${PYTHON_VERSION}, node ${NODE_VERSION}."
+
   backend-lint:
     name: Backend lint (ruff)
     runs-on: ubuntu-latest
@@ -26,7 +82,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12" # matches the backend Dockerfile pin
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Install ruff
         run: pip install ruff==0.15.20   # pinned so CI and local flag the same things
       - name: Lint
@@ -42,7 +98,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12" # matches the backend Dockerfile pin
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
@@ -63,7 +119,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20" # matches the frontend Dockerfile (node:20-alpine)
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
