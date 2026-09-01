@@ -117,6 +117,18 @@ def test_identity_failure_propagates():
     assert report["overall"] == "fail"
 
 
+def test_an_email_with_no_microsoft_365_account_warns_rather_than_fails():
+    # A personal address means this person cannot sign in to submit a request
+    # at all, so the record is inert rather than mis-wired.
+    verdict = ev._identity_verdict("1", "someone@gmail.com", None, None)
+    assert verdict["status"] == "warn"
+    assert "cannot submit a request" in verdict["detail"]
+
+
+def test_a_record_with_no_email_still_fails_identity():
+    assert ev._identity_verdict("1", "", None, None)["status"] == "fail"
+
+
 # ----- supervisor / AllManagers -----
 
 def test_empty_all_managers_fails():
@@ -155,10 +167,14 @@ def test_supervisor_email_that_does_not_resolve_fails():
     assert report["overall"] == "fail"
 
 
-def test_employee_listed_as_their_own_supervisor_fails():
+def test_employee_listed_as_their_own_supervisor_warns():
+    # Management groups list the whole group as each member's supervisors,
+    # themselves included. Requests still route to the others, so this is worth
+    # a look rather than a stalled request.
     fields = {**GOOD_FIELDS, "AllManagers": [{"LookupId": 1, "LookupValue": "Test Employee"}]}
     report = _report(employee_fields=fields)
-    assert _by_code(report, "supervisor_not_self")["status"] == "fail"
+    assert _by_code(report, "supervisor_not_self")["status"] == "warn"
+    assert report["overall"] != "fail"
 
 
 # ----- location / province -----
@@ -686,6 +702,22 @@ def test_a_record_with_no_email_is_flagged_on_identity(monkeypatch):
     result, _ = _sweep(monkeypatch, [no_email, BOSS])
 
     assert "identity_roundtrip" in _codes(_row(result, 1))
+
+
+def test_a_personal_email_with_no_microsoft_365_account_is_not_flagged(monkeypatch):
+    # They cannot submit a request at all, so nothing of theirs can stall.
+    personal = _staff_record(1, "Alice Worker", "alice@gmail.com", "Boss Person")
+    result, _ = _sweep(monkeypatch, [personal, BOSS])
+
+    assert _row(result, 1) is None
+
+
+def test_a_self_listed_supervisor_is_not_flagged(monkeypatch):
+    # Peer-approval groups list themselves; their requests still route.
+    self_listed = _staff_record(1, "Alice Worker", "alice@ucsh.ca", "Alice Worker")
+    result, _ = _sweep(monkeypatch, [self_listed, BOSS])
+
+    assert _row(result, 1) is None
 
 
 def test_an_unrecognised_location_is_flagged(monkeypatch):
