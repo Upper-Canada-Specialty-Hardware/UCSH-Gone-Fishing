@@ -5,6 +5,7 @@ from app.models.processing_log import ProcessingLog
 from app.models.carryover_reset_log import CarryoverResetLog
 from app.models.request_approval_state import RequestApprovalState
 from app.models.dashboard_link_state import DashboardLinkState
+from app.models.staff_setup_nudge import StaffSetupNudge
 
 # Migrated business tables (the SharePoint data, moved into Postgres).
 from app.models.employee import Employee
@@ -22,6 +23,7 @@ __all__ = [
     "CarryoverResetLog",
     "RequestApprovalState",
     "DashboardLinkState",
+    "StaffSetupNudge",
     # business
     "Employee",
     "ManagerAssignment",

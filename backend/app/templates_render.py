@@ -279,6 +279,27 @@ def render_dashboard_link_renewal(employee_name: str, expiry_days: int) -> str:
     )
 
 
+def render_staff_setup_issues(
+    employee_name: str, issues: list[dict], record_url: str | None = None,
+) -> str:
+    """Render the nudge sent to the creator of a broken Staff Directory record.
+
+    Args:
+        employee_name: The name on the record, so the reader knows which of
+            their records this is about.
+        issues: One {"code", "title", "detail", "fix"} per failing check.
+        record_url: Link to the list item, or None when the item carries no
+            webUrl - the link line is then left out rather than sent empty.
+
+    Returns:
+        The rendered HTML body.
+    """
+    return _render(
+        "staff_setup_issues.html",
+        employee_name=employee_name, issues=issues, record_url=record_url,
+    )
+
+
 def render_dashboard_link_email(manager_name: str, dashboard_url: str) -> str:
     return _render("dashboard_link_email.html", manager_name=manager_name, dashboard_url=dashboard_url)
 
