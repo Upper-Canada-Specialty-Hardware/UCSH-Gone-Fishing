@@ -49,6 +49,7 @@ from app.config import settings
 from app.database import async_session
 from app.graph.sharepoint import sp_client
 from app.models import RequestApprovalState
+from app.repositories import get_holiday_repository
 from app.services.employee import (
     get_all_managers_for_employee,
     get_employee_by_id,
@@ -112,6 +113,12 @@ LEAVE_POTS = [
     "CurrentOvertimeBalance",
     "CarryOver",
 ]
+
+# The check categories the whole-directory sweep keeps. Simulations and
+# requests-in-flight are dropped there: the sweep grades the Staff Directory
+# record itself, and a request already in flight belongs to the stuck-request
+# view, which reports it per request rather than per employee.
+SETUP_LIST_CATEGORIES = ("identity", "supervisor", "location", "balances")
 
 # Written into the Title by every automatic rejection; see auto_reject_titles.
 AUTO_REJECT_MARKER = "[Auto-Rejected:"
@@ -982,31 +989,29 @@ def _simulate_co_po_case(code, req_type, fields) -> dict:
 
 # --- Thin async wrapper: SharePoint reads, then hand off to the pure core ---
 
-async def _check_identity(employee_id, fields: dict) -> dict:
-    """Reproduce the email -> M365 user -> Staff Directory round-trip a real
-    request relies on, and confirm it lands back on THIS employee.
+def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None) -> dict:
+    """Turn one already-performed round-trip into the identity verdict.
 
-    Deliberately calls the production resolver rather than a local copy: the
-    point of this check is that the employee's own identity is resolved by the
-    exact code a submitted request runs. The lookup id it resolves is returned
-    so the rest of the report can reuse it instead of resolving it a second
-    time.
+    Pure, and the single place the identity wording lives, so the one-employee
+    check and the whole-directory sweep can resolve the round-trip by different
+    means (production resolvers vs. maps built from one read) without their
+    verdicts drifting apart.
 
     Args:
         employee_id: Staff Directory item id being validated.
-        fields: Their Staff Directory field values.
+        email: Their email, already stripped. Empty when the record has none.
+        lookup_id: The Microsoft 365 lookup id their email resolved to, or None.
+        resolved: The Staff Directory record that lookup id led back to, or None.
 
     Returns:
-        {"status", "account_count", "detail", "lookup_id"} — lookup_id is None
+        {"status", "account_count", "detail", "lookup_id"} - lookup_id is None
         when the email never resolved.
     """
-    email = (fields.get("EmailAddress") or "").strip()
     if not email:
         return {"status": "fail", "account_count": 0, "lookup_id": None, "detail": (
             "There is no email address on the record, so a submitted request cannot "
             "be linked back to this person."
         )}
-    lookup_id = await _resolve_user_lookup_id(email)
     if not lookup_id:
         return {"status": "fail", "account_count": 0, "lookup_id": None, "detail": (
             f"The email {email} was not found in the Microsoft 365 directory, so a "
@@ -1014,7 +1019,6 @@ async def _check_identity(employee_id, fields: dict) -> dict:
         )}
     # From here the email resolved, so the account count is 1; what can still go
     # wrong is which Staff Directory record it lands on.
-    resolved = await resolve_person_field(lookup_id)
     if not resolved:
         return {"status": "fail", "account_count": 1, "lookup_id": lookup_id, "detail": (
             "Their Microsoft 365 account did not match any Staff Directory record "
@@ -1032,6 +1036,80 @@ async def _check_identity(employee_id, fields: dict) -> dict:
     )}
 
 
+async def _check_identity(employee_id, fields: dict) -> dict:
+    """Reproduce the email -> M365 user -> Staff Directory round-trip a real
+    request relies on, and confirm it lands back on THIS employee.
+
+    Deliberately calls the production resolver rather than a local copy: the
+    point of this check is that the employee's own identity is resolved by the
+    exact code a submitted request runs. The lookup id it resolves is returned
+    so the rest of the report can reuse it instead of resolving it a second
+    time.
+
+    Args:
+        employee_id: Staff Directory item id being validated.
+        fields: Their Staff Directory field values.
+
+    Returns:
+        {"status", "account_count", "detail", "lookup_id"} - lookup_id is None
+        when the email never resolved.
+    """
+    email = (fields.get("EmailAddress") or "").strip()
+    if not email:
+        return _identity_verdict(employee_id, email, None, None)
+    lookup_id = await _resolve_user_lookup_id(email)
+    if not lookup_id:
+        return _identity_verdict(employee_id, email, None, None)
+    return _identity_verdict(employee_id, email, lookup_id, await resolve_person_field(lookup_id))
+
+
+async def _fetch_m365_rows() -> list[dict] | None:
+    """Read the Microsoft 365 User Information List once.
+
+    Returns:
+        The raw rows, or None when the list could not be read at all - which is
+        a different answer from "nobody matched".
+    """
+    try:
+        return await sp_client.get_list_items("User Information List", top=5000)
+    except Exception:  # noqa: BLE001 - an unreadable directory is reported, not raised
+        logger.exception("Setup check: could not read the Microsoft 365 directory")
+        return None
+
+
+def _parse_m365_rows(users: list[dict]) -> tuple[dict[str, int], dict[int, str]]:
+    """Split User Information List rows into the two maps the checks need.
+
+    Pure, so one read can serve both the email round-trip (email -> lookup id,
+    the rule `_resolve_user_lookup_id` matches on) and the reverse resolution a
+    Person/Group field needs (lookup id -> display name, the rule
+    `employee._get_sp_user_name_map` uses).
+
+    Args:
+        users: Rows as SharePoint returns them.
+
+    Returns:
+        (lowercased email -> lookup id, lookup id -> display name). A row whose
+        id cannot be read is left out of both, since it can be matched neither
+        way.
+    """
+    by_email: dict[str, int] = {}
+    by_lookup_id: dict[int, str] = {}
+    for user in users:
+        try:
+            lookup_id = int(user["id"])
+        except (KeyError, TypeError, ValueError):
+            continue  # a row without a usable id cannot be matched against
+        fields = user.get("fields", {})
+        email = (fields.get("EMail") or "").strip().lower()
+        if email:
+            by_email[email] = lookup_id
+        name = fields.get("Title", "")
+        if name:
+            by_lookup_id[lookup_id] = name
+    return by_email, by_lookup_id
+
+
 async def _load_m365_directory() -> dict[str, int] | None:
     """Read the Microsoft 365 User Information List once, as email -> lookup id.
 
@@ -1046,22 +1124,11 @@ async def _load_m365_directory() -> dict[str, int] | None:
         Lowercased email -> lookup id, or None when the list could not be read
         at all — which is a different answer from "nobody matched".
     """
-    try:
-        users = await sp_client.get_list_items("User Information List", top=5000)
-    except Exception:  # noqa: BLE001 - an unreadable directory is reported, not raised
-        logger.exception("Setup check: could not read the Microsoft 365 directory")
+    users = await _fetch_m365_rows()
+    if users is None:
         return None
-
-    directory: dict[str, int] = {}
-    for user in users:
-        email = (user.get("fields", {}).get("EMail") or "").strip().lower()
-        if not email:
-            continue
-        try:
-            directory[email] = int(user["id"])
-        except (KeyError, TypeError, ValueError):
-            continue  # a row without a usable id cannot be matched against
-    return directory
+    by_email, _by_lookup_id = _parse_m365_rows(users)
+    return by_email
 
 
 def _count_manager_m365_matches(managers: list[dict], directory: dict[str, int] | None) -> int | None:
@@ -1287,3 +1354,308 @@ async def validate_employee_setup(employee_id: str | int) -> dict:
         report["measurements"]["within_range"], report["measurements"]["total"],
     )
     return report
+
+
+# --- Whole-directory sweep: every Staff Directory record, three reads total ---
+#
+# The per-employee check above answers "is this person set up?" on demand, one
+# person at a time, at the cost of a fistful of SharePoint reads each. Nobody
+# runs it speculatively, so a record only gets looked at once someone has
+# already been blocked by it - which is how an employee with an empty
+# AllManagers column had three leave requests stall before anyone noticed.
+#
+# The sweep answers the same question for everyone at once. It reads the three
+# lists ONCE between them, builds the lookups the per-employee path resolves
+# with live calls, and feeds the same pure core, so the two cannot disagree
+# about what counts as broken.
+
+def _index_staff_by_name(staff: list[dict]) -> dict[str, dict]:
+    """Index Staff Directory rows by display name, first match winning.
+
+    `employee.get_employee_by_name` returns the FIRST row whose trimmed,
+    lowercased Title matches, so a name shared by two records always resolves to
+    the same one. Keeping the first entry here reproduces that, which is what
+    lets the sweep spot the second record as pointing at somebody else.
+
+    Args:
+        staff: Staff Directory rows.
+
+    Returns:
+        Trimmed lowercased name -> the first row carrying it.
+    """
+    by_name: dict[str, dict] = {}
+    for item in staff:
+        key = (item.get("fields", {}).get("Title") or "").strip().lower()
+        if key and key not in by_name:
+            by_name[key] = item
+    return by_name
+
+
+def _count_staff_names(staff: list[dict]) -> dict[str, int]:
+    """Count Staff Directory rows per exact display name.
+
+    Exact, not trimmed or lowercased, because `_count_same_name_others` compares
+    Title verbatim and the sweep must count the same way.
+
+    Args:
+        staff: Staff Directory rows.
+
+    Returns:
+        Title -> how many rows carry it.
+    """
+    counts: dict[str, int] = {}
+    for item in staff:
+        name = item.get("fields", {}).get("Title", "")
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _group_holidays_by_province(items: list[dict]) -> dict[str, list[dict]]:
+    """Bucket the holiday list by province, in the shape the checks expect.
+
+    `holidays.get_holidays_for_province` filters the whole list per province and
+    hands back the field dicts; grouping once produces the same lists without a
+    read per employee.
+
+    Args:
+        items: Holiday rows.
+
+    Returns:
+        Province -> that province's holiday field dicts, in list order.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for item in items:
+        fields = item.get("fields", {})
+        grouped.setdefault(fields.get("Province", ""), []).append(fields)
+    return grouped
+
+
+def _identity_unverified() -> dict:
+    """The identity verdict used when the Microsoft 365 directory is unreadable.
+
+    A failed read must never flag every employee at once: without the directory
+    the round-trip was never performed, so there is nothing to fail. It is a
+    warn carrying no account count, which is also why `manager_m365_matches` is
+    passed as None alongside it.
+
+    Returns:
+        {"status", "account_count", "detail", "lookup_id"}.
+    """
+    return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
+        "The Microsoft 365 directory could not be read, so identity could not be "
+        "verified. Run the check again."
+    )}
+
+
+def _identity_from_maps(
+    employee_id: str,
+    fields: dict,
+    directory: dict[str, int],
+    sp_user_to_name: dict[int, str],
+    staff_by_name: dict[str, dict],
+) -> dict:
+    """Run the identity round-trip against the pre-built maps.
+
+    Same three hops the live check makes - email to Microsoft 365 account, that
+    account to a display name, that name back to a Staff Directory record - and
+    the same verdicts, resolved from maps rather than a call each.
+
+    Args:
+        employee_id: Staff Directory item id being validated.
+        fields: Their Staff Directory field values.
+        directory: Lowercased email -> lookup id.
+        sp_user_to_name: Lookup id -> display name.
+        staff_by_name: Trimmed lowercased name -> Staff Directory row.
+
+    Returns:
+        The verdict `_identity_verdict` builds.
+    """
+    email = (fields.get("EmailAddress") or "").strip()
+    lookup_id = directory.get(email.lower()) if email else None
+    resolved = None
+    if lookup_id:
+        display_name = sp_user_to_name.get(lookup_id, "")
+        if display_name:
+            resolved = staff_by_name.get(display_name.strip().lower())
+    return _identity_verdict(employee_id, email, lookup_id, resolved)
+
+
+def _resolve_managers_from_map(fields: dict, staff_by_name: dict[str, dict]) -> list[dict]:
+    """Resolve the AllManagers entries against the pre-built name index.
+
+    Mirrors `employee.get_all_managers_for_employee`: entries with no
+    LookupValue are skipped, and each name resolves to the first Staff Directory
+    row carrying it.
+
+    Args:
+        fields: The employee's Staff Directory field values.
+        staff_by_name: Trimmed lowercased name -> Staff Directory row.
+
+    Returns:
+        The supervisor rows that resolved, in the order they are listed.
+    """
+    managers: list[dict] = []
+    entries = fields.get("AllManagers")
+    if not isinstance(entries, list):
+        return managers
+    for entry in entries:
+        name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
+        if not name:
+            continue
+        manager = staff_by_name.get(name.strip().lower())
+        if manager:
+            managers.append(manager)
+    return managers
+
+
+def _setup_problem(check: dict) -> dict:
+    """Reduce a report row to what the list view shows for it."""
+    return {"code": check["code"], "category": check["category"], "detail": check["detail"]}
+
+
+def build_setup_row(
+    *,
+    record: dict,
+    staff_by_name: dict[str, dict],
+    name_counts: dict[str, int],
+    directory: dict[str, int] | None,
+    sp_user_to_name: dict[int, str],
+    holidays_by_province: dict[str, list[dict]],
+    sample_start: date,
+    sample_end: date,
+    today: date,
+) -> dict:
+    """Grade one Staff Directory record from already-fetched data. No I/O.
+
+    Runs the same pure core the per-employee check runs, then keeps only the
+    checks that grade the record itself. Nothing is re-graded here: whether a
+    gap blocks a request or is merely worth a look is decided in one place, by
+    the core.
+
+    Args:
+        record: The Staff Directory row to grade.
+        staff_by_name: Trimmed lowercased name -> Staff Directory row.
+        name_counts: Exact Title -> how many records carry it.
+        directory: Lowercased email -> lookup id, or None when the Microsoft 365
+            directory could not be read.
+        sp_user_to_name: Lookup id -> display name.
+        holidays_by_province: Province -> its holiday field dicts.
+        sample_start: First day of the sample range for the day calculation.
+        sample_end: Last day of that range.
+        today: The date the sweep is running.
+
+    Returns:
+        {"employee_id", "employee_name", "department", "location", "fails",
+        "warns"} - fails is what makes a record flagged; warns ride along as
+        context.
+    """
+    fields = record.get("fields", {})
+    employee_id = str(record.get("id", ""))
+    name = fields.get("Title", "")
+
+    if directory is None:
+        identity = _identity_unverified()
+    else:
+        identity = _identity_from_maps(
+            employee_id, fields, directory, sp_user_to_name, staff_by_name,
+        )
+
+    managers = _resolve_managers_from_map(fields, staff_by_name)
+
+    province: str | None = None
+    province_error: str | None = None
+    try:
+        province = map_location_to_province(fields.get("Location", ""))
+    except ValueError as e:
+        province_error = str(e)
+
+    report = build_validation_report(
+        employee_id=employee_id,
+        employee_name=name,
+        employee_fields=fields,
+        managers=managers,
+        all_managers_count=_count_all_managers(fields),
+        manager_m365_matches=_count_manager_m365_matches(managers, directory),
+        # Every other record carrying this exact name, the record itself aside.
+        same_name_others=max(name_counts.get(name, 1) - 1, 0) if name else 0,
+        identity=identity,
+        province=province,
+        province_error=province_error,
+        holidays=holidays_by_province.get(province, []) if province else [],
+        # The sweep grades the record, not the requests hanging off it.
+        requests=[],
+        sample_start=sample_start,
+        sample_end=sample_end,
+        today=today,
+    )
+
+    kept = [c for c in report["checks"] if c["category"] in SETUP_LIST_CATEGORIES]
+    return {
+        "employee_id": employee_id,
+        "employee_name": name,
+        "department": fields.get("Department", ""),
+        "location": fields.get("Location", ""),
+        "fails": [_setup_problem(c) for c in kept if c["status"] == "fail"],
+        "warns": [_setup_problem(c) for c in kept if c["status"] == "warn"],
+    }
+
+
+async def validate_all_employee_setups() -> dict:
+    """Grade every Staff Directory record, in three reads. Zero writes.
+
+    The read count is fixed no matter the headcount: the Staff Directory, the
+    Microsoft 365 User Information List and the holiday list are each fetched
+    once, and every per-record lookup the per-employee check would make with a
+    call is answered from those in memory.
+
+    Returns:
+        {"total_checked", "flagged", "directory_unreadable"} - flagged holds one
+        row per record with at least one failing check, sorted by name.
+    """
+    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    m365_rows = await _fetch_m365_rows()
+    holiday_items = await get_holiday_repository().get_all()
+
+    # A directory that could not be read stays None all the way down, so the
+    # identity and supervisor-email checks report unverified rather than failing
+    # every record at once.
+    directory: dict[str, int] | None = None
+    sp_user_to_name: dict[int, str] = {}
+    if m365_rows is not None:
+        directory, sp_user_to_name = _parse_m365_rows(m365_rows)
+
+    staff_by_name = _index_staff_by_name(staff)
+    name_counts = _count_staff_names(staff)
+    holidays_by_province = _group_holidays_by_province(holiday_items)
+    sample_start, sample_end = _sample_weekday_range()
+    today = date.today()
+
+    flagged = [
+        row for row in (
+            build_setup_row(
+                record=record,
+                staff_by_name=staff_by_name,
+                name_counts=name_counts,
+                directory=directory,
+                sp_user_to_name=sp_user_to_name,
+                holidays_by_province=holidays_by_province,
+                sample_start=sample_start,
+                sample_end=sample_end,
+                today=today,
+            )
+            for record in staff
+        )
+        if row["fails"]
+    ]
+    flagged.sort(key=lambda row: (row["employee_name"] or "").lower())
+
+    logger.info(
+        "Employee setup sweep: checked %s record(s), flagged %s",
+        len(staff), len(flagged),
+    )
+    return {
+        "total_checked": len(staff),
+        "flagged": flagged,
+        "directory_unreadable": m365_rows is None,
+    }

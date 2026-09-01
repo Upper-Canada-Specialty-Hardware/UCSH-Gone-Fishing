@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Box, Autocomplete, TextField, Button, CircularProgress, Alert,
   Typography, Paper, Divider, Collapse, Stack, Chip,
@@ -9,6 +9,8 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { validateEmployee } from '../api/client';
+import EmployeeSetupList, { EmployeeSetupSummary } from './EmployeeSetupList';
+import { PROBLEM_INFO } from './employeeSetupProblems';
 
 // Matches the backend employee_validation.build_validation_report shape.
 // What a check measured and what it was held against. `comparison` is
@@ -37,88 +39,6 @@ interface Report {
   checks: Check[];
 }
 
-// Plain-language title + fix for each problem code, written for a non-technical
-// HR admin. The backend's `detail` (which carries the specifics) is shown under
-// the title; this is the human "what it means / what to do".
-const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
-  employee_record: {
-    title: 'Employee record not found',
-    fix: 'Confirm this person has a row in the Staff Directory.',
-  },
-  identity_roundtrip: {
-    title: 'Not linked to Microsoft 365',
-    fix: 'Make sure the email on the Staff Directory record matches their Microsoft 365 account, so the system can tell who submitted a request.',
-  },
-  supervisor_set: {
-    title: 'No supervisor assigned',
-    fix: 'Set their supervisor in the Staff Directory so their requests have someone to approve them.',
-  },
-  supervisor_resolves: {
-    title: 'A supervisor does not match a real employee',
-    fix: 'Re-pick their supervisor from the directory so approvals reach the right person.',
-  },
-  manager_reachable: {
-    title: 'A supervisor has no email address',
-    fix: 'Add an email address for the supervisor so approval emails can reach them.',
-  },
-  location_province: {
-    title: 'Office location not recognized',
-    fix: 'Choose a valid office location so vacation and leave days calculate correctly.',
-  },
-  holidays_load: {
-    title: 'No holiday calendar for their province',
-    fix: 'Add holidays for their province, otherwise every weekday counts as a workday.',
-  },
-  balances_numeric: {
-    title: 'A balance value is not a number',
-    fix: 'Correct the balance value on their Staff Directory record.',
-  },
-  identity_unique_name: {
-    title: 'Someone else has the same name',
-    fix: 'Two staff records share this name. Requests are matched back to a person by name, so one of the records needs a distinguishing name before their requests can be routed reliably.',
-  },
-  manager_m365_match: {
-    title: 'A supervisor’s email does not match a Microsoft 365 account',
-    fix: 'Correct the supervisor’s email so it matches their Microsoft 365 account. Until it does, their requests cannot record a manager — nobody is asked to approve, and the request stays hidden from the dashboards.',
-  },
-  supervisor_not_self: {
-    title: 'They are listed as their own supervisor',
-    fix: 'Change their supervisor in the Staff Directory, otherwise their requests are sent to them to approve.',
-  },
-  holidays_current_year: {
-    title: 'No holidays for the current year',
-    fix: 'Add this year’s holidays for their province. Without them, holidays are counted as ordinary workdays and leave is over-deducted.',
-  },
-  balances_in_range: {
-    title: 'A balance value looks wrong',
-    fix: 'Check the balance against their history — a value outside the expected range usually means an approval only half-applied.',
-  },
-  entitlements_set: {
-    title: 'A yearly entitlement is missing',
-    fix: 'Set their yearly vacation and sick entitlements in the Staff Directory so their annual grant can be worked out.',
-  },
-  requests_missing_days: {
-    title: 'A request never got its days worked out',
-    fix: 'Reprocess the request from Stuck Requests. Until then it is hidden from every dashboard and nobody can action it.',
-  },
-  requests_missing_manager: {
-    title: 'A request never got a manager',
-    fix: 'Reprocess the request from Stuck Requests. Nobody was asked to approve it, and it does not appear on any dashboard.',
-  },
-  requests_not_notified: {
-    title: 'A request was never sent to its manager',
-    fix: 'The request has a manager but the approval was never sent. Reprocess it from Stuck Requests to send it.',
-  },
-  requests_auto_rejected: {
-    title: 'The system recently rejected a request on its own',
-    fix: 'Read the reason shown above. If it is wrong, the employee can submit again once the cause is cleared.',
-  },
-  requests_approved_dates: {
-    title: 'Dates already booked',
-    fix: 'These approved requests hold their dates. A new request covering the same days will be refused at approval.',
-  },
-};
-
 /**
  * Render a measurement as "actual / expected" for the technical breakdown.
  *
@@ -142,7 +62,7 @@ function measureSummary(measure: Measure | null): string {
  *
  * The backend marks these by carrying a measurement with nothing in it: the
  * 'reported' comparison and a null reading. They must not be dressed up in the
- * wording for a misconfigured record, because the record may be fine — the
+ * wording for a misconfigured record, because the record may be fine - the
  * lookup behind the check is what failed.
  *
  * @param check - One row of the report.
@@ -249,9 +169,14 @@ function ToggleSection({ title, open, onToggle, children }: {
 
 interface Props {
   employees: any[];
+  setupList: EmployeeSetupSummary | null;
+  setupLoading: boolean;
+  onRefreshSetup: () => Promise<void>;
 }
 
-export default function EmployeeValidation({ employees }: Props) {
+export default function EmployeeValidation({
+  employees, setupList, setupLoading, onRefreshSetup,
+}: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<Report | null>(null);
@@ -259,13 +184,27 @@ export default function EmployeeValidation({ employees }: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [techOpen, setTechOpen] = useState(false);
 
-  const run = async () => {
-    if (!selectedId) return;
+  // Set when a check is started from the list above. The report renders under
+  // the picker, below the fold on a desktop viewport, so without this the click
+  // on a row looks like it did nothing.
+  const resultRef = useRef<HTMLDivElement>(null);
+  const [scrollToResult, setScrollToResult] = useState(false);
+  useEffect(() => {
+    if (!scrollToResult || (!report && !error)) return;
+    resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setScrollToResult(false);
+  }, [scrollToResult, report, error]);
+
+  // Takes the id rather than reading state, so picking a flagged record from
+  // the list can select it and check it in the same click - the state update
+  // has not landed yet at that point.
+  const run = async (id: string | null = selectedId) => {
+    if (!id) return;
     setLoading(true);
     setError('');
     setReport(null);
     try {
-      const res = await validateEmployee(selectedId);
+      const res = await validateEmployee(id);
       setReport(res.data);
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -274,6 +213,19 @@ export default function EmployeeValidation({ employees }: Props) {
       setLoading(false);
     }
   };
+
+  const checkFromList = (employeeId: string) => {
+    setSelectedId(employeeId);
+    setScrollToResult(true);
+    run(employeeId);
+  };
+
+  // The picker is controlled so a record chosen from the list above shows up in
+  // it as the employee being reported on.
+  const selectedEmployee = useMemo(
+    () => employees.find((e: any) => String(e.id) === String(selectedId)) || null,
+    [employees, selectedId],
+  );
 
   // Only real setup checks are "problems". Simulations are previews: a carryover
   // that would be declined is expected behavior, not something to fix. The one
@@ -322,7 +274,7 @@ export default function EmployeeValidation({ employees }: Props) {
       };
     } else {
       // Deliberately reports what was measured rather than promising that every
-      // request will work — the promise was what made a green result misleading
+      // request will work - the promise was what made a green result misleading
       // while a stalled request was blocking the employee.
       verdict = {
         severity: 'success',
@@ -334,6 +286,15 @@ export default function EmployeeValidation({ employees }: Props) {
 
   return (
     <Box>
+      <EmployeeSetupList
+        setupList={setupList}
+        loading={setupLoading}
+        onRefresh={onRefreshSetup}
+        onSelect={checkFromList}
+      />
+
+      <Divider sx={{ mb: 2 }} />
+
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Check whether an employee is set up correctly for leave, overtime, and payout requests.
         This reads their Staff Directory record only. It never creates a request or notifies anyone.
@@ -343,7 +304,8 @@ export default function EmployeeValidation({ employees }: Props) {
         <Autocomplete
           options={employees}
           disabled={loading}
-          getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
+          value={selectedEmployee}
+          getOptionLabel={(opt: any) => (opt.department ? `${opt.name} - ${opt.department}` : opt.name)}
           onChange={(_, val) => {
             setSelectedId(val?.id || null);
             setReport(null);
@@ -354,7 +316,7 @@ export default function EmployeeValidation({ employees }: Props) {
         />
         <Button
           variant="contained"
-          onClick={run}
+          onClick={() => run()}
           disabled={!selectedId || loading}
           startIcon={loading ? <CircularProgress size={16} color="inherit" /> : undefined}
         >
@@ -362,132 +324,134 @@ export default function EmployeeValidation({ employees }: Props) {
         </Button>
       </Box>
 
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      <Box ref={resultRef} sx={{ scrollMarginTop: 16 }}>
+        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {report && verdict && (
-        <Box>
-          <Alert severity={verdict.severity} sx={{ mb: 2 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.35 }}>
-              {verdict.headline}
-            </Typography>
-            <Typography variant="body2">{verdict.sub}</Typography>
-          </Alert>
-
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
-            {report.measurements.within_range} of {report.measurements.total} measurements within
-            the expected range.
-          </Typography>
-
-          {problems.length > 0 && (
-            <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
-                What to fix
+        {report && verdict && (
+          <Box>
+            <Alert severity={verdict.severity} sx={{ mb: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.35 }}>
+                {verdict.headline}
               </Typography>
-              <Stack spacing={2} divider={<Divider flexItem />}>
-                {problems.map((c) => {
-                  const info = problemInfo(c);
-                  const isFail = c.status === 'fail';
-                  return (
-                    <Box key={c.code} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
-                      <Box sx={{ color: isFail ? 'error.main' : 'warning.main', mt: '2px', display: 'flex' }}>
-                        {isFail ? <ErrorOutlineIcon fontSize="small" /> : <WarningAmberIcon fontSize="small" />}
-                      </Box>
-                      <Box>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{info.title}</Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-                          {c.detail}
-                        </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.5 }}>
-                          <Box component="span" sx={{ fontWeight: 600 }}>Fix:</Box> {info.fix}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  );
-                })}
-              </Stack>
-            </Paper>
-          )}
+              <Typography variant="body2">{verdict.sub}</Typography>
+            </Alert>
 
-          <Divider sx={{ mb: 0.5 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+              {report.measurements.within_range} of {report.measurements.total} measurements within
+              the expected range.
+            </Typography>
 
-          <ToggleSection
-            title="What each request would do"
-            open={previewOpen}
-            onToggle={() => setPreviewOpen((o) => !o)}
-          >
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell sx={{ border: 0, py: 0.5, width: '42%', color: 'text.secondary', fontWeight: 600 }}>
-                    Request
-                  </TableCell>
-                  <TableCell sx={{ border: 0, py: 0.5, color: 'text.secondary', fontWeight: 600 }}>
-                    Effect on balances
-                  </TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {PREVIEW_ROWS.map((row) => {
-                  const c = byCode(report, row.code);
-                  if (!c) return null;
-                  const outcome = previewOutcome(c, report.current_balances);
-                  const muted = outcome === 'No balance change';
-                  return (
-                    <TableRow key={row.code}>
-                      <TableCell sx={{ border: 0, py: 0.5, width: '42%' }}>{row.label}</TableCell>
-                      <TableCell sx={{ border: 0, py: 0.5, color: muted ? 'text.secondary' : 'text.primary' }}>
-                        {outcome}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </ToggleSection>
-
-          <ToggleSection
-            title="Technical details"
-            open={techOpen}
-            onToggle={() => setTechOpen((o) => !o)}
-          >
-            {orderedCategories.map((cat) => (
-              <Box key={cat} sx={{ mb: 1.5 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.75 }}>
-                  {CATEGORY_LABELS[cat] || cat}
+            {problems.length > 0 && (
+              <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
+                  What to fix
                 </Typography>
-                <Stack spacing={0.75}>
-                  {grouped[cat].map((c) => {
-                    const st = STATUS[c.status] || STATUS.warn;
-                    const summary = measureSummary(c.measure);
+                <Stack spacing={2} divider={<Divider flexItem />}>
+                  {problems.map((c) => {
+                    const info = problemInfo(c);
+                    const isFail = c.status === 'fail';
                     return (
-                      <Box key={c.code} sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                        <Chip
-                          size="small"
-                          color={st.color}
-                          label={st.label}
-                          sx={{ minWidth: 60, height: 20, fontSize: 11, fontWeight: 600 }}
-                        />
+                      <Box key={c.code} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
+                        <Box sx={{ color: isFail ? 'error.main' : 'warning.main', mt: '2px', display: 'flex' }}>
+                          {isFail ? <ErrorOutlineIcon fontSize="small" /> : <WarningAmberIcon fontSize="small" />}
+                        </Box>
                         <Box>
-                          <Typography variant="body2" color="text.secondary">{c.detail}</Typography>
-                          {summary && (
-                            <Typography
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{ display: 'block', fontFamily: 'monospace', opacity: 0.75 }}
-                            >
-                              {c.measure?.label}: {summary}
-                            </Typography>
-                          )}
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>{info.title}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+                            {c.detail}
+                          </Typography>
+                          <Typography variant="body2" sx={{ mt: 0.5 }}>
+                            <Box component="span" sx={{ fontWeight: 600 }}>Fix:</Box> {info.fix}
+                          </Typography>
                         </Box>
                       </Box>
                     );
                   })}
                 </Stack>
-              </Box>
-            ))}
-          </ToggleSection>
-        </Box>
-      )}
+              </Paper>
+            )}
+
+            <Divider sx={{ mb: 0.5 }} />
+
+            <ToggleSection
+              title="What each request would do"
+              open={previewOpen}
+              onToggle={() => setPreviewOpen((o) => !o)}
+            >
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ border: 0, py: 0.5, width: '42%', color: 'text.secondary', fontWeight: 600 }}>
+                      Request
+                    </TableCell>
+                    <TableCell sx={{ border: 0, py: 0.5, color: 'text.secondary', fontWeight: 600 }}>
+                      Effect on balances
+                    </TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {PREVIEW_ROWS.map((row) => {
+                    const c = byCode(report, row.code);
+                    if (!c) return null;
+                    const outcome = previewOutcome(c, report.current_balances);
+                    const muted = outcome === 'No balance change';
+                    return (
+                      <TableRow key={row.code}>
+                        <TableCell sx={{ border: 0, py: 0.5, width: '42%' }}>{row.label}</TableCell>
+                        <TableCell sx={{ border: 0, py: 0.5, color: muted ? 'text.secondary' : 'text.primary' }}>
+                          {outcome}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </ToggleSection>
+
+            <ToggleSection
+              title="Technical details"
+              open={techOpen}
+              onToggle={() => setTechOpen((o) => !o)}
+            >
+              {orderedCategories.map((cat) => (
+                <Box key={cat} sx={{ mb: 1.5 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.75 }}>
+                    {CATEGORY_LABELS[cat] || cat}
+                  </Typography>
+                  <Stack spacing={0.75}>
+                    {grouped[cat].map((c) => {
+                      const st = STATUS[c.status] || STATUS.warn;
+                      const summary = measureSummary(c.measure);
+                      return (
+                        <Box key={c.code} sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                          <Chip
+                            size="small"
+                            color={st.color}
+                            label={st.label}
+                            sx={{ minWidth: 60, height: 20, fontSize: 11, fontWeight: 600 }}
+                          />
+                          <Box>
+                            <Typography variant="body2" color="text.secondary">{c.detail}</Typography>
+                            {summary && (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ display: 'block', fontFamily: 'monospace', opacity: 0.75 }}
+                              >
+                                {c.measure?.label}: {summary}
+                              </Typography>
+                            )}
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Stack>
+                </Box>
+              ))}
+            </ToggleSection>
+          </Box>
+        )}
+      </Box>
     </Box>
   );
 }
