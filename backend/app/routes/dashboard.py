@@ -16,7 +16,10 @@ from app.services.balance import (
     simulate_carryover_payout_impact,
     is_next_year_request,
 )
-from app.services.employee_validation import validate_employee_setup
+from app.services.employee_validation import (
+    validate_all_employee_setups,
+    validate_employee_setup,
+)
 from app.services.overlap_detection import find_conflict_for_row
 from app.routes.approval import HANDLERS
 
@@ -1050,6 +1053,28 @@ async def admin_validate_employee(employee_id: str):
     except Exception:
         logger.exception("Employee validation failed for #%s", employee_id)
         raise HTTPException(status_code=500, detail="Validation failed - check server logs")
+
+
+@router.get("/admin/employee-setup")
+async def admin_employee_setup():
+    """Run the setup checks across the WHOLE Staff Directory at once.
+
+    Same checks as /admin/validate-employee, minus the simulations and the
+    requests already in flight, applied to every record rather than one chosen
+    by hand. The per-employee check is on-demand, so a broken record is only
+    ever looked at after someone has already been blocked by it; this lists them
+    before anyone is.
+
+    Costs a fixed three SharePoint reads regardless of headcount. Read-only, so
+    like the per-employee check it is deliberately NOT gated on
+    PROCESSING_ENABLED, and like every other /admin/* endpoint it carries no
+    token or role check.
+    """
+    try:
+        return await validate_all_employee_setups()
+    except Exception:
+        logger.exception("Employee setup sweep failed")
+        raise HTTPException(status_code=500, detail="Setup check failed - check server logs")
 
 
 # ============================

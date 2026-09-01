@@ -106,6 +106,10 @@ export const bulkManagerAssignment = (params: {
 export const validateEmployee = (id: string) =>
   api.get(`/admin/validate-employee/${id}`);
 
+// The same checks across the whole Staff Directory, so a record that would
+// stall a request is listed before anyone is blocked by it.
+export const getAdminEmployeeSetup = () => api.get('/admin/employee-setup');
+
 // Manager — create a new employee (Staff Directory record) for their team
 export const createEmployee = (payload: Record<string, unknown>) =>
   api.post('/team/employees', payload);

@@ -20,6 +20,7 @@ import inspect
 import uuid
 from datetime import date, timedelta
 
+from app.config import settings
 from app.services import employee_validation as ev
 from app.services.employee_validation import build_validation_report, summarise_request
 
@@ -561,6 +562,258 @@ async def _approval_record_flow():
 
 def test_approval_email_records_is_empty_for_no_requests():
     assert asyncio.run(ev._fetch_approval_email_records([])) == set()
+
+
+# ----- the whole-directory sweep -----
+#
+# The per-employee check is on-demand, so a record is only ever looked at after
+# someone has been blocked by it. The sweep grades every record at once, which
+# only helps if it flags exactly what would stall a request and nothing else -
+# and if it stays at three SharePoint reads however many employees there are.
+
+CURRENT_YEAR = date.today().year
+SWEEP_HOLIDAYS = [
+    {"id": "1", "fields": {"Title": "Canada Day", "Date": f"{CURRENT_YEAR}-07-01", "Province": "ON"}},
+]
+
+
+def _staff_record(item_id, name, email, manager_name, **field_overrides):
+    """A healthy Staff Directory row, before any override breaks one thing."""
+    fields = {
+        "Title": name,
+        "EmailAddress": email,
+        "Location": "Barrie",               # maps to ON
+        "Department": "Warehouse",
+        "CurrentVacationBalance": 10,
+        "CurrentSickDayBalance": 5,
+        "CurrentOvertimeBalance": 2,
+        "CarryOver": 0,
+        "Payout": 0,
+        "DefaultYearlyVacationDays": 15,
+        "SickDayEntitlement": 5,
+        "AllManagers": (
+            [{"LookupId": 900, "LookupValue": manager_name}] if manager_name else []
+        ),
+    }
+    fields.update(field_overrides)
+    return {"id": str(item_id), "fields": fields}
+
+
+def _uil(*people):
+    """User Information List rows: (lookup id, display name, email) each."""
+    return [
+        {"id": str(lookup_id), "fields": {"Title": name, "EMail": email}}
+        for lookup_id, name, email in people
+    ]
+
+
+# Two records that list each other as supervisor: everything resolves, nobody
+# supervises themselves, so a clean sweep over them flags nothing at all.
+ALICE = _staff_record(1, "Alice Worker", "alice@ucsh.ca", "Boss Person")
+BOSS = _staff_record(2, "Boss Person", "boss@ucsh.ca", "Alice Worker")
+PAIR_UIL = _uil(
+    (101, "Alice Worker", "alice@ucsh.ca"),
+    (102, "Boss Person", "boss@ucsh.ca"),
+)
+
+
+class _Reads:
+    """Stands in for the three list reads, counting each one.
+
+    The read count is the point of the sweep, so it is measured rather than
+    assumed: one Staff Directory read, one Microsoft 365 directory read and one
+    holiday read, whatever the headcount.
+    """
+
+    def __init__(self, staff, uil, holidays, uil_raises=False):
+        self.staff = staff
+        self.uil = uil
+        self.holidays = holidays
+        self.uil_raises = uil_raises
+        self.staff_reads = 0
+        self.uil_reads = 0
+        self.holiday_reads = 0
+
+    async def get_list_items(self, list_id, top=None):
+        if list_id == "User Information List":
+            self.uil_reads += 1
+            if self.uil_raises:
+                raise RuntimeError("Graph is down")
+            return self.uil
+        if list_id == settings.SP_LIST_STAFF_DIRECTORY:
+            self.staff_reads += 1
+            return self.staff
+        raise AssertionError(f"the sweep read an unexpected list: {list_id}")
+
+    async def get_all(self):
+        self.holiday_reads += 1
+        return self.holidays
+
+
+def _sweep(monkeypatch, staff, uil=PAIR_UIL, holidays=None, uil_raises=False):
+    """Run the sweep over a mocked directory. Returns (result, reads)."""
+    reads = _Reads(staff, uil, SWEEP_HOLIDAYS if holidays is None else holidays, uil_raises)
+    monkeypatch.setattr(ev.sp_client, "get_list_items", reads.get_list_items)
+    monkeypatch.setattr(ev, "get_holiday_repository", lambda: reads)
+    return asyncio.run(ev.validate_all_employee_setups()), reads
+
+
+def _row(result, employee_id):
+    return next(
+        (r for r in result["flagged"] if r["employee_id"] == str(employee_id)), None,
+    )
+
+
+def _codes(row, key="fails"):
+    return {p["code"] for p in row[key]}
+
+
+def test_a_record_with_no_supervisor_is_flagged(monkeypatch):
+    # The incident this exists for: an empty AllManagers column, and three leave
+    # requests stalled on "cannot assign manager" before anyone noticed.
+    no_supervisor = _staff_record(1, "Alice Worker", "alice@ucsh.ca", None)
+    result, _ = _sweep(monkeypatch, [no_supervisor, BOSS])
+
+    flagged = _row(result, 1)
+    assert flagged is not None
+    assert "supervisor_set" in _codes(flagged)
+    assert flagged["employee_name"] == "Alice Worker"
+    assert flagged["department"] == "Warehouse"
+
+
+def test_a_record_with_no_email_is_flagged_on_identity(monkeypatch):
+    no_email = _staff_record(1, "Alice Worker", "", "Boss Person")
+    result, _ = _sweep(monkeypatch, [no_email, BOSS])
+
+    assert "identity_roundtrip" in _codes(_row(result, 1))
+
+
+def test_an_unrecognised_location_is_flagged(monkeypatch):
+    on_mars = _staff_record(1, "Alice Worker", "alice@ucsh.ca", "Boss Person", Location="Mars")
+    result, _ = _sweep(monkeypatch, [on_mars, BOSS])
+
+    row = _row(result, 1)
+    assert "location_province" in _codes(row)
+    assert row["location"] == "Mars"
+
+
+def test_a_fully_valid_directory_flags_nobody(monkeypatch):
+    result, _ = _sweep(monkeypatch, [ALICE, BOSS])
+
+    assert result["flagged"] == []
+    assert result["total_checked"] == 2
+    assert result["directory_unreadable"] is False
+
+
+def test_a_warn_only_gap_does_not_flag_the_record(monkeypatch):
+    # A payout above the cap and a missing entitlement are both worth a look,
+    # neither stops a request - so the record stays off the list.
+    warn_only = _staff_record(
+        1, "Alice Worker", "alice@ucsh.ca", "Boss Person",
+        Payout=7, DefaultYearlyVacationDays=0,
+    )
+    result, _ = _sweep(monkeypatch, [warn_only, BOSS])
+
+    assert _row(result, 1) is None
+
+
+def test_warns_ride_along_on_a_record_flagged_for_something_else(monkeypatch):
+    # A supervisor with no email address cannot be sent an approval (a warn) and
+    # matches no Microsoft 365 account (a fail). The fail is what lists the
+    # record; the warn is shown beside it as context.
+    silent_boss = _staff_record(2, "Boss Person", "", "Alice Worker")
+    result, _ = _sweep(monkeypatch, [ALICE, silent_boss], uil=_uil((101, "Alice Worker", "alice@ucsh.ca")))
+
+    row = _row(result, 1)
+    assert "manager_m365_match" in _codes(row)
+    assert "manager_reachable" in _codes(row, "warns")
+
+
+def test_requests_and_simulations_are_never_reported(monkeypatch):
+    # Those two sections grade requests, not the record, and belong to the
+    # stuck-request view. A sweep row must only ever carry record-level checks.
+    broken = _staff_record(1, "Alice Worker", "", None, Location="Mars", Payout=7)
+    result, _ = _sweep(monkeypatch, [broken, BOSS])
+
+    categories = {
+        problem["category"]
+        for row in result["flagged"]
+        for key in ("fails", "warns")
+        for problem in row[key]
+    }
+    assert categories
+    assert categories <= {"identity", "supervisor", "location", "balances"}
+
+
+def test_a_duplicate_name_flags_the_record_the_lookup_does_not_reach(monkeypatch):
+    # A submitted request is matched back by display name, and the first record
+    # carrying it always wins - so the second one is the one whose requests land
+    # on somebody else.
+    first = _staff_record(1, "Twin Name", "twin1@ucsh.ca", "Boss Person")
+    second = _staff_record(2, "Twin Name", "twin2@ucsh.ca", "Boss Person")
+    boss = _staff_record(3, "Boss Person", "boss@ucsh.ca", "Twin Name")
+    uil = _uil(
+        (101, "Twin Name", "twin1@ucsh.ca"),
+        (102, "Twin Name", "twin2@ucsh.ca"),
+        (103, "Boss Person", "boss@ucsh.ca"),
+    )
+
+    result, _ = _sweep(monkeypatch, [first, second, boss], uil=uil)
+
+    second_row = _row(result, 2)
+    assert _codes(second_row) >= {"identity_roundtrip", "identity_unique_name"}
+    # It has to name the record the lookup actually reaches, or nobody can tell
+    # the two apart.
+    identity = next(p for p in second_row["fails"] if p["code"] == "identity_roundtrip")
+    assert "#1" in identity["detail"]
+
+    # The first record still resolves to itself; only the shared name is wrong.
+    first_row = _row(result, 1)
+    assert _codes(first_row) == {"identity_unique_name"}
+
+
+def test_an_unreadable_directory_does_not_flag_everyone_on_identity(monkeypatch):
+    # Reporting zero Microsoft 365 accounts after a failed read would accuse
+    # every correctly configured record at once.
+    no_supervisor = _staff_record(1, "Alice Worker", "alice@ucsh.ca", None)
+    result, _ = _sweep(monkeypatch, [no_supervisor, BOSS], uil_raises=True)
+
+    assert result["directory_unreadable"] is True
+    assert all(
+        "identity_roundtrip" not in _codes(row) for row in result["flagged"]
+    )
+    # The checks that do not depend on the directory still report.
+    assert "supervisor_set" in _codes(_row(result, 1))
+
+
+def test_the_read_count_does_not_grow_with_headcount(monkeypatch):
+    staff = [
+        _staff_record(1, "Alice Worker", "alice@ucsh.ca", "Boss Person"),
+        _staff_record(2, "Boss Person", "boss@ucsh.ca", "Alice Worker"),
+        _staff_record(3, "Carl Third", "carl@ucsh.ca", "Boss Person"),
+    ]
+    uil = _uil(
+        (101, "Alice Worker", "alice@ucsh.ca"),
+        (102, "Boss Person", "boss@ucsh.ca"),
+        (103, "Carl Third", "carl@ucsh.ca"),
+    )
+
+    result, reads = _sweep(monkeypatch, staff, uil=uil)
+
+    assert result["total_checked"] == 3
+    assert (reads.staff_reads, reads.uil_reads, reads.holiday_reads) == (1, 1, 1)
+
+
+def test_flagged_records_are_sorted_by_name(monkeypatch):
+    staff = [
+        _staff_record(1, "zoe last", "zoe@ucsh.ca", None),
+        _staff_record(2, "Alan First", "alan@ucsh.ca", None),
+    ]
+    result, _ = _sweep(monkeypatch, staff, uil=_uil(
+        (101, "zoe last", "zoe@ucsh.ca"), (102, "Alan First", "alan@ucsh.ca"),
+    ))
+
+    assert [row["employee_name"] for row in result["flagged"]] == ["Alan First", "zoe last"]
 
 
 # ----- SAFETY: no side effects -----

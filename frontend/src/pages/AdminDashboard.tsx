@@ -11,6 +11,7 @@ import RequestHistory from '../components/RequestHistory';
 import ManagerAssignments from '../components/ManagerAssignments';
 import StuckRequests from '../components/StuckRequests';
 import EmployeeValidation from '../components/EmployeeValidation';
+import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import {
@@ -19,6 +20,7 @@ import {
   getAdminRequests,
   getAdminStats,
   getAdminStuckRequests,
+  getAdminEmployeeSetup,
   getConfig,
   getSpUsers,
   createEmployeeAdmin,
@@ -41,6 +43,8 @@ export default function AdminDashboard() {
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
   const [stuckRequests, setStuckRequests] = useState<any[]>([]);
+  const [employeeSetup, setEmployeeSetup] = useState<EmployeeSetupSummary | null>(null);
+  const [setupRefreshing, setSetupRefreshing] = useState(false);
   const [stats, setStats] = useState<any>(null);
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -79,12 +83,13 @@ export default function AdminDashboard() {
     const loadData = async () => {
       while (!cancelled) {
         try {
-          const [balRes, pendRes, reqRes, statsRes, stuckRes, configRes] = await Promise.all([
+          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes] = await Promise.all([
             getAdminBalances(),
             getAdminPending(),
             getAdminRequests(),
             getAdminStats(),
             getAdminStuckRequests(),
+            getAdminEmployeeSetup(),
             getConfig(),
           ]);
           if (cancelled) return;
@@ -92,6 +97,7 @@ export default function AdminDashboard() {
           setPending(pendRes.data.pending || []);
           setRequests(reqRes.data.requests || []);
           setStuckRequests(stuckRes.data.stuck || []);
+          setEmployeeSetup(setupRes.data);
           setStats(statsRes.data);
           setProcessingEnabled(configRes.data.processing_enabled || false);
           setLoading(false);
@@ -104,6 +110,26 @@ export default function AdminDashboard() {
 
     loadData();
     return () => { cancelled = true; };
+  }, []);
+
+  // Re-runs the directory-wide setup check on its own. It is the one list an
+  // admin refreshes after fixing a record, and it is the expensive read of the
+  // set, so it is not folded into the dashboard's other refreshes.
+  const refreshEmployeeSetup = useCallback(async () => {
+    setSetupRefreshing(true);
+    try {
+      const res = await getAdminEmployeeSetup();
+      setEmployeeSetup(res.data);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({
+        open: true,
+        message: typeof detail === 'string' ? detail : 'Could not refresh the setup check',
+        severity: 'error',
+      });
+    } finally {
+      setSetupRefreshing(false);
+    }
   }, []);
 
   const handleGroupBy = async (_: any, value: string) => {
@@ -320,7 +346,7 @@ export default function AdminDashboard() {
         scrollButtons="auto"
         sx={{ mb: 3 }}
       >
-        <Tab label="Check Employee Setup" value={8} />
+        <Tab label={`Employee Setup (${employeeSetup?.flagged?.length ?? 0})`} value={8} />
         <Tab label={`Pending (${pending.length})`} value={0} />
         <Tab label="All Balances" value={1} />
         <Tab label="All Requests" value={2} />
@@ -474,7 +500,12 @@ export default function AdminDashboard() {
 
       {tab === 8 && (
         <Paper sx={{ p: 3 }}>
-          <EmployeeValidation employees={employees} />
+          <EmployeeValidation
+            employees={employees}
+            setupList={employeeSetup}
+            setupLoading={setupRefreshing}
+            onRefreshSetup={refreshEmployeeSetup}
+          />
         </Paper>
       )}
 
