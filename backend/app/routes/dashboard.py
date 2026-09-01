@@ -17,6 +17,7 @@ from app.services.balance import (
     is_next_year_request,
 )
 from app.services.employee_validation import (
+    fetch_approval_email_records,
     validate_all_employee_setups,
     validate_employee_setup,
 )
@@ -896,7 +897,7 @@ async def admin_pending():
 
 def _diagnose_stuck_leave(
     fields: dict, staff_by_name: dict, sp_user_to_name: dict,
-    blocked_by: dict | None = None,
+    blocked_by: dict | None = None, notified: bool | None = None,
 ) -> tuple[list[str], str]:
     """Inspect a stuck leave request and return (diagnostic_codes, detail_string).
 
@@ -907,6 +908,10 @@ def _diagnose_stuck_leave(
         blocked_by: The approved request this one clashes with, when it has
             one. Passed in rather than looked up here, because the caller
             already holds every row needed to work it out.
+        notified: Whether an approval email was ever composed for this request,
+            read from the approval-state table by the caller. None when that
+            record could not be read, which is reported as neither sent nor
+            unsent.
 
     Returns:
         The diagnostic codes and a single sentence joining their details.
@@ -968,10 +973,16 @@ def _diagnose_stuck_leave(
             codes.append("missing_manager_lookup")
             details.append("AllManagers populated but ManagerLookupId not set on request")
 
-    # Approval email pending (manager assigned but email not sent)
-    if fields.get("ManagerLookupId") and fields.get("ApproveProcessedFlag") != "Processed":
+    # Approval email never sent. The record of a send is the approval-state row
+    # written when the email is built; nothing on the SharePoint item answers
+    # this, since ApproveProcessedFlag is set only when a decision is applied,
+    # which listed every request still waiting on its manager as stuck.
+    if fields.get("ManagerLookupId") and notified is False:
         codes.append("approval_email_pending")
-        details.append("Manager assigned but approval email not sent")
+        details.append(
+            "Manager assigned but the approval email was never sent - there is no "
+            "record of one. Reprocess or Remind sends it"
+        )
 
     return codes, "; ".join(details) if details else "Unknown issue"
 
@@ -987,10 +998,18 @@ async def admin_stuck_requests():
         logger.exception("Failed to fetch leave requests for stuck check")
         items = []
 
-    for item in items:
+    pending_items = [i for i in items if i.get("fields", {}).get("Status") == "Pending"]
+
+    # Which of these have had an approval email composed, read in one query for
+    # the whole list. The approval-state row that the email build writes is the
+    # only record of a send; ApproveProcessedFlag is set when a decision is
+    # applied, so reading that listed every request awaiting a manager as stuck.
+    emailed = await fetch_approval_email_records(
+        [("leave", settings.SP_LIST_LEAVE_REQUESTS, item) for item in pending_items]
+    )
+
+    for item in pending_items:
         f = item.get("fields", {})
-        if f.get("Status") != "Pending":
-            continue
 
         # A request that cannot be approved because it clashes with an
         # already-approved absence. Worked out from the rows fetched above, so
@@ -998,13 +1017,20 @@ async def admin_stuck_requests():
         # it disappears by itself once the approved request is cancelled.
         blocked_by = find_conflict_for_row(items, item)
 
+        # None when the records could not be read, which is not evidence
+        # either way and so is not held against the request.
+        notified = (
+            None if emailed is None
+            else (settings.SP_LIST_LEAVE_REQUESTS, str(item.get("id", ""))) in emailed
+        )
+
         # Three stuck conditions:
         # 1. Not fully processed (no Days or no Manager)
-        # 2. Has manager but approval email never sent
+        # 2. Has a manager but no record of an approval email
         # 3. Blocked at approval by an already-approved absence
         is_stuck = (
             not _is_fully_processed(f, "leave")
-            or (f.get("ManagerLookupId") and f.get("ApproveProcessedFlag") != "Processed")
+            or (f.get("ManagerLookupId") and notified is False)
             or blocked_by is not None
         )
         if not is_stuck:
@@ -1012,7 +1038,7 @@ async def admin_stuck_requests():
 
         emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
         diagnostics, diagnostic_detail = _diagnose_stuck_leave(
-            f, staff_by_name, sp_user_to_name, blocked_by=blocked_by,
+            f, staff_by_name, sp_user_to_name, blocked_by=blocked_by, notified=notified,
         )
 
         stuck.append({
@@ -1317,11 +1343,24 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
     uf = updated.get("fields", {})
 
     staff_by_name, _by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
-    remaining, detail = _diagnose_stuck_leave(uf, staff_by_name, sp_user_to_name)
+
+    # Reprocessing is what sends the approval email, so the send record is read
+    # again here rather than reporting the state the request was in before it ran.
+    emailed = await fetch_approval_email_records(
+        [("leave", settings.SP_LIST_LEAVE_REQUESTS, {"id": request_id})]
+    )
+    notified = (
+        None if emailed is None
+        else (settings.SP_LIST_LEAVE_REQUESTS, str(request_id)) in emailed
+    )
+    remaining, detail = _diagnose_stuck_leave(
+        uf, staff_by_name, sp_user_to_name, notified=notified,
+    )
 
     # If fully processed now, clear remaining
     if _is_fully_processed(uf, "leave") and uf.get("ApproveProcessedFlag") == "Processed":
         remaining = []
+    if not remaining:
         detail = "All issues resolved"
 
     return {

@@ -436,15 +436,21 @@ def build_validation_report(
             1 for entry in (employee_fields.get("AllManagers") or [])
             if isinstance(entry, dict) and entry.get("LookupValue") == employee_name
         )
+        # A warn, not a fail: management groups list the whole group as each
+        # member's supervisors, themselves included, and requests still route
+        # to the rest of the group. What it permits is self-approval, which is
+        # worth knowing about rather than a stalled request.
         checks.append(_measured(
             "supervisor_not_self", "supervisor",
             label="Supervisor entries naming the employee themselves",
             actual=self_supervising, expected=0, comparison="equals",
             ok_detail="No supervisor entry points back at this employee.",
             bad_detail=(
-                "This employee is listed as their own supervisor, so their "
-                "requests would be sent to them to approve."
+                "This employee is listed among their own supervisors. Their "
+                "requests still reach the others listed, but they could approve "
+                "their own."
             ),
+            bad_status="warn",
         ))
 
     # --- Location -> province ---
@@ -1013,9 +1019,15 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
             "be linked back to this person."
         )}
     if not lookup_id:
-        return {"status": "fail", "account_count": 0, "lookup_id": None, "detail": (
-            f"The email {email} was not found in the Microsoft 365 directory, so a "
-            "request from this person would not match their record."
+        # A warn, not a fail: an address with no Microsoft 365 account behind it
+        # (a personal mailbox, typically) means this person cannot sign in to
+        # submit a SharePoint request in the first place, so the record is
+        # inert rather than mis-wired. It only needs fixing if they are meant
+        # to submit requests.
+        return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
+            f"The email {email} was not found in the Microsoft 365 directory. This "
+            "person cannot submit a request until the record carries the email of "
+            "their Microsoft 365 account."
         )}
     # From here the email resolved, so the account count is 1; what can still go
     # wrong is which Staff Directory record it lands on.
@@ -1176,7 +1188,7 @@ async def _count_same_name_others(employee_id: str | int, name: str) -> int | No
     )
 
 
-async def _fetch_approval_email_records(matched: list[tuple]) -> set[tuple[str, str]] | None:
+async def fetch_approval_email_records(matched: list[tuple]) -> set[tuple[str, str]] | None:
     """Look up which of these requests have had an approval email composed.
 
     `bump_and_snapshot` inserts a request_approval_state row the moment an
@@ -1266,7 +1278,7 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
         if str(item.get("fields", {}).get("EmployeeID") or "") == str(employee_id):
             matched.append(("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT, item))
 
-    emailed = await _fetch_approval_email_records(matched)
+    emailed = await fetch_approval_email_records(matched)
     return [
         summarise_request(
             kind, item,
