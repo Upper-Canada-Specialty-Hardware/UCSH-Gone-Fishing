@@ -1,0 +1,23 @@
+{# Sent to whoever created a Staff Directory record whose setup would stall a
+   request. Only the failing checks appear - the same ones the Employee Setup
+   tab flags - because those are what block a request outright.
+
+   Each issue carries the plain-language title and fix from
+   app/services/setup_problem_copy.py, with the check's own detail between them
+   so the reader gets the specifics of their record and not just the category. #}
+<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
+  <h2 style="color: #b45309;">Staff Directory Record Needs Attention</h2>
+  <p>You created a record that does not have the correct setup as per Gone Fishing's requirements. Please fix the issues below accordingly.</p>
+
+  <p style="margin: 16px 0;">Record: <strong>{{ employee_name }}</strong></p>
+
+  {% for issue in issues %}
+  <div style="border-left: 3px solid #b45309; padding-left: 12px; margin: 16px 0;">
+    <p style="margin: 0 0 4px; font-weight: bold;">{{ issue.title }}</p>
+    <p style="margin: 0 0 4px;">{{ issue.detail }}</p>
+    <p style="margin: 0; color: #6b7280;">{{ issue.fix }}</p>
+  </div>
+  {% endfor %}
+
+  {% if record_url %}<p style="margin: 16px 0;"><a href="{{ record_url }}">Open this record in SharePoint</a></p>{% endif %}
+</div>

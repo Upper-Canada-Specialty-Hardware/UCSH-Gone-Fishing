@@ -1514,6 +1514,26 @@ def _setup_problem(check: dict) -> dict:
     return {"code": check["code"], "category": check["category"], "detail": check["detail"]}
 
 
+def _creator_email(record: dict) -> str | None:
+    """The email of whoever created this Staff Directory record, or None.
+
+    Graph carries `createdBy` on the list item itself, not inside `fields`. A
+    record the app created carries an `application` identity with no `user` at
+    all, which is why the absence of an email is answered with None rather than
+    with a substitute: nobody to nudge is a real answer, and the only other
+    address on the item is the last editor, which is a shared mailbox.
+
+    Args:
+        record: The raw list item as SharePoint returns it.
+
+    Returns:
+        The creator's email, lowercased, or None when the item was not created
+        by a person or carries no address for them.
+    """
+    user = (record.get("createdBy") or {}).get("user") or {}
+    return (user.get("email") or "").strip().lower() or None
+
+
 def build_setup_row(
     *,
     record: dict,
@@ -1547,8 +1567,9 @@ def build_setup_row(
 
     Returns:
         {"employee_id", "employee_name", "department", "location", "fails",
-        "warns"} - fails is what makes a record flagged; warns ride along as
-        context.
+        "warns", "creator_email", "record_url"} - fails is what makes a record
+        flagged; warns ride along as context. The last two identify who to tell
+        and what to point them at, and are None when the item does not say.
     """
     fields = record.get("fields", {})
     employee_id = str(record.get("id", ""))
@@ -1598,6 +1619,9 @@ def build_setup_row(
         "location": fields.get("Location", ""),
         "fails": [_setup_problem(c) for c in kept if c["status"] == "fail"],
         "warns": [_setup_problem(c) for c in kept if c["status"] == "warn"],
+        # Who to tell about a broken record, and where to send them to fix it.
+        "creator_email": _creator_email(record),
+        "record_url": record.get("webUrl") or None,
     }
 
 

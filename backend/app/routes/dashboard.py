@@ -1077,6 +1077,30 @@ async def admin_employee_setup():
         raise HTTPException(status_code=500, detail="Setup check failed - check server logs")
 
 
+@router.post("/admin/employee-setup/nudge")
+async def admin_employee_setup_nudge():
+    """Run the setup sweep now and email the creator of every broken record.
+
+    The same sweep the task runs each morning, triggered by hand for when a
+    round of fixes has just gone in and the point is to see who is still
+    outstanding. Cadence still applies: a creator already told about the same
+    problems inside the last week is not told again.
+
+    Unlike the GET above this one sends email, so it is gated on
+    PROCESSING_ENABLED like every other outbound path. Like every other /admin/*
+    endpoint it carries no token or role check.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    from app.tasks.setup_nudges import run_setup_nudge_sweep
+    try:
+        return await run_setup_nudge_sweep()
+    except Exception:
+        logger.exception("Setup nudge sweep failed")
+        raise HTTPException(status_code=500, detail="Nudge sweep failed - check server logs")
+
+
 # ============================
 # Admin impersonation endpoint
 # ============================
