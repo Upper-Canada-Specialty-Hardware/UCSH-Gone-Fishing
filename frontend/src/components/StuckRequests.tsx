@@ -15,7 +15,7 @@ const DIAGNOSTIC_LABELS: Record<string, { label: string; color: 'error' | 'warni
   missing_all_managers:   { label: 'No Managers (Staff Dir)',  color: 'error' },
   missing_days:           { label: 'Days Not Calculated',     color: 'warning' },
   missing_manager_lookup: { label: 'Manager Lookup Failed',   color: 'warning' },
-  approval_email_pending: { label: 'Approval Email Pending',  color: 'warning' },
+  approval_email_pending: { label: 'Approval Email Never Sent', color: 'warning' },
   // Not a mechanical gap: the request is complete, but an approved absence
   // already holds those dates, so approving it is refused. Reprocessing will
   // not help - it needs a decision from the manager.
