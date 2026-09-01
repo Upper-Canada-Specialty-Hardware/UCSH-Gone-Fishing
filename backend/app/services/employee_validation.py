@@ -1176,7 +1176,7 @@ async def _count_same_name_others(employee_id: str | int, name: str) -> int | No
     )
 
 
-async def _fetch_approval_email_records(matched: list[tuple]) -> set[tuple[str, str]] | None:
+async def fetch_approval_email_records(matched: list[tuple]) -> set[tuple[str, str]] | None:
     """Look up which of these requests have had an approval email composed.
 
     `bump_and_snapshot` inserts a request_approval_state row the moment an
@@ -1266,7 +1266,7 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
         if str(item.get("fields", {}).get("EmployeeID") or "") == str(employee_id):
             matched.append(("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT, item))
 
-    emailed = await _fetch_approval_email_records(matched)
+    emailed = await fetch_approval_email_records(matched)
     return [
         summarise_request(
             kind, item,

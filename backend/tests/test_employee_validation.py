@@ -555,13 +555,13 @@ async def _approval_record_flow():
         ("leave", list_id, {"id": emailed_id}),
         ("leave", list_id, {"id": silent_id}),
     ]
-    found = await ev._fetch_approval_email_records(matched)
+    found = await ev.fetch_approval_email_records(matched)
 
     assert found == {(list_id, emailed_id)}
 
 
 def test_approval_email_records_is_empty_for_no_requests():
-    assert asyncio.run(ev._fetch_approval_email_records([])) == set()
+    assert asyncio.run(ev.fetch_approval_email_records([])) == set()
 
 
 # ----- the whole-directory sweep -----
