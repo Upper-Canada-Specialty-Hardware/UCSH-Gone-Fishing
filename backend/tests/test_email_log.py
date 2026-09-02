@@ -279,6 +279,11 @@ def test_lookup_honours_the_window_and_returns_newest_first():
 
 # ----- the admin endpoint -----
 
+async def _no_history(**kwargs):
+    """Stand-in for the record-based reconstruction, which reads SharePoint."""
+    return {"events": [], "notes": [], "latest_dashboard_link_email_at": None}
+
+
 def _seed_for_route():
     async def flow():
         await _reset()
@@ -299,6 +304,7 @@ def test_route_resolves_the_address_from_the_directory(client, monkeypatch):
         return {"id": "412", "fields": {"Title": "Test Worker", "EmailAddress": "Worker@ucsh.com  "}}
 
     monkeypatch.setattr(email_log_route, "get_employee_by_id", _employee)
+    monkeypatch.setattr(email_log_route, "reconstruct_email_history", _no_history)
     _seed_for_route()
 
     r = client.get("/api/dashboard/admin/email-log", params={"employee_id": "412"})
@@ -313,9 +319,44 @@ def test_route_resolves_the_address_from_the_directory(client, monkeypatch):
     assert body["address"] == "worker@ucsh.com"
     assert body["count"] == 1
     (email,) = body["emails"]
+    assert email["source"] == "email_log"
     assert email["subject"] == "Leave Request Received"
     assert email["to"] == ["worker@ucsh.com"]
     assert email["smtp2go_email_id"] == "em-9"
+
+
+def test_route_merges_reconstructed_sends_with_the_send_log_newest_first(client, monkeypatch):
+    async def _employee(item_id):
+        return {"id": "412", "fields": {"Title": "Test Worker", "EmailAddress": "worker@ucsh.com"}}
+
+    async def _history(**kwargs):
+        # The reconstruction receives the resolved identity and the window start.
+        assert kwargs["employee_id"] == "412"
+        assert kwargs["employee_name"] == "Test Worker"
+        assert kwargs["address"] == "worker@ucsh.com"
+        assert kwargs["since"] is not None
+        old = (utcnow() - timedelta(days=3)).isoformat()
+        return {
+            "events": [{
+                "date": old, "date_precision": "exact", "subject": "Your Dashboard Link",
+                "to": ["worker@ucsh.com"], "also_to": None,
+                "source": "processing_log dashboard-link-renewal",
+                "request_type": None, "request_id": None, "note": None,
+            }],
+            "notes": ["reminders keep only the latest date"],
+            "latest_dashboard_link_email_at": old,
+        }
+
+    monkeypatch.setattr(email_log_route, "get_employee_by_id", _employee)
+    monkeypatch.setattr(email_log_route, "reconstruct_email_history", _history)
+    _seed_for_route()
+
+    body = client.get("/api/dashboard/admin/email-log", params={"employee_id": "412"}).json()
+    assert body["count"] == 2
+    # Today's send-log row first, the three-day-old reconstructed send second.
+    assert [e["source"] for e in body["emails"]] == ["email_log", "processing_log dashboard-link-renewal"]
+    assert body["notes"] == ["reminders keep only the latest date"]
+    assert body["latest_dashboard_link_email_at"] is not None
 
 
 def test_route_still_searches_by_id_when_the_directory_has_no_such_employee(client, monkeypatch):
@@ -323,6 +364,7 @@ def test_route_still_searches_by_id_when_the_directory_has_no_such_employee(clie
         return None
 
     monkeypatch.setattr(email_log_route, "get_employee_by_id", _missing)
+    monkeypatch.setattr(email_log_route, "reconstruct_email_history", _no_history)
     _seed_for_route()
 
     r = client.get("/api/dashboard/admin/email-log", params={"employee_id": "999"})
@@ -339,6 +381,7 @@ def test_route_accepts_an_explicit_address_without_a_directory_lookup(client, mo
         raise AssertionError("directory must not be consulted")
 
     monkeypatch.setattr(email_log_route, "get_employee_by_id", _never)
+    monkeypatch.setattr(email_log_route, "reconstruct_email_history", _no_history)
     _seed_for_route()
 
     r = client.get("/api/dashboard/admin/email-log", params={"address": "WORKER@ucsh.com"})
