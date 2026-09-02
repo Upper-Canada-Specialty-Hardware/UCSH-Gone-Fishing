@@ -67,7 +67,19 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("SharePoint access check returned no items")
 
-        renewal_task = start_subscription_renewal_task()
+        # Webhook subscriptions are the one startup write not gated elsewhere:
+        # registration deletes the subscriptions listed in this database from
+        # Graph and creates new ones aimed at this instance's BASE_URL. A
+        # read-only instance (a PR environment, or production with the flag
+        # off) must leave them alone, or a preview could unhook production.
+        if settings.PROCESSING_ENABLED:
+            renewal_task = start_subscription_renewal_task()
+        else:
+            logger.warning(
+                "Read-only mode (environment %r, PROCESSING_ENABLED=False): "
+                "no webhook registration, no catch-up, no outbound email",
+                settings.RAILWAY_ENVIRONMENT_NAME or "local",
+            )
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
         dashboard_link_task = start_dashboard_link_task()
@@ -93,7 +105,8 @@ async def lifespan(app: FastAPI):
                 logger.exception("Deferred subscription registration failed")
 
         asyncio.create_task(_deferred_catch_up())
-        asyncio.create_task(_deferred_subscriptions())
+        if settings.PROCESSING_ENABLED:
+            asyncio.create_task(_deferred_subscriptions())
         logger.info("EmployeeLockManager ready")
     except Exception:
         logger.exception("Graph/SharePoint startup failed — app will serve but SP features are unavailable until restart")

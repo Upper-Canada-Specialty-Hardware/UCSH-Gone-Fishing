@@ -1,4 +1,8 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+# The one Railway environment allowed to process requests and send email.
+PRODUCTION_ENVIRONMENT = "production"
 
 
 class Settings(BaseSettings):
@@ -31,6 +35,10 @@ class Settings(BaseSettings):
     # Processing toggle — when False, app is read-only (dashboards only)
     PROCESSING_ENABLED: bool = False
 
+    # Set by Railway on every deployment: "production", or the name of a PR
+    # (preview) environment. Empty when running locally.
+    RAILWAY_ENVIRONMENT_NAME: str = ""
+
     # Storage backend per domain (SharePoint -> Postgres migration cutover flags).
     # "sharepoint" (default) keeps SharePoint as the source of truth; "postgres"
     # switches that domain's reads/writes to Postgres. Flipped per cutover PR once
@@ -47,6 +55,32 @@ class Settings(BaseSettings):
     SENDER_EMAIL: str = "HR@s2gms.com"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _read_only_outside_production(self):
+        """Force read-only mode in any Railway environment that is not production.
+
+        A PR (preview) environment is forked from production with the same
+        variables, PROCESSING_ENABLED included, but an empty database. Left to
+        process, it would re-send every reminder and dashboard-link renewal
+        (no idempotency claims exist in its database yet) and register Graph
+        webhook subscriptions of its own, against the shared SharePoint lists.
+        Refusing to process anywhere but the environment named "production"
+        makes a preview safe to create without anyone remembering to flip
+        the flag, and safe to use for verifying read-only endpoints before a
+        merge.
+
+        Returns:
+            The settings, with PROCESSING_ENABLED cleared where required.
+        """
+        if self.RAILWAY_ENVIRONMENT_NAME and self.RAILWAY_ENVIRONMENT_NAME != PRODUCTION_ENVIRONMENT:
+            self.PROCESSING_ENABLED = False
+        return self
+
+    @property
+    def is_preview_environment(self) -> bool:
+        """True on Railway outside production, e.g. a PR environment."""
+        return bool(self.RAILWAY_ENVIRONMENT_NAME) and self.RAILWAY_ENVIRONMENT_NAME != PRODUCTION_ENVIRONMENT
 
 
 settings = Settings()
