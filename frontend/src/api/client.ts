@@ -135,3 +135,9 @@ export const adminEditOvertimeRequest = (id: string, payload: {
 export const adminEditCarryoverPayoutRequest = (id: string, payload: {
   TypeofRequest: string; Days: number; reason: string;
 }) => api.post(`/admin/edit/carryover-payout/${id}`, payload);
+
+// Admin - Email Log: every SMTP2GO request/response that named one person.
+// The backend resolves the address from the Staff Directory when only an
+// employee_id is given; `days` bounds the window (default 30 server-side).
+export const getAdminEmailLog = (params: { employee_id?: string; address?: string; days?: number }) =>
+  api.get('/admin/email-log', { params });

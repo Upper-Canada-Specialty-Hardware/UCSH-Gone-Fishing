@@ -14,6 +14,7 @@ import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
+import EmailLog from '../components/EmailLog';
 import {
   getAdminBalances,
   getAdminPending,
@@ -356,6 +357,7 @@ export default function AdminDashboard() {
         <Tab label="Manager Assignments" value={6} />
         <Tab label="Add Employee" value={9} />
         <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
+        <Tab label="Email Log" value={10} />
       </Tabs>
 
       {tab === 0 && (
@@ -518,6 +520,12 @@ export default function AdminDashboard() {
             setSnack({ open: true, message: `${name} created.`, severity: 'success' })
           }
         />
+      )}
+
+      {tab === 10 && (
+        <Paper sx={{ p: 3 }}>
+          <EmailLog employees={employees} />
+        </Paper>
       )}
 
       <Snackbar
