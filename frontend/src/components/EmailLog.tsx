@@ -5,7 +5,7 @@ import {
   Stack, TextField, ToggleButton, ToggleButtonGroup, Typography,
 } from '@mui/material';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
-import { getAdminEmailLog } from '../api/client';
+import { getAdminEmailLog, sendAdminTestEmail } from '../api/client';
 import { SHARED_DATA_GRID_PROPS } from './dataGridDefaults';
 
 /** One SMTP2GO call as the backend returns it (snake_case wire format). */
@@ -143,8 +143,10 @@ export default function EmailLog({ employees }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<EmailLogEntry | null>(null);
+  const [sending, setSending] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);            // bumped after a test send
 
-  // Fetch whenever the person or the window changes.
+  // Fetch whenever the person or the window changes, or a test send lands.
   useEffect(() => {
     if (!selected) {
       setData(null);
@@ -160,7 +162,27 @@ export default function EmailLog({ employees }: Props) {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selected, days]);
+  }, [selected, days, refreshTick]);
+
+  /**
+   * Send the labelled test email to the selected person, then show its row.
+   * Goes through the same SMTP2GO call as every system email; touches no
+   * request, no manager, no SharePoint item.
+   */
+  const handleSendTest = async () => {
+    if (!selected) return;
+    setSending(true);
+    setError(null);
+    try {
+      const res = await sendAdminTestEmail({ employee_id: String(selected.id) });
+      setRefreshTick((t) => t + 1);                            // reload the table with the new row
+      if (res.data.email) setDetail(res.data.email);           // open SMTP2GO's answer at once
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || e?.message || 'Test send failed');
+    } finally {
+      setSending(false);
+    }
+  };
 
   const rows = useMemo(
     () => (data?.emails ?? []).map((e) => ({
@@ -302,8 +324,20 @@ export default function EmailLog({ employees }: Props) {
             <ToggleButton key={d} value={d}>Last {d} days</ToggleButton>
           ))}
         </ToggleButtonGroup>
+        <Button
+          variant="outlined"
+          disabled={!data?.address || loading || sending}
+          onClick={handleSendTest}
+        >
+          {sending ? 'Sending...' : 'Send test email'}
+        </Button>
         {loading && <CircularProgress size={24} />}
       </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+        Send test email delivers a short message titled "Leave system email test" to the selected
+        person's directory address through the normal SMTP2GO path, then opens SMTP2GO's answer.
+        It creates no request and notifies no manager.
+      </Typography>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {data && <Box sx={{ mb: 2 }}>{renderVerdict()}</Box>}
