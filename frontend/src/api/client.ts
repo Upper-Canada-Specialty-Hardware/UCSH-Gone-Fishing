@@ -141,3 +141,8 @@ export const adminEditCarryoverPayoutRequest = (id: string, payload: {
 // employee_id is given; `days` bounds the window (default 30 server-side).
 export const getAdminEmailLog = (params: { employee_id?: string; address?: string; days?: number }) =>
   api.get('/admin/email-log', { params });
+
+// Admin - Email Log: send a labelled test email to one person through the
+// normal SMTP2GO path and get that send's log row back.
+export const sendAdminTestEmail = (payload: { employee_id?: string; address?: string }) =>
+  api.post('/admin/email-log/test', payload);

@@ -479,3 +479,67 @@ def test_route_accepts_an_explicit_address_without_a_directory_lookup(client, mo
 
 def test_route_requires_an_id_or_an_address(client):
     assert client.get("/api/dashboard/admin/email-log").status_code == 400
+
+
+# ----- the admin test send -----
+
+def test_test_send_goes_to_the_directory_address_and_returns_its_row(client, smtp, monkeypatch):
+    async def _employee(item_id):
+        return {"id": "412", "fields": {"Title": "Test Worker", "EmailAddress": "Worker@ucsh.com "}}
+
+    monkeypatch.setattr(email_log_route, "get_employee_by_id", _employee)
+    asyncio.run(_reset())
+
+    r = client.post("/api/dashboard/admin/email-log/test", json={"employee_id": "412"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["directory_lookup"] == "ok"
+    assert body["employee_name"] == "Test Worker"
+    assert body["address"] == "worker@ucsh.com"
+
+    # It went through the normal client, labelled as a test.
+    (call,) = smtp.calls
+    assert call["to"] == ["worker@ucsh.com"]
+    assert call["subject"] == email_log_route.TEST_SUBJECT
+    assert "test email" in call["html_body"]
+    assert "No action is needed" in call["html_body"]
+
+    # And the row for that send comes back with SMTP2GO's answer.
+    email = body["email"]
+    assert email["subject"] == email_log_route.TEST_SUBJECT
+    assert email["outcome"] == "accepted"
+    assert email["http_status"] == 200
+    assert email["smtp2go_email_id"] == "em-1"
+    assert json.loads(email["response_body"])["data"]["email_id"] == "em-1"
+
+
+def test_test_send_returns_the_row_even_when_smtp2go_refuses(client, smtp, monkeypatch):
+    smtp.outcome = _response(401, {"data": {"error": "API key is invalid"}})
+
+    async def _never(item_id):
+        raise AssertionError("directory must not be consulted")
+
+    monkeypatch.setattr(email_log_route, "get_employee_by_id", _never)
+    asyncio.run(_reset())
+
+    r = client.post("/api/dashboard/admin/email-log/test", json={"address": "Someone@ucsh.com"})
+    # The send failed but the answer is the point: 200 with the row, not a 502.
+    assert r.status_code == 200
+    email = r.json()["email"]
+    assert email["outcome"] == "http_error"
+    assert email["http_status"] == 401
+    assert "API key is invalid" in email["response_body"]
+
+
+def test_test_send_refuses_when_there_is_no_address(client, smtp, monkeypatch):
+    async def _blank(item_id):
+        return {"id": "5", "fields": {"Title": "No Email", "EmailAddress": ""}}
+
+    monkeypatch.setattr(email_log_route, "get_employee_by_id", _blank)
+
+    r = client.post("/api/dashboard/admin/email-log/test", json={"employee_id": "5"})
+    assert r.status_code == 400
+    assert "no email address" in r.json()["detail"]
+    assert smtp.calls == []                                   # nothing was attempted
+
+    assert client.post("/api/dashboard/admin/email-log/test", json={}).status_code == 400
