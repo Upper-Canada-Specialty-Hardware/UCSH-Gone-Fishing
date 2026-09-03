@@ -238,14 +238,26 @@ export default function EmailLog({ employees }: Props) {
         </Alert>
       );
     }
+    if (data.count === 0 && logSince === null) {
+      // Empty table: the log has recorded nothing at all yet, so say that
+      // rather than implying we know what happened before it went live.
+      return (
+        <Alert severity="info">
+          The log has not recorded any SMTP2GO call yet. It only records sends made after it
+          went live, so anything sent to {data.address} before that has no row here. The next
+          email the backend sends to this address will appear.
+        </Alert>
+      );
+    }
     if (data.count === 0) {
       return (
         <Alert severity="info">
-          No SMTP2GO call named {data.address} since {formatToronto(windowStart.toISOString())}.
-          The backend never attempted an email to this address in that window.
+          No SMTP2GO call has named {data.address} since{' '}
+          {formatToronto(windowStart.toISOString())} (Toronto time). The backend never attempted
+          an email to this address in that window.
           {logYoungerThanWindow && (
-            <> Note: the log only covers sends since {formatToronto(data.log_since)}; earlier
-            sends left no record.</>
+            <> Note: the log only covers sends since {formatToronto(data.log_since)} (Toronto
+            time); earlier sends left no record.</>
           )}
         </Alert>
       );
