@@ -1,0 +1,13 @@
+name: sub-issue
+description: one deliverable under a parent. no points; it follows its parent.
+body:
+  - type: textarea
+    id: body
+    attributes:
+      label: sub-issue
+      description: >-
+        open with from #<parent> and the parent's title, then say what done looks like.
+        link it under its parent from the parent's sub-issues panel.
+      value: "from #"
+    validations:
+      required: true
