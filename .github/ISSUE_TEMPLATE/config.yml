@@ -1,0 +1,4 @@
+# The org's issue forms, kept here in org-automation and copied into every org
+# repository by propagate-issue-forms.yml. Blank issues are off so a parent is always
+# filed with its points. The rules are in docs/development-workflow.md in org-automation.
+blank_issues_enabled: false
