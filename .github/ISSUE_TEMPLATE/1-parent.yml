@@ -1,0 +1,30 @@
+name: parent
+description: a backlog item, filed with its points
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: description
+      description: what is wanted and why. enough for someone else to guess its size.
+    validations:
+      required: true
+  - type: dropdown
+    id: points
+    attributes:
+      label: points
+      description: >-
+        the initial guess of the whole parent's size, made now, before any spike. a relative
+        size, not hours; 8 or less is about two days of work. above 8 stays one parent and its
+        spike splits the work into more sub-issues. held once the spike starts.
+      options:
+        - '1'
+        - '2'
+        - '3'
+        - '5'
+        - '8'
+        - '13'
+        - '20'
+        - '40'
+        - '100'
+    validations:
+      required: true
