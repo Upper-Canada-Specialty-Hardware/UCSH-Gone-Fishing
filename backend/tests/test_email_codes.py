@@ -10,6 +10,7 @@ emailed links carry, while anyone else gets a separate verified-email token.
 import asyncio
 import itertools
 import time
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -33,9 +34,12 @@ def _unique(prefix: str) -> str:
 
 
 def _ip() -> str:
-    """A fresh caller IP per test, so the per-IP limit starts at zero."""
-    n = next(_counter)
-    return f"10.{n % 250}.{(n // 250) % 250}.{time.time_ns() % 250}"
+    """A caller id no earlier run has used, so the per-IP limit starts at zero.
+
+    The test database keeps rows between runs, so anything short of unique
+    (a random dotted IP) can collide with a row still inside the window.
+    """
+    return f"test-{uuid.uuid4().hex}"
 
 
 @pytest.fixture

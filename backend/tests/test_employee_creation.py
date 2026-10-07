@@ -100,12 +100,15 @@ def test_a_non_numeric_balance_is_refused():
 
 # ----- the async wrapper -----
 
-def _patch(monkeypatch, *, name_exists=False, email_resolves=True):
+def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=False):
     """Fake the wrapper's SharePoint touchpoints and capture the writes."""
     calls = {"created": None, "managers": None, "rad": None}
 
     async def _get_by_name(name):
         return {"id": "9", "fields": {"Title": name}} if name_exists else None
+
+    async def _get_by_email(email):
+        return {"id": "8", "fields": {"EmailAddress": email}} if email_exists else None
 
     async def _resolve(email):
         return 501 if email_resolves else None
@@ -124,6 +127,7 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True):
         return {"id": str(item_id), "fields": calls["created"] or {}}
 
     monkeypatch.setattr(ec, "get_employee_by_name", _get_by_name)
+    monkeypatch.setattr(ec, "get_employee_by_email", _get_by_email)
     monkeypatch.setattr(ec, "_resolve_user_lookup_id", _resolve)
     monkeypatch.setattr(ec.sp_client, "create_list_item", _create)
     monkeypatch.setattr(ec.sp_client, "get_list_item", _get_item)
@@ -153,10 +157,26 @@ def test_a_duplicate_name_is_refused_before_anything_is_written(monkeypatch):
     assert calls["created"] is None
 
 
-def test_an_email_that_does_not_resolve_is_refused(monkeypatch):
+def test_an_email_not_on_the_site_is_created_with_a_notice(monkeypatch):
+    # Someone who has never opened the SharePoint site is not in its user list.
+    # The request page links by email, so they are created, with a notice.
     calls = _patch(monkeypatch, email_resolves=False)
 
-    with pytest.raises(EmployeeValidationError, match="Microsoft 365"):
+    record = asyncio.run(create_employee(GOOD, [501]))
+
+    assert calls["created"]["Title"] == "New Hire"
+    assert len(record["notices"]) == 1 and "not linked" in record["notices"][0]
+
+
+def test_a_linked_email_has_no_notice(monkeypatch):
+    _patch(monkeypatch)
+    assert asyncio.run(create_employee(GOOD, [501]))["notices"] == []
+
+
+def test_a_duplicate_email_is_refused_before_anything_is_written(monkeypatch):
+    calls = _patch(monkeypatch, email_exists=True)
+
+    with pytest.raises(EmployeeValidationError, match="already exists"):
         asyncio.run(create_employee(GOOD, [501]))
 
     assert calls["created"] is None

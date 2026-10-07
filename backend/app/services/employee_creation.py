@@ -21,6 +21,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
+    get_employee_by_email,
     get_employee_by_name,
     map_location_to_province,
 )
@@ -153,11 +154,13 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
             the admin dashboard passes whoever the admin picked.
 
     Returns:
-        The created record in the {"id", "fields"} shape.
+        The created record in the {"id", "fields"} shape, plus "notices": a
+        list of readable notes for the person who added them (empty when
+        everything is linked).
 
     Raises:
-        EmployeeValidationError: On invalid input, an email that does not resolve
-            to a Microsoft 365 account, or a name already in the directory.
+        EmployeeValidationError: On invalid input, or a name or email already
+            in the directory.
     """
     fields = build_employee_fields(form_data)
 
@@ -168,13 +171,22 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
             f"An employee named '{fields['Title']}' already exists in the directory."
         )
 
-    # Identity check: the email must resolve to a Microsoft 365 account, or
-    # nothing links the record to the person and their requests never match.
-    # IT provisions the account before onboarding, so a miss is a real error.
-    if not await _resolve_user_lookup_id(fields["EmailAddress"]):
+    # The email is now how requests from the request page find this person, so
+    # a second record with the same email would make that ambiguous too.
+    if await get_employee_by_email(fields["EmailAddress"]):
         raise EmployeeValidationError(
-            f"No Microsoft 365 account was found for {fields['EmailAddress']}. "
-            "Check the address, or that IT has set up their account."
+            f"An employee with the email {fields['EmailAddress']} already exists in the directory."
+        )
+
+    # Not finding them in the site's user list is a notice, not a refusal: the
+    # request page links requests by email, and someone only joins that list
+    # once they visit the site or are added to it (see the invite on create).
+    notices: list[str] = []
+    if not await _resolve_user_lookup_id(fields["EmailAddress"]):
+        notices.append(
+            f"{fields['EmailAddress']} is not linked to the SharePoint site yet. "
+            "They can use the request page now; the Microsoft Form works once "
+            "they have a Microsoft 365 account and have opened the site."
         )
 
     if not manager_sp_user_ids:
@@ -196,4 +208,5 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
 
     # Return the record as written, re-read so the caller sees the person and
     # computed fields the two calls above added.
-    return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    record = await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    return {**record, "notices": notices}
