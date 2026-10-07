@@ -146,3 +146,18 @@ export const getAdminEmailLog = (params: { employee_id?: string; address?: strin
 // normal SMTP2GO path and get that send's log row back.
 export const sendAdminTestEmail = (payload: { employee_id?: string; address?: string }) =>
   api.post('/admin/email-log/test', payload);
+
+// Admin - Held Requests: request page submissions from people not in the Staff
+// Directory yet, waiting for their supervisor to add them.
+export const getHeldRequests = (includeClosed = false) =>
+  api.get('/admin/held-requests', { params: { include_closed: includeClosed } });
+export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
+export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/cancel`);
+
+// Admin - Site Invites: whether Add Employee gave each new hire site access.
+export const getInvites = () => api.get('/admin/invites');
+export const resendInvite = (employeeId: string) => api.post(`/admin/employees/${employeeId}/invite`);
+
+// Admin - the SubmitterEmail and RequestSource columns the request page writes.
+export const getRequestColumns = () => api.get('/admin/request-columns');
+export const addRequestColumns = () => api.post('/admin/request-columns');

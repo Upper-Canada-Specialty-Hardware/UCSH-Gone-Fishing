@@ -15,6 +15,8 @@ import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
+import HeldRequests, { HeldRow } from '../components/HeldRequests';
+import SiteInvites from '../components/SiteInvites';
 import {
   getAdminBalances,
   getAdminPending,
@@ -60,6 +62,15 @@ export default function AdminDashboard() {
 
   // Edit pending request
   const [editItem, setEditItem] = useState<any | null>(null);
+
+  // A held request's person, to prefill Add Employee from the Held Requests tab.
+  const [addPrefill, setAddPrefill] = useState<
+    { title: string; email_address: string; location: string } | null
+  >(null);
+  const handleAddFromHeld = useCallback((row: HeldRow) => {
+    setAddPrefill({ title: row.name, email_address: row.email, location: row.location });
+    setTab(9);                                         // the Add Employee tab
+  }, []);
 
   const managers = useMemo(() => {
     return employees.filter((e: any) => e.is_manager);
@@ -358,6 +369,8 @@ export default function AdminDashboard() {
         <Tab label="Add Employee" value={9} />
         <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
         <Tab label="Email Log" value={10} />
+        <Tab label="Held Requests" value={11} />
+        <Tab label="Site Invites" value={12} />
       </Tabs>
 
       {tab === 0 && (
@@ -516,6 +529,7 @@ export default function AdminDashboard() {
           processingEnabled={processingEnabled}
           submitEmployee={createEmployeeAdmin}
           managerOptions={spUsers}
+          prefill={addPrefill}
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} created.`, severity: 'success' })
           }
@@ -527,6 +541,12 @@ export default function AdminDashboard() {
           <EmailLog employees={employees} />
         </Paper>
       )}
+
+      {tab === 11 && (
+        <HeldRequests processingEnabled={processingEnabled} onAddEmployee={handleAddFromHeld} />
+      )}
+
+      {tab === 12 && <SiteInvites processingEnabled={processingEnabled} />}
 
       <Snackbar
         open={snack.open}

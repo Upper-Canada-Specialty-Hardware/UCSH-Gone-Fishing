@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Paper, Typography, TextField, MenuItem, Button, Alert, Stack,
   Divider, CircularProgress, Box, Select, InputLabel, FormControl,
@@ -44,6 +44,20 @@ interface Props {
    * dashboard, which assigns the signed-in manager).
    */
   managerOptions?: ManagerOption[];
+  /**
+   * Details to start the form with: a new hire's name, email and location from
+   * a held request on the request page (the supervisor's email link, or the
+   * admin Held Requests list).
+   */
+  prefill?: { title?: string; email_address?: string; location?: string } | null;
+}
+
+/** What the server reports back after a create, beyond the record itself. */
+interface CreateOutcome {
+  name: string;
+  notices: string[];
+  invite?: { status: string; detail: string };
+  released: { held_id: number; status: string; detail: string }[];
 }
 
 /** The blank form. Balances default to zero — a new hire starts empty. */
@@ -75,9 +89,15 @@ const EMPTY = {
  * @returns The Add Employee panel.
  */
 export default function AddEmployee({
-  processingEnabled, submitEmployee, onCreated, managerOptions,
+  processingEnabled, submitEmployee, onCreated, managerOptions, prefill,
 }: Props) {
-  const [form, setForm] = useState({ ...EMPTY });
+  const [form, setForm] = useState({ ...EMPTY, ...(prefill ?? {}) });
+  const [outcome, setOutcome] = useState<CreateOutcome | null>(null);
+
+  // A new prefill (another held request picked) replaces the form.
+  useEffect(() => {
+    if (prefill) setForm({ ...EMPTY, ...prefill });
+  }, [prefill]);
   const [managerIds, setManagerIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -90,12 +110,21 @@ export default function AddEmployee({
   /** Submit the form, showing the backend's reason on a 400. */
   const submit = async () => {
     setError('');
+    setOutcome(null);
     setSaving(true);
     try {
       // Only the admin path carries manager_ids; the manager path lets the
       // server assign the supervisor from the signed-in identity.
       const payload = showPicker ? { ...form, manager_ids: managerIds } : { ...form };
-      await submitEmployee(payload);
+      const res: any = await submitEmployee(payload);
+      const data = res?.data ?? {};
+      // Site access and released requests are reported, never blocking.
+      setOutcome({
+        name: form.title.trim(),
+        notices: data.notices ?? [],
+        invite: data.invite,
+        released: data.released ?? [],
+      });
       onCreated(form.title.trim());
       setForm({ ...EMPTY });
       setManagerIds([]);
@@ -131,7 +160,8 @@ export default function AddEmployee({
         {showPicker
           ? ' Choose their supervisor(s) below.'
           : ' The new hire is added to your team.'}{' '}
-        Their Microsoft 365 account must already exist.
+        They can use the request page right away; any requests they already made there
+        are sent once they are added.
       </Typography>
 
       {!processingEnabled && (
@@ -140,6 +170,7 @@ export default function AddEmployee({
         </Alert>
       )}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      {outcome && <CreatedSummary outcome={outcome} />}
 
       <Stack spacing={2} sx={{ maxWidth: 560 }}>
         <TextField
@@ -254,5 +285,41 @@ export default function AddEmployee({
         </Box>
       </Stack>
     </Paper>
+  );
+}
+
+/** Readable labels for the site-access outcome from the server. */
+const INVITE_TEXT: Record<string, string> = {
+  in_tenant: 'Site access: added to the site members.',
+  invited: 'Site access: invite emailed.',
+  skipped: 'Site access: not set up automatically; IT adds them to the site.',
+  failed: 'Site access: not set up.',
+};
+
+/**
+ * What happened after a create: notices, site access, and any held requests
+ * from the request page that were sent on.
+ *
+ * @param props.outcome - From the create response.
+ * @returns A success alert, plus warnings when something needs attention.
+ */
+function CreatedSummary({ outcome }: { outcome: CreateOutcome }) {
+  const released = outcome.released.filter((r) => r.status === 'released').length;
+  const stuck = outcome.released.filter((r) => r.status !== 'released');
+  const inviteFailed = outcome.invite?.status === 'failed';
+  return (
+    <Stack spacing={1} sx={{ mb: 2 }}>
+      <Alert severity="success">
+        {outcome.name} was added.
+        {outcome.invite && <> {INVITE_TEXT[outcome.invite.status] ?? ''} {!inviteFailed && outcome.invite.detail}</>}
+        {released > 0 && <> {released} waiting request{released > 1 ? 's were' : ' was'} sent to their manager.</>}
+      </Alert>
+      {stuck.length > 0 && (
+        <Alert severity="warning">
+          {stuck.length} waiting request{stuck.length > 1 ? 's' : ''} could not be sent yet: {stuck[0].detail}
+        </Alert>
+      )}
+      {outcome.notices.map((n) => <Alert key={n} severity="warning">{n}</Alert>)}
+    </Stack>
   );
 }
