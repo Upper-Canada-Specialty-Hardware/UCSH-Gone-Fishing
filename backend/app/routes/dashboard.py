@@ -10,6 +10,7 @@ from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, is_manager
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.request_submitter import SUBMITTER_PERSON_COLUMNS, submitter_email_of
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -133,9 +134,23 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
+class _PersonNames(dict):
+    """{SharePoint user id: display name}, plus staff names by email.
+
+    A plain dict for every existing caller. ``by_email`` lets
+    _resolve_sp_user_name name a request by its SubmitterEmail column when
+    the person column is empty (submitter never visited the site).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.by_email: dict[str, str] = {}                     # lowercase email -> staff name
+
+
 async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     """Fetch Staff Directory and User Information List.
-    Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts.
+    Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts;
+    sp_user_to_name also carries ``by_email`` (see _PersonNames).
     """
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     by_name: dict[str, dict] = {}
@@ -164,7 +179,12 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
                         mgr_to_emp_names.setdefault(mgr_name, set()).add(emp_name)
 
     # SP User Information List: map SP user IDs → display names
-    sp_user_to_name: dict[int, str] = {}
+    sp_user_to_name = _PersonNames()
+    for item in items:                                         # staff names by email, for SubmitterEmail
+        fields = item.get("fields", {})
+        email = (fields.get("EmailAddress") or "").strip().lower()
+        if email and fields.get("Title"):
+            sp_user_to_name.by_email[email] = fields["Title"]
     try:
         user_items = await sp_client.get_list_items("User Information List", top=5000)
         for u in user_items:
@@ -179,7 +199,24 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
 
 
 def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: dict) -> str:
-    """Resolve a SP Person/Group lookup field to a display name."""
+    """Resolve a SP Person/Group lookup field to a display name.
+
+    For the submitter columns, a SubmitterEmail on the item wins: it names the
+    submitter even when the person column could not be set.
+
+    Args:
+        item_data: The request item's fields.
+        field_prefix: The person column, e.g. "SubmittedTest" or "Manager".
+        sp_user_to_name: From _build_staff_lookups.
+
+    Returns:
+        The display name, or "" when nothing resolves.
+    """
+    if field_prefix in SUBMITTER_PERSON_COLUMNS:
+        email = submitter_email_of(item_data)
+        name = getattr(sp_user_to_name, "by_email", {}).get(email) if email else None
+        if name:
+            return name
     lookup_id = item_data.get(f"{field_prefix}LookupId")
     if lookup_id:
         try:
@@ -1474,6 +1511,34 @@ async def admin_manager_assignments():
     from app.services.manager_assignments import get_all_assignments
     assignments = await get_all_assignments()
     return {"assignments": assignments}
+
+
+@router.get("/admin/request-columns")
+async def admin_request_columns():
+    """Report whether SubmitterEmail and RequestSource exist on the request lists.
+
+    Unauthenticated like every other /admin/* route. Read only.
+
+    Returns:
+        The report from request_submitter.ensure_request_columns.
+    """
+    from app.services.request_submitter import ensure_request_columns
+    return await ensure_request_columns(create=False)
+
+
+@router.post("/admin/request-columns")
+async def admin_add_request_columns():
+    """Add SubmitterEmail and RequestSource to any request list missing them.
+
+    Needs the app's Sites.Manage.All permission. Adds only optional text
+    columns, so existing items and the Microsoft Form flow are unaffected.
+    Turn REQUEST_EMAIL_COLUMNS_ENABLED on once the report says ready.
+
+    Returns:
+        The report from request_submitter.ensure_request_columns.
+    """
+    from app.services.request_submitter import ensure_request_columns
+    return await ensure_request_columns(create=True)
 
 
 @router.get("/admin/sp-users")

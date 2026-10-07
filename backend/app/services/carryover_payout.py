@@ -21,6 +21,7 @@ from app.services.approval_versions import (
     MATERIAL_FIELDS_CARRYOVER_PAYOUT,
 )
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.request_submitter import submitter_columns
 from app.services.audit_trail import (
     AuditTrailBuilder,
     write_audit_log,
@@ -29,8 +30,20 @@ from app.services.audit_trail import (
 logger = logging.getLogger(__name__)
 
 
-async def process_new_carryover_payout(form_data: dict, submitter_email: str) -> dict:
-    """Create SP item → auto-assign manager → pre-validate → send emails."""
+async def process_new_carryover_payout(
+    form_data: dict, submitter_email: str, source: str | None = None,
+) -> dict:
+    """Create the SharePoint carryover/payout item, assign its manager, validate.
+
+    Args:
+        form_data: The form (type_of_request "Carry Over" or "Payout", days).
+        submitter_email: Who the request is for.
+        source: Where it came from (a request_submitter.SOURCE_* value),
+            written to RequestSource when those columns are enabled.
+
+    Returns:
+        The created SharePoint item.
+    """
     request_type = form_data.get("type_of_request", "")  # "Carry Over" or "Payout"
     days = float(form_data.get("days", 0))
 
@@ -43,6 +56,8 @@ async def process_new_carryover_payout(form_data: dict, submitter_email: str) ->
     lookup_id = await _resolve_user_lookup_id(submitter_email)
     if lookup_id:
         fields["SubmittedByLookupId"] = lookup_id
+    # SubmitterEmail and RequestSource (carryover already matches by email below).
+    fields.update(submitter_columns(submitter_email, source))
 
     item = await sp_client.create_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, fields)
     item_id = item["id"]
