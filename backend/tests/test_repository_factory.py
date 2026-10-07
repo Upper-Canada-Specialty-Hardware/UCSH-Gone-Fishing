@@ -1,27 +1,24 @@
-"""Tests for the repository seam factory (PR C, commit 1).
+"""Tests for the repository seam factory.
 
 Confirms (a) the factory hands back SharePoint implementations by default so
 behavior is unchanged, (b) flipping a domain's flag to an unimplemented backend
-fails loudly instead of silently falling back, and (c) the interfaces are
-implementable without SharePoint (a fake repo) — which is what lets the later
-Postgres impls and service tests decouple from Graph.
+fails loudly instead of silently falling back, and (c) the employee interface is
+implementable without SharePoint (a fake repo) -- which is what lets service
+tests decouple from Graph.
+
+The holidays factory (SharePoint vs Postgres) is covered separately in
+test_postgres_holiday_repository.py; here we only check its SharePoint default.
 """
 import asyncio
 
 from app.config import settings
 from app.repositories import (
-    get_carryover_payout_repository,
     get_employee_repository,
     get_holiday_repository,
-    get_leave_request_repository,
-    get_manager_assignment_repository,
-    get_overtime_request_repository,
 )
 from app.repositories.base import (
     EmployeeRepository,
     HolidayRepository,
-    ManagerAssignmentRepository,
-    RequestRepository,
 )
 from app.repositories.sharepoint.employee import SharePointEmployeeRepository
 
@@ -30,19 +27,10 @@ def test_factory_returns_sharepoint_impls_by_default():
     assert isinstance(get_employee_repository(), SharePointEmployeeRepository)
     assert isinstance(get_employee_repository(), EmployeeRepository)
     assert isinstance(get_holiday_repository(), HolidayRepository)
-    assert isinstance(get_leave_request_repository(), RequestRepository)
-    assert isinstance(get_overtime_request_repository(), RequestRepository)
-    assert isinstance(get_carryover_payout_repository(), RequestRepository)
-    assert isinstance(get_manager_assignment_repository(), ManagerAssignmentRepository)
-
-
-def test_request_repos_target_the_right_lists():
-    assert get_leave_request_repository()._list_id == settings.SP_LIST_LEAVE_REQUESTS
-    assert get_overtime_request_repository()._list_id == settings.SP_LIST_OVERTIME_REQUESTS
-    assert get_carryover_payout_repository()._list_id == settings.SP_LIST_CARRYOVER_PAYOUT
 
 
 def test_postgres_flag_raises_until_impl_exists():
+    # Employees are SharePoint-only, so selecting Postgres must fail loudly.
     original = settings.STORAGE_EMPLOYEES
     settings.STORAGE_EMPLOYEES = "postgres"
     try:
@@ -57,8 +45,8 @@ def test_postgres_flag_raises_until_impl_exists():
 
 
 class _FakeEmployeeRepository(EmployeeRepository):
-    """A SharePoint-free EmployeeRepository — proves the ABC is fully
-    implementable, and models how the Postgres impl / service tests will work."""
+    """A SharePoint-free EmployeeRepository -- proves the ABC is fully
+    implementable, and models how service tests decouple from Graph."""
 
     def __init__(self, rows: list[dict]):
         self._rows = rows

@@ -9,6 +9,7 @@ import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
 import ManagerAssignments from '../components/ManagerAssignments';
+import HolidaysManager from '../components/HolidaysManager';
 import StuckRequests from '../components/StuckRequests';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
@@ -356,6 +357,7 @@ export default function AdminDashboard() {
         <Tab label="View Team" value={5} />
         <Tab label="Manager Assignments" value={6} />
         <Tab label="Add Employee" value={9} />
+        <Tab label="Holidays" value={11} />
         <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
         <Tab label="Email Log" value={10} />
       </Tabs>
@@ -527,6 +529,8 @@ export default function AdminDashboard() {
           <EmailLog employees={employees} />
         </Paper>
       )}
+
+      {tab === 11 && <HolidaysManager />}
 
       <Snackbar
         open={snack.open}
