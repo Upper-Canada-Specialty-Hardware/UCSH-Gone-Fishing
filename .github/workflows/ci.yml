@@ -1,24 +1,33 @@
 name: CI
 
-# Runs the automated gate this repo previously lacked: a back-end lint (Ruff),
-# back-end tests, and the front-end build. Railway still deploys on merge to
-# master with no test gate, so this is what catches a broken change BEFORE it can
-# be merged. The lint job matters for cost too: Railway fails a build outright on
-# lint errors, so catching them here avoids wasting deploy credits.
+# The automated gate: a back-end lint (Ruff), back-end tests, and the front-end
+# build. Follows the org CI standard (docs/ci.md in org-automation), which keeps
+# GitHub Actions usage down: nothing runs on branch pushes or draft pull
+# requests, only once a pull request is ready and on the merge to master. The
+# lint job matters for cost too: Railway fails a build outright on lint errors,
+# so catching them here avoids wasting deploy credits.
 on:
+  pull_request:
+    # ready_for_review starts CI when a draft is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Railway's "Wait for CI" holds the production deploy of master until this
+  # workflow passes on the merged commit, so a red run blocks the deploy.
   push:
     branches: [master]
-  pull_request:
 
-# Cancel an in-progress run when new commits are pushed to the same ref.
+# A newer push to a pull request cancels its older run; a run on master is
+# never cancelled, so a deploy check is never cut off halfway.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend-lint:
     name: Backend lint (ruff)
+    # Skip drafts; always run on the push to master.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
+    timeout-minutes: 5            # normally well under a minute
     defaults:
       run:
         working-directory: backend
@@ -26,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12" # matches the backend Dockerfile pin
+          python-version: "3.14"  # matches the backend Dockerfile (python:3.14-slim)
       - name: Install ruff
         run: pip install ruff==0.15.20   # pinned so CI and local flag the same things
       - name: Lint
@@ -34,7 +43,9 @@ jobs:
 
   backend-tests:
     name: Backend tests (pytest)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
+    timeout-minutes: 15           # install plus the suite runs in a few minutes
     defaults:
       run:
         working-directory: backend
@@ -42,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12" # matches the backend Dockerfile pin
+          python-version: "3.14"  # matches the backend Dockerfile (python:3.14-slim)
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
@@ -55,7 +66,9 @@ jobs:
 
   frontend-build:
     name: Frontend build (tsc + vite)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
+    timeout-minutes: 10           # npm install plus the build
     defaults:
       run:
         working-directory: frontend
@@ -63,10 +76,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20" # matches the frontend Dockerfile (node:20-alpine)
+          node-version: "26"      # matches the frontend Dockerfile (node:26-alpine)
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm install          # mirrors the Dockerfile (npm install, not npm ci)
       - name: Build
-        run: npm run build         # tsc -b && vite build — the repo's only static check
+        run: npm run build         # tsc -b && vite build, the repo's only static check
