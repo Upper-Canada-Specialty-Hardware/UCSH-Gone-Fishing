@@ -8,6 +8,10 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  employee dashboard token (the same signed token the emailed
                  links carry). Anyone else gets a short "verified email" token
                  to carry into the new-hire path.
+* GET /supervisors, POST /held - the new-hire path, both needing that
+                 verified-email token: list the supervisors to pick from, then
+                 hold a request until the supervisor adds the person
+                 (services/held_requests.py).
 
 Mailbox control is the identity proof. Sending goes through send_email, so
 whichever email service that routes to (SMTP2GO today; HVE and Clerk later)
@@ -16,13 +20,16 @@ needs no change here.
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.config import settings
+
 from app.graph.email import send_email
-from app.services import email_codes
+from app.services import email_codes, held_requests
 from app.services.dashboard_tokens import generate_dashboard_token
-from app.services.employee import get_employee_by_email
+from app.services.employee import LOCATION_PROVINCE_MAP, get_employee_by_email
+from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,6 +51,42 @@ class VerifyRequest(BaseModel):
     """Body of POST /verify."""
     email: str
     code: str
+
+
+class VerifiedEmail(BaseModel):
+    """The token /verify hands to someone not on staff."""
+    email: str
+    exp: str
+    token: str
+
+
+class HeldRequestBody(BaseModel):
+    """Body of POST /held: who they are, who supervises them, and the form."""
+    verified: VerifiedEmail
+    name: str
+    location: str
+    supervisor_id: str
+    request_type: str
+    form: dict
+
+
+def _require_verified(email: str, exp: str, token: str) -> str:
+    """Check a verified-email token and return its normalised address.
+
+    Args:
+        email: The address the token claims.
+        exp: Its expiry.
+        token: The signature.
+
+    Returns:
+        The normalised address.
+
+    Raises:
+        HTTPException: 401 when the token is wrong or expired.
+    """
+    if not email_codes.check_verified_email(email, exp, token):
+        raise HTTPException(status_code=401, detail="Your email check has expired. Start again.")
+    return email_codes.normalise_email(email)
 
 
 def _client_ip(request: Request) -> str:
@@ -137,6 +180,57 @@ async def verify_code(body: VerifyRequest):
 
     # Not on staff yet: prove the address was verified for the new-hire path.
     return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
+
+
+@router.get("/supervisors")
+async def supervisors(email: str = Query(...), exp: str = Query(...), token: str = Query(...)):
+    """The supervisors and locations a person not on staff can pick from.
+
+    Needs the verified-email token, so the staff list is never public.
+
+    Args:
+        email: Verified-email token fields, as query parameters.
+        exp: See email.
+        token: See email.
+
+    Returns:
+        {"supervisors": [{"id", "name", "location"}], "locations": [...]}.
+    """
+    _require_verified(email, exp, token)
+    return {
+        "supervisors": await held_requests.list_supervisors(),
+        "locations": list(LOCATION_PROVINCE_MAP),
+    }
+
+
+@router.post("/held")
+async def hold(body: HeldRequestBody):
+    """Hold a request from someone not on staff and email their supervisor.
+
+    Args:
+        body: The verified-email token, name, location, supervisor and form.
+
+    Returns:
+        {"status": "held", "supervisor_name"}.
+
+    Raises:
+        HTTPException: 401 for a bad token; 409 when the address is on staff
+            after all (sign in again); 400 for anything wrong with the form;
+            503 while processing is off.
+    """
+    email = _require_verified(body.verified.email, body.verified.exp, body.verified.token)
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Requests cannot be submitted right now. Try again later.")
+    if await get_employee_by_email(email):
+        # Added since they verified: the normal path works now.
+        raise HTTPException(status_code=409, detail="You are in the Staff Directory now. Start again to sign in.")
+    try:
+        row = await held_requests.hold_request(
+            email, body.name, body.location, body.supervisor_id, body.request_type, body.form,
+        )
+    except (held_requests.HoldError, RequestFormError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "held", "supervisor_name": row.supervisor_name}
 
 
 def _render_code_email(code: str) -> str:

@@ -8,6 +8,7 @@ from app.models.dashboard_link_state import DashboardLinkState
 from app.models.staff_setup_nudge import StaffSetupNudge
 from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
 from app.models.email_code import EmailCode
+from app.models.held_request import HeldRequest
 
 # Migrated business tables (the SharePoint data, moved into Postgres).
 from app.models.employee import Employee
@@ -29,6 +30,7 @@ __all__ = [
     "EmailApiLog",
     "EmailApiLogRecipient",
     "EmailCode",
+    "HeldRequest",
     # business
     "Employee",
     "ManagerAssignment",
