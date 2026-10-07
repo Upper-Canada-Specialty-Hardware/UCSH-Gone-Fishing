@@ -826,19 +826,30 @@ async def admin_create_employee(body: dict):
 async def _after_employee_created(record: dict) -> dict:
     """Follow-ups once Add Employee has written a record, on either dashboard.
 
-    Submits any requests the person made on the request page while they were
-    not on staff yet. Never undoes or blocks the create: a failure is reported
-    in the response and stays on the admin dashboard's Held Requests list.
+    Gives the person access to the SharePoint site (a Microsoft 365 lookup or
+    guest invite, then the site members group), then submits any requests
+    they made on the request page while they were not on staff yet. Neither
+    step undoes or blocks the create: a failure is reported in the response
+    and stays visible on the admin dashboard.
 
     Args:
         record: The created record from create_employee.
 
     Returns:
-        The record plus "released": one {"held_id", "status", "detail"} per
-        held request that was waiting for this email.
+        The record plus "invite" ({"status", "detail", ...}, see
+        employee_invites.invite_employee) and "released": one
+        {"held_id", "status", "detail"} per held request for this email.
     """
+    from app.services.employee_invites import invite_employee
     from app.services.held_requests import release_held_requests
-    email = record.get("fields", {}).get("EmailAddress", "")
+    fields = record.get("fields", {})
+    email = fields.get("EmailAddress", "")
+    # Site access first; invite_employee records and returns, never raises.
+    record["invite"] = await invite_employee(str(record.get("id")), email, fields.get("Title", ""))
+    if record["invite"]["status"] == "failed":
+        record.setdefault("notices", []).append(
+            f"Site access was not set up: {record['invite']['detail']} Resend it from the admin dashboard."
+        )
     try:
         results = await release_held_requests(email)
         record["released"] = [vars(r) for r in results]
@@ -1595,6 +1606,39 @@ async def admin_cancel_held_request(held_id: int):
     if not await cancel_held_request(held_id):
         raise HTTPException(status_code=404, detail="No open held request with that id")
     return {"cancelled": True}
+
+
+@router.get("/admin/invites")
+async def admin_invites():
+    """Site access outcomes from Add Employee, newest first.
+
+    Unauthenticated like every other /admin/* route.
+
+    Returns:
+        {"invites": [...], "enabled": bool}.
+    """
+    from app.services.employee_invites import list_invites
+    return {"invites": await list_invites(), "enabled": settings.INVITES_ENABLED}
+
+
+@router.post("/admin/employees/{employee_id}/invite")
+async def admin_resend_invite(employee_id: str):
+    """Send (or resend) one employee's site invite and group add.
+
+    Args:
+        employee_id: Their Staff Directory id.
+
+    Returns:
+        The outcome from employee_invites.invite_employee.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.employee_invites import invite_employee
+    employee = await get_employee_by_id(employee_id)
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    fields = employee["fields"]
+    return await invite_employee(employee_id, fields.get("EmailAddress", ""), fields.get("Title", ""))
 
 
 @router.get("/admin/request-columns")
