@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.database import async_session
@@ -220,8 +220,10 @@ class CheckResult:
 async def check_code(email: str, code: str) -> CheckResult:
     """Check a typed code against the newest one sent to the address.
 
-    A wrong guess counts toward MAX_ATTEMPTS. A right one marks the code used,
-    so it cannot be entered twice.
+    Every try, right or wrong, first takes one of the code's MAX_ATTEMPTS
+    slots with a single conditional UPDATE, and a right code is then used up
+    with another. Both are done in the database, not in Python, so guesses
+    sent in parallel cannot get past the limit and a code cannot be used twice.
 
     Args:
         email: The address as typed; normalised here.
@@ -246,19 +248,37 @@ async def check_code(email: str, code: str) -> CheckResult:
             return CheckResult(False, "No code is waiting for this email. Ask for a new one.")
         if is_expired(row.created_at, now):
             return CheckResult(False, "This code has expired. Ask for a new one.")
-        if row.attempts >= MAX_ATTEMPTS:
+
+        # Take one try slot; only succeeds while unused and under the limit.
+        taken = await session.execute(
+            update(EmailCode)
+            .where(EmailCode.id == row.id,
+                   EmailCode.attempts < MAX_ATTEMPTS,
+                   EmailCode.consumed_at.is_(None))
+            .values(attempts=EmailCode.attempts + 1)           # incremented in SQL, not Python
+        )
+        await session.commit()
+        if taken.rowcount != 1:                                # limit reached, or used meanwhile
             return CheckResult(False, "Too many wrong tries. Ask for a new code.")
 
         if not hmac.compare_digest(row.code_hash, hash_code(email, code)):
-            row.attempts += 1                                  # count the miss
-            await session.commit()
-            left = MAX_ATTEMPTS - row.attempts
+            attempts = await session.scalar(                   # fresh count, parallel tries included
+                select(EmailCode.attempts).where(EmailCode.id == row.id)
+            )
+            left = MAX_ATTEMPTS - attempts
             if left <= 0:
                 return CheckResult(False, "Too many wrong tries. Ask for a new code.")
             return CheckResult(False, f"That code is not right. {left} tries left.")
 
-        row.consumed_at = now                                  # single use
+        # Use the code up; only the first of two parallel right answers wins.
+        used = await session.execute(
+            update(EmailCode)
+            .where(EmailCode.id == row.id, EmailCode.consumed_at.is_(None))
+            .values(consumed_at=now)
+        )
         await session.commit()
+        if used.rowcount != 1:
+            return CheckResult(False, "No code is waiting for this email. Ask for a new one.")
 
     logger.info("Email code verified")                         # address not logged
     return CheckResult(True)

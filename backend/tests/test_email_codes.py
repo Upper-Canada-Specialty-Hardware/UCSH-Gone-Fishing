@@ -16,7 +16,7 @@ from datetime import timedelta
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.database import async_session
 from app.models import EmailCode
@@ -222,6 +222,42 @@ def test_five_wrong_tries_lock_the_code_even_against_the_right_one(client, fixed
     response = _verify(client, email, fixed_code)
     assert response.status_code == 400
     assert "Ask for a new code" in response.json()["detail"]
+
+
+async def _attempts_of(email):
+    """The newest code's try count for an address."""
+    async with async_session() as session:
+        row = await session.scalar(
+            select(EmailCode).where(EmailCode.email == email)
+            .order_by(EmailCode.created_at.desc(), EmailCode.id.desc()).limit(1)
+        )
+        return row.attempts
+
+
+def test_parallel_guesses_cannot_get_past_the_limit(client, fixed_code):
+    # Twenty wrong guesses sent at once: each try slot is taken in the database,
+    # so exactly five are counted and the right code is then locked out too.
+    email = _unique("burst")
+    _ask(client, email)
+
+    async def burst():
+        return await asyncio.gather(*(email_codes.check_code(email, "000000") for _ in range(20)))
+
+    results = asyncio.run(burst())
+
+    assert not any(r.ok for r in results)
+    assert asyncio.run(_attempts_of(email)) == email_codes.MAX_ATTEMPTS
+    assert not asyncio.run(email_codes.check_code(email, fixed_code)).ok
+
+
+def test_two_parallel_right_answers_use_the_code_once(client, fixed_code):
+    email = _unique("twice")
+    _ask(client, email)
+
+    async def both():
+        return await asyncio.gather(*(email_codes.check_code(email, fixed_code) for _ in range(2)))
+
+    assert sum(r.ok for r in asyncio.run(both())) == 1
 
 
 def test_asking_again_retires_the_older_code(client, monkeypatch):

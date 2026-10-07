@@ -92,8 +92,10 @@ def _require_verified(email: str, exp: str, token: str) -> str:
 def _client_ip(request: Request) -> str:
     """The caller's IP for rate limiting, preferring the proxy's header.
 
-    Railway sits behind a proxy, so the socket address is the proxy; the first
-    X-Forwarded-For entry is the real caller.
+    Railway sits behind a proxy, so the socket address is the proxy. The
+    caller can put anything at the front of X-Forwarded-For, so its first
+    entry is never trusted: the proxy's own X-Real-IP comes first, then the
+    last X-Forwarded-For entry (the one the proxy appended itself).
 
     Args:
         request: The incoming request.
@@ -101,9 +103,12 @@ def _client_ip(request: Request) -> str:
     Returns:
         A best-effort IP string, "unknown" when nothing is available.
     """
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip                                         # set by the proxy, not the caller
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()                 # first hop is the client
+        return forwarded.split(",")[-1].strip()                # last hop was added by the proxy
     return request.client.host if request.client else "unknown"
 
 
