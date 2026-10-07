@@ -75,9 +75,10 @@ def graph(monkeypatch):
     return g
 
 
-def _invite(email="lee@ucsh.com"):
+def _invite(email="lee@ucsh.com", allow_external=False):
     employee_id = _employee_id()
-    return employee_id, asyncio.run(employee_invites.invite_employee(employee_id, email, "Lee New"))
+    return employee_id, asyncio.run(
+        employee_invites.invite_employee(employee_id, email, "Lee New", allow_external=allow_external))
 
 
 def test_someone_in_the_tenant_is_only_added_to_the_group(graph):
@@ -91,7 +92,7 @@ def test_someone_in_the_tenant_is_only_added_to_the_group(graph):
 
 
 def test_someone_outside_the_tenant_is_invited_then_added(graph):
-    _, result = _invite("lee@gmail.com")
+    _, result = _invite("lee@gmail.com", allow_external=True)
 
     assert result["status"] == "invited" and result["user_id"] == "guest-9"
     invite = next(c[2] for c in graph.calls if c[1] == "/invitations")
@@ -110,7 +111,7 @@ def test_an_existing_member_is_not_an_error(graph):
 
 def test_a_graph_refusal_is_recorded_not_raised(graph):
     graph.invite_error = _http_error(403, '{"error": {"message": "Insufficient privileges"}}')
-    employee_id, result = _invite("lee@gmail.com")
+    employee_id, result = _invite("lee@gmail.com", allow_external=True)
 
     assert result["status"] == "failed" and "Insufficient privileges" in result["detail"]
     listed = asyncio.run(employee_invites.list_invites())
@@ -151,3 +152,30 @@ def test_someone_already_on_the_site_is_left_alone(graph):
     graph.on_site.add("lee@ucsh.com")
     _, result = _invite()
     assert result["status"] == "on_site" and graph.calls == []
+
+
+def test_the_unsigned_admin_path_never_invites_an_outside_address(graph):
+    # No allow_external: a personal address is skipped, nothing reaches Graph.
+    employee_id = _employee_id()
+    result = asyncio.run(employee_invites.invite_employee(employee_id, "lee@gmail.com", "Lee New"))
+    assert result["status"] == "skipped" and graph.calls == []
+
+
+def test_the_unsigned_admin_path_still_handles_company_addresses(graph):
+    graph.users["lee@ucaccess.com"] = "user-1"
+    employee_id = _employee_id()
+    result = asyncio.run(employee_invites.invite_employee(employee_id, "lee@ucaccess.com", "Lee New"))
+    assert result["status"] == "in_tenant"
+
+
+def test_a_lookalike_domain_is_not_internal():
+    assert employee_invites.is_internal_email("Lee@UCSH.com")
+    assert not employee_invites.is_internal_email("lee@ucsh.com.evil.example")
+    assert not employee_invites.is_internal_email("lee@mail.ucsh.com")
+
+
+def test_a_resend_is_allowed_only_to_the_address_already_invited(graph):
+    employee_id = _employee_id()
+    asyncio.run(employee_invites.invite_employee(employee_id, "lee@gmail.com", "Lee New", allow_external=True))
+    assert asyncio.run(employee_invites.was_invited_at(employee_id, "lee@gmail.com"))
+    assert not asyncio.run(employee_invites.was_invited_at(employee_id, "someone@gmail.com"))

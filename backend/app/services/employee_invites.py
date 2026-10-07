@@ -18,7 +18,15 @@ and Entra account:
    membership is managed here.
 
 Every step is recorded in employee_invites and never raises: a failed invite
-must not stop the employee record from being created. The whole thing stays
+must not stop the employee record from being created.
+
+Who may trigger a guest invite: the admin dashboard has no sign-in (on
+purpose), so anyone who finds its address could add a record with their own
+personal email and be invited onto the site. A guest invite to an address
+outside INTERNAL_DOMAINS is therefore sent only from a manager's signed
+dashboard (``allow_external=True``), or as a resend to the same address an
+earlier signed invite went to. From the admin dashboard an outside address is
+recorded as "skipped" and IT adds the person by hand. The whole thing stays
 off until INVITES_ENABLED is set, after IT has granted the app User.Read.All,
 User.Invite.All and GroupMember.ReadWrite.All and created the group.
 """
@@ -35,6 +43,22 @@ from app.models import EmployeeInvite
 from app.models.mixins import utcnow
 
 logger = logging.getLogger(__name__)
+
+# Company mail domains; anyone else is "outside" and needs a signed request to invite.
+INTERNAL_DOMAINS = ("ucsh.com", "ucaccess.com")
+
+
+def is_internal_email(email: str) -> bool:
+    """Whether an address is on one of the company's own mail domains.
+
+    Args:
+        email: The address.
+
+    Returns:
+        True for ...@ucsh.com and ...@ucaccess.com, matched exactly (no subdomains).
+    """
+    domain = (email or "").strip().lower().rpartition("@")[2]   # text after the last @
+    return domain in INTERNAL_DOMAINS
 
 
 def _odata_quote(value: str) -> str:
@@ -165,7 +189,7 @@ async def add_to_site_members(user_id: str) -> bool:
         raise
 
 
-async def invite_employee(employee_id: str, email: str, name: str) -> dict:
+async def invite_employee(employee_id: str, email: str, name: str, allow_external: bool = False) -> dict:
     """Make sure a new employee can open the site; record and return the outcome.
 
     Never raises: every failure is recorded and returned.
@@ -174,6 +198,9 @@ async def invite_employee(employee_id: str, email: str, name: str) -> dict:
         employee_id: Their Staff Directory id.
         email: Their email.
         name: Their name.
+        allow_external: True only when the caller is signed in (a manager's
+            dashboard), or for a resend to an already-invited address; an
+            address outside INTERNAL_DOMAINS is skipped otherwise.
 
     Returns:
         {"status", "detail", "group_added", "user_id"}; status is
@@ -189,6 +216,12 @@ async def invite_employee(employee_id: str, email: str, name: str) -> dict:
         result.update(detail="The record has no email address.")
     elif await _already_on_site(email):
         result.update(status="on_site", detail="Already on the SharePoint site; no invite needed.")
+    elif not allow_external and not is_internal_email(email):
+        # Unsigned caller and a personal address: never invite, see the module notes.
+        result.update(status="skipped", detail=(
+            "Not a company address, and invites to outside addresses are sent only when a "
+            "manager adds the person from their own dashboard. IT adds them to the site by hand."
+        ))
     else:
         try:
             user_id = await find_user_id(email)
@@ -232,6 +265,26 @@ async def _record(employee_id: str, email: str, name: str, result: dict) -> None
             await session.commit()
     except Exception:  # noqa: BLE001 - the invite outcome is already returned
         logger.exception("Could not record the site invite for employee #%s", employee_id)
+
+
+async def was_invited_at(employee_id: str, email: str) -> bool:
+    """Whether a guest invite already went to this exact address for this employee.
+
+    Lets the admin dashboard resend an invite a manager's signed request first
+    sent, without letting it invite a changed (perhaps someone's own) address.
+
+    Args:
+        employee_id: Their Staff Directory id.
+        email: The address on their record now.
+
+    Returns:
+        True when the stored invite has a user id and the same address.
+    """
+    async with async_session() as session:
+        row = await session.scalar(
+            select(EmployeeInvite).where(EmployeeInvite.employee_id == str(employee_id))
+        )
+    return bool(row and row.user_id and row.email == (email or "").strip().lower())
 
 
 async def list_invites() -> list[dict]:

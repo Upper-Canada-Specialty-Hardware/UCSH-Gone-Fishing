@@ -772,7 +772,8 @@ async def team_create_employee(user: AuthUser, body: dict):
         record = await create_employee(body, [manager_sp_user_id])
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return await _after_employee_created(record)
+    # Signed manager: an outside address (a personal email) may be invited.
+    return await _after_employee_created(record, allow_external_invite=True)
 
 
 # ============================
@@ -820,10 +821,11 @@ async def admin_create_employee(body: dict):
         record = await create_employee(body, manager_ids)
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return await _after_employee_created(record)
+    # No sign-in here, so only company addresses are invited (see employee_invites).
+    return await _after_employee_created(record, allow_external_invite=False)
 
 
-async def _after_employee_created(record: dict) -> dict:
+async def _after_employee_created(record: dict, allow_external_invite: bool) -> dict:
     """Follow-ups once Add Employee has written a record, on either dashboard.
 
     Gives the person access to the SharePoint site (a Microsoft 365 lookup or
@@ -834,6 +836,8 @@ async def _after_employee_created(record: dict) -> dict:
 
     Args:
         record: The created record from create_employee.
+        allow_external_invite: True from the signed manager route only; lets a
+            guest invite go to an address outside the company domains.
 
     Returns:
         The record plus "invite" ({"status", "detail", ...}, see
@@ -845,7 +849,9 @@ async def _after_employee_created(record: dict) -> dict:
     fields = record.get("fields", {})
     email = fields.get("EmailAddress", "")
     # Site access first; invite_employee records and returns, never raises.
-    record["invite"] = await invite_employee(str(record.get("id")), email, fields.get("Title", ""))
+    record["invite"] = await invite_employee(
+        str(record.get("id")), email, fields.get("Title", ""), allow_external=allow_external_invite,
+    )
     if record["invite"]["status"] == "failed":
         record.setdefault("notices", []).append(
             f"Site access was not set up: {record['invite']['detail']} Resend it from the admin dashboard."
@@ -1625,6 +1631,9 @@ async def admin_invites():
 async def admin_resend_invite(employee_id: str):
     """Send (or resend) one employee's site invite and group add.
 
+    Unauthenticated like every other /admin/* route, so an outside address is
+    invited only when a signed request already invited that same address.
+
     Args:
         employee_id: Their Staff Directory id.
 
@@ -1633,12 +1642,14 @@ async def admin_resend_invite(employee_id: str):
     """
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.employee_invites import invite_employee
+    from app.services.employee_invites import invite_employee, was_invited_at
     employee = await get_employee_by_id(employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
     fields = employee["fields"]
-    return await invite_employee(employee_id, fields.get("EmailAddress", ""), fields.get("Title", ""))
+    email = fields.get("EmailAddress", "")
+    resend = await was_invited_at(employee_id, email)          # same address a signed request invited
+    return await invite_employee(employee_id, email, fields.get("Title", ""), allow_external=resend)
 
 
 @router.get("/admin/request-columns")
