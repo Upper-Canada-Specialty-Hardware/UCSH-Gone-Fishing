@@ -145,8 +145,11 @@ from app.routes.webhooks import router as webhooks_router
 from app.routes.twilio import router as twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.email_api_log import router as email_api_log_router
+from app.routes.intake import router as intake_router
 
 app.include_router(health_router)
+# Public request page sign-in: email a code, check it. Unauthenticated by design.
+app.include_router(intake_router, prefix="/api/intake", tags=["intake"])
 app.include_router(forms_router, prefix="/api/forms", tags=["forms"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 # Same prefix as the dashboard router so the admin email-log lookup sits next
