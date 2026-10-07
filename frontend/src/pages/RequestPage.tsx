@@ -105,10 +105,14 @@ export default function RequestPage() {
         setStep('form');
       } else {
         setVerified(res.data.verified);
-        const options = await getSupervisors(res.data.verified);
-        setSupervisors(options.data.supervisors || []);
-        setLocations(options.data.locations || []);
-        setStep('newhire');
+        setStep('newhire');                             // the code is used up; never go back to it
+        try {
+          const options = await getSupervisors(res.data.verified);
+          setSupervisors(options.data.supervisors || []);
+          setLocations(options.data.locations || []);
+        } catch {
+          setError('The supervisor list could not be loaded. Refresh the page and start again.');
+        }
       }
     } catch (err) {
       setError(errorText(err, 'That code could not be checked. Try again.'));
