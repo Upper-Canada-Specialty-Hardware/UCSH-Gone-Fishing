@@ -146,6 +146,7 @@ from app.routes.twilio import router as twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.email_api_log import router as email_api_log_router
 from app.routes.intake import router as intake_router
+from app.routes.self_service import router as self_service_router
 
 app.include_router(health_router)
 # Public request page sign-in: email a code, check it. Unauthenticated by design.
@@ -155,6 +156,8 @@ app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"]
 # Same prefix as the dashboard router so the admin email-log lookup sits next
 # to the other /admin/* endpoints; kept in its own module to stay small.
 app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"])
+# An employee signed in on the request page submits a request (/me/requests/{type}).
+app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])
