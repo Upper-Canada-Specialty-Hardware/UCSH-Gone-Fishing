@@ -18,10 +18,10 @@ interface InviteRow {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  in_tenant: 'Member', invited: 'Invited', skipped: 'Off', failed: 'Failed',
+  on_site: 'On site', in_tenant: 'Member', invited: 'Invited', skipped: 'Off', failed: 'Failed',
 };
 const STATUS_COLOR: Record<string, 'success' | 'info' | 'default' | 'error'> = {
-  in_tenant: 'success', invited: 'info', skipped: 'default', failed: 'error',
+  on_site: 'success', in_tenant: 'success', invited: 'info', skipped: 'default', failed: 'error',
 };
 
 /**

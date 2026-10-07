@@ -290,6 +290,7 @@ export default function AddEmployee({
 
 /** Readable labels for the site-access outcome from the server. */
 const INVITE_TEXT: Record<string, string> = {
+  on_site: 'Site access: already on the site.',
   in_tenant: 'Site access: added to the site members.',
   invited: 'Site access: invite emailed.',
   skipped: 'Site access: not set up automatically; IT adds them to the site.',

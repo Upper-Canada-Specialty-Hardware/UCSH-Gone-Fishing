@@ -4,6 +4,10 @@ Until now IT added each new hire to the site's members by hand. Add Employee
 now does it through Microsoft Graph, so IT only creates the person's mailbox
 and Entra account:
 
+0. Already in the site's user list (they have opened the site before, with
+   whatever account): nothing to do. This also stops a second, duplicate
+   guest being invited for someone who reaches the site through an account
+   whose email differs from the one on their staff record.
 1. Look the person up in the tenant by email (GET /users).
 2. Not there (a personal or other-company address): send a guest invite
    (POST /invitations). The email Microsoft sends them links to
@@ -74,6 +78,23 @@ def _graph_error(e: Exception) -> str:
             message = ""
         return f"Microsoft 365 said {e.response.status_code}: {message or e.response.text[:200]}"
     return str(e)[:300]
+
+
+async def _already_on_site(email: str) -> bool:
+    """Whether the email is already in the site's User Information List.
+
+    Uses the app's existing SharePoint read access (the same lookup request
+    creation uses). A read failure counts as "not on the site", so the normal
+    lookup and invite still run.
+
+    Args:
+        email: Normalised address.
+
+    Returns:
+        True when the site already knows this person.
+    """
+    from app.services.leave_requests import _resolve_user_lookup_id   # avoids an import cycle
+    return bool(await _resolve_user_lookup_id(email))
 
 
 async def find_user_id(email: str) -> str | None:
@@ -156,7 +177,7 @@ async def invite_employee(employee_id: str, email: str, name: str) -> dict:
 
     Returns:
         {"status", "detail", "group_added", "user_id"}; status is
-        "in_tenant", "invited", "skipped" or "failed".
+        "on_site", "in_tenant", "invited", "skipped" or "failed".
     """
     email = (email or "").strip().lower()
     result = {"status": "failed", "detail": "", "group_added": False, "user_id": None}
@@ -166,6 +187,8 @@ async def invite_employee(employee_id: str, email: str, name: str) -> dict:
         result.update(detail="No site members group is configured (SITE_MEMBERS_GROUP_ID).")
     elif not email:
         result.update(detail="The record has no email address.")
+    elif await _already_on_site(email):
+        result.update(status="on_site", detail="Already on the SharePoint site; no invite needed.")
     else:
         try:
             user_id = await find_user_id(email)

@@ -65,8 +65,13 @@ def graph(monkeypatch):
             raise g.group_error
         return {}
 
+    async def not_on_site(email):
+        return email in g.on_site
+
+    g.on_site = set()
     monkeypatch.setattr(employee_invites.graph_client, "get", fake_get)
     monkeypatch.setattr(employee_invites.graph_client, "post", fake_post)
+    monkeypatch.setattr(employee_invites, "_already_on_site", not_on_site)
     return g
 
 
@@ -138,3 +143,11 @@ def test_a_resend_counts_attempts_on_the_same_row(graph):
         asyncio.run(employee_invites.invite_employee(employee_id, "lee@ucsh.com", "Lee New"))
     rows = [r for r in asyncio.run(employee_invites.list_invites()) if r["employee_id"] == employee_id]
     assert len(rows) == 1 and rows[0]["attempts"] == 2
+
+
+def test_someone_already_on_the_site_is_left_alone(graph):
+    # Already in the site's user list, perhaps through an account with another
+    # email: no lookup, no invite, so no duplicate guest is created.
+    graph.on_site.add("lee@ucsh.com")
+    _, result = _invite()
+    assert result["status"] == "on_site" and graph.calls == []
