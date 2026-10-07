@@ -11,7 +11,13 @@ in a form. Nothing can route that request yet (no balances, no manager), so:
    emails the supervisor once more after 2 business days and the admins after 5.
 3. ``release_held_requests`` runs when Add Employee creates a record with that
    email: each held form is submitted as a normal request, and the person is
-   told it went through.
+   told it went through. While the SubmitterEmail column is off, a person not
+   yet on the SharePoint site cannot be routed, so their rows wait as
+   "waiting_site" and ``retry_waiting_site`` tries again every hour.
+
+Statuses: held (not on staff yet), waiting_site (on staff, not on the site
+yet), releasing (being submitted right now), failed (an admin can retry),
+released and cancelled (closed).
 
 Emails go through send_email, so they move with it from one email service to
 the next with no change here.
@@ -24,7 +30,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.config import settings
 from app.database import async_session
@@ -48,7 +54,7 @@ TORONTO = ZoneInfo("America/Toronto")
 SUPERVISOR_REMINDER_BUSINESS_DAYS = 2   # supervisor gets one more email after this
 ADMIN_ESCALATION_BUSINESS_DAYS = 5      # then the admins are told
 MAX_OPEN_PER_EMAIL = 5                  # held requests one address can have waiting
-OPEN_STATUSES = ("held", "failed")      # still waiting to become a real request
+OPEN_STATUSES = ("held", "waiting_site", "failed")   # still waiting to become a real request
 
 REQUEST_LABELS = {
     "leave": "leave request",
@@ -314,7 +320,7 @@ class ReleaseResult:
 
     Attributes:
         held_id: The held_requests row id.
-        status: "released", "failed" or "waiting".
+        status: "released", "failed" or "waiting_site".
         detail: The SharePoint item id, or why it did not go through.
     """
     held_id: int
@@ -325,7 +331,10 @@ class ReleaseResult:
 async def release_held_requests(email: str, only_id: int | None = None) -> list[ReleaseResult]:
     """Submit the held requests for an address that is now on staff.
 
-    Called after Add Employee creates a record, and by an admin's retry.
+    Called after Add Employee creates a record, by an admin's retry, and
+    hourly for rows waiting on site access. Each row is claimed with one
+    conditional UPDATE before it is submitted, so two releases running at once
+    (an admin retry during the hourly sweep, say) never submit it twice.
 
     Args:
         email: The new staff record's email.
@@ -340,7 +349,7 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
         return []                                              # still not on staff
 
     # Without the SubmitterEmail column, a request only finds its person through
-    # the site's user list. Leave it held rather than create an unroutable item.
+    # the site's user list. Park it as waiting_site rather than create an unroutable item.
     from app.services.leave_requests import _resolve_user_lookup_id
     waiting_for_site = (
         not settings.REQUEST_EMAIL_COLUMNS_ENABLED and not await _resolve_user_lookup_id(email)
@@ -356,9 +365,20 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
         rows = (await session.scalars(query.order_by(HeldRequest.id))).all()
         for row in rows:
             if waiting_for_site:
+                # On staff but not routable yet; no "add them" reminders, retried hourly.
+                row.status = "waiting_site"
                 row.last_error = "Waiting for them to be linked to the SharePoint site."
-                results.append(ReleaseResult(row.id, "waiting", row.last_error))
+                results.append(ReleaseResult(row.id, "waiting_site", row.last_error))
                 continue
+            claimed = await session.execute(                  # take the row; loses to a parallel release
+                update(HeldRequest)
+                .where(HeldRequest.id == row.id, HeldRequest.status.in_(OPEN_STATUSES))
+                .values(status="releasing")
+            )
+            await session.commit()                            # the claim is visible to others now
+            if claimed.rowcount != 1:
+                continue                                       # another release has it
+            row.status = "releasing"                           # keep the loaded copy in step
             try:
                 form = parse_request_form(row.request_type, row.form_data)
                 item = await submit_request(row.request_type, form, employee, SOURCE_REQUEST_PAGE)
@@ -369,8 +389,9 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
                 logger.exception("Could not release held request #%s", row.id)
                 row.status, row.last_error = "failed", str(e)[:500]
                 results.append(ReleaseResult(row.id, "failed", row.last_error))
-        await session.commit()
-        # Every row was open when read, so any now "released" went through in this run.
+            await session.commit()                            # outcome saved row by row
+        await session.commit()                                 # waiting_site changes
+        # Only rows this run claimed can be "released" here; others were skipped.
         released = [r for r in rows if r.status == "released"]
 
     if released:
@@ -379,6 +400,29 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
         except Exception:  # noqa: BLE001 - the requests went through either way
             logger.exception("Could not tell %s their held requests were submitted", email)
     return results
+
+
+async def retry_waiting_site() -> int:
+    """Try again to release rows waiting for their person to reach the site.
+
+    Run hourly. Once the person opens the site (or the SubmitterEmail column is
+    turned on), their requests go through without anyone pressing anything.
+
+    Returns:
+        How many rows were released this run.
+    """
+    async with async_session() as session:
+        emails = (await session.scalars(
+            select(HeldRequest.email).where(HeldRequest.status == "waiting_site").distinct()
+        )).all()
+    released = 0
+    for email in emails:
+        try:
+            results = await release_held_requests(email)
+            released += sum(1 for r in results if r.status == "released")
+        except Exception:  # noqa: BLE001 - one address must not stop the others
+            logger.exception("Retry of held requests waiting for site access failed")
+    return released
 
 
 async def _email_released(employee: dict, rows: list[HeldRequest]) -> None:

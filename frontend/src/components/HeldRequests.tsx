@@ -31,9 +31,16 @@ interface Props {
   onAddEmployee: (row: HeldRow) => void;
 }
 
-const STATUS_COLOR: Record<string, 'default' | 'warning' | 'error' | 'success'> = {
-  held: 'warning', failed: 'error', released: 'success', cancelled: 'default',
+const STATUS_COLOR: Record<string, 'default' | 'warning' | 'error' | 'success' | 'info'> = {
+  held: 'warning', waiting_site: 'info', releasing: 'info', failed: 'error',
+  released: 'success', cancelled: 'default',
 };
+// waiting_site: on staff, not on the SharePoint site yet; retried every hour.
+const STATUS_LABEL: Record<string, string> = {
+  held: 'Not on staff', waiting_site: 'Waiting for site access', releasing: 'Sending',
+  failed: 'Failed', released: 'Sent', cancelled: 'Cancelled',
+};
+const OPEN_STATUSES = ['held', 'waiting_site', 'failed'];   // matches the backend's OPEN_STATUSES
 
 /**
  * Requests from the request page by people not in the Staff Directory yet.
@@ -117,7 +124,7 @@ export default function HeldRequests({ processingEnabled, onAddEmployee }: Props
               </TableHead>
               <TableBody>
                 {rows.map((r) => {
-                  const open = r.status === 'held' || r.status === 'failed';
+                  const open = OPEN_STATUSES.includes(r.status);
                   return (
                     <TableRow key={r.id}>
                       <TableCell>
@@ -128,7 +135,7 @@ export default function HeldRequests({ processingEnabled, onAddEmployee }: Props
                       <TableCell>{r.summary}</TableCell>
                       <TableCell>{r.created_at?.slice(0, 10)}</TableCell>
                       <TableCell>
-                        <Chip size="small" label={r.status} color={STATUS_COLOR[r.status] ?? 'default'} />
+                        <Chip size="small" label={STATUS_LABEL[r.status] ?? r.status} color={STATUS_COLOR[r.status] ?? 'default'} />
                         {r.last_error && (
                           <Typography variant="caption" color="error" display="block">{r.last_error}</Typography>
                         )}
@@ -136,7 +143,9 @@ export default function HeldRequests({ processingEnabled, onAddEmployee }: Props
                       <TableCell sx={{ whiteSpace: 'nowrap' }}>
                         {open && (
                           <>
-                            <Button size="small" onClick={() => onAddEmployee(r)}>Add employee</Button>
+                            {r.status === 'held' && (                /* already on staff otherwise */
+                              <Button size="small" onClick={() => onAddEmployee(r)}>Add employee</Button>
+                            )}
                             <Button size="small" disabled={!processingEnabled || busyId === r.id}
                               onClick={() => act(r.id, () => releaseHeldRequest(r.id), 'Sent on.')}>
                               Retry

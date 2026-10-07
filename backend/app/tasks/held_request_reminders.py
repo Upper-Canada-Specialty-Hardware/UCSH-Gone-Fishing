@@ -3,14 +3,15 @@
 A request from someone not in the Staff Directory yet waits until their
 supervisor adds them (services/held_requests.py). This loop sends the one
 supervisor reminder after 2 business days and the one admin email after 5.
-Each is recorded on the row, so restarts and repeated runs never resend.
+Each is recorded on the row, so restarts and repeated runs never resend. It
+also retries rows whose person is on staff but not yet on the SharePoint site.
 """
 
 import asyncio
 import logging
 
 from app.config import settings
-from app.services.held_requests import remind_held_requests
+from app.services.held_requests import remind_held_requests, retry_waiting_site
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,9 @@ async def _loop() -> None:
             sent = await remind_held_requests()
             if sent["supervisor"] or sent["admins"]:
                 logger.info("Held request reminders sent: %s", sent)
+            released = await retry_waiting_site()             # people who reached the site since
+            if released:
+                logger.info("Held requests released after site access: %s", released)
         except Exception:
             logger.exception("Held request reminder loop error")
 

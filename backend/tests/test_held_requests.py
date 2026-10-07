@@ -242,7 +242,7 @@ def test_a_failed_release_is_kept_for_a_retry(world):
     assert retry.status == "released"
 
 
-def test_without_the_email_column_an_unlinked_person_stays_held(world, monkeypatch):
+def test_without_the_email_column_an_unlinked_person_waits_for_the_site(world, monkeypatch):
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
     world.linked = False
     email = _email()
@@ -250,7 +250,34 @@ def test_without_the_email_column_an_unlinked_person_stays_held(world, monkeypat
     world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
 
     [result] = asyncio.run(held_requests.release_held_requests(email))
-    assert result.status == "waiting" and world.created == []
+    assert result.status == "waiting_site" and world.created == []
+
+    # Already added, so the supervisor is not told to add them again.
+    world.sent.clear()
+    asyncio.run(held_requests.remind_held_requests(today=date(2099, 1, 5)))
+    assert not any(email in m["html"] for m in world.sent)
+
+    # Once they reach the site, the hourly retry sends the request on.
+    world.linked = True
+    asyncio.run(held_requests.retry_waiting_site())
+    assert len(world.created) == 1
+    listed = asyncio.run(held_requests.list_held_requests(include_closed=True))
+    assert next(r for r in listed if r["email"] == email)["status"] == "released"
+
+
+def test_a_row_claimed_by_another_release_is_not_submitted_twice(world):
+    email = _email()
+    row = _hold(email)
+    world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
+
+    async def both():
+        return await asyncio.gather(
+            held_requests.release_held_requests(email),
+            held_requests.release_held_requests(email, only_id=row.id),
+        )
+
+    asyncio.run(both())
+    assert len(world.created) == 1
 
 
 def test_someone_still_not_on_staff_releases_nothing(world):
@@ -278,7 +305,7 @@ def test_add_employee_reports_what_was_released(monkeypatch):
 
     monkeypatch.setattr(held_requests, "release_held_requests", fake_release)
     record = asyncio.run(dashboard._after_employee_created(
-        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}))
+        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}, allow_external_invite=True))
     assert record["released"] == [{"held_id": 1, "status": "released", "detail": "91"}]
 
 
@@ -290,6 +317,6 @@ def test_a_release_error_never_undoes_the_new_employee(monkeypatch):
 
     monkeypatch.setattr(held_requests, "release_held_requests", broken)
     record = asyncio.run(dashboard._after_employee_created(
-        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}))
+        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}, allow_external_invite=True))
     assert record["id"] == "8" and record["released"] == []
     assert "Held Requests" in record["notices"][0]
