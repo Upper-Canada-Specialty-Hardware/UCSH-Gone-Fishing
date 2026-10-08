@@ -59,7 +59,7 @@ export default function App() {
         <AppBar position="static" sx={{ mb: 3 }}>
           <Toolbar>
             <Typography variant="h6" sx={{ fontWeight: 600 }}>
-              UCSH Gone Fishing
+              UCSH Out of Office
             </Typography>
           </Toolbar>
         </AppBar>

@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # Email (SMTP2GO)
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
+    # Display name shown next to SENDER_EMAIL in the inbox; blank sends the bare address.
+    SENDER_NAME: str = "UCSH Out of Office"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

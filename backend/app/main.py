@@ -34,7 +34,7 @@ def run_migrations():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- Startup ---
-    logger.info("Starting UCSH Gone Fishing server...")
+    logger.info("Starting UCSH Out of Office server...")
 
     # 1. Run database migrations
     run_migrations()
@@ -117,7 +117,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
-app = FastAPI(title="UCSH Gone Fishing", lifespan=lifespan)
+app = FastAPI(title="UCSH Out of Office", lifespan=lifespan)
 
 # CORS — allow dashboard frontend
 cors_origins = [o for o in [settings.DASHBOARD_FRONTEND_URL] if o]

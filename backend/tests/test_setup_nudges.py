@@ -466,8 +466,8 @@ ISSUES = [
 ]
 
 LEAD = (
-    "You created a record that does not have the correct setup as per Gone "
-    "Fishing's requirements. Please fix the issues below accordingly."
+    "You created a record that does not have the correct setup as per UCSH Out "
+    "of Office's requirements. Please fix the issues below accordingly."
 )
 
 
