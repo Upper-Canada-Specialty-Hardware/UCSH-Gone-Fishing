@@ -1,15 +1,9 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import {
-  Box, Typography, Paper, CircularProgress, Alert,
-  Card, CardContent, Snackbar, ToggleButton, ToggleButtonGroup,
-  Autocomplete, TextField, Button,
-} from '@mui/material';
-import Grid from '@mui/material/Grid2';
+import { Box, Typography, Paper, CircularProgress, Alert, Snackbar } from '@mui/material';
 import TopBar from '../components/TopBar';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
 import AdminHome from '../components/admin/AdminHome';
-import TeamBalanceTable from '../components/TeamBalanceTable';
 import ManagerAssignments from '../components/ManagerAssignments';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
@@ -17,6 +11,7 @@ import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
 import RequestsScreen from '../components/admin/RequestsScreen';
+import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
@@ -52,10 +47,8 @@ const SCREEN_TITLES: Record<string, string> = {
   held: 'Held for new hires',
   setup: 'Employee setup',
   add: 'Add employee',
-  balances: 'All balances',
-  departments: 'Department summary',
-  'view-employee': 'View employee',
-  'view-team': 'View team',
+  staff: 'Staff',
+  // Reached from Staff, not the sidebar.
   assignments: 'Manager assignments',
   requests: 'All requests',
   stuck: 'Stuck requests',
@@ -99,14 +92,8 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState<any>(null);
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [groupBy, setGroupBy] = useState<string | null>(null);
-  const [grouped, setGrouped] = useState<Record<string, any[]> | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
-
-  // View Employee / View Team tabs
-  const [viewEmpId, setViewEmpId] = useState<string | null>(null);
-  const [viewMgrId, setViewMgrId] = useState<string | null>(null);
 
   // Edit pending request
   const [editItem, setEditItem] = useState<any | null>(null);
@@ -119,10 +106,6 @@ export default function AdminDashboard() {
     setAddPrefill({ title: row.name, email_address: row.email, location: row.location });
     setTab('add');                                     // the Add Employee screen
   }, [setTab]);
-
-  const managers = useMemo(() => {
-    return employees.filter((e: any) => e.is_manager);
-  }, [employees]);
 
   // The supervisor picker for Add Employee. Fetched once, lazily, when that tab
   // is first opened — not on every poll of loadData, since it is a full staff
@@ -194,16 +177,6 @@ export default function AdminDashboard() {
       setSetupRefreshing(false);
     }
   }, []);
-
-  const handleGroupBy = async (_: any, value: string) => {
-    setGroupBy(value || null);
-    if (value) {
-      const res = await getAdminBalances({ group_by: value });
-      setGrouped(res.data.groups || null);
-    } else {
-      setGrouped(null);
-    }
-  };
 
   const handleApprove = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
@@ -394,13 +367,9 @@ export default function AdminDashboard() {
       { key: 'held', label: 'Held for new hires', count: heldCount },
     ] },
     { title: 'People', items: [
+      { key: 'staff', label: 'Staff' },
       { key: 'setup', label: 'Employee setup', count: setupCount },
       { key: 'add', label: 'Add employee' },
-      { key: 'balances', label: 'All balances' },
-      { key: 'departments', label: 'Department summary' },
-      { key: 'view-employee', label: 'View employee' },
-      { key: 'view-team', label: 'View team' },
-      { key: 'assignments', label: 'Manager assignments' },
     ] },
     { title: 'Requests', items: [{ key: 'requests', label: 'All requests' }] },
     { items: [
@@ -416,7 +385,7 @@ export default function AdminDashboard() {
       <Box sx={{ display: 'flex', minHeight: 'calc(100vh - 56px)' }}>
         <AdminNav
           groups={groups}
-          current={tab}
+          current={tab === 'assignments' ? 'staff' : tab}
           onSelect={setTab}
           mobileOpen={menuOpen}
           onCloseMobile={() => setMenuOpen(false)}
@@ -475,107 +444,16 @@ export default function AdminDashboard() {
                 />
               )}
 
-              {tab === 'balances' && (
-                <Paper sx={{ p: 3 }}>
-                  <Box sx={{ mb: 2 }}>
-                    <ToggleButtonGroup value={groupBy} exclusive onChange={handleGroupBy} size="small">
-                      <ToggleButton value="">All</ToggleButton>
-                      <ToggleButton value="department">By Department</ToggleButton>
-                      <ToggleButton value="location">By Location</ToggleButton>
-                    </ToggleButtonGroup>
-                  </Box>
-                  {grouped ? (
-                    Object.entries(grouped).map(([group, emps]) => (
-                      <Box key={group} sx={{ mb: 3 }}>
-                        <Typography variant="h6" sx={{ mb: 1 }}>{group}</Typography>
-                        <TeamBalanceTable members={emps} />
-                      </Box>
-                    ))
-                  ) : (
-                    <TeamBalanceTable members={employees} />
-                  )}
-                </Paper>
-              )}
-
-              {tab === 'departments' && stats?.department_summary && (
-                <Paper sx={{ p: 3 }}>
-                  <Grid container spacing={2}>
-                    {Object.entries(stats.department_summary).map(([dept, data]: [string, any]) => (
-                      <Grid key={dept} size={{ xs: 12, sm: 6, md: 4 }}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="h6" gutterBottom>{dept}</Typography>
-                            <Typography variant="body2">Employees: {data.count}</Typography>
-                            <Typography variant="body2">Avg Vacation: {data.avg_vacation}</Typography>
-                            <Typography variant="body2">Avg Sick: {data.avg_sick}</Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                    ))}
-                  </Grid>
-                </Paper>
-              )}
-
-              {tab === 'view-employee' && (
-                <Paper sx={{ p: 3 }}>
-                  <Autocomplete
-                    options={employees}
-                    getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
-                    onChange={(_, val) => setViewEmpId(val?.id || null)}
-                    renderInput={(params) => <TextField {...params} label="Select Employee" />}
-                    sx={{ mb: 3 }}
-                  />
-                  {viewEmpId && (
-                    <Box sx={{ display: 'flex', gap: 2 }}>
-                      <Button
-                        variant="contained"
-                        onClick={() => handleOpenDashboard(viewEmpId, 'employee')}
-                      >
-                        Open Employee Dashboard
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        onClick={() => handleCopyEmployeeLink(viewEmpId)}
-                      >
-                        Copy Link
-                      </Button>
-                    </Box>
-                  )}
-                </Paper>
-              )}
-
-              {tab === 'view-team' && (
-                <Paper sx={{ p: 3 }}>
-                  <Autocomplete
-                    options={managers}
-                    getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
-                    onChange={(_, val) => setViewMgrId(val?.id || null)}
-                    renderInput={(params) => <TextField {...params} label="Select Manager" />}
-                    sx={{ mb: 3 }}
-                  />
-                  {viewMgrId && (
-                    <Box sx={{ display: 'flex', gap: 2 }}>
-                      <Button
-                        variant="contained"
-                        onClick={() => handleOpenDashboard(viewMgrId, 'manager')}
-                      >
-                        Open Team Dashboard
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        onClick={() => handleSendDashboardLink(viewMgrId)}
-                      >
-                        Send Dashboard Link
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        onClick={() => handleCopyEmployeeLink(viewMgrId)}
-                      >
-                        Copy Employee Link
-                      </Button>
-                    </Box>
-                  )}
-                </Paper>
+              {tab === 'staff' && (
+                <StaffScreen
+                  employees={employees}
+                  requests={requests}
+                  setup={employeeSetup}
+                  onOpenDashboard={handleOpenDashboard}
+                  onCopyLink={handleCopyEmployeeLink}
+                  onSendLink={handleSendDashboardLink}
+                  onManageAssignments={() => setTab('assignments')}
+                />
               )}
 
               {tab === 'assignments' && <ManagerAssignments />}
