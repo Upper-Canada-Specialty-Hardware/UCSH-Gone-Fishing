@@ -9,17 +9,16 @@ import Grid from '@mui/material/Grid2';
 import TopBar from '../components/TopBar';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
 import AdminHome from '../components/admin/AdminHome';
-import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
-import RequestHistory from '../components/RequestHistory';
 import ManagerAssignments from '../components/ManagerAssignments';
-import StuckRequests from '../components/StuckRequests';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
-import HeldRequests, { HeldRow } from '../components/HeldRequests';
+import RequestsScreen from '../components/admin/RequestsScreen';
+import RequestColumnsCard from '../components/admin/RequestColumnsCard';
+import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
   getAdminBalances,
   getAdminPending,
@@ -42,6 +41,8 @@ import {
   sendDashboardLink,
   getEmployeeDashboardLink,
   getHeldRequests,
+  releaseHeldRequest,
+  cancelHeldRequest,
 } from '../api/client';
 
 /** Every admin screen, keyed by its url segment (#/admin/<key>). */
@@ -59,7 +60,13 @@ const SCREEN_TITLES: Record<string, string> = {
   requests: 'All requests',
   stuck: 'Stuck requests',
   emails: 'Email log',
+  checks: 'Data checks',
 };
+
+/** The four screens that are views of the one requests table. */
+const REQUEST_VIEWS: Record<string, RequestView> = { pending: 'pending', held: 'held', stuck: 'stuck', requests: 'all' };
+/** A view back to its screen key, for the view chips. */
+const VIEW_SCREEN: Record<RequestView, string> = { pending: 'pending', held: 'held', stuck: 'stuck', all: 'requests' };
 
 /**
  * The admin dashboard: a grouped sidebar instead of a tab strip, a home screen
@@ -79,7 +86,10 @@ export default function AdminDashboard() {
     window.scrollTo(0, 0);                             // a new screen starts at the top
   }, [navigate]);
   const [menuOpen, setMenuOpen] = useState(false);     // small screens: the slide-out menu
-  const [heldCount, setHeldCount] = useState(0);       // held requests, for home and the sidebar
+  const [heldRows, setHeldRows] = useState<HeldRow[]>([]);         // held requests (open, or all with the switch on)
+  const [heldIncludeClosed, setHeldIncludeClosed] = useState(false);
+  // Open held requests, for home and the sidebar, whatever the switch shows.
+  const heldCount = heldRows.filter((h) => OPEN_HELD.includes(h.status)).length;
   const [employees, setEmployees] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -141,7 +151,7 @@ export default function AdminDashboard() {
             getAdminStuckRequests(),
             getAdminEmployeeSetup(),
             getConfig(),
-            // Only the count is needed here; a failure must not hold up the dashboard.
+            // A failure here must not hold up the dashboard; the held view just shows empty.
             getHeldRequests(false).catch(() => ({ data: { held: [] } })),
           ]);
           if (cancelled) return;
@@ -152,7 +162,7 @@ export default function AdminDashboard() {
           setEmployeeSetup(setupRes.data);
           setStats(statsRes.data);
           setProcessingEnabled(configRes.data.processing_enabled || false);
-          setHeldCount((heldRes.data.held || []).length);   // open held requests only
+          setHeldRows(heldRes.data.held || []);
           setLoading(false);
           return;
         } catch {
@@ -308,6 +318,47 @@ export default function AdminDashboard() {
     setSnack({ open: true, message: 'Request updated and approval email re-sent', severity: 'success' });
   }, [editItem]);
 
+  /**
+   * Reload the held list.
+   *
+   * @param includeClosed - Also show sent and cancelled ones.
+   */
+  const loadHeld = useCallback(async (includeClosed: boolean) => {
+    try {
+      const res = await getHeldRequests(includeClosed);
+      setHeldRows(res.data.held || []);
+    } catch {
+      setSnack({ open: true, message: 'Held requests could not be loaded', severity: 'error' });
+    }
+  }, []);
+
+  /** Show or hide sent and cancelled held requests. @param v - Show them. */
+  const handleHeldIncludeClosed = useCallback((v: boolean) => {
+    setHeldIncludeClosed(v);
+    loadHeld(v);
+  }, [loadHeld]);
+
+  /**
+   * Run one held-request action, then reload the held list.
+   *
+   * @param id - The held request.
+   * @param action - The call to make.
+   * @param done - What to say when it worked.
+   */
+  const heldAction = useCallback(async (id: number, action: () => Promise<unknown>, done: string) => {
+    setActionLoading(`held-${id}`);                    // the busy key the requests table looks for
+    try {
+      await action();
+      setSnack({ open: true, message: done, severity: 'success' });
+      await loadHeld(heldIncludeClosed);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'That did not work', severity: 'error' });
+    } finally {
+      setActionLoading(null);
+    }
+  }, [loadHeld, heldIncludeClosed]);
+
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
     try {
@@ -355,6 +406,7 @@ export default function AdminDashboard() {
     { items: [
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
+      { key: 'checks', label: 'Data checks' },
     ] },
   ];
 
@@ -398,15 +450,28 @@ export default function AdminDashboard() {
                 />
               )}
 
-              {tab === 'pending' && (
-                <PendingApprovals
+              {REQUEST_VIEWS[tab] && (
+                <RequestsScreen
+                  view={REQUEST_VIEWS[tab]}
+                  onView={(v) => setTab(VIEW_SCREEN[v])}
                   pending={pending}
+                  stuck={stuckRequests}
+                  requests={requests}
+                  held={heldRows}
+                  heldIncludeClosed={heldIncludeClosed}
+                  onHeldIncludeClosed={handleHeldIncludeClosed}
+                  stats={stats}
                   processingEnabled={processingEnabled}
+                  actionLoading={actionLoading}
                   onApprove={handleApprove}
                   onReject={handleReject}
-                  onSendReminder={handleSendReminder}
+                  onRemind={handleSendReminder}
+                  onRefund={handleRefund}
                   onEdit={(item) => setEditItem(item)}
-                  actionLoading={actionLoading}
+                  onReprocess={handleReprocess}
+                  onAddHeld={handleAddFromHeld}
+                  onRetryHeld={(id) => heldAction(id, () => releaseHeldRequest(id), 'Sent on.')}
+                  onCancelHeld={(id) => heldAction(id, () => cancelHeldRequest(id), 'Cancelled.')}
                 />
               )}
 
@@ -429,56 +494,6 @@ export default function AdminDashboard() {
                   ) : (
                     <TeamBalanceTable members={employees} />
                   )}
-                </Paper>
-              )}
-
-              {tab === 'requests' && stats && (
-                <Grid container spacing={2}>
-                  <Grid size={{ xs: 12, sm: 4 }}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="subtitle2" color="text.secondary">Leave Requests</Typography>
-                        <Typography variant="h4">{stats.total_requests?.leave || 0}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {stats.leave_by_status?.Pending || 0} pending
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 4 }}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="subtitle2" color="text.secondary">Overtime Requests</Typography>
-                        <Typography variant="h4">{stats.total_requests?.overtime || 0}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {stats.overtime_by_status?.Pending || 0} pending
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 4 }}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="subtitle2" color="text.secondary">Carry Over / Payout</Typography>
-                        <Typography variant="h4">{stats.total_requests?.carryover_payout || 0}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {stats.carryover_by_status?.Pending || 0} pending
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-              )}
-
-              {tab === 'requests' && (
-                <Paper sx={{ p: 3 }}>
-                  <RequestHistory
-                    requests={requests}
-                    showEmployee
-                    onRefund={handleRefund}
-                    processingEnabled={processingEnabled}
-                    actionLoading={actionLoading}
-                  />
                 </Paper>
               )}
 
@@ -565,17 +580,6 @@ export default function AdminDashboard() {
 
               {tab === 'assignments' && <ManagerAssignments />}
 
-              {tab === 'stuck' && (
-                <Paper sx={{ p: 3 }}>
-                  <StuckRequests
-                    stuckRequests={stuckRequests}
-                    processingEnabled={processingEnabled}
-                    onReprocess={handleReprocess}
-                    actionLoading={actionLoading}
-                  />
-                </Paper>
-              )}
-
               {tab === 'setup' && (
                 <Paper sx={{ p: 3 }}>
                   <EmployeeValidation
@@ -605,9 +609,8 @@ export default function AdminDashboard() {
                 </Paper>
               )}
 
-              {tab === 'held' && (
-                <HeldRequests processingEnabled={processingEnabled} onAddEmployee={handleAddFromHeld} />
-              )}
+              {tab === 'checks' && <RequestColumnsCard processingEnabled={processingEnabled} />}
+
             </>
           )}
         </Box>
