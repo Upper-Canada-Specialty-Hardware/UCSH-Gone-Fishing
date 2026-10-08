@@ -61,14 +61,6 @@ class Settings(BaseSettings):
     MAILER_FROM: str = ""                              # sender address; only needed when the key has several senders
     MAILER_FROM_NAME: str = "UCSH Out of Office"       # display name shown to staff recipients
 
-    # Email (Clerk): transactional email for every non-UCSH recipient once
-    # switched on. Off and blank by default. The endpoint is experimental.
-    CLERK_EMAIL_ENABLED: bool = False                  # master switch for Clerk email
-    CLERK_SECRET_KEY: str = ""                         # production secret key (sk_live_...)
-    CLERK_API_URL: str = "https://api.clerk.com/v1"    # base url; /email is appended per call
-    CLERK_FROM_EMAIL: str = ""                         # sender on the verified Clerk production domain
-    CLERK_REPLY_TO: str = ""                           # optional reply-to, must be on the same domain
-
     # Which email domains count as internal (routed to the UCSH mailer). Comma
     # separated; must match the mailer's own ALLOWED_DOMAINS or it will refuse
     # recipients it considers external.
