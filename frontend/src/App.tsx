@@ -74,8 +74,8 @@ export default function App() {
       <HashRouter>
         <Routes>
           {/* The public request page is the landing page: bookmarks, links and QR codes. */}
-          <Route path="/" element={<Framed><RequestPage /></Framed>} />
-          <Route path="/request" element={<Framed><RequestPage /></Framed>} />
+          <Route path="/" element={<RequestPage />} />
+          <Route path="/request" element={<RequestPage />} />
           <Route path="/dashboard" element={<AuthHandler />} />
           <Route path="/employee" element={<Framed><EmployeeDashboard /></Framed>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}

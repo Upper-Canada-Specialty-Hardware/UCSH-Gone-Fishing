@@ -91,6 +91,20 @@ export function handOffSession(session: EmployeeSession): void {
 }
 
 /**
+ * Whether the current sign-in came from the employee dashboard in this tab,
+ * so the request page can say so.
+ *
+ * @returns True when a dashboard handoff is present.
+ */
+export function isHandedOff(): boolean {
+  try {
+    return !!sessionStorage.getItem(HANDOFF_KEY);
+  } catch {
+    return false;                                      // blocked storage: no handoff either
+  }
+}
+
+/**
  * Remember the sign-in on this device for its lifetime (30 days).
  *
  * @param session - From verifyCode.

@@ -62,14 +62,23 @@ const DARK = {
   warn: '#facc15', warnSoft: '#332a0e', info: '#7dd3fc', infoSoft: '#102c3c',
 };
 
+/** The colours a page may swap in over the base palette (the request page's moods). */
+export interface PrimaryOverride {
+  primary: string;
+  primarySoft: string;
+  primaryInk: string;
+  accent?: string;
+}
+
 /**
  * Build the app's MUI theme for one colour mode.
  *
  * @param mode - 'light' or 'dark' (already resolved from the system setting).
+ * @param override - Optional primary colours to use instead of the deep green.
  * @returns A theme with the warm palette, the two fonts and the extra tokens.
  */
-export function buildTheme(mode: 'light' | 'dark'): Theme {
-  const c = mode === 'dark' ? DARK : LIGHT;                      // pick the palette for this mode
+export function buildTheme(mode: 'light' | 'dark', override?: PrimaryOverride): Theme {
+  const c = { ...(mode === 'dark' ? DARK : LIGHT), ...override };   // the mode's palette, then any override
   return createTheme({
     palette: {
       mode,
