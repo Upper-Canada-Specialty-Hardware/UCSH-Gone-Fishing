@@ -461,3 +461,60 @@ def test_a_group_with_only_cc_still_gets_the_mail(monkeypatch):
         assert len(m.calls) == 1
 
     asyncio.run(flow())
+
+
+# ----- the mailer refusing an address as not internal -----
+
+def test_refused_addresses_reads_only_recipient_not_internal():
+    refused = httpx.HTTPStatusError("x", request=httpx.Request("POST", "u"), response=_resp(
+        400, {"error": "recipient_not_internal", "message": "m", "addresses": ["Temp@UCAccess.com"]}))
+    other = httpx.HTTPStatusError("x", request=httpx.Request("POST", "u"), response=_resp(
+        400, {"error": "invalid_request", "message": "m"}))
+    assert mailer_client.refused_addresses(refused) == {"temp@ucaccess.com"}
+    assert mailer_client.refused_addresses(other) == set()
+    assert mailer_client.refused_addresses(ValueError("no response")) == set()
+
+
+def test_refused_address_goes_the_outside_way_and_the_rest_resend(monkeypatch, no_sleep):
+    # The app treats ucaccess.com as internal, the mailer does not: the mailer
+    # refuses the whole request, so the ucsh.com address is re-sent through the
+    # mailer with a new key and the ucaccess.com one goes to SMTP2GO (Clerk off).
+    _enable_mailer(monkeypatch)
+    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    m = _FakeHttp([
+        _resp(400, {"error": "recipient_not_internal", "message": "m", "addresses": ["temp@ucaccess.com"]}),
+        _mailer_accepted(recipients=1),
+    ])
+    monkeypatch.setattr(mailer_client, "_http", m)
+
+    async def flow():
+        await _reset()
+        await email_module.send_email(
+            to=["staff@ucsh.com"], subject="S", html_body="<p>b</p>", cc=["temp@ucaccess.com"],
+        )
+        first, second = m.calls
+        assert first["json"]["to"] == ["staff@ucsh.com"] and first["json"]["cc"] == ["temp@ucaccess.com"]
+        assert second["json"]["to"] == ["staff@ucsh.com"] and not second["json"].get("cc")
+        assert second["headers"]["Idempotency-Key"] != first["headers"]["Idempotency-Key"]  # new body, new key
+        (call,) = smtp.calls
+        assert call["json"]["to"] == ["temp@ucaccess.com"]  # promoted from cc on the fallback
+
+    asyncio.run(flow())
+
+
+def test_refused_address_goes_to_clerk_when_clerk_is_on(monkeypatch, no_sleep):
+    _enable_mailer(monkeypatch)
+    _enable_clerk(monkeypatch)
+    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    m = _FakeHttp(_resp(400, {"error": "recipient_not_internal", "message": "m", "addresses": ["temp@ucaccess.com"]}))
+    c = _FakeHttp(_clerk_accepted())
+    monkeypatch.setattr(mailer_client, "_http", m)
+    monkeypatch.setattr(clerk_email, "_http", c)
+
+    async def flow():
+        await _reset()
+        await email_module.send_email(to=["temp@ucaccess.com"], subject="S", html_body="<p>b</p>")
+        assert len(m.calls) == 1                     # nothing left for the mailer to resend
+        assert len(c.calls) == 1 and smtp.calls == []
+
+    asyncio.run(flow())

@@ -59,19 +59,28 @@ Unchanged. `SMTP2GO_API_KEY` and `SENDER_EMAIL` stay exactly as they are.
 
 ### (a) UCSH mailer
 
-1. Ask the mailer's owner for a product key. They generate it with
-   `npm run keygen -- out-of-office <sender@ucsh.com>` in the `ucsh-mailer`
-   repo.
-2. Note the key's sender address (the `<sender@ucsh.com>` it was made for).
-3. Set `MAILER_URL`, `MAILER_KEY`, and `MAILER_FROM` (the sender address from
-   step 2).
-4. Confirm `INTERNAL_EMAIL_DOMAINS` matches the mailer's `ALLOWED_DOMAINS`, or
-   the mailer will refuse recipients it considers external.
-5. Turn on `MAILER_ENABLED`.
-6. Make the app email a UCSH address you can read (for example, submit a
-   request page code to your own address once #131 is live, or approve a test
-   request), then check the admin Email Log tab: the new row should show the
-   mailer and an accepted answer.
+The mailer (repo `ucsh-mailer`, live at
+`https://ucsh-mailer-production.up.railway.app`, sending over HVE with OAuth)
+issues one key per product. This app's key is planned there under the product
+name `gone-fishing`, bound to the shared sender `noreply@ucsh.com` (mailer issue
+#16); its maintainer creates it with `npm run onboard -- gone-fishing --apply`
+and hands over two secrets.
+
+1. Set `MAILER_URL` and `MAILER_KEY` to the two secrets. Leave `MAILER_FROM`
+   blank: the key has one sender and the mailer uses it.
+2. Confirm `INTERNAL_EMAIL_DOMAINS` matches the mailer's `ALLOWED_DOMAINS`. If
+   the app lists a domain the mailer does not accept, those addresses are
+   refused (`recipient_not_internal`); the app then sends them the outside way
+   (Clerk, or SMTP2GO) and logs a warning, so mail still arrives.
+3. Turn on `MAILER_ENABLED`.
+4. Make the app email a UCSH address you can read (a request page code to your
+   own address is simplest, or approve a test request), then check the admin
+   Email Log tab: the new row should show the mailer and an accepted answer.
+
+The mailer's yes/no rule (a link opens a confirmation page and only a `POST`
+records the answer, because link scanners open links) already holds here: the
+emailed approve and reject links show a confirmation page and act only on its
+`POST` (`routes/approval.py`).
 
 ### (b) Clerk
 

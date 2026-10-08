@@ -130,6 +130,30 @@ def _error_code(response_body: str | None) -> str | None:
         return None
 
 
+def refused_addresses(error: Exception) -> set[str]:
+    """The addresses the mailer refused as outside its allowed domains.
+
+    The mailer refuses a whole request (sending nothing) with
+    ``400 recipient_not_internal`` and lists the offending ``addresses``.
+
+    Args:
+        error: Whatever ``send`` raised.
+
+    Returns:
+        Those addresses, lower-cased; empty for any other error.
+    """
+    response = getattr(error, "response", None)                    # only HTTPStatusError has one
+    if response is None or response.status_code != 400:
+        return set()
+    try:
+        body = response.json() or {}
+    except ValueError:                                             # not the documented JSON
+        return set()
+    if not isinstance(body, dict) or body.get("error") != "recipient_not_internal":
+        return set()
+    return {str(a).strip().lower() for a in body.get("addresses") or [] if a}
+
+
 def _should_retry(status: int, response_body: str | None) -> bool:
     """Whether this answer is one of the mailer's retryable failures.
 

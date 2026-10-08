@@ -306,7 +306,40 @@ async def send_email(
                 mailer["to"], mailer["cc"], subject, full_body, base_key
             ))
         except Exception as e:
-            first_error = first_error or e
+            refused = mailer_client.refused_addresses(e)             # set only for recipient_not_internal
+            if not refused:
+                first_error = first_error or e
+            else:
+                # The mailer sent nothing: some addresses are outside its allowed domains
+                # (INTERNAL_EMAIL_DOMAINS lists more than the mailer accepts). Re-send the
+                # rest through the mailer and route the refused ones like outside addresses.
+                logger.warning(
+                    "UCSH mailer refused %s as not internal; sending them the outside way. "
+                    "Check INTERNAL_EMAIL_DOMAINS against the mailer's allowed domains.", sorted(refused),
+                )
+                kept = {f: [a for a in mailer[f] if a.strip().lower() not in refused] for f in ("to", "cc")}
+                moved = [(a, f) for f in ("to", "cc") for a in mailer[f] if a.strip().lower() in refused]
+                if not kept["to"] and kept["cc"]:                    # no To left: promote the CC
+                    kept["to"], kept["cc"] = kept["cc"], []
+                if kept["to"]:
+                    try:
+                        summaries.append(await mailer_client.send(   # a new body needs a new key
+                            kept["to"], kept["cc"], subject, full_body, f"{base_key}-kept"
+                        ))
+                    except Exception as e2:
+                        first_error = first_error or e2
+                if _clerk_usable():
+                    clerk.extend(moved)                              # sent with the Clerk group below
+                else:
+                    fallback = {f: [a for a, g in moved if g == f] for f in ("to", "cc")}
+                    if not fallback["to"]:                           # no To: promote the CC
+                        fallback["to"], fallback["cc"] = fallback["cc"], []
+                    try:
+                        summaries.append(await _send_via_smtp2go(
+                            fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"]
+                        ))
+                    except Exception as e3:
+                        first_error = first_error or e3
 
     # Clerk: one HTTP call per external recipient, each with its own key.
     for address, field in clerk:
