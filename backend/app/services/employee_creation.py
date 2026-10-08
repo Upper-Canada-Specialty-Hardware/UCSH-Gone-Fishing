@@ -180,7 +180,7 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
 
     # Not finding them in the site's user list is a notice, not a refusal: the
     # request page links requests by email, and someone only joins that list
-    # once they visit the site or are added to it (see the invite on create).
+    # once they visit the site or are added to it.
     notices: list[str] = []
     if not await _resolve_user_lookup_id(fields["EmailAddress"]):
         notices.append(

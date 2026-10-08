@@ -305,7 +305,7 @@ def test_add_employee_reports_what_was_released(monkeypatch):
 
     monkeypatch.setattr(held_requests, "release_held_requests", fake_release)
     record = asyncio.run(dashboard._after_employee_created(
-        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}, allow_external_invite=True))
+        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}))
     assert record["released"] == [{"held_id": 1, "status": "released", "detail": "91"}]
 
 
@@ -317,6 +317,6 @@ def test_a_release_error_never_undoes_the_new_employee(monkeypatch):
 
     monkeypatch.setattr(held_requests, "release_held_requests", broken)
     record = asyncio.run(dashboard._after_employee_created(
-        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}, allow_external_invite=True))
+        {"id": "8", "fields": {"EmailAddress": "lee@gmail.com"}, "notices": []}))
     assert record["id"] == "8" and record["released"] == []
     assert "Held Requests" in record["notices"][0]

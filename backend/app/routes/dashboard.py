@@ -772,8 +772,7 @@ async def team_create_employee(user: AuthUser, body: dict):
         record = await create_employee(body, [manager_sp_user_id])
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # Signed manager: an outside address (a personal email) may be invited.
-    return await _after_employee_created(record, allow_external_invite=True)
+    return await _after_employee_created(record)
 
 
 # ============================
@@ -821,41 +820,25 @@ async def admin_create_employee(body: dict):
         record = await create_employee(body, manager_ids)
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # No sign-in here, so only company addresses are invited (see employee_invites).
-    return await _after_employee_created(record, allow_external_invite=False)
+    return await _after_employee_created(record)
 
 
-async def _after_employee_created(record: dict, allow_external_invite: bool) -> dict:
+async def _after_employee_created(record: dict) -> dict:
     """Follow-ups once Add Employee has written a record, on either dashboard.
 
-    Gives the person access to the SharePoint site (a Microsoft 365 lookup or
-    guest invite, then the site members group), then submits any requests
-    they made on the request page while they were not on staff yet. Neither
-    step undoes or blocks the create: a failure is reported in the response
-    and stays visible on the admin dashboard.
+    Submits any requests the person made on the request page while they were
+    not on staff yet. This never undoes or blocks the create: a failure is
+    reported in the response and stays visible on the admin dashboard.
 
     Args:
         record: The created record from create_employee.
-        allow_external_invite: True from the signed manager route only; lets a
-            guest invite go to an address outside the company domains.
 
     Returns:
-        The record plus "invite" ({"status", "detail", ...}, see
-        employee_invites.invite_employee) and "released": one
-        {"held_id", "status", "detail"} per held request for this email.
+        The record plus "released": one {"held_id", "status", "detail"} per
+        held request for this email.
     """
-    from app.services.employee_invites import invite_employee
     from app.services.held_requests import release_held_requests
-    fields = record.get("fields", {})
-    email = fields.get("EmailAddress", "")
-    # Site access first; invite_employee records and returns, never raises.
-    record["invite"] = await invite_employee(
-        str(record.get("id")), email, fields.get("Title", ""), allow_external=allow_external_invite,
-    )
-    if record["invite"]["status"] == "failed":
-        record.setdefault("notices", []).append(
-            f"Site access was not set up: {record['invite']['detail']} Resend it from the admin dashboard."
-        )
+    email = record.get("fields", {}).get("EmailAddress", "")      # held rows are keyed by email
     try:
         results = await release_held_requests(email)
         record["released"] = [vars(r) for r in results]
@@ -1612,44 +1595,6 @@ async def admin_cancel_held_request(held_id: int):
     if not await cancel_held_request(held_id):
         raise HTTPException(status_code=404, detail="No open held request with that id")
     return {"cancelled": True}
-
-
-@router.get("/admin/invites")
-async def admin_invites():
-    """Site access outcomes from Add Employee, newest first.
-
-    Unauthenticated like every other /admin/* route.
-
-    Returns:
-        {"invites": [...], "enabled": bool}.
-    """
-    from app.services.employee_invites import list_invites
-    return {"invites": await list_invites(), "enabled": settings.INVITES_ENABLED}
-
-
-@router.post("/admin/employees/{employee_id}/invite")
-async def admin_resend_invite(employee_id: str):
-    """Send (or resend) one employee's site invite and group add.
-
-    Unauthenticated like every other /admin/* route, so an outside address is
-    invited only when a signed request already invited that same address.
-
-    Args:
-        employee_id: Their Staff Directory id.
-
-    Returns:
-        The outcome from employee_invites.invite_employee.
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.employee_invites import invite_employee, was_invited_at
-    employee = await get_employee_by_id(employee_id)
-    if not employee:
-        raise HTTPException(status_code=404, detail="Employee not found")
-    fields = employee["fields"]
-    email = fields.get("EmailAddress", "")
-    resend = await was_invited_at(employee_id, email)          # same address a signed request invited
-    return await invite_employee(employee_id, email, fields.get("Title", ""), allow_external=resend)
 
 
 @router.get("/admin/request-columns")

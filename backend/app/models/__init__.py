@@ -9,7 +9,6 @@ from app.models.staff_setup_nudge import StaffSetupNudge
 from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
 from app.models.email_code import EmailCode
 from app.models.held_request import HeldRequest
-from app.models.employee_invite import EmployeeInvite
 
 # Migrated business tables (the SharePoint data, moved into Postgres).
 from app.models.employee import Employee
@@ -32,7 +31,6 @@ __all__ = [
     "EmailApiLogRecipient",
     "EmailCode",
     "HeldRequest",
-    "EmployeeInvite",
     # business
     "Employee",
     "ManagerAssignment",

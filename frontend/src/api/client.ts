@@ -154,10 +154,6 @@ export const getHeldRequests = (includeClosed = false) =>
 export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
 export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/cancel`);
 
-// Admin - Site Invites: whether Add Employee gave each new hire site access.
-export const getInvites = () => api.get('/admin/invites');
-export const resendInvite = (employeeId: string) => api.post(`/admin/employees/${employeeId}/invite`);
-
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
 export const addRequestColumns = () => api.post('/admin/request-columns');

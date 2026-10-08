@@ -16,7 +16,6 @@ import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
 import HeldRequests, { HeldRow } from '../components/HeldRequests';
-import SiteInvites from '../components/SiteInvites';
 import {
   getAdminBalances,
   getAdminPending,
@@ -370,7 +369,6 @@ export default function AdminDashboard() {
         <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
         <Tab label="Email Log" value={10} />
         <Tab label="Held Requests" value={11} />
-        <Tab label="Site Invites" value={12} />
       </Tabs>
 
       {tab === 0 && (
@@ -546,7 +544,6 @@ export default function AdminDashboard() {
         <HeldRequests processingEnabled={processingEnabled} onAddEmployee={handleAddFromHeld} />
       )}
 
-      {tab === 12 && <SiteInvites processingEnabled={processingEnabled} />}
 
       <Snackbar
         open={snack.open}

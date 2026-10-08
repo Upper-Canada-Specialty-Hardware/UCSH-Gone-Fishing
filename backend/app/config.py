@@ -48,14 +48,6 @@ class Settings(BaseSettings):
     # not there makes SharePoint refuse the whole item.
     REQUEST_EMAIL_COLUMNS_ENABLED: bool = False
 
-    # Add Employee invites (#133)
-    # Off until IT has granted the Graph permissions and created the group.
-    INVITES_ENABLED: bool = False
-    # Object id of the Entra security group placed inside the site's Members.
-    SITE_MEMBERS_GROUP_ID: str = ""
-    # Where a guest lands after accepting the invite; empty = the request page.
-    INVITE_REDIRECT_URL: str = ""
-
     # Email (SMTP2GO)
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"

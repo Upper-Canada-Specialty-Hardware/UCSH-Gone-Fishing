@@ -56,7 +56,6 @@ interface Props {
 interface CreateOutcome {
   name: string;
   notices: string[];
-  invite?: { status: string; detail: string };
   released: { held_id: number; status: string; detail: string }[];
 }
 
@@ -118,11 +117,10 @@ export default function AddEmployee({
       const payload = showPicker ? { ...form, manager_ids: managerIds } : { ...form };
       const res: any = await submitEmployee(payload);
       const data = res?.data ?? {};
-      // Site access and released requests are reported, never blocking.
+      // Released requests are reported, never blocking.
       setOutcome({
         name: form.title.trim(),
         notices: data.notices ?? [],
-        invite: data.invite,
         released: data.released ?? [],
       });
       onCreated(form.title.trim());
@@ -288,17 +286,8 @@ export default function AddEmployee({
   );
 }
 
-/** Readable labels for the site-access outcome from the server. */
-const INVITE_TEXT: Record<string, string> = {
-  on_site: 'Site access: already on the site.',
-  in_tenant: 'Site access: added to the site members.',
-  invited: 'Site access: invite emailed.',
-  skipped: 'Site access: not set up automatically; IT adds them to the site.',
-  failed: 'Site access: not set up.',
-};
-
 /**
- * What happened after a create: notices, site access, and any held requests
+ * What happened after a create: notices and any held requests
  * from the request page that were sent on.
  *
  * @param props.outcome - From the create response.
@@ -307,12 +296,10 @@ const INVITE_TEXT: Record<string, string> = {
 function CreatedSummary({ outcome }: { outcome: CreateOutcome }) {
   const released = outcome.released.filter((r) => r.status === 'released').length;
   const stuck = outcome.released.filter((r) => r.status !== 'released');
-  const inviteFailed = outcome.invite?.status === 'failed';
   return (
     <Stack spacing={1} sx={{ mb: 2 }}>
       <Alert severity="success">
         {outcome.name} was added.
-        {outcome.invite && <> {INVITE_TEXT[outcome.invite.status] ?? ''} {!inviteFailed && outcome.invite.detail}</>}
         {released > 0 && <> {released} waiting request{released > 1 ? 's were' : ' was'} sent to their manager.</>}
       </Alert>
       {stuck.length > 0 && (
