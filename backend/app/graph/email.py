@@ -1,17 +1,21 @@
 import asyncio
+import hashlib
 import logging
 import time
+import uuid
 from collections import deque
 
 import httpx
 
 from app.config import settings
+from app.graph import clerk_email, mailer_client
 from app.models.mixins import utcnow
 from app.services.email_api_log import (
     OUTCOME_NOT_ATTEMPTED,
     RESPONSE_MAX_CHARS,
     ExchangeSummary,
     classify_response,
+    combine_summaries,
     record_exchange,
 )
 
@@ -116,6 +120,123 @@ def _build_payload(
     return payload
 
 
+def _domain_of(address: str) -> str:
+    """Lower-cased domain part of an address.
+
+    Args:
+        address: A recipient address, possibly with surrounding whitespace.
+
+    Returns:
+        The part after "@", lower-cased and stripped; "" when there is no "@".
+    """
+    _, _, domain = address.strip().lower().partition("@")          # "" before/no "@"
+    return domain
+
+
+def _internal_domains() -> set[str]:
+    """The domains that route to the UCSH mailer, from settings.
+
+    Returns:
+        The comma-separated ``INTERNAL_EMAIL_DOMAINS`` as a lower-cased set,
+        blanks dropped.
+    """
+    return {d.strip().lower() for d in settings.INTERNAL_EMAIL_DOMAINS.split(",") if d.strip()}
+
+
+def _mailer_usable() -> bool:
+    """Whether internal recipients should go to the UCSH mailer right now.
+
+    Returns:
+        True only when the mailer is switched on and configured. Switched on
+        but missing its url or key is a misconfiguration: it is logged as an
+        error and treated as unusable, so those recipients fall back to
+        SMTP2GO rather than being dropped.
+    """
+    if not settings.MAILER_ENABLED:                                # off: use SMTP2GO
+        return False
+    if not mailer_client.is_configured():                          # on but not set up
+        logger.error(
+            "MAILER_ENABLED is on but MAILER_URL/MAILER_KEY are not set; "
+            "UCSH recipients fall back to SMTP2GO"
+        )
+        return False
+    return True
+
+
+def _clerk_usable() -> bool:
+    """Whether external recipients should go to Clerk right now.
+
+    Returns:
+        True only when Clerk is switched on and configured. Switched on but
+        missing its key or sender is logged as an error and treated as
+        unusable, so those recipients fall back to SMTP2GO.
+    """
+    if not settings.CLERK_EMAIL_ENABLED:                           # off: use SMTP2GO
+        return False
+    if not clerk_email.is_configured():                            # on but not set up
+        logger.error(
+            "CLERK_EMAIL_ENABLED is on but CLERK_SECRET_KEY/CLERK_FROM_EMAIL are not set; "
+            "external recipients fall back to SMTP2GO"
+        )
+        return False
+    return True
+
+
+def _route_recipients(
+    valid_to: list[str], valid_cc: list[str]
+) -> tuple[dict, dict, list[tuple[str, str]]]:
+    """Split recipients into per-service groups by domain.
+
+    Each address goes to the service its domain designates: internal (UCSH)
+    addresses to the UCSH mailer, every other address to Clerk. When the
+    designated service is off or misconfigured, that address falls back to
+    SMTP2GO. Clerk never receives an internal address and the mailer never
+    receives an external one.
+
+    Args:
+        valid_to: To addresses with blanks already removed.
+        valid_cc: CC addresses with blanks already removed.
+
+    Returns:
+        ``(smtp2go, mailer, clerk)`` where ``smtp2go`` and ``mailer`` are
+        ``{"to": [...], "cc": [...]}`` and ``clerk`` is a list of
+        ``(address, field)`` because Clerk sends one recipient per call.
+    """
+    internal = _internal_domains()
+    mailer_usable = _mailer_usable()
+    clerk_usable = _clerk_usable()
+    smtp2go: dict = {"to": [], "cc": []}
+    mailer: dict = {"to": [], "cc": []}
+    clerk: list[tuple[str, str]] = []
+    for field, addresses in (("to", valid_to), ("cc", valid_cc)):
+        for addr in addresses:
+            if _domain_of(addr) in internal:                       # a staff address
+                (mailer if mailer_usable else smtp2go)[field].append(addr)
+            else:                                                  # an outside address
+                if clerk_usable:
+                    clerk.append((addr, field))
+                else:
+                    smtp2go[field].append(addr)
+    return smtp2go, mailer, clerk
+
+
+def _clerk_key(base_key: str, address: str) -> str:
+    """Per-recipient Clerk idempotency key derived from the send's base key.
+
+    Clerk allows only letters, digits, underscore and hyphen, so the address
+    is folded in as a hex digest rather than appended raw.
+
+    Args:
+        base_key: The send-wide base key (hex).
+        address: The recipient the key is for.
+
+    Returns:
+        ``<base>_<16 hex of the address>``, well under Clerk's 255-char limit.
+    """
+    suffix = hashlib.sha256(address.strip().lower().encode("utf-8")).hexdigest()[:16]
+    return f"{base_key}_{suffix}"
+
+
 async def send_email(
     to: list[str],
     subject: str,
@@ -125,42 +246,167 @@ async def send_email(
     attachments: list[dict] | None = None,
     dashboard_footer: str = "",
 ) -> ExchangeSummary:
-    """Send one email through SMTP2GO and record the exchange in email_api_log.
+    """Send one email, routing each recipient to the right service, and log it.
 
-    Every path out of this function leaves exactly one log row holding the
-    redacted request and SMTP2GO's answer verbatim: a send with no usable
-    recipient is recorded as not attempted and returns quietly; an HTTP or
-    network failure is recorded and then re-raised; an answered call is
-    recorded whatever the body says. The row is written in a ``finally`` so a
-    raised error cannot skip it, and the writer swallows its own failures so
-    logging can never change the outcome of a send.
+    The signature and the contract for callers are unchanged. What is new is
+    that recipients are split by domain across up to three services: UCSH
+    (internal) addresses go to the UCSH mailer, every other address to Clerk,
+    and anything whose service is switched off (or misconfigured) stays on
+    SMTP2GO. With both new services off (the default), every recipient routes
+    to SMTP2GO and the behaviour and logging are exactly what they were.
 
-    Sending behaviour is unchanged from before the log existed: 4xx/5xx and
-    network errors raise; a 200 that rejects some or all recipients does not.
-    The returned summary is how a caller can tell those cases apart.
+    Every HTTP call made for the send leaves exactly one ``email_api_log`` row
+    (written in a ``finally``; the writer never raises), so a Clerk fan-out of
+    three recipients leaves three rows and a mailer call leaves one. Each
+    service classifies its own answer into the shared summary shape, so the
+    admin Email Log tab reads them all the same way.
+
+    Error contract (unchanged for callers): if any group fails with an HTTP or
+    network error, the other groups are still attempted, then the first failure
+    is raised. A 200 that merely rejects recipients does not raise, as before.
 
     Args:
         to: Recipient addresses; blanks and None are dropped before sending.
         subject: Email subject.
         html_body: HTML body; the dashboard footer is appended when given.
         cc: Optional CC addresses, filtered the same way as ``to``.
-        importance: "High" adds priority headers; "Normal" adds nothing.
+        importance: "High" adds priority headers; "Normal" adds nothing
+            (SMTP2GO only; the other services do not take an importance flag).
         attachments: Accepted for signature compatibility; not sent today.
         dashboard_footer: Pre-rendered footer HTML from the dashboard wrapper.
 
     Returns:
-        The ``ExchangeSummary`` read off SMTP2GO's answer (outcome, counts,
-        ids, raw body), or a not-attempted summary when nothing was sent.
+        A single ``ExchangeSummary`` covering the whole send (see
+        ``combine_summaries``): the one call's summary when only one service
+        was used, or the folded summary across services otherwise.
+
+    Raises:
+        httpx.HTTPStatusError: A service answered 4xx/5xx (rows written first).
+        httpx.HTTPError: A request never completed (rows written first).
+    """
+    full_body = html_body + dashboard_footer if dashboard_footer else html_body
+    valid_to = [addr for addr in to if addr]                       # drop blanks/None
+    valid_cc = [addr for addr in (cc or []) if addr]
+
+    smtp2go, mailer, clerk = _route_recipients(valid_to, valid_cc)
+    # A group can end up with CC addresses but no To (the To went to another
+    # service). SMTP2GO treats "no To" as nothing to send, so promote the CC
+    # to To for that group; they still get the mail.
+    for group in (smtp2go, mailer):
+        if not group["to"] and group["cc"]:
+            group["to"], group["cc"] = group["cc"], []
+    base_key = uuid.uuid4().hex                                    # reused across a call's retries
+
+    summaries: list[ExchangeSummary] = []
+    first_error: Exception | None = None
+
+    # SMTP2GO: send its group when it has recipients, or when nothing is
+    # routable anywhere (which reproduces the historical not-attempted row on
+    # the SMTP2GO url, so a wholly-blank send behaves exactly as it always has).
+    nothing_routable = not (
+        smtp2go["to"] or smtp2go["cc"] or mailer["to"] or mailer["cc"] or clerk
+    )
+    if smtp2go["to"] or smtp2go["cc"] or nothing_routable:
+        try:
+            summaries.append(await _send_via_smtp2go(
+                smtp2go["to"], smtp2go["cc"], subject, full_body, importance, raw_to=to
+            ))
+        except Exception as e:                                     # keep going; raise it at the end
+            first_error = first_error or e
+
+    # UCSH mailer: one HTTP call for the whole internal group.
+    if mailer["to"] or mailer["cc"]:
+        try:
+            summaries.append(await mailer_client.send(
+                mailer["to"], mailer["cc"], subject, full_body, base_key
+            ))
+        except Exception as e:
+            refused = mailer_client.refused_addresses(e)             # set only for recipient_not_internal
+            if not refused:
+                first_error = first_error or e
+            else:
+                # The mailer sent nothing: some addresses are outside its allowed domains
+                # (INTERNAL_EMAIL_DOMAINS lists more than the mailer accepts). Re-send the
+                # rest through the mailer and route the refused ones like outside addresses.
+                logger.warning(
+                    "UCSH mailer refused %s as not internal; sending them the outside way. "
+                    "Check INTERNAL_EMAIL_DOMAINS against the mailer's allowed domains.", sorted(refused),
+                )
+                kept = {f: [a for a in mailer[f] if a.strip().lower() not in refused] for f in ("to", "cc")}
+                moved = [(a, f) for f in ("to", "cc") for a in mailer[f] if a.strip().lower() in refused]
+                if not kept["to"] and kept["cc"]:                    # no To left: promote the CC
+                    kept["to"], kept["cc"] = kept["cc"], []
+                if kept["to"]:
+                    try:
+                        summaries.append(await mailer_client.send(   # a new body needs a new key
+                            kept["to"], kept["cc"], subject, full_body, f"{base_key}-kept"
+                        ))
+                    except Exception as e2:
+                        first_error = first_error or e2
+                if _clerk_usable():
+                    clerk.extend(moved)                              # sent with the Clerk group below
+                else:
+                    fallback = {f: [a for a, g in moved if g == f] for f in ("to", "cc")}
+                    if not fallback["to"]:                           # no To: promote the CC
+                        fallback["to"], fallback["cc"] = fallback["cc"], []
+                    try:
+                        summaries.append(await _send_via_smtp2go(
+                            fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"]
+                        ))
+                    except Exception as e3:
+                        first_error = first_error or e3
+
+    # Clerk: one HTTP call per external recipient, each with its own key.
+    for address, field in clerk:
+        try:
+            summaries.append(await clerk_email.send(
+                address, field, subject, full_body, _clerk_key(base_key, address)
+            ))
+        except Exception as e:
+            first_error = first_error or e
+
+    if first_error is not None:                                    # callers rely on this raising
+        raise first_error
+    return combine_summaries(summaries)
+
+
+async def _send_via_smtp2go(
+    to: list[str],
+    cc: list[str],
+    subject: str,
+    full_body: str,
+    importance: str,
+    *,
+    raw_to: list[str],
+) -> ExchangeSummary:
+    """Send one email through SMTP2GO and record the exchange. Fallback mailer.
+
+    This is the original single-provider send, unchanged in behaviour: a send
+    with no usable recipient is recorded as not attempted and returns quietly;
+    an HTTP or network failure is recorded in a ``finally`` and then re-raised;
+    a 200 that rejects some or all recipients is recorded and does not raise.
+    The SMTP2GO rate limiter applies only here.
+
+    Args:
+        to: To addresses, blanks already removed.
+        cc: CC addresses, blanks already removed.
+        subject: Email subject.
+        full_body: HTML body with the dashboard footer already appended.
+        importance: "High" adds priority headers; "Normal" adds nothing.
+        raw_to: The caller's original ``to`` (blanks included), recorded on the
+            not-attempted row so it shows what the code had to work with.
+
+    Returns:
+        The ``ExchangeSummary`` read off SMTP2GO's answer, or a not-attempted
+        summary when there was no usable recipient.
 
     Raises:
         httpx.HTTPStatusError: SMTP2GO answered 4xx/5xx (after the row is written).
         httpx.HTTPError: The request never completed (after the row is written).
     """
-    full_body = html_body + dashboard_footer if dashboard_footer else html_body
-    valid_to = [addr for addr in to if addr]
-    payload = _build_payload(valid_to, subject, full_body, cc, importance)
+    payload = _build_payload(to, subject, full_body, cc, importance)
 
-    if not valid_to:
+    if not to:
         logger.warning("No valid recipients for email: %s", subject)
         # A blank Staff Directory address raises nothing anywhere else, so this
         # row is often the only evidence that a person was never emailed. The
@@ -172,7 +418,7 @@ async def send_email(
         await record_exchange(
             summary,
             request_url=SMTP2GO_URL,
-            payload={**payload, "to": list(to)},
+            payload={**payload, "to": list(raw_to)},
             attempted_at=utcnow(),
             duration_ms=None,
         )
@@ -212,11 +458,11 @@ async def send_email(
         # body. Not raised today (existing behaviour); the log row carries it.
         logger.error(
             "SMTP2GO rejected %s of %s recipient(s) for %r: %s",
-            summary.failed, len(valid_to), subject, response_body,
+            summary.failed, len(to), subject, response_body,
         )
     logger.info(
         "Email sent to %s - subject: %s (SMTP2GO %s, email_id %s)",
-        valid_to, subject, summary.outcome, summary.email_id,
+        to, subject, summary.outcome, summary.email_id,
     )
     return summary
 

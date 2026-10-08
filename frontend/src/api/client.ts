@@ -118,6 +118,18 @@ export const createEmployee = (payload: Record<string, unknown>) =>
 export const createEmployeeAdmin = (payload: Record<string, unknown>) =>
   api.post('/admin/employees', payload);
 
+// Admin - Company Holidays editor (the dashboard edit surface for HR)
+export const getAdminHolidays = () => api.get('/admin/holidays');
+export const createHoliday = (payload: { title: string; date: string; province: string }) =>
+  api.post('/admin/holidays', payload);
+export const updateHoliday = (id: string, payload: { title: string; date: string; province: string }) =>
+  api.patch(`/admin/holidays/${id}`, payload);
+export const deleteHoliday = (id: string) => api.delete(`/admin/holidays/${id}`);
+
+// Admin - holidays SharePoint -> Postgres copy + parity check
+export const getHolidaysParity = () => api.get('/admin/holidays/parity');
+export const copyHolidaysToPostgres = () => api.post('/admin/holidays/copy-to-postgres');
+
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
 export const adminReprocessRequest = (id: string, reason: string) =>
@@ -146,3 +158,14 @@ export const getAdminEmailLog = (params: { employee_id?: string; address?: strin
 // normal SMTP2GO path and get that send's log row back.
 export const sendAdminTestEmail = (payload: { employee_id?: string; address?: string }) =>
   api.post('/admin/email-log/test', payload);
+
+// Admin - Held Requests: request page submissions from people not in the Staff
+// Directory yet, waiting for their supervisor to add them.
+export const getHeldRequests = (includeClosed = false) =>
+  api.get('/admin/held-requests', { params: { include_closed: includeClosed } });
+export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
+export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/cancel`);
+
+// Admin - the SubmitterEmail and RequestSource columns the request page writes.
+export const getRequestColumns = () => api.get('/admin/request-columns');
+export const addRequestColumns = () => api.post('/admin/request-columns');

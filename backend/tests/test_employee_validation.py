@@ -118,11 +118,11 @@ def test_identity_failure_propagates():
 
 
 def test_an_email_with_no_microsoft_365_account_warns_rather_than_fails():
-    # A personal address means this person cannot sign in to submit a request
-    # at all, so the record is inert rather than mis-wired.
+    # Not in the site's user list (a personal address, or never opened the
+    # site): the request page still links them by email, so this is a warn.
     verdict = ev._identity_verdict("1", "someone@gmail.com", None, None)
     assert verdict["status"] == "warn"
-    assert "cannot submit a request" in verdict["detail"]
+    assert "request page" in verdict["detail"]
 
 
 def test_a_record_with_no_email_still_fails_identity():

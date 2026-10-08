@@ -1,20 +1,21 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import {
-  Box, Typography, Paper, CircularProgress, Alert, Tabs, Tab,
-  Card, CardContent, Snackbar, ToggleButton, ToggleButtonGroup,
-  Autocomplete, TextField, Button,
-} from '@mui/material';
-import Grid from '@mui/material/Grid2';
-import PendingApprovals from '../components/PendingApprovals';
-import TeamBalanceTable from '../components/TeamBalanceTable';
-import RequestHistory from '../components/RequestHistory';
+import { useEffect, useState, useCallback } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Box, Typography, Paper, CircularProgress, Alert, Snackbar } from '@mui/material';
+import TopBar from '../components/TopBar';
+import AdminNav, { NavGroup } from '../components/admin/AdminNav';
+import AdminHome from '../components/admin/AdminHome';
 import ManagerAssignments from '../components/ManagerAssignments';
-import StuckRequests from '../components/StuckRequests';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
+import HolidaysManager from '../components/HolidaysManager';
+import RequestsScreen from '../components/admin/RequestsScreen';
+import StaffScreen from '../components/admin/StaffScreen';
+import RequestColumnsCard from '../components/admin/RequestColumnsCard';
+import { Enter, leaveDelay } from '../components/Motion';
+import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
   getAdminBalances,
   getAdminPending,
@@ -36,10 +37,55 @@ import {
   getAdminImpersonateUrl,
   sendDashboardLink,
   getEmployeeDashboardLink,
+  getHeldRequests,
+  releaseHeldRequest,
+  cancelHeldRequest,
 } from '../api/client';
 
+/** Every admin screen, keyed by its url segment (#/admin/<key>). */
+const SCREEN_TITLES: Record<string, string> = {
+  home: 'Home',
+  pending: 'Pending approvals',
+  held: 'Held for new hires',
+  setup: 'Employee setup',
+  add: 'Add employee',
+  staff: 'Staff',
+  // Reached from Staff, not the sidebar.
+  assignments: 'Manager assignments',
+  requests: 'All requests',
+  holidays: 'Company holidays',
+  stuck: 'Stuck requests',
+  emails: 'Email log',
+  checks: 'Data checks',
+};
+
+/** The four screens that are views of the one requests table. */
+const REQUEST_VIEWS: Record<string, RequestView> = { pending: 'pending', held: 'held', stuck: 'stuck', requests: 'all' };
+/** A view back to its screen key, for the view chips. */
+const VIEW_SCREEN: Record<RequestView, string> = { pending: 'pending', held: 'held', stuck: 'stuck', all: 'requests' };
+
+/**
+ * The admin dashboard: a grouped sidebar instead of a tab strip, a home screen
+ * of what needs attention, and the open screen in the url so it survives a
+ * refresh and can be bookmarked or shared.
+ *
+ * @returns The admin dashboard.
+ */
 export default function AdminDashboard() {
-  const [tab, setTab] = useState(0);
+  const params = useParams();
+  const navigate = useNavigate();
+  // The screen comes from the url; anything unknown falls back to home.
+  const tab = params.screen && SCREEN_TITLES[params.screen] ? params.screen : 'home';
+  /** Open a screen (changes the url). @param key - Screen key. */
+  const setTab = useCallback((key: string) => {
+    navigate(`/admin/${key}`);                         // the url is the source of truth
+    window.scrollTo(0, 0);                             // a new screen starts at the top
+  }, [navigate]);
+  const [menuOpen, setMenuOpen] = useState(false);     // small screens: the slide-out menu
+  const [heldRows, setHeldRows] = useState<HeldRow[]>([]);         // held requests (open, or all with the switch on)
+  const [heldIncludeClosed, setHeldIncludeClosed] = useState(false);
+  // Open held requests, for home and the sidebar, whatever the switch shows.
+  const heldCount = heldRows.filter((h) => OPEN_HELD.includes(h.status)).length;
   const [employees, setEmployees] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -49,28 +95,28 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState<any>(null);
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [groupBy, setGroupBy] = useState<string | null>(null);
-  const [grouped, setGrouped] = useState<Record<string, any[]> | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());   // decided pending rows on their way out
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
-
-  // View Employee / View Team tabs
-  const [viewEmpId, setViewEmpId] = useState<string | null>(null);
-  const [viewMgrId, setViewMgrId] = useState<string | null>(null);
 
   // Edit pending request
   const [editItem, setEditItem] = useState<any | null>(null);
 
-  const managers = useMemo(() => {
-    return employees.filter((e: any) => e.is_manager);
-  }, [employees]);
+  // A held request's person, to prefill Add Employee from the Held Requests tab.
+  const [addPrefill, setAddPrefill] = useState<
+    { title: string; email_address: string; location: string } | null
+  >(null);
+  const handleAddFromHeld = useCallback((row: HeldRow) => {
+    setAddPrefill({ title: row.name, email_address: row.email, location: row.location });
+    setTab('add');                                     // the Add Employee screen
+  }, [setTab]);
 
   // The supervisor picker for Add Employee. Fetched once, lazily, when that tab
   // is first opened — not on every poll of loadData, since it is a full staff
   // read and the dashboard's data loop runs continuously.
   const [spUsers, setSpUsers] = useState<ManagerOption[]>([]);
   useEffect(() => {
-    if (tab !== 9 || spUsers.length > 0) return;
+    if (tab !== 'add' || spUsers.length > 0) return;
     getSpUsers()
       .then((r) => setSpUsers(
         (r.data.users || []).map((u: any) => ({ sp_user_id: u.sp_user_id, name: u.name })),
@@ -84,7 +130,7 @@ export default function AdminDashboard() {
     const loadData = async () => {
       while (!cancelled) {
         try {
-          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes] = await Promise.all([
+          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes, heldRes] = await Promise.all([
             getAdminBalances(),
             getAdminPending(),
             getAdminRequests(),
@@ -92,6 +138,8 @@ export default function AdminDashboard() {
             getAdminStuckRequests(),
             getAdminEmployeeSetup(),
             getConfig(),
+            // A failure here must not hold up the dashboard; the held view just shows empty.
+            getHeldRequests(false).catch(() => ({ data: { held: [] } })),
           ]);
           if (cancelled) return;
           setEmployees(balRes.data.employees || []);
@@ -101,6 +149,7 @@ export default function AdminDashboard() {
           setEmployeeSetup(setupRes.data);
           setStats(statsRes.data);
           setProcessingEnabled(configRes.data.processing_enabled || false);
+          setHeldRows(heldRes.data.held || []);
           setLoading(false);
           return;
         } catch {
@@ -133,21 +182,27 @@ export default function AdminDashboard() {
     }
   }, []);
 
-  const handleGroupBy = async (_: any, value: string) => {
-    setGroupBy(value || null);
-    if (value) {
-      const res = await getAdminBalances({ group_by: value });
-      setGrouped(res.data.groups || null);
-    } else {
-      setGrouped(null);
-    }
-  };
+  /**
+   * Take a decided request out of the pending list: its row fades first, then
+   * it is removed (straight away when less motion is asked for).
+   *
+   * @param type - 'leave', 'overtime' or 'carryover-payout'.
+   * @param id - The SharePoint item id.
+   */
+  const removeDecided = useCallback((type: string, id: string) => {
+    const key = `${type}-${id}`;
+    setLeaving((prev) => new Set(prev).add(key));
+    setTimeout(() => {
+      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      setLeaving((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }, leaveDelay());
+  }, []);
 
   const handleApprove = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
     try {
       await adminApproveRequest(type, id);
-      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      removeDecided(type, id);                                      // fades the row, then drops it
       setSnack({ open: true, message: 'Request approved', severity: 'success' });
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -155,13 +210,13 @@ export default function AdminDashboard() {
     } finally {
       setActionLoading(null);
     }
-  }, []);
+  }, [removeDecided]);
 
   const handleReject = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
     try {
       await adminRejectRequest(type, id);
-      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      removeDecided(type, id);                                      // fades the row, then drops it
       setSnack({ open: true, message: 'Request rejected', severity: 'success' });
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -169,7 +224,7 @@ export default function AdminDashboard() {
     } finally {
       setActionLoading(null);
     }
-  }, []);
+  }, [removeDecided]);
 
   const handleRefund = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
@@ -256,6 +311,47 @@ export default function AdminDashboard() {
     setSnack({ open: true, message: 'Request updated and approval email re-sent', severity: 'success' });
   }, [editItem]);
 
+  /**
+   * Reload the held list.
+   *
+   * @param includeClosed - Also show sent and cancelled ones.
+   */
+  const loadHeld = useCallback(async (includeClosed: boolean) => {
+    try {
+      const res = await getHeldRequests(includeClosed);
+      setHeldRows(res.data.held || []);
+    } catch {
+      setSnack({ open: true, message: 'Held requests could not be loaded', severity: 'error' });
+    }
+  }, []);
+
+  /** Show or hide sent and cancelled held requests. @param v - Show them. */
+  const handleHeldIncludeClosed = useCallback((v: boolean) => {
+    setHeldIncludeClosed(v);
+    loadHeld(v);
+  }, [loadHeld]);
+
+  /**
+   * Run one held-request action, then reload the held list.
+   *
+   * @param id - The held request.
+   * @param action - The call to make.
+   * @param done - What to say when it worked.
+   */
+  const heldAction = useCallback(async (id: number, action: () => Promise<unknown>, done: string) => {
+    setActionLoading(`held-${id}`);                    // the busy key the requests table looks for
+    try {
+      await action();
+      setSnack({ open: true, message: done, severity: 'success' });
+      await loadHeld(heldIncludeClosed);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'That did not work', severity: 'error' });
+    } finally {
+      setActionLoading(null);
+    }
+  }, [loadHeld, heldIncludeClosed]);
+
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
     try {
@@ -281,252 +377,150 @@ export default function AdminDashboard() {
     }
   }, []);
 
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
+  // The sidebar, grouped the way HR thinks about the work. The last group has no
+  // heading and sits under a divider: the technical screens, unlabelled.
+  const setupCount = employeeSetup?.flagged?.length ?? 0;
+  const groups: NavGroup[] = [
+    { items: [{ key: 'home', label: 'Home' }] },
+    { title: 'Approvals', items: [
+      { key: 'pending', label: 'Pending approvals', count: pending.length },
+      { key: 'held', label: 'Held for new hires', count: heldCount },
+    ] },
+    { title: 'People', items: [
+      { key: 'staff', label: 'Staff' },
+      { key: 'setup', label: 'Employee setup', count: setupCount },
+      { key: 'add', label: 'Add employee' },
+    ] },
+    { title: 'Requests', items: [{ key: 'requests', label: 'All requests' }] },
+    // The holidays every working-day count skips, edited here since they moved to Postgres.
+    { title: 'Calendar', items: [{ key: 'holidays', label: 'Company holidays' }] },
+    { items: [
+      { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
+      { key: 'emails', label: 'Email log' },
+      { key: 'checks', label: 'Data checks' },
+    ] },
+  ];
 
   return (
-    <Box>
-      <Typography variant="h5" sx={{ mb: 3, fontWeight: 600 }}>
-        Admin Dashboard
-      </Typography>
-
-      {!processingEnabled && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          System is in reporting-only mode. Approve/reject actions are disabled.
-        </Alert>
-      )}
-
-      {/* Stats summary */}
-      {stats && (
-        <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid size={{ xs: 12, sm: 4 }}>
-            <Card>
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">Leave Requests</Typography>
-                <Typography variant="h4">{stats.total_requests?.leave || 0}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {stats.leave_by_status?.Pending || 0} pending
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid size={{ xs: 12, sm: 4 }}>
-            <Card>
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">Overtime Requests</Typography>
-                <Typography variant="h4">{stats.total_requests?.overtime || 0}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {stats.overtime_by_status?.Pending || 0} pending
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid size={{ xs: 12, sm: 4 }}>
-            <Card>
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">Carry Over / Payout</Typography>
-                <Typography variant="h4">{stats.total_requests?.carryover_payout || 0}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {stats.carryover_by_status?.Pending || 0} pending
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
-      )}
-
-      <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        variant="scrollable"
-        scrollButtons="auto"
-        sx={{ mb: 3 }}
-      >
-        <Tab label={`Employee Setup (${employeeSetup?.flagged?.length ?? 0})`} value={8} />
-        <Tab label={`Pending (${pending.length})`} value={0} />
-        <Tab label="All Balances" value={1} />
-        <Tab label="All Requests" value={2} />
-        <Tab label="Department Summary" value={3} />
-        <Tab label="View Employee" value={4} />
-        <Tab label="View Team" value={5} />
-        <Tab label="Manager Assignments" value={6} />
-        <Tab label="Add Employee" value={9} />
-        <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
-        <Tab label="Email Log" value={10} />
-      </Tabs>
-
-      {tab === 0 && (
-        <PendingApprovals
-          pending={pending}
-          processingEnabled={processingEnabled}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          onSendReminder={handleSendReminder}
-          onEdit={(item) => setEditItem(item)}
-          actionLoading={actionLoading}
+    <>
+      <TopBar onMenu={() => setMenuOpen(true)} />
+      <Box sx={{ display: 'flex', minHeight: 'calc(100vh - 56px)' }}>
+        <AdminNav
+          groups={groups}
+          current={tab === 'assignments' ? 'staff' : tab}
+          onSelect={setTab}
+          mobileOpen={menuOpen}
+          onCloseMobile={() => setMenuOpen(false)}
         />
-      )}
-
-      {tab === 1 && (
-        <Paper sx={{ p: 3 }}>
-          <Box sx={{ mb: 2 }}>
-            <ToggleButtonGroup value={groupBy} exclusive onChange={handleGroupBy} size="small">
-              <ToggleButton value="">All</ToggleButton>
-              <ToggleButton value="department">By Department</ToggleButton>
-              <ToggleButton value="location">By Location</ToggleButton>
-            </ToggleButtonGroup>
-          </Box>
-          {grouped ? (
-            Object.entries(grouped).map(([group, emps]) => (
-              <Box key={group} sx={{ mb: 3 }}>
-                <Typography variant="h6" sx={{ mb: 1 }}>{group}</Typography>
-                <TeamBalanceTable members={emps} />
-              </Box>
-            ))
+        <Box
+          component="main"
+          sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
+        >
+          {loading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
+              <CircularProgress />
+            </Box>
           ) : (
-            <TeamBalanceTable members={employees} />
+            <>
+              {!processingEnabled && (
+                <Alert severity="info">
+                  System is in reporting-only mode. Approve/reject actions are disabled.
+                </Alert>
+              )}
+
+              {/* Every screen but home is headed by its name. */}
+              {tab !== 'home' && <Typography variant="h5">{SCREEN_TITLES[tab]}</Typography>}
+
+              {/* The screen eases in on change; the request views share a key so switching them keeps the table's search. */}
+              <Enter key={REQUEST_VIEWS[tab] ? 'requests' : tab} sx={{ display: 'grid', gap: 2.5, gridTemplateColumns: 'minmax(0, 1fr)' }}>
+
+              {tab === 'home' && (
+                <AdminHome
+                  pending={pending}
+                  heldCount={heldCount}
+                  stuckCount={stuckRequests.length}
+                  setupCount={setupCount}
+                  onGo={setTab}
+                />
+              )}
+
+              {REQUEST_VIEWS[tab] && (
+                <RequestsScreen
+                  view={REQUEST_VIEWS[tab]}
+                  onView={(v) => setTab(VIEW_SCREEN[v])}
+                  pending={pending}
+                  stuck={stuckRequests}
+                  requests={requests}
+                  held={heldRows}
+                  heldIncludeClosed={heldIncludeClosed}
+                  onHeldIncludeClosed={handleHeldIncludeClosed}
+                  stats={stats}
+                  processingEnabled={processingEnabled}
+                  actionLoading={actionLoading}
+                  leaving={leaving}
+                  onApprove={handleApprove}
+                  onReject={handleReject}
+                  onRemind={handleSendReminder}
+                  onRefund={handleRefund}
+                  onEdit={(item) => setEditItem(item)}
+                  onReprocess={handleReprocess}
+                  onAddHeld={handleAddFromHeld}
+                  onRetryHeld={(id) => heldAction(id, () => releaseHeldRequest(id), 'Sent on.')}
+                  onCancelHeld={(id) => heldAction(id, () => cancelHeldRequest(id), 'Cancelled.')}
+                />
+              )}
+
+              {tab === 'staff' && (
+                <StaffScreen
+                  employees={employees}
+                  requests={requests}
+                  setup={employeeSetup}
+                  onOpenDashboard={handleOpenDashboard}
+                  onCopyLink={handleCopyEmployeeLink}
+                  onSendLink={handleSendDashboardLink}
+                  onManageAssignments={() => setTab('assignments')}
+                />
+              )}
+
+              {tab === 'assignments' && <ManagerAssignments />}
+
+              {tab === 'setup' && (
+                <Paper sx={{ p: 3 }}>
+                  <EmployeeValidation
+                    employees={employees}
+                    setupList={employeeSetup}
+                    setupLoading={setupRefreshing}
+                    onRefreshSetup={refreshEmployeeSetup}
+                  />
+                </Paper>
+              )}
+
+              {tab === 'add' && (
+                <AddEmployee
+                  processingEnabled={processingEnabled}
+                  submitEmployee={createEmployeeAdmin}
+                  managerOptions={spUsers}
+                  prefill={addPrefill}
+                  onCreated={(name) =>
+                    setSnack({ open: true, message: `${name} created.`, severity: 'success' })
+                  }
+                />
+              )}
+
+              {tab === 'emails' && (
+                <Paper sx={{ p: 3 }}>
+                  <EmailLog employees={employees} />
+                </Paper>
+              )}
+
+              {tab === 'checks' && <RequestColumnsCard processingEnabled={processingEnabled} />}
+
+              {tab === 'holidays' && <HolidaysManager />}
+              </Enter>
+            </>
           )}
-        </Paper>
-      )}
-
-      {tab === 2 && (
-        <Paper sx={{ p: 3 }}>
-          <RequestHistory
-            requests={requests}
-            showEmployee
-            onRefund={handleRefund}
-            processingEnabled={processingEnabled}
-            actionLoading={actionLoading}
-          />
-        </Paper>
-      )}
-
-      {tab === 3 && stats?.department_summary && (
-        <Paper sx={{ p: 3 }}>
-          <Grid container spacing={2}>
-            {Object.entries(stats.department_summary).map(([dept, data]: [string, any]) => (
-              <Grid key={dept} size={{ xs: 12, sm: 6, md: 4 }}>
-                <Card variant="outlined">
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>{dept}</Typography>
-                    <Typography variant="body2">Employees: {data.count}</Typography>
-                    <Typography variant="body2">Avg Vacation: {data.avg_vacation}</Typography>
-                    <Typography variant="body2">Avg Sick: {data.avg_sick}</Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
-        </Paper>
-      )}
-
-      {tab === 4 && (
-        <Paper sx={{ p: 3 }}>
-          <Autocomplete
-            options={employees}
-            getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
-            onChange={(_, val) => setViewEmpId(val?.id || null)}
-            renderInput={(params) => <TextField {...params} label="Select Employee" />}
-            sx={{ mb: 3 }}
-          />
-          {viewEmpId && (
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Button
-                variant="contained"
-                onClick={() => handleOpenDashboard(viewEmpId, 'employee')}
-              >
-                Open Employee Dashboard
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => handleCopyEmployeeLink(viewEmpId)}
-              >
-                Copy Link
-              </Button>
-            </Box>
-          )}
-        </Paper>
-      )}
-
-      {tab === 5 && (
-        <Paper sx={{ p: 3 }}>
-          <Autocomplete
-            options={managers}
-            getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
-            onChange={(_, val) => setViewMgrId(val?.id || null)}
-            renderInput={(params) => <TextField {...params} label="Select Manager" />}
-            sx={{ mb: 3 }}
-          />
-          {viewMgrId && (
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Button
-                variant="contained"
-                onClick={() => handleOpenDashboard(viewMgrId, 'manager')}
-              >
-                Open Team Dashboard
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => handleSendDashboardLink(viewMgrId)}
-              >
-                Send Dashboard Link
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => handleCopyEmployeeLink(viewMgrId)}
-              >
-                Copy Employee Link
-              </Button>
-            </Box>
-          )}
-        </Paper>
-      )}
-
-      {tab === 6 && <ManagerAssignments />}
-
-      {tab === 7 && (
-        <Paper sx={{ p: 3 }}>
-          <StuckRequests
-            stuckRequests={stuckRequests}
-            processingEnabled={processingEnabled}
-            onReprocess={handleReprocess}
-            actionLoading={actionLoading}
-          />
-        </Paper>
-      )}
-
-      {tab === 8 && (
-        <Paper sx={{ p: 3 }}>
-          <EmployeeValidation
-            employees={employees}
-            setupList={employeeSetup}
-            setupLoading={setupRefreshing}
-            onRefreshSetup={refreshEmployeeSetup}
-          />
-        </Paper>
-      )}
-
-      {tab === 9 && (
-        <AddEmployee
-          processingEnabled={processingEnabled}
-          submitEmployee={createEmployeeAdmin}
-          managerOptions={spUsers}
-          onCreated={(name) =>
-            setSnack({ open: true, message: `${name} created.`, severity: 'success' })
-          }
-        />
-      )}
-
-      {tab === 10 && (
-        <Paper sx={{ p: 3 }}>
-          <EmailLog employees={employees} />
-        </Paper>
-      )}
+        </Box>
+      </Box>
 
       <Snackbar
         open={snack.open}
@@ -541,6 +535,6 @@ export default function AdminDashboard() {
         onClose={() => setEditItem(null)}
         onSave={handleEditSave}
       />
-    </Box>
+    </>
   );
 }

@@ -8,6 +8,7 @@ from app.config import settings
 from app.services.leave_requests import process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
 from app.services.carryover_payout import process_new_carryover_payout
+from app.services.request_submitter import SOURCE_API
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -61,7 +62,7 @@ async def receive_leave_form(data: LeaveFormData):
     if (resp := _check_processing()):
         return resp
     try:
-        item = await process_new_leave_request(data.model_dump(), data.submitter_email)
+        item = await process_new_leave_request(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
     except Exception as e:
         logger.exception("Error processing leave form")
@@ -73,7 +74,7 @@ async def receive_overtime_form(data: OvertimeFormData):
     if (resp := _check_processing()):
         return resp
     try:
-        item = await process_new_overtime_request(data.model_dump(), data.submitter_email)
+        item = await process_new_overtime_request(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
     except Exception as e:
         logger.exception("Error processing overtime form")
@@ -85,7 +86,7 @@ async def receive_carryover_payout_form(data: CarryoverPayoutFormData):
     if (resp := _check_processing()):
         return resp
     try:
-        item = await process_new_carryover_payout(data.model_dump(), data.submitter_email)
+        item = await process_new_carryover_payout(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
     except Exception as e:
         logger.exception("Error processing carryover/payout form")
