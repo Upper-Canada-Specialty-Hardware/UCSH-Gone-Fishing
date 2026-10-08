@@ -1,6 +1,6 @@
 import { RequestKind } from '../../constants/leaveColors';
-import { getDescription, hasAuditLog } from '../dataGridDefaults';
-import { daysWaiting, requestKind, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
+import { hasAuditLog } from '../dataGridDefaults';
+import { daysWaiting, requestKind, requestNote, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
 
 /** One held request, as /admin/held-requests returns it. */
 export interface HeldRow {
@@ -112,8 +112,7 @@ export function fromSharePoint(r: any, source: Exclude<RowSource, 'held'>): Requ
     what: requestWhat(item),
     kind: requestKind(item),
     when: requestWhen(item),
-    // Overtime and carry-over Titles are often just the name; that is not a description.
-    note: getDescription(item) === requestWho(item) ? '' : getDescription(item),
+    note: requestNote(item),
     manager: typeof item.managers === 'string' ? item.managers : (item.managers || []).join(', '),
     status: source === 'stuck' ? 'Stuck' : item.Status || 'Pending',
     // Waiting only means something while nobody has decided.

@@ -111,5 +111,14 @@ export function askedAgo(r: any): string {
   return d === 0 ? 'asked today' : d === 1 ? 'asked yesterday' : `asked ${d} days ago`;
 }
 
-/** The employee's own words on the request, if any. */
-export { getDescription as requestNote };
+/**
+ * The employee's own words on the request, if any. Overtime and carry-over
+ * Titles are often just the person's name; that is not a description.
+ *
+ * @param r - The request row.
+ * @returns The description, or ''.
+ */
+export function requestNote(r: any): string {
+  const d = getDescription(r);
+  return d === requestWho(r) ? '' : d;
+}
