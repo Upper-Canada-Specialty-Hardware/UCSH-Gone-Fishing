@@ -13,6 +13,7 @@ import EmailLog from '../components/EmailLog';
 import RequestsScreen from '../components/admin/RequestsScreen';
 import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
+import { Enter, leaveDelay } from '../components/Motion';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
   getAdminBalances,
@@ -93,6 +94,7 @@ export default function AdminDashboard() {
   const [processingEnabled, setProcessingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());   // decided pending rows on their way out
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
 
   // Edit pending request
@@ -178,11 +180,27 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  /**
+   * Take a decided request out of the pending list: its row fades first, then
+   * it is removed (straight away when less motion is asked for).
+   *
+   * @param type - 'leave', 'overtime' or 'carryover-payout'.
+   * @param id - The SharePoint item id.
+   */
+  const removeDecided = useCallback((type: string, id: string) => {
+    const key = `${type}-${id}`;
+    setLeaving((prev) => new Set(prev).add(key));
+    setTimeout(() => {
+      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      setLeaving((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }, leaveDelay());
+  }, []);
+
   const handleApprove = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
     try {
       await adminApproveRequest(type, id);
-      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      removeDecided(type, id);                                      // fades the row, then drops it
       setSnack({ open: true, message: 'Request approved', severity: 'success' });
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -190,13 +208,13 @@ export default function AdminDashboard() {
     } finally {
       setActionLoading(null);
     }
-  }, []);
+  }, [removeDecided]);
 
   const handleReject = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
     try {
       await adminRejectRequest(type, id);
-      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      removeDecided(type, id);                                      // fades the row, then drops it
       setSnack({ open: true, message: 'Request rejected', severity: 'success' });
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -204,7 +222,7 @@ export default function AdminDashboard() {
     } finally {
       setActionLoading(null);
     }
-  }, []);
+  }, [removeDecided]);
 
   const handleRefund = useCallback(async (type: string, id: string) => {
     setActionLoading(`${type}-${id}`);
@@ -409,6 +427,9 @@ export default function AdminDashboard() {
               {/* Every screen but home is headed by its name. */}
               {tab !== 'home' && <Typography variant="h5">{SCREEN_TITLES[tab]}</Typography>}
 
+              {/* The screen eases in on change; the request views share a key so switching them keeps the table's search. */}
+              <Enter key={REQUEST_VIEWS[tab] ? 'requests' : tab} sx={{ display: 'grid', gap: 2.5, gridTemplateColumns: 'minmax(0, 1fr)' }}>
+
               {tab === 'home' && (
                 <AdminHome
                   pending={pending}
@@ -432,6 +453,7 @@ export default function AdminDashboard() {
                   stats={stats}
                   processingEnabled={processingEnabled}
                   actionLoading={actionLoading}
+                  leaving={leaving}
                   onApprove={handleApprove}
                   onReject={handleReject}
                   onRemind={handleSendReminder}
@@ -488,7 +510,7 @@ export default function AdminDashboard() {
               )}
 
               {tab === 'checks' && <RequestColumnsCard processingEnabled={processingEnabled} />}
-
+              </Enter>
             </>
           )}
         </Box>

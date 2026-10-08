@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Alert, Box, Button, Chip, CircularProgress, Paper, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
+import { Enter } from '../components/Motion';
 import RequestHistory from '../components/RequestHistory';
 import { STATUS_COLOR } from '../components/dataGridDefaults';
 import { getMyBalances, getMyRequests } from '../api/client';
@@ -164,9 +165,11 @@ export default function EmployeeDashboard() {
       </Paper>
 
       {showAll && (
-        <Paper sx={{ p: 2 }}>
-          <RequestHistory requests={requests} />
-        </Paper>
+        <Enter>
+          <Paper sx={{ p: 2 }}>
+            <RequestHistory requests={requests} />
+          </Paper>
+        </Enter>
       )}
     </Box>
   );
