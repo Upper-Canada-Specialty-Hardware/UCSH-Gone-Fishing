@@ -39,24 +39,54 @@ export interface Supervisor {
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
 const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day sign-in
+const HANDOFF_KEY = 'request_page_handoff';   // sessionStorage key for a sign-in handed over by the employee dashboard
 
 /**
- * The saved sign-in, if any and not expired.
+ * One stored sign-in, if present and not expired; an expired one is removed.
+ *
+ * @param store - localStorage (the 30-day sign-in) or sessionStorage (a dashboard handoff).
+ * @param key - The key it is kept under.
+ * @returns The session, or null.
+ */
+function readSession(store: Storage, key: string): EmployeeSession | null {
+  const raw = store.getItem(key);
+  if (!raw) return null;
+  const session = JSON.parse(raw) as EmployeeSession;
+  if (Number(session.exp) * 1000 <= Date.now()) {      // exp is unix seconds
+    store.removeItem(key);
+    return null;
+  }
+  return session;
+}
+
+/**
+ * The sign-in to use, if any and not expired: one handed over by the employee
+ * dashboard in this tab first, then this device's 30-day sign-in.
  *
  * @returns The session, or null when there is none, it expired, or storage is blocked.
  */
 export function loadSession(): EmployeeSession | null {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const session = JSON.parse(raw) as EmployeeSession;
-    if (Number(session.exp) * 1000 <= Date.now()) {    // exp is unix seconds
-      localStorage.removeItem(SESSION_KEY);
-      return null;
-    }
-    return session;
+    return readSession(sessionStorage, HANDOFF_KEY) ?? readSession(localStorage, SESSION_KEY);
   } catch {
     return null;                                       // private window or blocked storage
+  }
+}
+
+/**
+ * Hand the employee dashboard's sign-in to the request page, for this browser
+ * tab only. It is the same signed employee token, so the request page skips
+ * the email code. It is deliberately not saved for 30 days: an admin who opens
+ * someone's dashboard and follows "Make a request" must not stay signed in as
+ * that person on their own device.
+ *
+ * @param session - Built from the dashboard's token and the employee's name and email.
+ */
+export function handOffSession(session: EmployeeSession): void {
+  try {
+    sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(session));
+  } catch {
+    /* storage blocked: the request page asks for a code instead */
   }
 }
 
@@ -77,6 +107,7 @@ export function saveSession(session: EmployeeSession): void {
 export function clearSession(): void {
   try {
     localStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(HANDOFF_KEY);            // a dashboard handoff too
   } catch {
     /* nothing to clear */
   }
