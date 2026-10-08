@@ -17,6 +17,7 @@ from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
 from app.tasks.dashboard_links import start_dashboard_link_task
 from app.tasks.setup_nudges import start_setup_nudge_task
+from app.tasks.held_request_reminders import start_held_request_reminder_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     reminder_task = None
     dashboard_link_task = None
     setup_nudge_task = None
+    held_request_task = None
     try:
         await token_manager.get_token()
         logger.info("Graph API token acquired")
@@ -72,6 +74,7 @@ async def lifespan(app: FastAPI):
         reminder_task = start_reminder_task()
         dashboard_link_task = start_dashboard_link_task()
         setup_nudge_task = start_setup_nudge_task()
+        held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
 
         # Defer catch-up and subscription registration — both can be slow under
         # backlog/rate-limit conditions, and Graph webhook validation needs the
@@ -113,6 +116,8 @@ async def lifespan(app: FastAPI):
         dashboard_link_task.cancel()
     if setup_nudge_task:
         setup_nudge_task.cancel()
+    if held_request_task:
+        held_request_task.cancel()
     await sp_client.close()
     logger.info("Shutdown complete")
 
@@ -145,13 +150,19 @@ from app.routes.webhooks import router as webhooks_router
 from app.routes.twilio import router as twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.email_api_log import router as email_api_log_router
+from app.routes.intake import router as intake_router
+from app.routes.self_service import router as self_service_router
 
 app.include_router(health_router)
+# Public request page sign-in: email a code, check it. Unauthenticated by design.
+app.include_router(intake_router, prefix="/api/intake", tags=["intake"])
 app.include_router(forms_router, prefix="/api/forms", tags=["forms"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 # Same prefix as the dashboard router so the admin email-log lookup sits next
 # to the other /admin/* endpoints; kept in its own module to stay small.
 app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"])
+# An employee signed in on the request page submits a request (/me/requests/{type}).
+app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])

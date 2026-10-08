@@ -436,3 +436,52 @@ def test_find_conflict_for_row_lets_part_days_share_a_date():
     items = [pending, _leave(11, "Approved", "2026-09-02", "2026-09-02", days=0.5)]
 
     assert od.find_conflict_for_row(items, pending) is None
+
+
+# ----- request page rows matched by SubmitterEmail -----
+
+def _email_leave(item_id, status, start, end, email, lookup=None):
+    """A leave row from the request page; the person column only when known."""
+    fields = {"Status": status, "StartDate": start, "EndDate": end, "Days": 1.0,
+              "SubmitterEmail": email}
+    if lookup is not None:
+        fields["SubmittedTestLookupId"] = lookup
+    return {"id": item_id, "fields": fields}
+
+
+def test_rows_with_only_an_email_are_matched_by_email():
+    # Someone not on the SharePoint site: no lookup id, only SubmitterEmail.
+    approved = _email_leave("1", "Approved", "2026-11-02", "2026-11-04", "lee@gmail.com")
+    pending = _email_leave("2", "Pending", "2026-11-03", "2026-11-03", "lee@gmail.com")
+    conflict = od.find_conflict_for_row([approved, pending], pending)
+    assert conflict and conflict["item_id"] == "1"
+
+
+def test_a_different_email_never_matches():
+    approved = _email_leave("1", "Approved", "2026-11-02", "2026-11-04", "sam@gmail.com")
+    pending = _email_leave("2", "Pending", "2026-11-03", "2026-11-03", "lee@gmail.com")
+    assert od.find_conflict_for_row([approved, pending], pending) is None
+
+
+def test_two_rows_without_any_identifier_are_not_the_same_person():
+    approved = {"id": "1", "fields": {"Status": "Approved", "StartDate": "2026-11-02",
+                                      "EndDate": "2026-11-02", "Days": 1.0}}
+    pending = {"id": "2", "fields": {"Status": "Pending", "StartDate": "2026-11-02",
+                                     "EndDate": "2026-11-02", "Days": 1.0}}
+    assert od.find_conflict_for_row([approved, pending], pending) is None
+
+
+def test_the_approval_check_uses_the_email_when_there_is_no_lookup_id(monkeypatch):
+    approved = _email_leave("1", "Approved", "2026-11-02", "2026-11-04", "lee@gmail.com")
+    monkeypatch.setattr(od.sp_client, "get_list_items", _fake_list_items([approved]))
+    fields = {"StartDate": "2026-11-04", "EndDate": "2026-11-05", "Days": 2.0,
+              "SubmitterEmail": "Lee@Gmail.com"}
+    conflict = asyncio.run(od.find_leave_conflict_for_request("9", fields))
+    assert conflict and conflict["item_id"] == "1"
+
+
+def test_an_old_form_row_and_a_new_page_row_match_by_lookup_id():
+    approved = _leave("1", "Approved", "2026-11-02", "2026-11-04", submitter=7)
+    pending = _email_leave("2", "Pending", "2026-11-03", "2026-11-03", "lee@ucsh.com", lookup=7)
+    conflict = od.find_conflict_for_row([approved, pending], pending)
+    assert conflict and conflict["item_id"] == "1"

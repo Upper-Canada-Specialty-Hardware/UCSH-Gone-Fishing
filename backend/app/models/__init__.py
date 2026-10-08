@@ -7,6 +7,8 @@ from app.models.request_approval_state import RequestApprovalState
 from app.models.dashboard_link_state import DashboardLinkState
 from app.models.staff_setup_nudge import StaffSetupNudge
 from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
+from app.models.email_code import EmailCode
+from app.models.held_request import HeldRequest
 
 # Company Holidays: the one business domain served from Postgres. The other
 # business tables that once backed a wider storage move (employees, the three
@@ -24,6 +26,8 @@ __all__ = [
     "StaffSetupNudge",
     "EmailApiLog",
     "EmailApiLogRecipient",
+    "EmailCode",
+    "HeldRequest",
     # business
     "Holiday",
 ]

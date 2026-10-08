@@ -10,8 +10,12 @@ from app.services.employee import (
     get_manager_for_employee,
     get_all_managers_for_employee,
     map_location_to_province,
-    resolve_person_field,
-    resolve_person_field_name,
+)
+# Who a request is for: SubmitterEmail first, then the SubmittedTest person column.
+from app.services.request_submitter import (
+    resolve_request_submitter,
+    resolve_request_submitter_name,
+    submitter_columns,
 )
 from app.services.holidays import (
     get_holidays_for_province,
@@ -51,8 +55,20 @@ from app.services.audit_trail import (
 logger = logging.getLogger(__name__)
 
 
-async def process_new_leave_request(form_data: dict, submitter_email: str) -> dict:
-    """Create SP list item + fire parallel tasks."""
+async def process_new_leave_request(
+    form_data: dict, submitter_email: str, source: str | None = None,
+) -> dict:
+    """Create the SharePoint leave item, then work out its days and manager.
+
+    Args:
+        form_data: The leave form (leave_type, start_date, end_date, ...).
+        submitter_email: Who the request is for.
+        source: Where it came from (a request_submitter.SOURCE_* value),
+            written to RequestSource when those columns are enabled.
+
+    Returns:
+        The created SharePoint item.
+    """
     leave_type = form_data.get("leave_type", "")
     is_partial = leave_type == "Half Day or Partial Day Off"
 
@@ -79,6 +95,9 @@ async def process_new_leave_request(form_data: dict, submitter_email: str) -> di
 
     # Set SubmittedTest via Claims lookup
     fields["SubmittedTestLookupId"] = await _resolve_user_lookup_id(submitter_email)
+    # SubmitterEmail and RequestSource, so the request resolves even when the
+    # person column could not be set (submitter never visited the site).
+    fields.update(submitter_columns(submitter_email, source))
 
     # No duplicate check here, deliberately. A clash with an approved absence is
     # raised when a manager tries to approve, not at intake — blocking here ran
@@ -114,7 +133,7 @@ async def auto_calculate_days(leave_request_id: str | int):
         return
 
     # Resolve employee from SubmittedTest Person/Group field
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     if not employee:
         logger.error("Cannot find employee for leave request #%s", leave_request_id)
         return
@@ -205,7 +224,7 @@ async def auto_assign_manager(leave_request_id: str | int):
     item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     if not employee:
         logger.warning("Cannot assign manager — employee not found for LR #%s", leave_request_id)
         return
@@ -259,7 +278,7 @@ async def send_bereavement_alert(leave_request_id: str | int):
     if leave_type not in ("Bereavement", "Jury Duty"):
         return
 
-    submitter_name = await resolve_person_field_name(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    submitter_name = await resolve_request_submitter_name(fields, "SubmittedTest")
     from app.templates_render import render_bereavement_alert
     html = render_bereavement_alert(fields, submitter_name)
     await send_email(
@@ -282,7 +301,7 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
     if not fields.get("ManagerLookupId"):
         return
 
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     if not employee:
         return
     emp_fields = employee["fields"]
@@ -450,7 +469,7 @@ async def admin_edit_leave_request(
     if start_date > end_date:
         return {"error": "StartDate must be on or before EndDate"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     if not employee:
         return {"error": "Cannot resolve employee for this request"}
     employee_id = employee["id"]
@@ -535,7 +554,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     if fields.get("Status") != "Pending":
         return {"error": "Not pending"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     if not employee:
         return {"error": "Employee not found"}
     emp_fields = employee["fields"]
@@ -691,7 +710,7 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     if fields.get("ApproveProcessedFlag") == "Processed":
         return {"error": "Already processed"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     submitter_name = employee["fields"].get("Title", "") if employee else ""
     emp_fields = employee["fields"] if employee else {}
 
@@ -724,7 +743,7 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
     if fields.get("Status") != "Approved":
         return {"error": "Only approved requests can be refunded"}
 
-    employee = await resolve_person_field(fields.get("SubmittedTest") or fields.get("SubmittedTestLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedTest")
     if not employee:
         return {"error": "Employee not found"}
     emp_fields = employee["fields"]

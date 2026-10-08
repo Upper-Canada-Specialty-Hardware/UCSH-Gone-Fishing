@@ -43,9 +43,37 @@ class Settings(BaseSettings):
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
 
-    # Email (SMTP2GO)
+    # Public request page (#131)
+    # Write SubmitterEmail and RequestSource on new request items. Off until
+    # those columns exist on the three request lists: writing a column that is
+    # not there makes SharePoint refuse the whole item.
+    REQUEST_EMAIL_COLUMNS_ENABLED: bool = False
+
+    # Email (SMTP2GO): the fallback mailer; always available.
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
+
+    # Email (UCSH mailer): internal HTTPS service over Microsoft High Volume
+    # Email, used for staff (UCSH-domain) recipients once switched on. Off and
+    # blank by default, so nothing changes until an operator fills these in.
+    MAILER_ENABLED: bool = False                       # master switch for the UCSH mailer
+    MAILER_URL: str = ""                               # base url, e.g. https://mailer.internal (no trailing /v1/send)
+    MAILER_KEY: str = ""                               # static per-product bearer key from the mailer owner
+    MAILER_FROM: str = ""                              # sender address; only needed when the key has several senders
+    MAILER_FROM_NAME: str = "UCSH Out of Office"       # display name shown to staff recipients
+
+    # Email (Clerk): transactional email for every non-UCSH recipient once
+    # switched on. Off and blank by default. The endpoint is experimental.
+    CLERK_EMAIL_ENABLED: bool = False                  # master switch for Clerk email
+    CLERK_SECRET_KEY: str = ""                         # production secret key (sk_live_...)
+    CLERK_API_URL: str = "https://api.clerk.com/v1"    # base url; /email is appended per call
+    CLERK_FROM_EMAIL: str = ""                         # sender on the verified Clerk production domain
+    CLERK_REPLY_TO: str = ""                           # optional reply-to, must be on the same domain
+
+    # Which email domains count as internal (routed to the UCSH mailer). Comma
+    # separated; must match the mailer's own ALLOWED_DOMAINS or it will refuse
+    # recipients it considers external.
+    INTERNAL_EMAIL_DOMAINS: str = "ucsh.com,ucaccess.com"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

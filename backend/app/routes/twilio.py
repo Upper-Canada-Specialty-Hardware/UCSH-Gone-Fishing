@@ -109,12 +109,12 @@ async def receive_sms(request: Request):
     sender_id = sender["id"]
 
     # Manager authorization check — dynamic lookup from Staff Directory AllManagers
-    from app.services.employee import resolve_person_field, get_all_managers_for_employee
+    from app.services.employee import get_all_managers_for_employee
+    from app.services.request_submitter import resolve_request_submitter
     submitter = None
     if config["submitter_field"]:
-        submitter = await resolve_person_field(
-            fields.get(config["submitter_field"][0]) or fields.get(config["submitter_field"][1])
-        )
+        # SubmitterEmail first, then the person column named in the config.
+        submitter = await resolve_request_submitter(fields, config["submitter_field"][0])
     else:
         # Carryover/payout uses EmployeeID directly
         employee_id = fields.get("EmployeeID")
