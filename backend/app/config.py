@@ -31,13 +31,14 @@ class Settings(BaseSettings):
     # Processing toggle — when False, app is read-only (dashboards only)
     PROCESSING_ENABLED: bool = False
 
-    # Storage backend per domain (SharePoint -> Postgres migration cutover flags).
-    # "sharepoint" (default) keeps SharePoint as the source of truth; "postgres"
-    # switches that domain's reads/writes to Postgres. Flipped per cutover PR once
-    # that domain's Postgres implementation exists.
+    # Storage backend per domain. "sharepoint" (default) keeps SharePoint as the
+    # source of truth; "postgres" switches that domain's reads/writes to Postgres.
+    # Holidays is the only domain with a Postgres implementation; flip its flag
+    # once the holidays copy has run and the parity check is clean. Employees are
+    # SharePoint-only, but the flag is kept so the factory fails loudly if it is
+    # ever set to an unimplemented backend.
     STORAGE_HOLIDAYS: str = "sharepoint"
     STORAGE_EMPLOYEES: str = "sharepoint"
-    STORAGE_REQUESTS: str = "sharepoint"
 
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
@@ -51,6 +52,8 @@ class Settings(BaseSettings):
     # Email (SMTP2GO): the fallback mailer; always available.
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
+    # Display name shown next to SENDER_EMAIL in the inbox; blank sends the bare address.
+    SENDER_NAME: str = "UCSH Out of Office"
 
     # Email (UCSH mailer): internal HTTPS service over Microsoft High Volume
     # Email, used for staff (UCSH-domain) recipients once switched on. Off and

@@ -21,6 +21,24 @@ class _FakeHolidayRepository(HolidayRepository):
     async def get_by_id(self, item_id):
         return next((i for i in self._items if str(i["id"]) == str(item_id)), None)
 
+    # Write methods exist on the ABC for the admin editor; unused by these
+    # read-path tests, implemented only so the fake stays instantiable.
+    async def create(self, fields):
+        item = {"id": str(len(self._items) + 1), "fields": dict(fields)}
+        self._items.append(item)
+        return item
+
+    async def update_fields(self, item_id, fields):
+        item = await self.get_by_id(item_id)
+        item["fields"].update(fields)
+        return item
+
+    async def delete(self, item_id):
+        item = await self.get_by_id(item_id)
+        if item is None:
+            raise KeyError(item_id)
+        self._items.remove(item)
+
 
 def test_get_holidays_for_province_filters_via_repo(monkeypatch):
     items = [

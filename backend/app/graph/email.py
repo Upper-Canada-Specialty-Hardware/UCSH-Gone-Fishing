@@ -33,6 +33,21 @@ _timestamps: deque[float] = deque()
 NO_RECIPIENT_REASON = "No valid recipient address (blank in the Staff Directory?)"
 
 
+def sender_address() -> str:
+    """The From value for SMTP2GO: the display name plus the sending address.
+
+    SMTP2GO accepts ``Name <address>``; the address part must stay the
+    verified sender, so only the name is added in front of it.
+
+    Returns:
+        ``"<SENDER_NAME> <SENDER_EMAIL>"``, or the bare address when no name is set.
+    """
+    name = settings.SENDER_NAME.strip()
+    if not name:
+        return settings.SENDER_EMAIL                          # no name: unchanged from before
+    return f"{name} <{settings.SENDER_EMAIL}>"                # inbox shows the app's name
+
+
 async def send_email_with_dashboard(
     to: list[str],
     subject: str,
@@ -88,7 +103,7 @@ def _build_payload(
     """
     payload = {
         "api_key": settings.SMTP2GO_API_KEY,
-        "sender": settings.SENDER_EMAIL,
+        "sender": sender_address(),                       # "Name <address>" when a name is set
         "to": to,
         "subject": subject,
         "html_body": html_body,
