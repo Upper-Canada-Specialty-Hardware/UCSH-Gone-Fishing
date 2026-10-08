@@ -80,7 +80,7 @@ export default function App() {
           <Route path="/employee" element={<Framed><EmployeeDashboard /></Framed>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/manager/:tab?" element={<Framed><ManagerDashboard /></Framed>} />
-          <Route path="/admin/:screen?" element={<Framed><AdminDashboard /></Framed>} />
+          <Route path="/admin/:screen?" element={<AdminDashboard />} />
           <Route path="/expired" element={<Framed><Expired /></Framed>} />
           <Route path="*" element={<Navigate to="/expired" replace />} />
         </Routes>

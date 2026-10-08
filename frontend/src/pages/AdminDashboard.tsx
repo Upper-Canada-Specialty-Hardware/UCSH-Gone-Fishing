@@ -1,10 +1,14 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Box, Typography, Paper, CircularProgress, Alert, Tabs, Tab,
+  Box, Typography, Paper, CircularProgress, Alert,
   Card, CardContent, Snackbar, ToggleButton, ToggleButtonGroup,
   Autocomplete, TextField, Button,
 } from '@mui/material';
 import Grid from '@mui/material/Grid2';
+import TopBar from '../components/TopBar';
+import AdminNav, { NavGroup } from '../components/admin/AdminNav';
+import AdminHome from '../components/admin/AdminHome';
 import PendingApprovals from '../components/PendingApprovals';
 import TeamBalanceTable from '../components/TeamBalanceTable';
 import RequestHistory from '../components/RequestHistory';
@@ -37,10 +41,45 @@ import {
   getAdminImpersonateUrl,
   sendDashboardLink,
   getEmployeeDashboardLink,
+  getHeldRequests,
 } from '../api/client';
 
+/** Every admin screen, keyed by its url segment (#/admin/<key>). */
+const SCREEN_TITLES: Record<string, string> = {
+  home: 'Home',
+  pending: 'Pending approvals',
+  held: 'Held for new hires',
+  setup: 'Employee setup',
+  add: 'Add employee',
+  balances: 'All balances',
+  departments: 'Department summary',
+  'view-employee': 'View employee',
+  'view-team': 'View team',
+  assignments: 'Manager assignments',
+  requests: 'All requests',
+  stuck: 'Stuck requests',
+  emails: 'Email log',
+};
+
+/**
+ * The admin dashboard: a grouped sidebar instead of a tab strip, a home screen
+ * of what needs attention, and the open screen in the url so it survives a
+ * refresh and can be bookmarked or shared.
+ *
+ * @returns The admin dashboard.
+ */
 export default function AdminDashboard() {
-  const [tab, setTab] = useState(0);
+  const params = useParams();
+  const navigate = useNavigate();
+  // The screen comes from the url; anything unknown falls back to home.
+  const tab = params.screen && SCREEN_TITLES[params.screen] ? params.screen : 'home';
+  /** Open a screen (changes the url). @param key - Screen key. */
+  const setTab = useCallback((key: string) => {
+    navigate(`/admin/${key}`);                         // the url is the source of truth
+    window.scrollTo(0, 0);                             // a new screen starts at the top
+  }, [navigate]);
+  const [menuOpen, setMenuOpen] = useState(false);     // small screens: the slide-out menu
+  const [heldCount, setHeldCount] = useState(0);       // held requests, for home and the sidebar
   const [employees, setEmployees] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -68,8 +107,8 @@ export default function AdminDashboard() {
   >(null);
   const handleAddFromHeld = useCallback((row: HeldRow) => {
     setAddPrefill({ title: row.name, email_address: row.email, location: row.location });
-    setTab(9);                                         // the Add Employee tab
-  }, []);
+    setTab('add');                                     // the Add Employee screen
+  }, [setTab]);
 
   const managers = useMemo(() => {
     return employees.filter((e: any) => e.is_manager);
@@ -80,7 +119,7 @@ export default function AdminDashboard() {
   // read and the dashboard's data loop runs continuously.
   const [spUsers, setSpUsers] = useState<ManagerOption[]>([]);
   useEffect(() => {
-    if (tab !== 9 || spUsers.length > 0) return;
+    if (tab !== 'add' || spUsers.length > 0) return;
     getSpUsers()
       .then((r) => setSpUsers(
         (r.data.users || []).map((u: any) => ({ sp_user_id: u.sp_user_id, name: u.name })),
@@ -94,7 +133,7 @@ export default function AdminDashboard() {
     const loadData = async () => {
       while (!cancelled) {
         try {
-          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes] = await Promise.all([
+          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes, heldRes] = await Promise.all([
             getAdminBalances(),
             getAdminPending(),
             getAdminRequests(),
@@ -102,6 +141,8 @@ export default function AdminDashboard() {
             getAdminStuckRequests(),
             getAdminEmployeeSetup(),
             getConfig(),
+            // Only the count is needed here; a failure must not hold up the dashboard.
+            getHeldRequests(false).catch(() => ({ data: { held: [] } })),
           ]);
           if (cancelled) return;
           setEmployees(balRes.data.employees || []);
@@ -111,6 +152,7 @@ export default function AdminDashboard() {
           setEmployeeSetup(setupRes.data);
           setStats(statsRes.data);
           setProcessingEnabled(configRes.data.processing_enabled || false);
+          setHeldCount((heldRes.data.held || []).length);   // open held requests only
           setLoading(false);
           return;
         } catch {
@@ -291,259 +333,285 @@ export default function AdminDashboard() {
     }
   }, []);
 
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
+  // The sidebar, grouped the way HR thinks about the work. The last group has no
+  // heading and sits under a divider: the technical screens, unlabelled.
+  const setupCount = employeeSetup?.flagged?.length ?? 0;
+  const groups: NavGroup[] = [
+    { items: [{ key: 'home', label: 'Home' }] },
+    { title: 'Approvals', items: [
+      { key: 'pending', label: 'Pending approvals', count: pending.length },
+      { key: 'held', label: 'Held for new hires', count: heldCount },
+    ] },
+    { title: 'People', items: [
+      { key: 'setup', label: 'Employee setup', count: setupCount },
+      { key: 'add', label: 'Add employee' },
+      { key: 'balances', label: 'All balances' },
+      { key: 'departments', label: 'Department summary' },
+      { key: 'view-employee', label: 'View employee' },
+      { key: 'view-team', label: 'View team' },
+      { key: 'assignments', label: 'Manager assignments' },
+    ] },
+    { title: 'Requests', items: [{ key: 'requests', label: 'All requests' }] },
+    { items: [
+      { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
+      { key: 'emails', label: 'Email log' },
+    ] },
+  ];
 
   return (
-    <Box>
-      <Typography variant="h5" sx={{ mb: 3, fontWeight: 600 }}>
-        Admin Dashboard
-      </Typography>
-
-      {!processingEnabled && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          System is in reporting-only mode. Approve/reject actions are disabled.
-        </Alert>
-      )}
-
-      {/* Stats summary */}
-      {stats && (
-        <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid size={{ xs: 12, sm: 4 }}>
-            <Card>
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">Leave Requests</Typography>
-                <Typography variant="h4">{stats.total_requests?.leave || 0}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {stats.leave_by_status?.Pending || 0} pending
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid size={{ xs: 12, sm: 4 }}>
-            <Card>
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">Overtime Requests</Typography>
-                <Typography variant="h4">{stats.total_requests?.overtime || 0}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {stats.overtime_by_status?.Pending || 0} pending
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid size={{ xs: 12, sm: 4 }}>
-            <Card>
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">Carry Over / Payout</Typography>
-                <Typography variant="h4">{stats.total_requests?.carryover_payout || 0}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {stats.carryover_by_status?.Pending || 0} pending
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
-      )}
-
-      <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        variant="scrollable"
-        scrollButtons="auto"
-        sx={{ mb: 3 }}
-      >
-        <Tab label={`Employee Setup (${employeeSetup?.flagged?.length ?? 0})`} value={8} />
-        <Tab label={`Pending (${pending.length})`} value={0} />
-        <Tab label="All Balances" value={1} />
-        <Tab label="All Requests" value={2} />
-        <Tab label="Department Summary" value={3} />
-        <Tab label="View Employee" value={4} />
-        <Tab label="View Team" value={5} />
-        <Tab label="Manager Assignments" value={6} />
-        <Tab label="Add Employee" value={9} />
-        <Tab label={`Stuck (${stuckRequests.length})`} value={7} />
-        <Tab label="Email Log" value={10} />
-        <Tab label="Held Requests" value={11} />
-      </Tabs>
-
-      {tab === 0 && (
-        <PendingApprovals
-          pending={pending}
-          processingEnabled={processingEnabled}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          onSendReminder={handleSendReminder}
-          onEdit={(item) => setEditItem(item)}
-          actionLoading={actionLoading}
+    <>
+      <TopBar onMenu={() => setMenuOpen(true)} />
+      <Box sx={{ display: 'flex', minHeight: 'calc(100vh - 56px)' }}>
+        <AdminNav
+          groups={groups}
+          current={tab}
+          onSelect={setTab}
+          mobileOpen={menuOpen}
+          onCloseMobile={() => setMenuOpen(false)}
         />
-      )}
-
-      {tab === 1 && (
-        <Paper sx={{ p: 3 }}>
-          <Box sx={{ mb: 2 }}>
-            <ToggleButtonGroup value={groupBy} exclusive onChange={handleGroupBy} size="small">
-              <ToggleButton value="">All</ToggleButton>
-              <ToggleButton value="department">By Department</ToggleButton>
-              <ToggleButton value="location">By Location</ToggleButton>
-            </ToggleButtonGroup>
-          </Box>
-          {grouped ? (
-            Object.entries(grouped).map(([group, emps]) => (
-              <Box key={group} sx={{ mb: 3 }}>
-                <Typography variant="h6" sx={{ mb: 1 }}>{group}</Typography>
-                <TeamBalanceTable members={emps} />
-              </Box>
-            ))
+        <Box
+          component="main"
+          sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
+        >
+          {loading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
+              <CircularProgress />
+            </Box>
           ) : (
-            <TeamBalanceTable members={employees} />
+            <>
+              {!processingEnabled && (
+                <Alert severity="info">
+                  System is in reporting-only mode. Approve/reject actions are disabled.
+                </Alert>
+              )}
+
+              {/* Every screen but home is headed by its name. */}
+              {tab !== 'home' && <Typography variant="h5">{SCREEN_TITLES[tab]}</Typography>}
+
+              {tab === 'home' && (
+                <AdminHome
+                  pending={pending}
+                  heldCount={heldCount}
+                  stuckCount={stuckRequests.length}
+                  setupCount={setupCount}
+                  onGo={setTab}
+                />
+              )}
+
+              {tab === 'pending' && (
+                <PendingApprovals
+                  pending={pending}
+                  processingEnabled={processingEnabled}
+                  onApprove={handleApprove}
+                  onReject={handleReject}
+                  onSendReminder={handleSendReminder}
+                  onEdit={(item) => setEditItem(item)}
+                  actionLoading={actionLoading}
+                />
+              )}
+
+              {tab === 'balances' && (
+                <Paper sx={{ p: 3 }}>
+                  <Box sx={{ mb: 2 }}>
+                    <ToggleButtonGroup value={groupBy} exclusive onChange={handleGroupBy} size="small">
+                      <ToggleButton value="">All</ToggleButton>
+                      <ToggleButton value="department">By Department</ToggleButton>
+                      <ToggleButton value="location">By Location</ToggleButton>
+                    </ToggleButtonGroup>
+                  </Box>
+                  {grouped ? (
+                    Object.entries(grouped).map(([group, emps]) => (
+                      <Box key={group} sx={{ mb: 3 }}>
+                        <Typography variant="h6" sx={{ mb: 1 }}>{group}</Typography>
+                        <TeamBalanceTable members={emps} />
+                      </Box>
+                    ))
+                  ) : (
+                    <TeamBalanceTable members={employees} />
+                  )}
+                </Paper>
+              )}
+
+              {tab === 'requests' && stats && (
+                <Grid container spacing={2}>
+                  <Grid size={{ xs: 12, sm: 4 }}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="subtitle2" color="text.secondary">Leave Requests</Typography>
+                        <Typography variant="h4">{stats.total_requests?.leave || 0}</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {stats.leave_by_status?.Pending || 0} pending
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid size={{ xs: 12, sm: 4 }}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="subtitle2" color="text.secondary">Overtime Requests</Typography>
+                        <Typography variant="h4">{stats.total_requests?.overtime || 0}</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {stats.overtime_by_status?.Pending || 0} pending
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid size={{ xs: 12, sm: 4 }}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="subtitle2" color="text.secondary">Carry Over / Payout</Typography>
+                        <Typography variant="h4">{stats.total_requests?.carryover_payout || 0}</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {stats.carryover_by_status?.Pending || 0} pending
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                </Grid>
+              )}
+
+              {tab === 'requests' && (
+                <Paper sx={{ p: 3 }}>
+                  <RequestHistory
+                    requests={requests}
+                    showEmployee
+                    onRefund={handleRefund}
+                    processingEnabled={processingEnabled}
+                    actionLoading={actionLoading}
+                  />
+                </Paper>
+              )}
+
+              {tab === 'departments' && stats?.department_summary && (
+                <Paper sx={{ p: 3 }}>
+                  <Grid container spacing={2}>
+                    {Object.entries(stats.department_summary).map(([dept, data]: [string, any]) => (
+                      <Grid key={dept} size={{ xs: 12, sm: 6, md: 4 }}>
+                        <Card variant="outlined">
+                          <CardContent>
+                            <Typography variant="h6" gutterBottom>{dept}</Typography>
+                            <Typography variant="body2">Employees: {data.count}</Typography>
+                            <Typography variant="body2">Avg Vacation: {data.avg_vacation}</Typography>
+                            <Typography variant="body2">Avg Sick: {data.avg_sick}</Typography>
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    ))}
+                  </Grid>
+                </Paper>
+              )}
+
+              {tab === 'view-employee' && (
+                <Paper sx={{ p: 3 }}>
+                  <Autocomplete
+                    options={employees}
+                    getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
+                    onChange={(_, val) => setViewEmpId(val?.id || null)}
+                    renderInput={(params) => <TextField {...params} label="Select Employee" />}
+                    sx={{ mb: 3 }}
+                  />
+                  {viewEmpId && (
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <Button
+                        variant="contained"
+                        onClick={() => handleOpenDashboard(viewEmpId, 'employee')}
+                      >
+                        Open Employee Dashboard
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        onClick={() => handleCopyEmployeeLink(viewEmpId)}
+                      >
+                        Copy Link
+                      </Button>
+                    </Box>
+                  )}
+                </Paper>
+              )}
+
+              {tab === 'view-team' && (
+                <Paper sx={{ p: 3 }}>
+                  <Autocomplete
+                    options={managers}
+                    getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
+                    onChange={(_, val) => setViewMgrId(val?.id || null)}
+                    renderInput={(params) => <TextField {...params} label="Select Manager" />}
+                    sx={{ mb: 3 }}
+                  />
+                  {viewMgrId && (
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <Button
+                        variant="contained"
+                        onClick={() => handleOpenDashboard(viewMgrId, 'manager')}
+                      >
+                        Open Team Dashboard
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        onClick={() => handleSendDashboardLink(viewMgrId)}
+                      >
+                        Send Dashboard Link
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        onClick={() => handleCopyEmployeeLink(viewMgrId)}
+                      >
+                        Copy Employee Link
+                      </Button>
+                    </Box>
+                  )}
+                </Paper>
+              )}
+
+              {tab === 'assignments' && <ManagerAssignments />}
+
+              {tab === 'stuck' && (
+                <Paper sx={{ p: 3 }}>
+                  <StuckRequests
+                    stuckRequests={stuckRequests}
+                    processingEnabled={processingEnabled}
+                    onReprocess={handleReprocess}
+                    actionLoading={actionLoading}
+                  />
+                </Paper>
+              )}
+
+              {tab === 'setup' && (
+                <Paper sx={{ p: 3 }}>
+                  <EmployeeValidation
+                    employees={employees}
+                    setupList={employeeSetup}
+                    setupLoading={setupRefreshing}
+                    onRefreshSetup={refreshEmployeeSetup}
+                  />
+                </Paper>
+              )}
+
+              {tab === 'add' && (
+                <AddEmployee
+                  processingEnabled={processingEnabled}
+                  submitEmployee={createEmployeeAdmin}
+                  managerOptions={spUsers}
+                  prefill={addPrefill}
+                  onCreated={(name) =>
+                    setSnack({ open: true, message: `${name} created.`, severity: 'success' })
+                  }
+                />
+              )}
+
+              {tab === 'emails' && (
+                <Paper sx={{ p: 3 }}>
+                  <EmailLog employees={employees} />
+                </Paper>
+              )}
+
+              {tab === 'held' && (
+                <HeldRequests processingEnabled={processingEnabled} onAddEmployee={handleAddFromHeld} />
+              )}
+            </>
           )}
-        </Paper>
-      )}
-
-      {tab === 2 && (
-        <Paper sx={{ p: 3 }}>
-          <RequestHistory
-            requests={requests}
-            showEmployee
-            onRefund={handleRefund}
-            processingEnabled={processingEnabled}
-            actionLoading={actionLoading}
-          />
-        </Paper>
-      )}
-
-      {tab === 3 && stats?.department_summary && (
-        <Paper sx={{ p: 3 }}>
-          <Grid container spacing={2}>
-            {Object.entries(stats.department_summary).map(([dept, data]: [string, any]) => (
-              <Grid key={dept} size={{ xs: 12, sm: 6, md: 4 }}>
-                <Card variant="outlined">
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>{dept}</Typography>
-                    <Typography variant="body2">Employees: {data.count}</Typography>
-                    <Typography variant="body2">Avg Vacation: {data.avg_vacation}</Typography>
-                    <Typography variant="body2">Avg Sick: {data.avg_sick}</Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
-        </Paper>
-      )}
-
-      {tab === 4 && (
-        <Paper sx={{ p: 3 }}>
-          <Autocomplete
-            options={employees}
-            getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
-            onChange={(_, val) => setViewEmpId(val?.id || null)}
-            renderInput={(params) => <TextField {...params} label="Select Employee" />}
-            sx={{ mb: 3 }}
-          />
-          {viewEmpId && (
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Button
-                variant="contained"
-                onClick={() => handleOpenDashboard(viewEmpId, 'employee')}
-              >
-                Open Employee Dashboard
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => handleCopyEmployeeLink(viewEmpId)}
-              >
-                Copy Link
-              </Button>
-            </Box>
-          )}
-        </Paper>
-      )}
-
-      {tab === 5 && (
-        <Paper sx={{ p: 3 }}>
-          <Autocomplete
-            options={managers}
-            getOptionLabel={(opt: any) => `${opt.name} — ${opt.department}`}
-            onChange={(_, val) => setViewMgrId(val?.id || null)}
-            renderInput={(params) => <TextField {...params} label="Select Manager" />}
-            sx={{ mb: 3 }}
-          />
-          {viewMgrId && (
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Button
-                variant="contained"
-                onClick={() => handleOpenDashboard(viewMgrId, 'manager')}
-              >
-                Open Team Dashboard
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => handleSendDashboardLink(viewMgrId)}
-              >
-                Send Dashboard Link
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => handleCopyEmployeeLink(viewMgrId)}
-              >
-                Copy Employee Link
-              </Button>
-            </Box>
-          )}
-        </Paper>
-      )}
-
-      {tab === 6 && <ManagerAssignments />}
-
-      {tab === 7 && (
-        <Paper sx={{ p: 3 }}>
-          <StuckRequests
-            stuckRequests={stuckRequests}
-            processingEnabled={processingEnabled}
-            onReprocess={handleReprocess}
-            actionLoading={actionLoading}
-          />
-        </Paper>
-      )}
-
-      {tab === 8 && (
-        <Paper sx={{ p: 3 }}>
-          <EmployeeValidation
-            employees={employees}
-            setupList={employeeSetup}
-            setupLoading={setupRefreshing}
-            onRefreshSetup={refreshEmployeeSetup}
-          />
-        </Paper>
-      )}
-
-      {tab === 9 && (
-        <AddEmployee
-          processingEnabled={processingEnabled}
-          submitEmployee={createEmployeeAdmin}
-          managerOptions={spUsers}
-          prefill={addPrefill}
-          onCreated={(name) =>
-            setSnack({ open: true, message: `${name} created.`, severity: 'success' })
-          }
-        />
-      )}
-
-      {tab === 10 && (
-        <Paper sx={{ p: 3 }}>
-          <EmailLog employees={employees} />
-        </Paper>
-      )}
-
-      {tab === 11 && (
-        <HeldRequests processingEnabled={processingEnabled} onAddEmployee={handleAddFromHeld} />
-      )}
-
+        </Box>
+      </Box>
 
       <Snackbar
         open={snack.open}
@@ -558,6 +626,6 @@ export default function AdminDashboard() {
         onClose={() => setEditItem(null)}
         onSave={handleEditSave}
       />
-    </Box>
+    </>
   );
 }
