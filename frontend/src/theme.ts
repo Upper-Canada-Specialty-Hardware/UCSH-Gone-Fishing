@@ -133,6 +133,15 @@ export function buildTheme(mode: 'light' | 'dark', override?: PrimaryOverride): 
       MuiChip: { styleOverrides: { root: { fontWeight: 600 } } },
       MuiAlert: { styleOverrides: { root: { borderRadius: 12 } } },
       MuiTab: { styleOverrides: { root: { textTransform: 'none', fontWeight: 600 } } },
+      MuiDialog: {
+        styleOverrides: {
+          // Every dialog rises in a little as it fades in; none when less motion is asked for.
+          paper: {
+            '@media (prefers-reduced-motion: no-preference)': { animation: 'dialogin .26s ease-out both' },
+            '@keyframes dialogin': { from: { opacity: 0, transform: 'translateY(10px) scale(.98)' } },
+          },
+        },
+      },
     },
   });
 }
