@@ -1,22 +1,28 @@
-import { useEffect, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, Navigate, useSearchParams, useNavigate } from 'react-router-dom';
-import { ThemeProvider, createTheme, CssBaseline, AppBar, Toolbar, Typography, Container, Box } from '@mui/material';
+import { Container } from '@mui/material';
+import { ColorModeProvider } from './colorMode';
+import TopBar from './components/TopBar';
 import EmployeeDashboard from './pages/EmployeeDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import Expired from './pages/Expired';
 import RequestPage from './pages/RequestPage';
 
-const theme = createTheme({
-  typography: {
-    fontFamily: '"Inter", "Segoe UI", sans-serif',
-  },
-  palette: {
-    primary: { main: '#1e40af' },
-    success: { main: '#16a34a' },
-    error: { main: '#dc2626' },
-  },
-});
+/**
+ * The frame around a page: the top bar, then the page in a centred column.
+ *
+ * @param props.children - The page.
+ * @returns The framed page.
+ */
+function Framed({ children }: { children: ReactNode }) {
+  return (
+    <>
+      <TopBar />
+      <Container maxWidth="lg" sx={{ py: { xs: 2, sm: 4 } }}>{children}</Container>
+    </>
+  );
+}
 
 function AuthHandler() {
   const [searchParams] = useSearchParams();
@@ -64,33 +70,21 @@ function AuthHandler() {
 
 export default function App() {
   return (
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
+    <ColorModeProvider>
       <HashRouter>
-        <AppBar position="static" sx={{ mb: 3 }}>
-          <Toolbar>
-            <Typography variant="h6" sx={{ fontWeight: 600 }}>
-              UCSH Gone Fishing
-            </Typography>
-          </Toolbar>
-        </AppBar>
-        <Container maxWidth="lg" sx={{ pb: 4 }}>
-          <Routes>
-            {/* The public request page is the landing page: bookmarks, links and QR codes. */}
-            <Route path="/" element={<RequestPage />} />
-            <Route path="/request" element={<RequestPage />} />
-            <Route path="/dashboard" element={<AuthHandler />} />
-            <Route path="/employee" element={<EmployeeDashboard />} />
-            <Route path="/manager" element={<ManagerDashboard />} />
-            <Route path="/admin" element={<AdminDashboard />} />
-            <Route path="/expired" element={<Expired />} />
-            <Route path="*" element={<Navigate to="/expired" replace />} />
-          </Routes>
-        </Container>
-        <Box component="footer" sx={{ textAlign: 'center', py: 2, color: 'text.secondary', fontSize: 12 }}>
-          UCSH Leave Management System
-        </Box>
+        <Routes>
+          {/* The public request page is the landing page: bookmarks, links and QR codes. */}
+          <Route path="/" element={<Framed><RequestPage /></Framed>} />
+          <Route path="/request" element={<Framed><RequestPage /></Framed>} />
+          <Route path="/dashboard" element={<AuthHandler />} />
+          <Route path="/employee" element={<Framed><EmployeeDashboard /></Framed>} />
+          {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
+          <Route path="/manager/:tab?" element={<Framed><ManagerDashboard /></Framed>} />
+          <Route path="/admin/:screen?" element={<Framed><AdminDashboard /></Framed>} />
+          <Route path="/expired" element={<Framed><Expired /></Framed>} />
+          <Route path="*" element={<Navigate to="/expired" replace />} />
+        </Routes>
       </HashRouter>
-    </ThemeProvider>
+    </ColorModeProvider>
   );
 }

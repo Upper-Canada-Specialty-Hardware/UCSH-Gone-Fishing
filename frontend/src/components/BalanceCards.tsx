@@ -50,7 +50,7 @@ function BalanceCard({ label, balance, entitlement, color, lowColor }: BalanceCa
               sx={{
                 height: 8,
                 borderRadius: 4,
-                backgroundColor: '#e5e7eb',
+                backgroundColor: 'action.hover',                // the empty track, light or dark
                 '& .MuiLinearProgress-bar': { backgroundColor: barColor, borderRadius: 4 },
               }}
             />
@@ -69,8 +69,8 @@ export default function BalanceCards({ balances }: Props) {
           label="Vacation"
           balance={balances.vacation_balance}
           entitlement={balances.vacation_entitlement}
-          color="#2563eb"
-          lowColor="#dc2626"
+          color="primary.main"
+          lowColor="error.main"
         />
       </Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -78,24 +78,24 @@ export default function BalanceCards({ balances }: Props) {
           label="Sick / Personal"
           balance={balances.sick_balance}
           entitlement={balances.sick_entitlement}
-          color="#16a34a"
-          lowColor="#dc2626"
+          color="success.main"
+          lowColor="error.main"
         />
       </Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>
         <BalanceCard
           label="Time Make-Up"
           balance={balances.overtime}
-          color="#7c3aed"
-          lowColor="#dc2626"
+          color="secondary.main"
+          lowColor="error.main"
         />
       </Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>
         <BalanceCard
           label="Carry Over"
           balance={balances.carryover}
-          color="#0891b2"
-          lowColor="#dc2626"
+          color="info.main"
+          lowColor="error.main"
         />
       </Grid>
     </Grid>

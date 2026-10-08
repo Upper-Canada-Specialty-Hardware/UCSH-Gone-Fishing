@@ -5,7 +5,7 @@ export default function Expired() {
   return (
     <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
       <Paper sx={{ p: 4, textAlign: 'center', maxWidth: 400 }}>
-        <ErrorOutlineIcon sx={{ fontSize: 64, color: '#dc2626', mb: 2 }} />
+        <ErrorOutlineIcon sx={{ fontSize: 64, color: 'error.main', mb: 2 }} />
         <Typography variant="h5" gutterBottom>
           Link Expired
         </Typography>
