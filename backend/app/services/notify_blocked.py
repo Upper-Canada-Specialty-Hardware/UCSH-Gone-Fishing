@@ -27,6 +27,7 @@ from app.services.overlap_detection import (
     find_overtime_conflict_for_row,
     find_requests_blocked_by,
 )
+from app.services.request_submitter import submitter_email_of
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ async def notify_requests_blocked_by_approval(
 
     list_id, person_column, matcher = _KINDS[kind]
     submitter_lookup_id = _extract_lookup_id(approved_fields, person_column)
-    if not submitter_lookup_id:
+    submitter_email = submitter_email_of(approved_fields)      # request page rows may only have this
+    if not submitter_lookup_id and not submitter_email:
         # Their rows cannot be told from anyone else's, so nothing to check.
         return 0
     try:
@@ -69,6 +71,7 @@ async def notify_requests_blocked_by_approval(
         items = await sp_client.get_list_items(list_id)
         blocked = find_requests_blocked_by(
             items, approved_item_id, submitter_lookup_id, person_column, matcher,
+            submitter_email=submitter_email,
         )
     except Exception:  # noqa: BLE001 - the approval is already done; never undo it with an error
         logger.exception(

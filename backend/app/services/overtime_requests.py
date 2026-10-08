@@ -9,8 +9,9 @@ from app.services.employee import (
     get_employee_by_id,
     get_all_managers_for_employee,
     map_location_to_province,
-    resolve_person_field,
 )
+# Who a request is for: SubmitterEmail first, then the SubmittedBy person column.
+from app.services.request_submitter import resolve_request_submitter, submitter_columns
 from app.services.holidays import (
     get_holidays_for_province,
     get_half_friday_season,
@@ -49,8 +50,20 @@ from app.services.audit_trail import (
 logger = logging.getLogger(__name__)
 
 
-async def process_new_overtime_request(form_data: dict, submitter_email: str) -> dict:
-    """Create SP item → auto-assign manager → trigger approval pipeline."""
+async def process_new_overtime_request(
+    form_data: dict, submitter_email: str, source: str | None = None,
+) -> dict:
+    """Create the SharePoint overtime item, assign its manager, ask for approval.
+
+    Args:
+        form_data: The overtime form (description, date, hours).
+        submitter_email: Who the request is for.
+        source: Where it came from (a request_submitter.SOURCE_* value),
+            written to RequestSource when those columns are enabled.
+
+    Returns:
+        The created SharePoint item.
+    """
     hours = float(form_data.get("hours", 0))
     fields = {
         "Title": form_data.get("description", ""),
@@ -62,6 +75,8 @@ async def process_new_overtime_request(form_data: dict, submitter_email: str) ->
     lookup_id = await _resolve_user_lookup_id(submitter_email)
     if lookup_id:
         fields["SubmittedByLookupId"] = lookup_id
+    # SubmitterEmail and RequestSource, for submitters the person column misses.
+    fields.update(submitter_columns(submitter_email, source))
 
     # No duplicate check here, deliberately — a clash with an already-approved
     # entry is raised when a manager tries to approve. See the module docstring
@@ -82,7 +97,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     fields = item["fields"]
 
     # Resolve submitter from SubmittedBy Person/Group field
-    employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedBy")
     if not employee and submitter_email:
         from app.services.employee import get_employee_by_email
         employee = await get_employee_by_email(submitter_email)
@@ -282,7 +297,7 @@ async def admin_edit_overtime_request(
     if not isinstance(new_title, str):
         return {"error": "Title must be a string"}
 
-    employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedBy")
     if not employee:
         return {"error": "Cannot resolve employee for this request"}
     employee_id = employee["id"]
@@ -361,7 +376,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         return {"error": "Not pending"}
 
     # Resolve employee from SubmittedBy Person/Group field
-    employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedBy")
     if not employee:
         return {"error": "Employee not found"}
 
@@ -487,7 +502,7 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
     if fields.get("Status") != "Approved":
         return {"error": "Only approved requests can be refunded"}
 
-    employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedBy")
     if not employee:
         return {"error": "Employee not found"}
 
@@ -579,7 +594,7 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
     if fields.get("Status") != "Pending":
         return {"error": "Not pending"}
 
-    employee = await resolve_person_field(fields.get("SubmittedBy") or fields.get("SubmittedByLookupId"))
+    employee = await resolve_request_submitter(fields, "SubmittedBy")
     submitter_name = employee["fields"].get("Title", "") if employee else ""
     emp_fields = employee["fields"] if employee else {}
 

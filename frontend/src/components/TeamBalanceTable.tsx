@@ -55,7 +55,7 @@ export default function TeamBalanceTable({ members, loading }: Props) {
   return (
     <Box
       sx={{
-        '& .cell-negative': { color: '#dc2626', fontWeight: 600 },
+        '& .cell-negative': { color: 'error.main', fontWeight: 600 },  // below zero
       }}
     >
       <DataGrid

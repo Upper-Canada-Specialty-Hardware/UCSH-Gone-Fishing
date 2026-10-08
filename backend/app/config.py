@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
 
+    # Public request page (#131)
+    # Write SubmitterEmail and RequestSource on new request items. Off until
+    # those columns exist on the three request lists: writing a column that is
+    # not there makes SharePoint refuse the whole item.
+    REQUEST_EMAIL_COLUMNS_ENABLED: bool = False
+
     # Email (SMTP2GO): the fallback mailer; always available.
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
