@@ -6,6 +6,7 @@ import { ThemeProvider, useTheme } from '@mui/material/styles';
 import RequestForm, {
   EMPTY_REQUEST, RequestValues, buildRequestBody, isRequestReady,
 } from '../components/RequestForm';
+import BalancePreview from '../components/request/BalancePreview';
 import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
@@ -357,6 +358,8 @@ export default function RequestPage() {
                 {error && <Alert severity="error">{error}</Alert>}
                 <TypeCards value={type} onPick={setType} />
                 <RequestForm type={type} values={values} onChange={setValue} />
+                {/* Days and balances after approval, once the form is complete. */}
+                <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} />
                 <Button variant="contained" size="large" sx={big} disabled={!formReady || busy} onClick={submitAsEmployee} startIcon={spinner}>
                   Send request
                 </Button>

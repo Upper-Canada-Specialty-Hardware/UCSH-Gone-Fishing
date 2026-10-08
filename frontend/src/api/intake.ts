@@ -196,6 +196,47 @@ export const submitMyRequest = (session: EmployeeSession, type: RequestType, for
     params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
   });
 
+/** Balances in the dashboard's shape. */
+export interface Balances {
+  vacation_balance: number;
+  vacation_entitlement: number;
+  sick_balance: number;
+  sick_entitlement: number;
+  overtime: number;
+  carryover: number;
+  payout: number;
+}
+
+/** What a request would do, from the preview endpoint. Nothing is saved. */
+export interface RequestPreview {
+  /** Working days (leave), days added (overtime), or days moved (carry-over/payout). */
+  days: number;
+  current: Balances;
+  /** After approval; null when no balance changes or the request would be rejected. */
+  projected: Balances | null;
+  /** Why nothing changes, when that is the case. */
+  unchanged: string;
+  /** Things worth knowing (skipped holidays, next-year rules). */
+  notes: string[];
+  /** Set when the request would be rejected automatically. */
+  warning: string;
+  next_year: boolean;
+}
+
+/**
+ * Preview what the form would do to the signed-in employee's balances.
+ *
+ * @param session - The saved sign-in.
+ * @param type - Which form.
+ * @param form - The form body, exactly as it would be submitted.
+ * @returns The preview.
+ * @throws AxiosError 400 for a form that is not ready, 401 sign-in expired.
+ */
+export const previewMyRequest = (session: EmployeeSession, type: RequestType, form: Record<string, unknown>) =>
+  dashboard.post<RequestPreview>(`/me/requests/${type}/preview`, form, {
+    params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+  });
+
 /**
  * The readable reason from a failed call.
  *
