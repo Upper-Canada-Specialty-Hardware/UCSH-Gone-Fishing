@@ -49,28 +49,27 @@ DEFAULT_WINDOW_DAYS = 30
 RECIPIENT_FIELDS = ("to", "cc")
 
 # Payload keys that carry a secret and must never be stored. SMTP2GO puts its
-# key in the body (api_key); the UCSH mailer and Clerk put theirs in the
+# key in the body (api_key); the UCSH mailer puts its key in the
 # Authorization header, which is never handed to the recorder, so these extra
 # names are belt-and-braces only.
 _SECRET_KEYS = ("api_key", "authorization", "bearer_token")
 # Payload keys that carry a message body: stored as a byte length and a
 # SHA-256 only, never the text, because bodies carry signed approval links and
 # this table is read by an unauthenticated admin endpoint. "html_body" is the
-# SMTP2GO field; "html" and "text" are the UCSH mailer's and Clerk's fields.
+# SMTP2GO field; "html" and "text" are the UCSH mailer's fields.
 _BODY_KEYS = ("html_body", "html", "text")
 
 # Which email service a stored row went to, derived from its request url so no
 # column is needed. The admin Email Log tab labels each row with this.
 SERVICE_SMTP2GO = "smtp2go"
 SERVICE_UCSH_MAILER = "ucsh_mailer"
-SERVICE_CLERK = "clerk"
 SERVICE_UNKNOWN = "unknown"
 
 
 def service_for_url(request_url: str | None) -> str:
     """Name the email service a logged exchange went to, from its url.
 
-    Deriving the service from the stored ``request_url`` keeps the three
+    Deriving the service from the stored ``request_url`` keeps the
     providers distinguishable on the admin page without adding a column.
 
     Args:
@@ -83,8 +82,6 @@ def service_for_url(request_url: str | None) -> str:
     url = (request_url or "").lower()                              # tolerate None
     if "smtp2go" in url:                                           # api.smtp2go.com
         return SERVICE_SMTP2GO
-    if "clerk" in url:                                             # api.clerk.com
-        return SERVICE_CLERK
     if url.endswith("/v1/send"):                                   # the UCSH mailer's send path
         return SERVICE_UCSH_MAILER
     return SERVICE_UNKNOWN
@@ -140,10 +137,9 @@ def as_utc(value: datetime | None) -> datetime | None:
 def redact_request(payload: dict) -> dict:
     """Copy of an email payload that is safe to store.
 
-    Works for all three providers. The SMTP2GO payload (``api_key`` +
-    ``html_body``) comes out exactly as before; the UCSH mailer and Clerk
-    payloads (``html`` / ``text`` bodies, keys in headers) are redacted the
-    same way.
+    Works for both providers. The SMTP2GO payload (``api_key`` +
+    ``html_body``) comes out exactly as before; the UCSH mailer payload
+    (``html`` / ``text`` bodies, key in a header) is redacted the same way.
 
     Args:
         payload: The exact JSON body posted to the email service.
@@ -219,9 +215,9 @@ def classify_response(
 def combine_summaries(summaries: list[ExchangeSummary]) -> ExchangeSummary:
     """Fold one send's per-call summaries into a single whole-send summary.
 
-    A send now fans out across up to three services, and Clerk makes one call
-    per recipient, so ``send_email`` collects several summaries and returns
-    one. A single summary is returned unchanged, so a send that touches only
+    A send can now be split across two services (and the mailer's refusal
+    fallback can add a call), so ``send_email`` collects several summaries and
+    returns one. A single summary is returned unchanged, so a send that touches only
     one service (the default, SMTP2GO-only) returns exactly what that one call
     produced and nothing about the existing behaviour shifts.
 
@@ -297,16 +293,13 @@ async def record_exchange(
     duration_ms: int | None,
     sender: str | None = None,
     subject: str | None = None,
-    recipient_source: dict | None = None,
 ) -> None:
     """Write one email_api_log row and its recipient rows. Never raises.
 
     One row per logical call, whatever the provider. The SMTP2GO path calls
     this with just the payload (sender/subject read off it, recipients read
-    off its ``to``/``cc`` lists). The UCSH mailer and Clerk paths pass
-    ``sender``/``subject`` explicitly, because their payloads nest or rename
-    those, and Clerk passes ``recipient_source`` because its wire payload nests
-    the recipient under ``to.address`` and the lookup join needs a flat list.
+    off its ``to``/``cc`` lists). The UCSH mailer path passes
+    ``sender``/``subject`` explicitly, because its payload renames those.
 
     Args:
         summary: The classified answer (or the reason there is none).
@@ -316,12 +309,10 @@ async def record_exchange(
         duration_ms: Round trip in milliseconds; None when never called.
         sender: Sender to store; falls back to ``payload["sender"]`` when None.
         subject: Subject to store; falls back to ``payload["subject"]``.
-        recipient_source: ``{"to": [...], "cc": [...]}`` to build the recipient
-            rows from; falls back to the payload's own ``to``/``cc`` lists.
     """
     try:
         safe = redact_request(payload)
-        rows = _recipient_rows(recipient_source if recipient_source is not None else payload)
+        rows = _recipient_rows(payload)
         async with async_session() as session:
             session.add(EmailApiLog(
                 attempted_at=attempted_at,

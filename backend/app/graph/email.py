@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import logging
 import time
 import uuid
@@ -8,7 +7,7 @@ from collections import deque
 import httpx
 
 from app.config import settings
-from app.graph import clerk_email, mailer_client
+from app.graph import mailer_client
 from app.models.mixins import utcnow
 from app.services.email_api_log import (
     OUTCOME_NOT_ATTEMPTED,
@@ -148,78 +147,32 @@ def _mailer_usable() -> bool:
     return True
 
 
-def _clerk_usable() -> bool:
-    """Whether external recipients should go to Clerk right now.
-
-    Returns:
-        True only when Clerk is switched on and configured. Switched on but
-        missing its key or sender is logged as an error and treated as
-        unusable, so those recipients fall back to SMTP2GO.
-    """
-    if not settings.CLERK_EMAIL_ENABLED:                           # off: use SMTP2GO
-        return False
-    if not clerk_email.is_configured():                            # on but not set up
-        logger.error(
-            "CLERK_EMAIL_ENABLED is on but CLERK_SECRET_KEY/CLERK_FROM_EMAIL are not set; "
-            "external recipients fall back to SMTP2GO"
-        )
-        return False
-    return True
-
-
-def _route_recipients(
-    valid_to: list[str], valid_cc: list[str]
-) -> tuple[dict, dict, list[tuple[str, str]]]:
+def _route_recipients(valid_to: list[str], valid_cc: list[str]) -> tuple[dict, dict]:
     """Split recipients into per-service groups by domain.
 
-    Each address goes to the service its domain designates: internal (UCSH)
-    addresses to the UCSH mailer, every other address to Clerk. When the
-    designated service is off or misconfigured, that address falls back to
-    SMTP2GO. Clerk never receives an internal address and the mailer never
-    receives an external one.
+    Internal (UCSH) addresses go to the UCSH mailer while it is switched on
+    and configured; every other address, and every internal one while the
+    mailer is off, goes to SMTP2GO. The mailer never receives an outside
+    address, since it only accepts internal recipients.
 
     Args:
         valid_to: To addresses with blanks already removed.
         valid_cc: CC addresses with blanks already removed.
 
     Returns:
-        ``(smtp2go, mailer, clerk)`` where ``smtp2go`` and ``mailer`` are
-        ``{"to": [...], "cc": [...]}`` and ``clerk`` is a list of
-        ``(address, field)`` because Clerk sends one recipient per call.
+        ``(smtp2go, mailer)``, each ``{"to": [...], "cc": [...]}``.
     """
     internal = _internal_domains()
     mailer_usable = _mailer_usable()
-    clerk_usable = _clerk_usable()
     smtp2go: dict = {"to": [], "cc": []}
     mailer: dict = {"to": [], "cc": []}
-    clerk: list[tuple[str, str]] = []
     for field, addresses in (("to", valid_to), ("cc", valid_cc)):
         for addr in addresses:
-            if _domain_of(addr) in internal:                       # a staff address
-                (mailer if mailer_usable else smtp2go)[field].append(addr)
-            else:                                                  # an outside address
-                if clerk_usable:
-                    clerk.append((addr, field))
-                else:
-                    smtp2go[field].append(addr)
-    return smtp2go, mailer, clerk
-
-
-def _clerk_key(base_key: str, address: str) -> str:
-    """Per-recipient Clerk idempotency key derived from the send's base key.
-
-    Clerk allows only letters, digits, underscore and hyphen, so the address
-    is folded in as a hex digest rather than appended raw.
-
-    Args:
-        base_key: The send-wide base key (hex).
-        address: The recipient the key is for.
-
-    Returns:
-        ``<base>_<16 hex of the address>``, well under Clerk's 255-char limit.
-    """
-    suffix = hashlib.sha256(address.strip().lower().encode("utf-8")).hexdigest()[:16]
-    return f"{base_key}_{suffix}"
+            if mailer_usable and _domain_of(addr) in internal:     # a staff address, mailer on
+                mailer[field].append(addr)
+            else:                                                  # outside address, or mailer off
+                smtp2go[field].append(addr)
+    return smtp2go, mailer
 
 
 async def send_email(
@@ -234,17 +187,16 @@ async def send_email(
     """Send one email, routing each recipient to the right service, and log it.
 
     The signature and the contract for callers are unchanged. What is new is
-    that recipients are split by domain across up to three services: UCSH
-    (internal) addresses go to the UCSH mailer, every other address to Clerk,
-    and anything whose service is switched off (or misconfigured) stays on
-    SMTP2GO. With both new services off (the default), every recipient routes
-    to SMTP2GO and the behaviour and logging are exactly what they were.
+    that recipients are split by domain: UCSH (internal) addresses go to the
+    UCSH mailer, every other address stays on SMTP2GO. With the mailer off
+    (the default), every recipient routes to SMTP2GO and the behaviour and
+    logging are exactly what they were.
 
     Every HTTP call made for the send leaves exactly one ``email_api_log`` row
-    (written in a ``finally``; the writer never raises), so a Clerk fan-out of
-    three recipients leaves three rows and a mailer call leaves one. Each
-    service classifies its own answer into the shared summary shape, so the
-    admin Email Log tab reads them all the same way.
+    (written in a ``finally``; the writer never raises), so a send split
+    across both services leaves two rows. Each service classifies its own
+    answer into the shared summary shape, so the admin Email Log tab reads
+    them all the same way.
 
     Error contract (unchanged for callers): if any group fails with an HTTP or
     network error, the other groups are still attempted, then the first failure
@@ -256,7 +208,7 @@ async def send_email(
         html_body: HTML body; the dashboard footer is appended when given.
         cc: Optional CC addresses, filtered the same way as ``to``.
         importance: "High" adds priority headers; "Normal" adds nothing
-            (SMTP2GO only; the other services do not take an importance flag).
+            (SMTP2GO only; the mailer does not take an importance flag).
         attachments: Accepted for signature compatibility; not sent today.
         dashboard_footer: Pre-rendered footer HTML from the dashboard wrapper.
 
@@ -273,7 +225,7 @@ async def send_email(
     valid_to = [addr for addr in to if addr]                       # drop blanks/None
     valid_cc = [addr for addr in (cc or []) if addr]
 
-    smtp2go, mailer, clerk = _route_recipients(valid_to, valid_cc)
+    smtp2go, mailer = _route_recipients(valid_to, valid_cc)
     # A group can end up with CC addresses but no To (the To went to another
     # service). SMTP2GO treats "no To" as nothing to send, so promote the CC
     # to To for that group; they still get the mail.
@@ -288,9 +240,7 @@ async def send_email(
     # SMTP2GO: send its group when it has recipients, or when nothing is
     # routable anywhere (which reproduces the historical not-attempted row on
     # the SMTP2GO url, so a wholly-blank send behaves exactly as it always has).
-    nothing_routable = not (
-        smtp2go["to"] or smtp2go["cc"] or mailer["to"] or mailer["cc"] or clerk
-    )
+    nothing_routable = not (smtp2go["to"] or smtp2go["cc"] or mailer["to"] or mailer["cc"])
     if smtp2go["to"] or smtp2go["cc"] or nothing_routable:
         try:
             summaries.append(await _send_via_smtp2go(
@@ -312,7 +262,7 @@ async def send_email(
             else:
                 # The mailer sent nothing: some addresses are outside its allowed domains
                 # (INTERNAL_EMAIL_DOMAINS lists more than the mailer accepts). Re-send the
-                # rest through the mailer and route the refused ones like outside addresses.
+                # rest through the mailer and send the refused ones through SMTP2GO.
                 logger.warning(
                     "UCSH mailer refused %s as not internal; sending them the outside way. "
                     "Check INTERNAL_EMAIL_DOMAINS against the mailer's allowed domains.", sorted(refused),
@@ -328,27 +278,15 @@ async def send_email(
                         ))
                     except Exception as e2:
                         first_error = first_error or e2
-                if _clerk_usable():
-                    clerk.extend(moved)                              # sent with the Clerk group below
-                else:
-                    fallback = {f: [a for a, g in moved if g == f] for f in ("to", "cc")}
-                    if not fallback["to"]:                           # no To: promote the CC
-                        fallback["to"], fallback["cc"] = fallback["cc"], []
-                    try:
-                        summaries.append(await _send_via_smtp2go(
-                            fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"]
-                        ))
-                    except Exception as e3:
-                        first_error = first_error or e3
-
-    # Clerk: one HTTP call per external recipient, each with its own key.
-    for address, field in clerk:
-        try:
-            summaries.append(await clerk_email.send(
-                address, field, subject, full_body, _clerk_key(base_key, address)
-            ))
-        except Exception as e:
-            first_error = first_error or e
+                fallback = {f: [a for a, g in moved if g == f] for f in ("to", "cc")}
+                if not fallback["to"]:                               # no To: promote the CC
+                    fallback["to"], fallback["cc"] = fallback["cc"], []
+                try:
+                    summaries.append(await _send_via_smtp2go(
+                        fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"]
+                    ))
+                except Exception as e3:
+                    first_error = first_error or e3
 
     if first_error is not None:                                    # callers rely on this raising
         raise first_error
