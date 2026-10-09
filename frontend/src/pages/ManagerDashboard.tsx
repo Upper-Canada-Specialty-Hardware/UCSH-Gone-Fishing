@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Alert, Box, Button, Chip, CircularProgress, Paper, Snackbar, Tab, Tabs, Typography,
+  Alert, Box, Button, Chip, CircularProgress, Paper, Snackbar, Tab, Tabs, TextField, Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import TeamCalendar from '../components/TeamCalendar';
@@ -16,7 +16,7 @@ import {
 } from '../components/manager/teamStats';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { addDays, dayKey, mondayOf, today } from '../utils/dates';
-import { firstName, teamColors } from '../utils/personColor';
+import { firstName, teamColors, teamLabeler } from '../utils/personColor';
 import { daysWaiting, shortDate } from '../utils/requestText';
 import {
   getMyBalances,
@@ -143,6 +143,10 @@ export default function ManagerDashboard() {
   }, [arrived, navigate]);
 
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');
+  // Today's decision queue starts folded to its oldest few; this reveals the rest.
+  const [queueExpanded, setQueueExpanded] = useState(false);
+  // The Team tab's name filter, applied to the rings and the member cards.
+  const [teamSearch, setTeamSearch] = useState('');
   const [members, setMembers] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -207,6 +211,8 @@ export default function ManagerDashboard() {
   const names = useMemo(() => members.map((m) => m.name), [members]);
   // One colour per person on this team, in the current light or dark shade.
   const colorOf = useMemo(() => teamColors(names, theme.palette.mode), [names, theme.palette.mode]);
+  // One short, unambiguous label per person (first name, or "First L" when a first name repeats).
+  const labelOf = useMemo(() => teamLabeler(names), [names]);
   const absences = useMemo(() => absencesFrom(calendarEvents, pending), [calendarEvents, pending]);
   const waiting = useMemo(() => [...pending].sort((a, b) => (daysWaiting(b) ?? 0) - (daysWaiting(a) ?? 0)), [pending]);
   const approve = useMemo(() => approveSummary(requests), [requests]);
@@ -217,8 +223,11 @@ export default function ManagerDashboard() {
     let s = 0;
     return monthly.slice(0, today().getMonth() + 1).map((m) => (s += m.vacation + m.sick + m.other));
   }, [monthly]);
-  const notes = useMemo(() => insights(members, absences), [members, absences]);
+  const notes = useMemo(() => insights(members, absences, labelOf), [members, absences, labelOf]);
   const calFrom = mondayOf(today());                     // the calendar shows four weeks from this Monday
+  // The Team tab's members after the name filter, matched on the typed text.
+  const q = teamSearch.trim().toLowerCase();
+  const teamShown = q ? members.filter((m) => (m.name || '').toLowerCase().includes(q)) : members;
 
   if (loading) {
     return <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}><CircularProgress /></Box>;
@@ -274,19 +283,30 @@ export default function ManagerDashboard() {
 
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1.1fr) minmax(0, 1fr)' }, alignItems: 'start' }}>
             <Box sx={{ display: 'grid', gap: 2 }}>
-              {waiting.length ? waiting.map((item) => (
-                <Leaving key={`${item.request_type}-${item.id}`} leaving={leaving.has(`${item.request_type}-${item.id}`)}>
-                <DecisionCard
-                  item={item}
-                  clashes={clashesFor(item, absences)}
-                  processingEnabled={processingEnabled}
-                  busy={actionLoading === `${item.request_type}-${item.id}`}
-                  onApprove={() => decide(item.request_type, String(item.id), true)}
-                  onReject={() => decide(item.request_type, String(item.id), false)}
-                  colorOf={colorOf}
-                />
-                </Leaving>
-              )) : (
+              {waiting.length ? (
+                <>
+                  {/* Oldest first; only the first five until the manager asks for the rest. */}
+                  {(queueExpanded ? waiting : waiting.slice(0, 5)).map((item) => (
+                    <Leaving key={`${item.request_type}-${item.id}`} leaving={leaving.has(`${item.request_type}-${item.id}`)}>
+                    <DecisionCard
+                      item={item}
+                      clashes={clashesFor(item, absences, labelOf)}
+                      processingEnabled={processingEnabled}
+                      busy={actionLoading === `${item.request_type}-${item.id}`}
+                      onApprove={() => decide(item.request_type, String(item.id), true)}
+                      onReject={() => decide(item.request_type, String(item.id), false)}
+                      colorOf={colorOf}
+                    />
+                    </Leaving>
+                  ))}
+                  {/* Reveal or re-fold everything past the first five. */}
+                  {waiting.length > 5 && (
+                    <Button variant="text" onClick={() => setQueueExpanded((v) => !v)} sx={{ justifySelf: 'start', textTransform: 'none' }}>
+                      {queueExpanded ? 'Show fewer' : `Show ${waiting.length - 5} more`}
+                    </Button>
+                  )}
+                </>
+              ) : (
                 <Paper sx={{ p: 4, display: 'grid', justifyItems: 'center', gap: 0.5, textAlign: 'center' }}>
                   <Box sx={{ width: 44, height: 44, borderRadius: 999, display: 'grid', placeItems: 'center', bgcolor: alpha(theme.palette.success.main, 0.14), color: 'success.main', fontWeight: 800, fontSize: 20 }}>✓</Box>
                   <Typography sx={{ fontWeight: 700 }}>You are all caught up</Typography>
@@ -296,7 +316,11 @@ export default function ManagerDashboard() {
             </Box>
             <Box sx={{ display: 'grid', gap: 2 }}>
               <Panel title="Next two weeks" aside="dashed = asked">
-                <LeaveTimeline names={names} absences={absences} from={today()} days={14} colorOf={colorOf} />
+                {/* Only people off in the window, at most eight rows; the rest link to the Calendar tab. */}
+                <LeaveTimeline
+                  names={names} absences={absences} from={today()} days={14}
+                  colorOf={colorOf} labelOf={labelOf} maxRows={8} onShowMore={() => go('calendar')}
+                />
               </Panel>
               {notes.length > 0 && (
                 <Panel title="Worth knowing">
@@ -341,16 +365,12 @@ export default function ManagerDashboard() {
             </Box>
             <Box sx={{ p: 2 }}>
               {calendarView === 'timeline'
-                ? <LeaveTimeline names={names} absences={absences} from={calFrom} days={28} colorOf={colorOf} />
+                ? <LeaveTimeline names={names} absences={absences} from={calFrom} days={28} colorOf={colorOf} labelOf={labelOf} showToggle />
                 : <TeamCalendar events={calendarEvents} />}
             </Box>
             {calendarView === 'timeline' && (
+              // Each row already shows its own dot and name, so the only key left is the dashed = asked one.
               <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', px: 2, pb: 2, fontSize: 13, color: 'text.secondary' }}>
-                {names.map((n) => (
-                  <Box key={n} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                    <Box sx={{ width: 10, height: 10, borderRadius: 0.5, bgcolor: colorOf(n) }} />{n}
-                  </Box>
-                ))}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                   <Box sx={{ width: 10, height: 10, borderRadius: 0.5, border: '1.5px dashed', borderColor: 'text.secondary' }} />Asked, not approved yet
                 </Box>
@@ -365,9 +385,14 @@ export default function ManagerDashboard() {
 
       {tab === 'team' && (
         <>
-          <Panel title="Vacation left"><VacationRings members={members} colorOf={colorOf} /></Panel>
+          {/* Name filter: narrows the rings and the cards below as the manager types. */}
+          <TextField
+            label="Search by name" value={teamSearch} onChange={(e) => setTeamSearch(e.target.value)}
+            size="small" fullWidth placeholder="Start typing a name" sx={{ maxWidth: 360 }}
+          />
+          <Panel title="Vacation left"><VacationRings members={teamShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))' }}>
-            {members.map((m) => {
+            {teamShown.map((m) => {
               const b = m.balances || {};
               // Their next time away from today on, approved or asked.
               const nextOff = absences
@@ -387,7 +412,8 @@ export default function ManagerDashboard() {
                       {initials(m.name)}
                     </Box>
                     <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 700 }} noWrap>{m.name}</Typography>
+                      {/* Wrap a long name onto a second line instead of cutting it off. */}
+                      <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</Typography>
                       <Typography variant="caption" color="text.secondary">{m.department || 'No department'} · {m.location || 'No location'}</Typography>
                     </Box>
                   </Box>
@@ -468,7 +494,8 @@ export default function ManagerDashboard() {
       )}
 
       {tab === 'history' && (
-        <Paper sx={{ p: 2 }}>
+        // minWidth 0 lets this grid item shrink below the table's natural width; overflow hidden keeps the page from widening.
+        <Paper sx={{ p: 2, minWidth: 0, overflow: 'hidden' }}>
           <RequestHistory requests={requests} showEmployee />
         </Paper>
       )}
