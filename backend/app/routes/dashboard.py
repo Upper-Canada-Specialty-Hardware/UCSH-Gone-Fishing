@@ -341,12 +341,25 @@ def _enrich_pending_item(
 
 @router.get("/me/balances")
 async def my_balances(user: AuthUser):
+    """The signed-in employee's record, balances and manager(s).
+
+    Args:
+        user: The employee, from the signed dashboard link.
+
+    Returns:
+        {"employee": {..., "managers": "A, B"}, "balances": {...}}; managers
+        is "" when the Staff Directory names none.
+
+    Raises:
+        HTTPException: 404 when the employee is not in the Staff Directory.
+    """
     emp = await get_employee_by_id(user.user_id)
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     fields = emp["fields"]
     return {
-        "employee": _format_employee(fields, user.user_id),
+        # Managers come from the same AllManagers column the request rows use.
+        "employee": {**_format_employee(fields, user.user_id), "managers": _resolve_managers(emp)},
         "balances": _format_balances(fields),
     }
 
