@@ -125,10 +125,11 @@ def test_routing_sends_everything_to_smtp2go_when_the_mailer_is_off():
 def test_routing_internal_to_mailer_external_to_smtp2go_when_the_mailer_is_on(monkeypatch):
     _enable_mailer(monkeypatch)
     smtp, mailer = email_module._route_recipients(
-        ["staff@ucsh.com", "out@gmail.com"], ["boss@ucaccess.com", "vendor@example.org"]
+        ["staff@ucsh.com", "out@gmail.com"], ["boss@ucsh.com", "temp@ucaccess.com"]
     )
-    assert mailer == {"to": ["staff@ucsh.com"], "cc": ["boss@ucaccess.com"]}
-    assert smtp == {"to": ["out@gmail.com"], "cc": ["vendor@example.org"]}  # outside stays on smtp2go
+    assert mailer == {"to": ["staff@ucsh.com"], "cc": ["boss@ucsh.com"]}
+    # Only ucsh.com is internal by default: ucaccess.com stays on smtp2go like any outside address.
+    assert smtp == {"to": ["out@gmail.com"], "cc": ["temp@ucaccess.com"]}
 
 
 # ----- the UCSH mailer payload, headers and classifier -----
@@ -378,10 +379,11 @@ def test_refused_addresses_reads_only_recipient_not_internal():
 
 
 def test_refused_address_goes_to_smtp2go_and_the_rest_resend(monkeypatch, no_sleep):
-    # The app treats ucaccess.com as internal, the mailer does not: the mailer
-    # refuses the whole request, so the ucsh.com address is re-sent through the
-    # mailer with a new key and the ucaccess.com one goes to SMTP2GO.
+    # The app is set to treat ucaccess.com as internal, the mailer does not:
+    # the mailer refuses the whole request, so the ucsh.com address is re-sent
+    # through the mailer with a new key and the ucaccess.com one goes to SMTP2GO.
     _enable_mailer(monkeypatch)
+    monkeypatch.setattr(settings, "INTERNAL_EMAIL_DOMAINS", "ucsh.com,ucaccess.com")
     smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
     m = _FakeHttp([
         _resp(400, {"error": "recipient_not_internal", "message": "m", "addresses": ["temp@ucaccess.com"]}),
@@ -402,3 +404,42 @@ def test_refused_address_goes_to_smtp2go_and_the_rest_resend(monkeypatch, no_sle
         assert call["json"]["to"] == ["temp@ucaccess.com"]  # promoted from cc on the fallback
 
     asyncio.run(flow())
+
+
+# ----- reply-to: the sending accounts have no inbox -----
+
+def test_reply_to_is_the_callers_then_the_default_and_internal_only_for_the_mailer(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "")
+    assert email_module._resolve_reply_to(None) == (None, None)               # nothing set: no reply-to
+    assert email_module._resolve_reply_to("boss@ucsh.com") == ("boss@ucsh.com", "boss@ucsh.com")
+    # The mailer refuses an outside reply-to, so only smtp2go carries it.
+    assert email_module._resolve_reply_to("me@gmail.com") == ("me@gmail.com", None)
+    monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "hr@ucsh.com")
+    assert email_module._resolve_reply_to("") == ("hr@ucsh.com", "hr@ucsh.com")  # default fills a blank
+    assert email_module._resolve_reply_to("boss@ucsh.com")[0] == "boss@ucsh.com"  # the caller's wins
+
+
+def test_send_email_passes_reply_to_to_both_services(monkeypatch):
+    _enable_mailer(monkeypatch)
+    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    m = _FakeHttp(_mailer_accepted(recipients=1))
+    monkeypatch.setattr(mailer_client, "_http", m)
+
+    async def flow():
+        await _reset()
+        await email_module.send_email(
+            to=["staff@ucsh.com", "jane@gmail.com"], subject="S", html_body="<p>hi</p>",
+            reply_to="boss@ucsh.com",
+        )
+        (mailer_call,) = m.calls
+        assert mailer_call["json"]["replyTo"] == "boss@ucsh.com"
+        (smtp_call,) = smtp.calls
+        assert {"header": "Reply-To", "value": "boss@ucsh.com"} in smtp_call["json"]["custom_headers"]
+
+    asyncio.run(flow())
+
+
+def test_no_reply_to_leaves_both_payloads_as_before(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "")
+    assert "replyTo" not in mailer_client.build_payload(["a@ucsh.com"], [], "S", "<p>b</p>")
+    assert "custom_headers" not in email_module._build_payload(["a@x.com"], "S", "<p>b</p>", None, "Normal")

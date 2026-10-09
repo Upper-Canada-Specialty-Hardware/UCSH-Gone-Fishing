@@ -234,6 +234,7 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
             subject=subject,
             html_body=html,
             primary_employee_id=manager_id,
+            reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
         )
 
         # Send SMS to manager if they have a cell number (skipped on reminders)
@@ -408,6 +409,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
             to=[emp_fields.get("EmailAddress", ""), mgr_fields.get("EmailAddress", "")],
             subject=f"Overtime Approved - Hourly - {submitter_name}",
             html_body=html,
+            reply_to=mgr_fields.get("EmailAddress", ""),       # replies reach the manager
         )
         return {"status": "approved", "hourly": True}
 
@@ -487,6 +489,7 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
         subject=f"{submitter_name} Overtime Approved - {fields.get('StartDate', '')}",
         html_body=html,
         primary_employee_id=employee_id,
+        reply_to=mgr_fields.get("EmailAddress", ""),            # replies reach the manager
     )
 
     await write_audit_log(settings.SP_LIST_OVERTIME_REQUESTS, request_id, audit)
@@ -626,6 +629,7 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
         subject=f"{submitter_name} Overtime Rejected - {fields.get('StartDate', '')}",
         html_body=html,
         primary_employee_id=emp_id,
+        reply_to=mgr_fields.get("EmailAddress", ""),            # replies reach the manager
     )
 
     return {"status": "rejected"}

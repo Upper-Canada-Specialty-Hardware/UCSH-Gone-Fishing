@@ -72,6 +72,7 @@ def _build_payload(
     html_body: str,
     cc: list[str] | None,
     importance: str,
+    reply_to: str | None = None,
 ) -> dict:
     """The JSON body posted to SMTP2GO's send endpoint.
 
@@ -81,6 +82,7 @@ def _build_payload(
         html_body: Full HTML body, footer included.
         cc: Optional CC addresses; blanks are removed here.
         importance: "High" adds priority headers; "Normal" adds nothing.
+        reply_to: Optional Reply-To, sent as a custom header.
 
     Returns:
         The payload, api_key included. Redacted before it is ever stored.
@@ -96,11 +98,16 @@ def _build_payload(
         valid_cc = [addr for addr in cc if addr]
         if valid_cc:
             payload["cc"] = valid_cc
+    headers: list[dict] = []
     if importance and importance != "Normal":
-        payload["custom_headers"] = [
+        headers += [
             {"header": "X-Priority", "value": "1"},
             {"header": "Importance", "value": importance},
         ]
+    if reply_to:                                                    # answers reach a person, not the sender
+        headers.append({"header": "Reply-To", "value": reply_to})
+    if headers:                                                     # omit the key when there are none
+        payload["custom_headers"] = headers
     return payload
 
 
@@ -125,6 +132,26 @@ def _internal_domains() -> set[str]:
         blanks dropped.
     """
     return {d.strip().lower() for d in settings.INTERNAL_EMAIL_DOMAINS.split(",") if d.strip()}
+
+
+def _resolve_reply_to(reply_to: str | None) -> tuple[str | None, str | None]:
+    """The Reply-To each service gets for one send.
+
+    The caller's address wins; without one, ``EMAIL_REPLY_TO`` is used. The
+    mailer refuses an outside Reply-To, so it only gets an internal one;
+    SMTP2GO takes any address.
+
+    Args:
+        reply_to: The caller's Reply-To, or None.
+
+    Returns:
+        ``(for_smtp2go, for_mailer)``; either may be None (no Reply-To).
+    """
+    address = (reply_to or settings.EMAIL_REPLY_TO or "").strip()  # caller first, then the default
+    if not address:                                                # nothing to set
+        return None, None
+    internal = _domain_of(address) in _internal_domains()          # mailer rule: internal only
+    return address, (address if internal else None)
 
 
 def _mailer_usable() -> bool:
@@ -183,6 +210,7 @@ async def send_email(
     importance: str = "Normal",
     attachments: list[dict] | None = None,
     dashboard_footer: str = "",
+    reply_to: str | None = None,
 ) -> ExchangeSummary:
     """Send one email, routing each recipient to the right service, and log it.
 
@@ -211,6 +239,9 @@ async def send_email(
             (SMTP2GO only; the mailer does not take an importance flag).
         attachments: Accepted for signature compatibility; not sent today.
         dashboard_footer: Pre-rendered footer HTML from the dashboard wrapper.
+        reply_to: The person a reply should reach (the manager on an
+            employee's email, the employee on a manager's). Falls back to
+            ``EMAIL_REPLY_TO``; see ``_resolve_reply_to``.
 
     Returns:
         A single ``ExchangeSummary`` covering the whole send (see
@@ -233,6 +264,7 @@ async def send_email(
         if not group["to"] and group["cc"]:
             group["to"], group["cc"] = group["cc"], []
     base_key = uuid.uuid4().hex                                    # reused across a call's retries
+    reply_smtp2go, reply_mailer = _resolve_reply_to(reply_to)       # per-service Reply-To
 
     summaries: list[ExchangeSummary] = []
     first_error: Exception | None = None
@@ -244,7 +276,8 @@ async def send_email(
     if smtp2go["to"] or smtp2go["cc"] or nothing_routable:
         try:
             summaries.append(await _send_via_smtp2go(
-                smtp2go["to"], smtp2go["cc"], subject, full_body, importance, raw_to=to
+                smtp2go["to"], smtp2go["cc"], subject, full_body, importance, raw_to=to,
+                reply_to=reply_smtp2go,
             ))
         except Exception as e:                                     # keep going; raise it at the end
             first_error = first_error or e
@@ -253,7 +286,7 @@ async def send_email(
     if mailer["to"] or mailer["cc"]:
         try:
             summaries.append(await mailer_client.send(
-                mailer["to"], mailer["cc"], subject, full_body, base_key
+                mailer["to"], mailer["cc"], subject, full_body, base_key, reply_to=reply_mailer
             ))
         except Exception as e:
             refused = mailer_client.refused_addresses(e)             # set only for recipient_not_internal
@@ -274,7 +307,8 @@ async def send_email(
                 if kept["to"]:
                     try:
                         summaries.append(await mailer_client.send(   # a new body needs a new key
-                            kept["to"], kept["cc"], subject, full_body, f"{base_key}-kept"
+                            kept["to"], kept["cc"], subject, full_body, f"{base_key}-kept",
+                            reply_to=reply_mailer,
                         ))
                     except Exception as e2:
                         first_error = first_error or e2
@@ -283,7 +317,8 @@ async def send_email(
                     fallback["to"], fallback["cc"] = fallback["cc"], []
                 try:
                     summaries.append(await _send_via_smtp2go(
-                        fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"]
+                        fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"],
+                        reply_to=reply_smtp2go,
                     ))
                 except Exception as e3:
                     first_error = first_error or e3
@@ -301,6 +336,7 @@ async def _send_via_smtp2go(
     importance: str,
     *,
     raw_to: list[str],
+    reply_to: str | None = None,
 ) -> ExchangeSummary:
     """Send one email through SMTP2GO and record the exchange. Fallback mailer.
 
@@ -318,6 +354,7 @@ async def _send_via_smtp2go(
         importance: "High" adds priority headers; "Normal" adds nothing.
         raw_to: The caller's original ``to`` (blanks included), recorded on the
             not-attempted row so it shows what the code had to work with.
+        reply_to: Optional Reply-To header.
 
     Returns:
         The ``ExchangeSummary`` read off SMTP2GO's answer, or a not-attempted
@@ -327,7 +364,7 @@ async def _send_via_smtp2go(
         httpx.HTTPStatusError: SMTP2GO answered 4xx/5xx (after the row is written).
         httpx.HTTPError: The request never completed (after the row is written).
     """
-    payload = _build_payload(to, subject, full_body, cc, importance)
+    payload = _build_payload(to, subject, full_body, cc, importance, reply_to)
 
     if not to:
         logger.warning("No valid recipients for email: %s", subject)

@@ -80,7 +80,9 @@ def is_configured() -> bool:
     return bool(settings.MAILER_URL and settings.MAILER_KEY)
 
 
-def build_payload(to: list[str], cc: list[str], subject: str, html: str) -> dict:
+def build_payload(
+    to: list[str], cc: list[str], subject: str, html: str, reply_to: str | None = None
+) -> dict:
     """The camelCase JSON body posted to the mailer.
 
     The mailer refuses unknown fields, so only documented keys are included.
@@ -94,6 +96,8 @@ def build_payload(to: list[str], cc: list[str], subject: str, html: str) -> dict
         cc: Internal CC addresses, blanks already removed.
         subject: Email subject (required by the mailer).
         html: Full HTML body (one of html/text is required; this app sends HTML).
+        reply_to: Optional Reply-To. The mailer refuses an outside address
+            here, so the caller passes only an internal one.
 
     Returns:
         The payload dict. The bearer key is a header, never in the body.
@@ -112,6 +116,8 @@ def build_payload(to: list[str], cc: list[str], subject: str, html: str) -> dict
         payload["from"] = settings.MAILER_FROM
     if settings.MAILER_FROM_NAME:                                 # display name for staff recipients
         payload["fromName"] = settings.MAILER_FROM_NAME
+    if reply_to:                                                  # the sender has no inbox: answers go here
+        payload["replyTo"] = reply_to
     return payload
 
 
@@ -240,7 +246,12 @@ def classify_response(
 
 
 async def send(
-    to: list[str], cc: list[str], subject: str, html: str, idempotency_key: str
+    to: list[str],
+    cc: list[str],
+    subject: str,
+    html: str,
+    idempotency_key: str,
+    reply_to: str | None = None,
 ) -> ExchangeSummary:
     """Send one internal email through the mailer and record the exchange.
 
@@ -257,6 +268,7 @@ async def send(
         subject: Email subject.
         html: Full HTML body.
         idempotency_key: Stable key reused across this call's retries.
+        reply_to: Optional internal Reply-To address.
 
     Returns:
         The ``ExchangeSummary`` read off the mailer's final answer.
@@ -265,7 +277,7 @@ async def send(
         httpx.HTTPStatusError: The mailer's last answer was 4xx/5xx.
         httpx.HTTPError: The request never completed.
     """
-    payload = build_payload(to, cc, subject, html)                 # body (no secret inside)
+    payload = build_payload(to, cc, subject, html, reply_to)       # body (no secret inside)
     url = send_url()
     headers = {                                                    # key and idempotency go in headers
         "Authorization": f"Bearer {settings.MAILER_KEY}",
