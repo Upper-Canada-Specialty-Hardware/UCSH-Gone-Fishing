@@ -1,8 +1,9 @@
-import { Box, Tooltip, Typography } from '@mui/material';
+import { useState } from 'react';
+import { Box, Button, Tooltip, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { kindColor } from '../../constants/leaveColors';
 import { addDays, dayKey, isWeekend, today } from '../../utils/dates';
-import { ColorOf, firstName } from '../../utils/personColor';
+import { ColorOf, LabelOf } from '../../utils/personColor';
 import { shortDate } from '../../utils/requestText';
 import { Absence } from './teamStats';
 
@@ -16,14 +17,28 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
  * Approved time is a solid bar in the person's colour; time asked for but not
  * approved yet is dashed. Bars grow in from the left, one after another.
  *
- * @param props.names - The team, one row each.
+ * By default only people with an absence in the window get a row, so a large
+ * team stays short. A toggle (when asked for) switches between "only people
+ * off" and the whole team; a row cap (when asked for) trims the list and offers
+ * a "more" link instead of a long scroll.
+ *
+ * @param props.names - The team, one row each when everyone is shown.
  * @param props.absences - What to draw.
  * @param props.from - The first day shown.
  * @param props.days - How many days to show.
  * @param props.colorOf - Each person's colour.
+ * @param props.labelOf - Each person's short, unambiguous label.
+ * @param props.showToggle - Offer the "only off / everyone" toggle.
+ * @param props.maxRows - Show at most this many rows, with a "more" link.
+ * @param props.onShowMore - Called by the "more" link (e.g. open the Calendar tab).
  * @returns The timeline.
  */
-export function LeaveTimeline({ names, absences, from, days, colorOf }: { names: string[]; absences: Absence[]; from: Date; days: number; colorOf: ColorOf }) {
+export function LeaveTimeline({
+  names, absences, from, days, colorOf, labelOf, showToggle = false, maxRows, onShowMore,
+}: {
+  names: string[]; absences: Absence[]; from: Date; days: number;
+  colorOf: ColorOf; labelOf: LabelOf; showToggle?: boolean; maxRows?: number; onShowMore?: () => void;
+}) {
   const theme = useTheme();
   const last = addDays(from, days - 1);
   const t = dayKey(today());
@@ -31,8 +46,35 @@ export function LeaveTimeline({ names, absences, from, days, colorOf }: { names:
   const pct = (i: number) => `${(i / days) * 100}%`;     // a day index as a share of the track
   let n = 0;                                               // running count, for the staggered entry
 
+  // When the toggle is on, start on "only people off"; it can expand to everyone.
+  const [onlyOff, setOnlyOff] = useState(true);
+  // People with any absence overlapping the shown window.
+  const offNames = names.filter((who) => absences.some((a) => a.who === who && a.end >= from && a.start <= last));
+  // Rows to consider: the toggle picks the set; without a toggle we always show only the people off.
+  const chosen = showToggle && !onlyOff ? names : offNames;
+  // Trim to the cap, if any, and count what the cap hides.
+  const shown = maxRows ? chosen.slice(0, maxRows) : chosen;
+  const hiddenByCap = chosen.length - shown.length;
+  // What to say when there is no row to draw.
+  const emptyText = names.length === 0 ? 'No one on your team yet.' : 'No one is away in this window.';
+
   return (
-    <Box sx={{ overflowX: 'auto' }}>
+    <Box sx={{ display: 'grid', gap: 1 }}>
+      {/* The "only off / everyone" toggle, kept above the scroll area so it is always reachable. */}
+      {showToggle && (
+        <Button
+          size="small" variant="text" onClick={() => setOnlyOff((v) => !v)} aria-pressed={!onlyOff}
+          sx={{ justifySelf: 'start', textTransform: 'none' }}
+        >
+          {onlyOff ? `Show everyone (${names.length})` : 'Only people off'}
+        </Button>
+      )}
+
+      {shown.length === 0 ? (
+        // Nothing to draw: a plain line rather than an empty grid.
+        <Typography variant="body2" color="text.secondary">{emptyText}</Typography>
+      ) : (
+      <Box sx={{ overflowX: 'auto' }}>
       <Box sx={{ minWidth: days > 14 ? 720 : 440, display: 'grid', gap: 0.75 }}>
         {/* Day header: weekday letter and date, weekends muted, today marked. */}
         <Box sx={{ display: 'grid', gridTemplateColumns: '96px 1fr', alignItems: 'end' }}>
@@ -49,13 +91,13 @@ export function LeaveTimeline({ names, absences, from, days, colorOf }: { names:
           </Box>
         </Box>
 
-        {names.map((who) => {
+        {shown.map((who) => {
           const mine = absences.filter((a) => a.who === who && a.end >= from && a.start <= last);
           return (
             <Box key={who} sx={{ display: 'grid', gridTemplateColumns: '96px 1fr', alignItems: 'center' }}>
               <Typography variant="body2" noWrap sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 0.75 }}>
                 <Box component="span" sx={{ width: 8, height: 8, borderRadius: 999, bgcolor: colorOf(who), flex: 'none' }} />
-                {firstName(who)}
+                {labelOf(who)}
               </Typography>
               <Box sx={{ position: 'relative', height: 28, borderRadius: '8px', bgcolor: theme.tokens.hover }}>
                 {/* Weekend shading. */}
@@ -96,6 +138,15 @@ export function LeaveTimeline({ names, absences, from, days, colorOf }: { names:
           );
         })}
       </Box>
+      </Box>
+      )}
+
+      {/* The cap hid some people off: a link to the fuller view rather than a long scroll. */}
+      {hiddenByCap > 0 && onShowMore && (
+        <Button size="small" variant="text" onClick={onShowMore} sx={{ justifySelf: 'start', textTransform: 'none' }}>
+          +{hiddenByCap} more
+        </Button>
+      )}
     </Box>
   );
 }
@@ -225,19 +276,22 @@ export function MonthlyBars({ months, upTo }: { months: { vacation: number; sick
  *
  * @param props.members - /team/members (balances.vacation_balance and vacation_entitlement).
  * @param props.colorOf - Each person's colour.
+ * @param props.labelOf - Each person's short, unambiguous label.
  * @returns The rings.
  */
-export function VacationRings({ members, colorOf }: { members: any[]; colorOf: ColorOf }) {
+export function VacationRings({ members, colorOf, labelOf }: { members: any[]; colorOf: ColorOf; labelOf: LabelOf }) {
   const theme = useTheme();
   const r = 38, c = 2 * Math.PI * r;
+  // One scrollable strip instead of N wrapped rows, so the panel stays one row tall on any team size.
+  if (members.length === 0) return <Typography variant="body2" color="text.secondary">No matches.</Typography>;
   return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(118px, 1fr))', gap: 2 }}>
+    <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
       {members.map((m, k) => {
         const left = m.balances?.vacation_balance ?? 0;
         const of = m.balances?.vacation_entitlement ?? 0;
         const frac = of > 0 ? Math.max(0, Math.min(1, left / of)) : 0;
         return (
-          <Box key={m.id ?? m.name} sx={{ display: 'grid', justifyItems: 'center', textAlign: 'center', gap: 0.25 }}>
+          <Box key={m.id ?? m.name} sx={{ flex: 'none', width: 118, display: 'grid', justifyItems: 'center', textAlign: 'center', gap: 0.25 }}>
             <Box sx={{ position: 'relative', width: 92, height: 92 }}>
               <svg viewBox="0 0 92 92" width={92} height={92} aria-hidden>
                 <circle cx={46} cy={46} r={r} fill="none" stroke={theme.tokens.hover} strokeWidth={9} />
@@ -252,7 +306,7 @@ export function VacationRings({ members, colorOf }: { members: any[]; colorOf: C
                 {of > 0 && <Typography variant="caption" color="text.secondary">of {of}</Typography>}
               </Box>
             </Box>
-            <Typography variant="body2" sx={{ fontWeight: 700 }}>{firstName(m.name)}</Typography>
+            <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{labelOf(m.name)}</Typography>
             <Typography variant="caption" color="text.secondary">vacation left</Typography>
           </Box>
         );

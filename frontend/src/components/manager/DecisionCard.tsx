@@ -3,6 +3,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
 import { parseDay } from '../../utils/dates';
 import { ColorOf } from '../../utils/personColor';
+import { Clash } from './teamStats';
 import { askedAgo, daysWaiting, requestAmount, requestKind, requestNote, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
 import { BalanceMeter } from './Charts';
 
@@ -19,8 +20,8 @@ const POTS: { key: string; label: string; of?: string }[] = [
 interface Props {
   /** A /team/pending item. */
   item: any;
-  /** Others away during these dates, from clashesFor. */
-  clashes: string[];
+  /** Others away during these dates, from clashesFor; each has a unique key. */
+  clashes: Clash[];
   processingEnabled: boolean;
   busy: boolean;
   onApprove: () => void;
@@ -125,8 +126,9 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
       {clashes.length > 0 && (
         <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
           {clashes.map((c) => (
-            <Box key={c} component="span" sx={{ fontSize: 12, fontWeight: 600, px: 1, py: 0.25, borderRadius: 999, color: theme.tokens.accent, bgcolor: alpha(theme.tokens.accent, 0.12) }}>
-              {c}
+            // Keyed by the clashing absence's own id, so two teammates sharing a first name never collide.
+            <Box key={c.key} component="span" sx={{ fontSize: 12, fontWeight: 600, px: 1, py: 0.25, borderRadius: 999, color: theme.tokens.accent, bgcolor: alpha(theme.tokens.accent, 0.12) }}>
+              {c.text}
             </Box>
           ))}
         </Box>
