@@ -165,9 +165,9 @@ def test_routing_splits_internal_and_external_when_both_on(monkeypatch):
     _enable_mailer(monkeypatch)
     _enable_clerk(monkeypatch)
     smtp, mailer, clerk = email_module._route_recipients(
-        ["staff@ucsh.com", "out@gmail.com"], ["boss@ucaccess.com", "vendor@example.org"]
+        ["staff@ucsh.com", "out@gmail.com"], ["boss@ucsh.com", "vendor@example.org"]
     )
-    assert mailer == {"to": ["staff@ucsh.com"], "cc": ["boss@ucaccess.com"]}
+    assert mailer == {"to": ["staff@ucsh.com"], "cc": ["boss@ucsh.com"]}
     assert sorted(clerk) == [("out@gmail.com", "to"), ("vendor@example.org", "cc")]
     assert smtp == {"to": [], "cc": []}  # nothing falls through
 
@@ -476,10 +476,11 @@ def test_refused_addresses_reads_only_recipient_not_internal():
 
 
 def test_refused_address_goes_the_outside_way_and_the_rest_resend(monkeypatch, no_sleep):
-    # The app treats ucaccess.com as internal, the mailer does not: the mailer
+    # The app is set to treat ucaccess.com as internal, the mailer does not: the mailer
     # refuses the whole request, so the ucsh.com address is re-sent through the
     # mailer with a new key and the ucaccess.com one goes to SMTP2GO (Clerk off).
     _enable_mailer(monkeypatch)
+    monkeypatch.setattr(settings, "INTERNAL_EMAIL_DOMAINS", "ucsh.com,ucaccess.com")
     smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
     m = _FakeHttp([
         _resp(400, {"error": "recipient_not_internal", "message": "m", "addresses": ["temp@ucaccess.com"]}),
@@ -505,6 +506,7 @@ def test_refused_address_goes_the_outside_way_and_the_rest_resend(monkeypatch, n
 def test_refused_address_goes_to_clerk_when_clerk_is_on(monkeypatch, no_sleep):
     _enable_mailer(monkeypatch)
     _enable_clerk(monkeypatch)
+    monkeypatch.setattr(settings, "INTERNAL_EMAIL_DOMAINS", "ucsh.com,ucaccess.com")
     smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
     m = _FakeHttp(_resp(400, {"error": "recipient_not_internal", "message": "m", "addresses": ["temp@ucaccess.com"]}))
     c = _FakeHttp(_clerk_accepted())
@@ -518,3 +520,42 @@ def test_refused_address_goes_to_clerk_when_clerk_is_on(monkeypatch, no_sleep):
         assert len(c.calls) == 1 and smtp.calls == []
 
     asyncio.run(flow())
+
+
+# ----- reply-to: the sending accounts have no inbox -----
+
+def test_reply_to_is_the_callers_then_the_default_and_internal_only_for_the_mailer(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "")
+    assert email_module._resolve_reply_to(None) == (None, None)               # nothing set: no reply-to
+    assert email_module._resolve_reply_to("boss@ucsh.com") == ("boss@ucsh.com", "boss@ucsh.com")
+    # The mailer refuses an outside reply-to, so only smtp2go carries it.
+    assert email_module._resolve_reply_to("me@gmail.com") == ("me@gmail.com", None)
+    monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "hr@ucsh.com")
+    assert email_module._resolve_reply_to("") == ("hr@ucsh.com", "hr@ucsh.com")  # default fills a blank
+    assert email_module._resolve_reply_to("boss@ucsh.com")[0] == "boss@ucsh.com"  # the caller's wins
+
+
+def test_send_email_passes_reply_to_to_both_services(monkeypatch):
+    _enable_mailer(monkeypatch)
+    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    m = _FakeHttp(_mailer_accepted(recipients=1))
+    monkeypatch.setattr(mailer_client, "_http", m)
+
+    async def flow():
+        await _reset()
+        await email_module.send_email(
+            to=["staff@ucsh.com", "jane@gmail.com"], subject="S", html_body="<p>hi</p>",
+            reply_to="boss@ucsh.com",
+        )
+        (mailer_call,) = m.calls
+        assert mailer_call["json"]["replyTo"] == "boss@ucsh.com"
+        (smtp_call,) = smtp.calls
+        assert {"header": "Reply-To", "value": "boss@ucsh.com"} in smtp_call["json"]["custom_headers"]
+
+    asyncio.run(flow())
+
+
+def test_no_reply_to_leaves_both_payloads_as_before(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "")
+    assert "replyTo" not in mailer_client.build_payload(["a@ucsh.com"], [], "S", "<p>b</p>")
+    assert "custom_headers" not in email_module._build_payload(["a@x.com"], "S", "<p>b</p>", None, "Normal")

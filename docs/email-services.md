@@ -10,7 +10,8 @@ Every address in a send's `to` and `cc` is routed independently:
 
 - **UCSH (internal) addresses** go to the **UCSH mailer**, an internal HTTPS
   service that relays mail over Microsoft High Volume Email. "Internal" means
-  the domain is in `INTERNAL_EMAIL_DOMAINS` (default `ucsh.com,ucaccess.com`).
+  the domain is in `INTERNAL_EMAIL_DOMAINS` (default `ucsh.com`, the only
+  domain the mailer accepts).
 - **Every other address** goes to **Clerk** transactional email.
 - **Any recipient whose service is switched off** (or switched on but not yet
   configured) stays on **SMTP2GO**, exactly as before. With both new services
@@ -39,7 +40,17 @@ fills these in.
 | `MAILER_KEY` | `""` | Static per-product bearer key from the mailer's owner. |
 | `MAILER_FROM` | `""` | Sender address. Only needed when the key has several senders; a single-sender key supplies its own. |
 | `MAILER_FROM_NAME` | `UCSH Out of Office` | Display name staff recipients see. |
-| `INTERNAL_EMAIL_DOMAINS` | `ucsh.com,ucaccess.com` | Comma-separated domains routed to the mailer. Must match the mailer's own `ALLOWED_DOMAINS`. |
+| `INTERNAL_EMAIL_DOMAINS` | `ucsh.com` | Comma-separated domains routed to the mailer. Must match the mailer's own `ALLOWED_DOMAINS`. |
+| `EMAIL_REPLY_TO` | `""` | Reply-To for emails that name no person to answer (auto-rejections, receipts). Blank = none. |
+
+### Reply-To
+
+The sending accounts have no inbox, so an email that someone may answer
+carries a Reply-To. A manager's approval request replies to the employee;
+an employee's approved or rejected email replies to the manager. Other
+emails use `EMAIL_REPLY_TO` when it is set. The mailer only accepts an
+internal Reply-To, so an outside one is left off the mailer's copy (SMTP2GO
+sends it as a header either way).
 
 ### Clerk
 
