@@ -168,3 +168,21 @@ def test_route_unknown_location_still_previews(client, monkeypatch):
     assert res.status_code == 200
     assert res.json()["days"] == 1                              # the holiday is not known, so it counts
     assert any("could not be checked" in n for n in res.json()["notes"])
+
+
+def test_my_balances_names_the_managers(monkeypatch):
+    # The employee dashboard shows who approves their requests.
+    from app.routes import dashboard
+    app = FastAPI()
+    app.include_router(dashboard.router, prefix="/api/dashboard")
+    fields = {**AVERY, "AllManagers": [{"LookupValue": "Jordan Lee"}, {"LookupValue": "Sam Park"}]}
+
+    async def by_id(item_id):
+        return {"id": "7", "fields": fields} if str(item_id) == "7" else None
+
+    monkeypatch.setattr(dashboard, "get_employee_by_id", by_id)
+    res = TestClient(app).get("/api/dashboard/me/balances", params=generate_dashboard_token("employee", "7"))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["employee"]["managers"] == "Jordan Lee, Sam Park"
+    assert body["balances"]["payout"] == 0 and body["balances"]["vacation_entitlement"] == 15
