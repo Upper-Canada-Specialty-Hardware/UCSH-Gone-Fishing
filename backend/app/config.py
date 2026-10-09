@@ -65,9 +65,14 @@ class Settings(BaseSettings):
     MAILER_FROM_NAME: str = "UCSH Out of Office"       # display name shown to staff recipients
 
     # Which email domains count as internal (routed to the UCSH mailer). Comma
-    # separated; must match the mailer's own ALLOWED_DOMAINS or it will refuse
-    # recipients it considers external.
-    INTERNAL_EMAIL_DOMAINS: str = "ucsh.com,ucaccess.com"
+    # separated; must match the mailer's own ALLOWED_DOMAINS (ucsh.com only) or
+    # it will refuse recipients it considers external.
+    INTERNAL_EMAIL_DOMAINS: str = "ucsh.com"
+
+    # Reply-To for emails that name no person to answer (auto-rejections,
+    # receipts). The sending accounts have no inbox, so without one a reply
+    # goes nowhere. Blank = no Reply-To on those emails.
+    EMAIL_REPLY_TO: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

@@ -309,6 +309,7 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
             subject=subject,
             html_body=html,
             primary_employee_id=mgr_id,
+            reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
         )
 
         cell = mgr["fields"].get("CellNumber", "")
@@ -526,6 +527,7 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
         html_body=html,
         importance="High",
         primary_employee_id=employee_id,
+        reply_to=mgr_fields.get("EmailAddress", ""),            # replies reach the manager
     )
 
     return {"status": "approved", "balances": balances}
@@ -654,6 +656,7 @@ async def reject_carryover_payout(request_id: str | int, manager_id: str | int) 
         subject=subject,
         html_body=html,
         primary_employee_id=employee_id,
+        reply_to=mgr_fields.get("EmailAddress", ""),            # replies reach the manager
     )
 
     return {"status": "rejected"}

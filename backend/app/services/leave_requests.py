@@ -374,6 +374,7 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
             subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
             html_body=html,
             primary_employee_id=manager_id,
+            reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
         )
 
         # Send SMS to manager if they have a cell number (skipped on reminders -
@@ -588,6 +589,7 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
         subject=f"{submitter_name} - Leave Request: Approved",
         html_body=html,
         primary_employee_id=employee_id,
+        reply_to=mgr_fields.get("EmailAddress", ""),            # replies reach the manager
     )
 
     leave_type = fields.get("LeaveType", "")
@@ -730,6 +732,7 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
         subject=f"{submitter_name} - Leave Request: Rejected",
         html_body=html,
         primary_employee_id=emp_id,
+        reply_to=mgr_fields.get("EmailAddress", ""),            # replies reach the manager
     )
 
     return {"status": "rejected"}
