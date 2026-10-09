@@ -1,5 +1,6 @@
 import { RequestKind } from '../../constants/leaveColors';
 import { addDays, dayKey, daysBetween, isWeekend, mondayOf, overlaps, parseDay, today } from '../../utils/dates';
+import { LabelOf } from '../../utils/personColor';
 import { requestKind, requestWhat, requestWho, shortDate } from '../../utils/requestText';
 
 /**
@@ -191,21 +192,36 @@ export function totalsByKind(requests: any[], year: number): [string, number, Re
   ];
 }
 
+/** One clash: a stable unique key (the absence's own key) and its readable note. */
+export interface Clash {
+  /** The clashing absence's key, unique across the team, for a React list key. */
+  key: string;
+  /** "Riley K is off Oct 20 to Oct 22" style note. */
+  text: string;
+}
+
 /**
- * Who else is away during a request's dates, for the flag on its card.
+ * Who else is away during a request's dates, for the flag on its card. Each
+ * clash carries the clashing absence's own key so two teammates who share a
+ * first name never collide as React keys, and the note uses the team's
+ * disambiguated label so they read apart.
  *
  * @param item - A /team/pending item.
  * @param list - Absences.
- * @returns "Riley (Oct 20 to Oct 22)" style notes, one per other absence.
+ * @param labelOf - The team's short, unambiguous labels.
+ * @returns One {key, text} per other overlapping absence.
  */
-export function clashesFor(item: any, list: Absence[]): string[] {
+export function clashesFor(item: any, list: Absence[], labelOf: LabelOf): Clash[] {
   if (item.request_type !== 'leave') return [];
   const s = parseDay(item.StartDate), e = parseDay(item.EndDate) || s;
   if (!s || !e) return [];
   const me = requestWho(item);
   return list
-    .filter((a) => a.who !== me && overlaps(a.start, a.end, s, e))
-    .map((a) => `${a.who.split(' ')[0]} is ${a.pending ? 'asking for' : 'off'} ${shortDate(dayKey(a.start))}${a.end > a.start ? ` to ${shortDate(dayKey(a.end))}` : ''}`);
+    .filter((a) => a.who !== me && overlaps(a.start, a.end, s, e))   // other people, overlapping dates
+    .map((a) => ({
+      key: a.key,                                                    // unique per absence, so keys never clash
+      text: `${labelOf(a.who)} is ${a.pending ? 'asking for' : 'off'} ${shortDate(dayKey(a.start))}${a.end > a.start ? ` to ${shortDate(dayKey(a.end))}` : ''}`,
+    }));
 }
 
 /**
@@ -213,9 +229,10 @@ export function clashesFor(item: any, list: Absence[]): string[] {
  *
  * @param members - /team/members.
  * @param list - Absences, waiting ones included.
+ * @param labelOf - The team's short, unambiguous labels.
  * @returns Up to four {tone, text} notes.
  */
-export function insights(members: any[], list: Absence[]): { tone: 'warn' | 'info'; text: string }[] {
+export function insights(members: any[], list: Absence[], labelOf: LabelOf): { tone: 'warn' | 'info'; text: string }[] {
   const out: { tone: 'warn' | 'info'; text: string }[] = [];
   const names = members.map((m) => m.name);
   // The thinnest day in the next four weeks, if every waiting request is approved.
@@ -229,12 +246,12 @@ export function insights(members: any[], list: Absence[]): { tone: 'warn' | 'inf
   // Below zero on vacation: approved leave has run past what they have.
   for (const m of members) {
     const v = m.balances?.vacation_balance ?? 0;
-    if (v < 0) out.push({ tone: 'warn', text: `${m.name} is ${Math.abs(v)} vacation day${Math.abs(v) === 1 ? '' : 's'} below zero.` });
+    if (v < 0) out.push({ tone: 'warn', text: `${labelOf(m.name)} is ${Math.abs(v)} vacation day${Math.abs(v) === 1 ? '' : 's'} below zero.` });
   }
   // Carried-over days are cleared every April 1.
   for (const m of members) {
     const c = m.balances?.carryover ?? 0;
-    if (c > 0) out.push({ tone: 'info', text: `${m.name} has ${c} carried-over day${c === 1 ? '' : 's'}. Carried-over days reset on April 1.` });
+    if (c > 0) out.push({ tone: 'info', text: `${labelOf(m.name)} has ${c} carried-over day${c === 1 ? '' : 's'}. Carried-over days reset on April 1.` });
   }
   return out.slice(0, 4);
 }
