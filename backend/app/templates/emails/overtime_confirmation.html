@@ -1,28 +1,29 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #1e40af;">Time Make-Up Request Received</h2>
-  <p>Your overtime request has been received and is pending manager approval.</p>
-  {% include "conflict_warning.html" %}
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Details:</td><td style="padding: 8px;">{{ fields.get('Title', '') }}</td></tr>
-  </table>
-  {% if emp_fields %}
-  <h3>Current Balances</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ emp_fields.get('CurrentVacationBalance', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ emp_fields.get('CurrentSickDayBalance', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ emp_fields.get('CarryOver', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ emp_fields.get('CurrentOvertimeBalance', 0) }} days</td></tr>
-  </table>
-  {% if projected %}
-  <h3>Projected Balances (if approved)</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ projected.CurrentVacationBalance }} days</td></tr>
-    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ projected.CurrentSickDayBalance }} days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ projected.CarryOver }} days</td></tr>
-    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ projected.CurrentOvertimeBalance }} days</td></tr>
-  </table>
-  {% endif %}
-  {% endif %}
-</div>
+{# Employee's overtime received confirmation. Restyled to the shared layout;
+   variables and conditionals are unchanged. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Time Make-Up Request Received</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Your overtime request has been received and is pending manager approval.</p>
+{% include "conflict_warning.html" %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {{ ui.row('Date:', fields.get('StartDate', '')) }}
+  {{ ui.row('Hours:', fields.get('Hours', '')) }}
+  {{ ui.row('Details:', fields.get('Title', '')) }}
+</table>
+{% if emp_fields %}
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Current Balances</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', emp_fields.get('CurrentVacationBalance', 0) ~ ' days') }}
+  {{ ui.row('Sick/Personal:', emp_fields.get('CurrentSickDayBalance', 0) ~ ' days') }}
+  {{ ui.row('Carry Over:', emp_fields.get('CarryOver', 0) ~ ' days') }}
+  {{ ui.row('Make-Up:', emp_fields.get('CurrentOvertimeBalance', 0) ~ ' days') }}
+</table>
+{% if projected %}
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Projected Balances (if approved)</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', projected.CurrentVacationBalance ~ ' days') }}
+  {{ ui.row('Sick/Personal:', projected.CurrentSickDayBalance ~ ' days') }}
+  {{ ui.row('Carry Over:', projected.CarryOver ~ ' days') }}
+  {{ ui.row('Make-Up:', projected.CurrentOvertimeBalance ~ ' days') }}
+</table>
+{% endif %}
+{% endif %}

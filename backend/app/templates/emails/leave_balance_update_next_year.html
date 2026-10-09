@@ -1,11 +1,12 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #1e40af;">Updated Leave Balance</h2>
-  <p>Updated Balances for (<strong>{{ employee_name }}</strong>):</p>
-  <p style="color: #b45309; font-style: italic;">The approved request is dated for the next calendar year. The request's deductions were applied to your Overtime and Carry Over balances.</p>
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr><td style="padding: 8px;">Vacation:</td><td style="padding: 8px;">{{ balances.CurrentVacationBalance }} days</td></tr>
-    <tr><td style="padding: 8px;">Sick/Personal:</td><td style="padding: 8px;">{{ balances.CurrentSickDayBalance }} days</td></tr>
-    <tr><td style="padding: 8px;">Carry Over:</td><td style="padding: 8px;">{{ balances.CarryOver }} days</td></tr>
-    <tr><td style="padding: 8px;">Overtime:</td><td style="padding: 8px;">{{ balances.CurrentOvertimeBalance }} days</td></tr>
-  </table>
-</div>
+{# Employee's updated-balance notice for a next-calendar-year request.
+   Restyled to the shared layout; the next-year note is unchanged. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Updated Leave Balance</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Updated Balances for (<strong>{{ employee_name }}</strong>):</p>
+<p style="color:#b45309;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;font-style:italic;margin:0 0 12px;">The approved request is dated for the next calendar year. The request's deductions were applied to your Overtime and Carry Over balances.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {{ ui.row('Vacation:', balances.CurrentVacationBalance ~ ' days') }}
+  {{ ui.row('Sick/Personal:', balances.CurrentSickDayBalance ~ ' days') }}
+  {{ ui.row('Carry Over:', balances.CarryOver ~ ' days') }}
+  {{ ui.row('Overtime:', balances.CurrentOvertimeBalance ~ ' days') }}
+</table>

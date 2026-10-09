@@ -23,6 +23,8 @@ from app.database import Base, async_session, engine
 from app.graph import email as email_module, mailer_client
 from app.models import EmailApiLog, EmailApiLogRecipient
 from app.services import email_api_log as log_service
+from app import templates_render
+from app.templates_render import LAYOUT_MARKER, render_layout
 
 
 # ----- fixtures and helpers -----
@@ -443,3 +445,59 @@ def test_no_reply_to_leaves_both_payloads_as_before(monkeypatch):
     monkeypatch.setattr(settings, "EMAIL_REPLY_TO", "")
     assert "replyTo" not in mailer_client.build_payload(["a@ucsh.com"], [], "S", "<p>b</p>")
     assert "custom_headers" not in email_module._build_payload(["a@x.com"], "S", "<p>b</p>", None, "Normal")
+
+
+# ----- the one shared layout, applied centrally in send_email -----
+
+def test_render_layout_wraps_once_and_is_idempotent():
+    once = render_layout("<p>hi</p>")
+    assert once.lstrip().startswith("<!DOCTYPE html>")   # a full document, header band and all
+    assert once.count(LAYOUT_MARKER) == 1                # wrapped exactly once
+    assert "<p>hi</p>" in once                           # the content is carried through
+    # An already-wrapped body is returned untouched, so a second wrap is a no-op.
+    assert render_layout(once) == once
+    assert render_layout(once).count("<!DOCTYPE html>") == 1
+
+
+def test_send_email_wraps_the_body_in_the_layout_for_both_services(monkeypatch):
+    _enable_mailer(monkeypatch)
+    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    m = _FakeHttp(_mailer_accepted(recipients=1))
+    monkeypatch.setattr(mailer_client, "_http", m)
+
+    async def flow():
+        await _reset()
+        await email_module.send_email(
+            to=["staff@ucsh.com", "jane@gmail.com"], subject="S", html_body="<p>hi</p>",
+        )
+        smtp_html = smtp.calls[0]["json"]["html_body"]   # what SMTP2GO was sent
+        mailer_html = m.calls[0]["json"]["html"]         # what the mailer was sent
+        for body in (smtp_html, mailer_html):
+            assert LAYOUT_MARKER in body                 # every service got the shell
+            assert body.count("<!DOCTYPE html>") == 1    # and only one shell
+            assert "<p>hi</p>" in body                   # with the original content inside
+
+    asyncio.run(flow())
+
+
+def test_button_macro_emits_both_the_vml_and_the_non_mso_anchor():
+    html = templates_render._env.from_string(
+        "{% import '_macros.html' as ui %}{{ ui.button('https://x.test/go', 'Approve', '#15803d') }}"
+    ).render()
+    assert "<!--[if mso]>" in html and "v:roundrect" in html        # the Outlook (VML) button
+    assert "<!--[if !mso]><!-->" in html                            # the everyone-else branch
+    assert '<a href="https://x.test/go"' in html                    # the real anchor
+    assert "#15803d" in html                                        # painted the colour it was given
+
+
+def test_dashboard_footer_keeps_its_links_and_its_warning():
+    links = [
+        {"label": "My Dashboard", "url": "https://x.test/emp"},
+        {"label": "Team Dashboard", "url": "https://x.test/mgr"},
+    ]
+    html = templates_render.render_dashboard_footer(links)
+    for link in links:                                              # every dashboard still linked
+        assert link["url"] in html and link["label"] in html
+    assert "v:roundrect" in html                                    # Outlook-safe buttons, not thin links
+    assert "Do not forward this email" in html                     # the standing warning stays
+    assert "cryptographed" in html

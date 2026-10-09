@@ -1,10 +1,10 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #1e40af;">Request Received for Carry Over</h2>
-  <p>Your Carry Over request (#{{ request_id }}) for <strong>{{ days }}</strong> days has been received and is pending manager approval.</p>
-  <p>If approved, your balances will be adjusted to:</p>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>({{ new_vacation }}) days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>({{ new_carryover }}) days</td></tr>
-    <tr><td style="padding: 4px;">Payout:</td><td>({{ current_payout }}) days</td></tr>
-  </table>
-</div>
+{# Employee's carry-over received confirmation. Restyled to the shared layout. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Request Received for Carry Over</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Your Carry Over request (#{{ request_id }}) for <strong>{{ days }}</strong> days has been received and is pending manager approval.</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">If approved, your balances will be adjusted to:</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', '(' ~ new_vacation ~ ') days') }}
+  {{ ui.row('Carry Over:', '(' ~ new_carryover ~ ') days') }}
+  {{ ui.row('Payout:', '(' ~ current_payout ~ ') days') }}
+</table>

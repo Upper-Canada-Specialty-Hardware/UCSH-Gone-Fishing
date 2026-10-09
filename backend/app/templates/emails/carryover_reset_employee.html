@@ -1,18 +1,10 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #b45309;">Annual Carry Over Balance Reset</h2>
-  <p>Hi <strong>{{ employee_name }}</strong>,</p>
-  <p>As per company policy, your Carry Over balance has been reset to <strong>0</strong> effective April 1st.</p>
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr>
-      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Previous Carry Over:</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{{ carryover_lost }} days</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px; font-weight: bold;">New Carry Over:</td>
-      <td style="padding: 8px;">0 days</td>
-    </tr>
-  </table>
-  <p style="color: #6b7280; font-size: 14px;">
-    If you have any questions about this adjustment, please contact HR.
-  </p>
-</div>
+{# Employee's April-1 carry-over reset notice. Restyled to the shared layout. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Annual Carry Over Balance Reset</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Hi <strong>{{ employee_name }}</strong>,</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">As per company policy, your Carry Over balance has been reset to <strong>0</strong> effective April 1st.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {{ ui.row('Previous Carry Over:', carryover_lost ~ ' days') }}
+  {{ ui.row('New Carry Over:', '0 days') }}
+</table>
+<p style="color:#6b6257;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;margin:0;">If you have any questions about this adjustment, please contact HR.</p>

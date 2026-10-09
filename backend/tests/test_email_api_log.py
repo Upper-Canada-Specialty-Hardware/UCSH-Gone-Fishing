@@ -25,6 +25,7 @@ from app.models.mixins import utcnow
 from app.routes import email_api_log as email_log_route
 from app.routes.email_api_log import router as email_log_router
 from app.services import email_api_log as log_service
+from app.templates_render import render_layout
 
 
 # ----- fixtures and helpers -----
@@ -145,8 +146,11 @@ def test_accepted_send_stores_the_request_and_the_answer_verbatim(smtp):
         request = json.loads(row.request_json)
         assert "api_key" not in request
         assert "html_body" not in request
-        assert request["html_body_bytes"] == len(b"<p>hi</p>")
-        assert request["html_body_sha256"] == hashlib.sha256(b"<p>hi</p>").hexdigest()
+        # The stored body is what SMTP2GO was sent: the content wrapped once in
+        # the shared layout by send_email, so the logged size/hash cover that.
+        sent_body = render_layout("<p>hi</p>").encode()
+        assert request["html_body_bytes"] == len(sent_body)
+        assert request["html_body_sha256"] == hashlib.sha256(sent_body).hexdigest()
         # Recipients as sent (untouched), so the row shows what SMTP2GO saw.
         assert request["to"] == ["  Worker@UCSH.com "]
         assert request["cc"] == ["Boss@ucsh.com"]

@@ -1,9 +1,21 @@
+{# Dashboard-links footer appended to many emails, then wrapped by the layout.
+
+   Built by build_dashboard_footer_html (app/services/dashboard_tokens.py) and
+   handed to send_email as dashboard_footer. One brand-green button per
+   dashboard the recipient can open, stacked so they never overflow the card in
+   Outlook, plus the standing do-not-forward warning. #}
+{% import "_macros.html" as ui %}
 {% if dashboard_links %}
-<div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-family: 'Segoe UI', sans-serif;">
-  <p style="color: #6b7280; font-size: 13px; margin-bottom: 8px;">View your dashboards:</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;margin-top:28px;border-top:1px solid #ebe4d8;">
+  <tr>
+    <td style="padding-top:16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#6b6257;">View your dashboards:</td>
+  </tr>
   {% for link in dashboard_links %}
-  <a href="{{ link.url }}" style="display: inline-block; padding: 8px 20px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px; font-size: 13px; margin-right: 8px; margin-bottom: 4px;">{{ link.label }}</a>
+  {#- one button per dashboard, each on its own line -#}
+  <tr><td style="padding-top:8px;">{{ ui.button(link.url, link.label, "#2f5d50", 220) }}</td></tr>
   {% endfor %}
-  <p style="color: #991b1b; font-size: 12px; margin-top: 12px; margin-bottom: 0;">Do not forward this email to anyone. It contains cryptographed links that provide access to your employee and manager's dashboards.</p>
-</div>
+  <tr>
+    <td style="padding-top:12px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#b91c1c;">Do not forward this email to anyone. It contains cryptographed links that provide access to your employee and manager's dashboards.</td>
+  </tr>
+</table>
 {% endif %}

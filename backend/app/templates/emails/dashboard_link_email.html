@@ -1,10 +1,11 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #1e40af;">Your Team Dashboard</h2>
-  <p>Hi {{ manager_name }},</p>
-  <p>An administrator has sent you a link to access your team dashboard. Use the button below to view your team's leave balances, pending requests, and more.</p>
-  <p style="margin: 24px 0;">
-    <a href="{{ dashboard_url }}" style="display: inline-block; padding: 12px 32px; background: #1e40af; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Open Team Dashboard</a>
-  </p>
-  <p style="color: #6b7280; font-size: 14px;">This link will expire in 30 days. If the link has expired, please contact your administrator for a new one.</p>
-  <p style="color: #991b1b; font-size: 12px; margin-top: 12px;">Do not forward this email to anyone. It contains cryptographed links that provide access to your employee and manager's dashboards.</p>
-</div>
+{# Team-dashboard link an admin sends a manager. Restyled to the shared layout;
+   wording and variables are unchanged. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Your Team Dashboard</h2>
+<p style="margin:0 0 12px;">Hi {{ manager_name }},</p>
+<p style="margin:0 0 12px;">An administrator has sent you a link to access your team dashboard. Use the button below to view your team's leave balances, pending requests, and more.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;">
+  <tr><td>{{ ui.button(dashboard_url, "Open Team Dashboard", "#2f5d50", 240) }}</td></tr>
+</table>
+<p style="color:#6b6257;font-size:14px;margin:0 0 12px;">This link will expire in 30 days. If the link has expired, please contact your administrator for a new one.</p>
+<p style="color:#b91c1c;font-size:12px;margin:12px 0 0;">Do not forward this email to anyone. It contains cryptographed links that provide access to your employee and manager's dashboards.</p>
