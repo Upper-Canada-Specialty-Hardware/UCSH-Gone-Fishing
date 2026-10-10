@@ -10,12 +10,9 @@ from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
 from app.models.email_code import EmailCode
 from app.models.held_request import HeldRequest
 
-# Migrated business tables (the SharePoint data, moved into Postgres).
-from app.models.employee import Employee
-from app.models.manager_assignment import ManagerAssignment
-from app.models.leave_request import LeaveRequest
-from app.models.overtime_request import OvertimeRequest
-from app.models.carryover_payout_request import CarryoverPayoutRequest
+# Company Holidays: the one business domain served from Postgres. The other
+# business tables that once backed a wider storage move (employees, the three
+# request lists, manager assignments) were dropped; only holidays remain here.
 from app.models.holiday import Holiday
 
 __all__ = [
@@ -32,10 +29,5 @@ __all__ = [
     "EmailCode",
     "HeldRequest",
     # business
-    "Employee",
-    "ManagerAssignment",
-    "LeaveRequest",
-    "OvertimeRequest",
-    "CarryoverPayoutRequest",
     "Holiday",
 ]

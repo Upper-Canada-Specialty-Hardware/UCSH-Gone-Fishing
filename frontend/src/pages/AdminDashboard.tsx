@@ -10,6 +10,7 @@ import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
+import HolidaysManager from '../components/HolidaysManager';
 import RequestsScreen from '../components/admin/RequestsScreen';
 import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
@@ -52,6 +53,7 @@ const SCREEN_TITLES: Record<string, string> = {
   // Reached from Staff, not the sidebar.
   assignments: 'Manager assignments',
   requests: 'All requests',
+  holidays: 'Company holidays',
   stuck: 'Stuck requests',
   emails: 'Email log',
   checks: 'Data checks',
@@ -390,6 +392,8 @@ export default function AdminDashboard() {
       { key: 'add', label: 'Add employee' },
     ] },
     { title: 'Requests', items: [{ key: 'requests', label: 'All requests' }] },
+    // The holidays every working-day count skips, edited here since they moved to Postgres.
+    { title: 'Calendar', items: [{ key: 'holidays', label: 'Company holidays' }] },
     { items: [
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
@@ -510,6 +514,8 @@ export default function AdminDashboard() {
               )}
 
               {tab === 'checks' && <RequestColumnsCard processingEnabled={processingEnabled} />}
+
+              {tab === 'holidays' && <HolidaysManager />}
               </Enter>
             </>
           )}
