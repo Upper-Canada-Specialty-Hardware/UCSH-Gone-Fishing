@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { clearSession, loadSession, setSignInNotice } from './intake';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -6,31 +7,26 @@ const api = axios.create({
   baseURL: `${API_URL}/api/dashboard`,
 });
 
-// Attach auth params from sessionStorage to every request
+// Every call carries the one shared sign-in: an emailed link in this tab, or
+// this device's 30-day sign-in from the emailed code (see loadSession).
 api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem('dashboard_token');
-  const role = sessionStorage.getItem('dashboard_role');
-  const uid = sessionStorage.getItem('dashboard_uid');
-  const exp = sessionStorage.getItem('dashboard_exp');
-
-  if (token && role && uid && exp) {
-    config.params = {
-      ...config.params,
-      token,
-      role,
-      uid,
-      exp,
-    };
+  const session = loadSession();
+  if (session) {
+    const { token, role, uid, exp } = session;
+    config.params = { ...config.params, token, role, uid, exp };
   }
   return config;
 });
 
+// A refused sign-in (expired or tampered) signs out and goes back to the
+// landing page, which says why.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.hash = '#/expired';
+      clearSession();
+      setSignInNotice('Your sign-in has ended. Enter your email for a new code.');
+      window.location.hash = '#/';
     }
     return Promise.reject(error);
   }

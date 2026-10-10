@@ -1,6 +1,7 @@
-import { useState, useMemo } from 'react';
-import { Box, Chip } from '@mui/material';
-import { DataGrid, GridColDef, GridActionsCellItem, GridActionsCellItemProps } from '@mui/x-data-grid';
+import { useState, useMemo, useEffect } from 'react';
+import { Box, Chip, useMediaQuery } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import { DataGrid, GridColDef, GridActionsCellItem, GridActionsCellItemProps, GridColumnVisibilityModel } from '@mui/x-data-grid';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import UndoIcon from '@mui/icons-material/Undo';
 import AuditTrailDialog from './AuditTrailDialog';
@@ -24,8 +25,26 @@ interface Props {
   actionLoading?: string | null;
 }
 
+/** Columns worth hiding on a phone, where the full set would force a wide scroll. */
+const HIDDEN_ON_NARROW: GridColumnVisibilityModel = {
+  managers: false, LeaveType: false, description: false, EndDate: false, Hours: false, Created: false, ApprovedDate: false,
+};
+
 export default function RequestHistory({ requests, loading, showEmployee, onRefund, processingEnabled, actionLoading }: Props) {
   const [auditDialogLog, setAuditDialogLog] = useState<string | null>(null);
+  const theme = useTheme();
+  // True on phone-width screens; drives which columns start hidden.
+  const narrow = useMediaQuery(theme.breakpoints.down('sm'));
+  // The starting column set: phones hide the low-value columns; an employee's own
+  // table hides Manager(s), which is the same on every row and named in the page header.
+  const defaultVisibility = useMemo<GridColumnVisibilityModel>(
+    () => ({ ...(narrow ? HIDDEN_ON_NARROW : {}), ...(showEmployee ? {} : { managers: false }) }),
+    [narrow, showEmployee],
+  );
+  // Which columns are shown; starts from the default but the toolbar's Columns menu can still change it.
+  const [columnVisibilityModel, setColumnVisibilityModel] = useState<GridColumnVisibilityModel>(defaultVisibility);
+  // Crossing the phone breakpoint resets to that width's sensible default.
+  useEffect(() => setColumnVisibilityModel(defaultVisibility), [defaultVisibility]);
 
   const rows = useMemo(
     () =>
@@ -59,15 +78,10 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         valueOptions: REQUEST_TYPE_OPTIONS,
       },
       ...(showEmployee
-        ? [{ field: 'employee_name', headerName: 'Employee', width: 180 } as GridColDef]
+        // Roomy and minWidth-floored so an employee name is never clipped (it also wraps, see the grid sx).
+        ? [{ field: 'employee_name', headerName: 'Employee', width: 200, minWidth: 160 } as GridColDef]
         : []),
-      { field: 'managers', headerName: 'Manager(s)', width: 200 },
-      { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
-      { field: 'description', headerName: 'Description', width: 200 },
-      { field: 'StartDate', headerName: 'Start', width: 120 },
-      { field: 'EndDate', headerName: 'End', width: 120 },
-      { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
-      { field: 'Hours', headerName: 'Hours', width: 80, type: 'number' },
+      // Status right after who and what, so it is visible without scrolling sideways.
       {
         field: 'Status',
         headerName: 'Status',
@@ -82,6 +96,13 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
           />
         ),
       },
+      { field: 'managers', headerName: 'Manager(s)', width: 200 },
+      { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
+      { field: 'description', headerName: 'Description', width: 200 },
+      { field: 'StartDate', headerName: 'Start', width: 120 },
+      { field: 'EndDate', headerName: 'End', width: 120 },
+      { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
+      { field: 'Hours', headerName: 'Hours', width: 80, type: 'number' },
       { field: 'Created', headerName: 'Created', width: 120 },
       { field: 'ApprovedDate', headerName: 'Approved Date', width: 120 },
     ];
@@ -130,15 +151,23 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
   }, [showEmployee, onRefund, processingEnabled, actionLoading, requests]);
 
   return (
-    <Box>
+    // width 100% + minWidth 0 keep the grid inside this box, so it scrolls internally and never widens the page.
+    <Box sx={{ width: '100%', minWidth: 0 }}>
       <DataGrid
         rows={rows}
         columns={columns}
         loading={loading}
+        columnVisibilityModel={columnVisibilityModel}
+        onColumnVisibilityModelChange={setColumnVisibilityModel}
+        getRowHeight={() => 'auto'}
         {...SHARED_DATA_GRID_PROPS}
         initialState={{
           ...SHARED_DATA_GRID_PROPS.initialState,
           sorting: { sortModel: [{ field: 'StartDate', sort: 'desc' }] },
+        }}
+        sx={{
+          // Let text columns (Employee, Description, Manager) wrap instead of being cut; rows size to fit.
+          '& .MuiDataGrid-cell': { whiteSpace: 'normal', lineHeight: 1.4, display: 'flex', alignItems: 'center', py: 0.75 },
         }}
       />
       <AuditTrailDialog

@@ -15,10 +15,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.routes.dashboard import AuthUser
+from app.routes.dashboard import AuthUser, _format_balances
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_intake import RequestFormError, parse_request_form, submit_request
+from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 
 logger = logging.getLogger(__name__)
@@ -81,3 +82,44 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
             detail="Your request could not be saved. Try again in a few minutes.",
         )
     return {"status": "submitted", "request_type": request_type, "item_id": item.get("id")}
+
+
+@router.post("/me/requests/{request_type}/preview")
+async def preview_my_request(user: AuthUser, request_type: str, body: dict):
+    """What the form would do to the signed-in employee's balances. Saves nothing.
+
+    Works while processing is off: it only reads the staff record and the
+    holiday list, so the request page can show it at any time.
+
+    Args:
+        user: From the signed token; uid is the employee's Staff Directory id.
+        request_type: "leave", "overtime" or "carryover-payout".
+        body: The form, snake_case, exactly as it would be submitted.
+
+    Returns:
+        {"days", "current": balances, "projected": balances or None,
+        "unchanged", "notes", "warning", "next_year"}; balances use the
+        dashboard's keys (vacation_balance, sick_balance, overtime, ...).
+
+    Raises:
+        HTTPException: 400 for a form that cannot become a request (the
+            page hides the preview); 404 when the staff record is gone.
+    """
+    try:
+        form = parse_request_form(request_type, body)          # same checks as submitting
+    except RequestFormError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    employee = await get_employee_by_id(user.user_id)          # one read of the staff record
+    if not employee:
+        raise HTTPException(status_code=404, detail="Your staff record could not be found.")
+    fields = employee["fields"]
+
+    result = await preview_request(request_type, form, fields)
+    projected = result.pop("projected")
+    return {
+        **result,
+        "current": _format_balances(fields),
+        # Untouched pots (Payout, entitlements) carry over from the record.
+        "projected": _format_balances({**fields, **projected}) if projected else None,
+    }

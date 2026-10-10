@@ -1,4 +1,5 @@
-import { Stack, TextField, MenuItem } from '@mui/material';
+import { Box, ButtonBase, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import type { RequestType } from '../api/intake';
 
 /**
@@ -13,7 +14,7 @@ export const LEAVE_TYPES = [
   'Jury Duty',
 ];
 
-const PARTIAL_DAY = 'Half Day or Partial Day Off';
+export const PARTIAL_DAY = 'Half Day or Partial Day Off';
 
 /** The three forms on the request page, with the label shown on the picker. */
 export const REQUEST_TYPES: { value: RequestType; label: string; hint: string }[] = [
@@ -92,6 +93,46 @@ interface Props {
 }
 
 /**
+ * The leave types as a row of pills; the chosen one fills with the page colour.
+ *
+ * @param props.value - The chosen type.
+ * @param props.onPick - Called with the type picked.
+ * @returns The labelled group.
+ */
+function LeaveChips({ value, onPick }: { value: string; onPick: (t: string) => void }) {
+  const theme = useTheme();
+  return (
+    <Box>
+      <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }} id="leave-type-label">Type of leave</Typography>
+      <Box role="group" aria-labelledby="leave-type-label" sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+        {LEAVE_TYPES.map((t) => {
+          const on = value === t;
+          return (
+            <ButtonBase
+              key={t}
+              aria-pressed={on}
+              onClick={() => onPick(t)}
+              sx={{
+                px: 1.5, py: 0.75, borderRadius: 999, fontSize: 13, fontWeight: on ? 700 : 500,
+                border: `1.5px solid ${on ? theme.palette.primary.main : theme.tokens.line2}`,
+                bgcolor: on ? 'primary.main' : 'background.paper',
+                color: on ? theme.tokens.primaryInk : 'text.primary',
+                transition: 'background-color .4s ease, color .4s ease, border-color .4s ease',  // follows the mood change
+              }}
+            >
+              {t}
+            </ButtonBase>
+          );
+        })}
+      </Box>
+    </Box>
+  );
+}
+
+/** Two fields side by side on wider screens, stacked on phones. */
+const ROW2 = { display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' } } as const;
+
+/**
  * The fields of one request form: leave, overtime, or carry-over/payout.
  * Plain date inputs, so phones show their own date picker.
  *
@@ -108,20 +149,20 @@ export default function RequestForm({ type, values: v, onChange }: Props) {
     const partial = v.leave_type === PARTIAL_DAY;
     return (
       <Stack spacing={2}>
-        <TextField label="Type of leave" required select value={v.leave_type} onChange={field('leave_type')}>
-          {LEAVE_TYPES.map((t) => <MenuItem key={t} value={t}>{t}</MenuItem>)}
-        </TextField>
-        <TextField label={partial ? 'Date' : 'First day away'} required {...dateProps}
-          value={v.start_date} onChange={field('start_date')} />
-        {partial ? (
-          <TextField label="Hours away" required type="number" value={v.partial_hours}
-            onChange={field('partial_hours')}
-            slotProps={{ htmlInput: { min: 0.5, max: 7.5, step: 0.5 } }}
-            helperText="In half-hour steps, less than a full 8-hour day." />
-        ) : (
-          <TextField label="Last day away" required {...dateProps}
-            value={v.end_date} onChange={field('end_date')} />
-        )}
+        <LeaveChips value={v.leave_type} onPick={(t) => onChange('leave_type', t)} />
+        <Box sx={ROW2}>
+          <TextField label={partial ? 'Date' : 'First day away'} required {...dateProps}
+            value={v.start_date} onChange={field('start_date')} />
+          {partial ? (
+            <TextField label="Hours away" required type="number" value={v.partial_hours}
+              onChange={field('partial_hours')}
+              slotProps={{ htmlInput: { min: 0.5, max: 7.5, step: 0.5 } }}
+              helperText="In half-hour steps, less than a full 8-hour day." />
+          ) : (
+            <TextField label="Last day away" required {...dateProps}
+              value={v.end_date} onChange={field('end_date')} />
+          )}
+        </Box>
         <TextField label="Notes (optional)" multiline minRows={2} value={v.notes} onChange={field('notes')}
           helperText="Shown to your manager with the request." />
       </Stack>
@@ -132,21 +173,23 @@ export default function RequestForm({ type, values: v, onChange }: Props) {
     return (
       <Stack spacing={2}>
         <TextField label="What was the overtime for?" required value={v.description} onChange={field('description')} />
-        <TextField label="Date worked" required {...dateProps} value={v.date} onChange={field('date')} />
-        <TextField label="Hours" required type="number" value={v.hours} onChange={field('hours')}
-          slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-hour steps." />
+        <Box sx={ROW2}>
+          <TextField label="Date worked" required {...dateProps} value={v.date} onChange={field('date')} />
+          <TextField label="Hours" required type="number" value={v.hours} onChange={field('hours')}
+            slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-hour steps." />
+        </Box>
       </Stack>
     );
   }
 
   return (
-    <Stack spacing={2}>
+    <Box sx={ROW2}>
       <TextField label="Request" required select value={v.type_of_request} onChange={field('type_of_request')}>
         <MenuItem value="Carry Over">Carry over to next year</MenuItem>
         <MenuItem value="Payout">Pay out</MenuItem>
       </TextField>
       <TextField label="Days" required type="number" value={v.days} onChange={field('days')}
         slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-day steps." />
-    </Stack>
+    </Box>
   );
 }

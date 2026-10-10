@@ -3,11 +3,10 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 /**
- * Calls for the public request page. Kept apart from the dashboard client
- * (./client.ts) on purpose: that client reads its token from sessionStorage
- * and sends any 401 to the "link expired" page, while the request page keeps
- * its own 30-day sign-in in localStorage and handles an expired one itself
- * (by asking for a new code).
+ * Calls for the landing and request pages, and the one sign-in every page
+ * shares (loadSession). Kept apart from the dashboard client (./client.ts),
+ * which sends any 401 back to the landing page, because the request page
+ * handles an expired sign-in itself by asking for a new code.
  */
 const intake = axios.create({ baseURL: `${API_URL}/api/intake` });
 const dashboard = axios.create({ baseURL: `${API_URL}/api/dashboard` });
@@ -39,24 +38,87 @@ export interface Supervisor {
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
 const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day sign-in
+const LINK_KEYS = ['dashboard_token', 'dashboard_role', 'dashboard_uid', 'dashboard_exp'];   // sessionStorage, from an emailed link
+const NOTICE_KEY = 'sign_in_notice';           // sessionStorage: why someone was sent to the landing page
+const AFTER_KEY = 'after_sign_in';             // sessionStorage: the page to open once signed in
+const NEW_HIRE_KEY = 'new_hire_verified';      // sessionStorage: a new hire's verified-email token
 
 /**
- * The saved sign-in, if any and not expired.
+ * Whether a sign-in's expiry (unix seconds) has passed.
  *
- * @returns The session, or null when there is none, it expired, or storage is blocked.
+ * @param exp - The token's exp field.
+ * @returns True once it has expired.
+ */
+const expired = (exp: string) => Number(exp) * 1000 <= Date.now();
+
+/**
+ * The sign-in from an emailed dashboard link, kept for this browser tab only.
+ *
+ * @returns The link's token fields as a session (no name or email), or null.
+ */
+function linkSession(): EmployeeSession | null {
+  const [token, role, uid, exp] = LINK_KEYS.map((k) => sessionStorage.getItem(k));
+  if (!token || !role || !uid || !exp) return null;
+  if (expired(exp)) {
+    LINK_KEYS.forEach((k) => sessionStorage.removeItem(k));
+    return null;
+  }
+  return { token, role, uid, exp, name: '', email: '' };
+}
+
+/**
+ * This device's 30-day sign-in from the emailed code.
+ *
+ * @returns The session, or null when there is none or it expired (then removed).
+ */
+function deviceSession(): EmployeeSession | null {
+  const raw = localStorage.getItem(SESSION_KEY);
+  if (!raw) return null;
+  const session = JSON.parse(raw) as EmployeeSession;
+  if (expired(session.exp)) {
+    localStorage.removeItem(SESSION_KEY);
+    return null;
+  }
+  return session;
+}
+
+/**
+ * The one sign-in every page uses. An emailed link opened in this tab wins,
+ * so a manager's link works even on a computer someone else signed in on;
+ * otherwise this device's 30-day sign-in from the emailed code.
+ *
+ * @returns The session, or null when nobody is signed in, it expired, or storage is blocked.
  */
 export function loadSession(): EmployeeSession | null {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const session = JSON.parse(raw) as EmployeeSession;
-    if (Number(session.exp) * 1000 <= Date.now()) {    // exp is unix seconds
-      localStorage.removeItem(SESSION_KEY);
-      return null;
-    }
-    return session;
+    return linkSession() ?? deviceSession();
   } catch {
     return null;                                       // private window or blocked storage
+  }
+}
+
+/**
+ * Whether a sign-in opens My team (the manager dashboard).
+ *
+ * @param session - The current sign-in.
+ * @returns True for the manager and admin roles.
+ */
+export const canSeeTeam = (session: EmployeeSession | null) =>
+  !!session && (session.role === 'manager' || session.role === 'admin');
+
+/**
+ * Keep an emailed dashboard link's sign-in for this browser tab.
+ *
+ * @param fields - token, role, uid and exp from the link.
+ */
+export function saveLinkSession(fields: { token: string; role: string; uid: string; exp: string }): void {
+  try {
+    sessionStorage.setItem('dashboard_token', fields.token);
+    sessionStorage.setItem('dashboard_role', fields.role);
+    sessionStorage.setItem('dashboard_uid', fields.uid);
+    sessionStorage.setItem('dashboard_exp', fields.exp);
+  } catch {
+    /* storage blocked: the pages ask for a code instead */
   }
 }
 
@@ -73,26 +135,88 @@ export function saveSession(session: EmployeeSession): void {
   }
 }
 
-/** Forget the sign-in ("Not you? Sign out"). */
+/** Sign out everywhere: this device's 30-day sign-in and this tab's link. */
 export function clearSession(): void {
   try {
     localStorage.removeItem(SESSION_KEY);
+    LINK_KEYS.forEach((k) => sessionStorage.removeItem(k));
   } catch {
     /* nothing to clear */
   }
 }
 
 /**
- * The employee's own dashboard link, built from the saved sign-in.
+ * Store a value for this tab, ignoring blocked storage.
  *
- * @param session - The saved sign-in.
- * @returns A hash URL the existing dashboard sign-in handler accepts.
+ * @param key - The sessionStorage key.
+ * @param value - The value, or null to remove it.
  */
-export function dashboardHref(session: EmployeeSession): string {
-  const params = new URLSearchParams({
-    token: session.token, role: session.role, uid: session.uid, exp: session.exp,
-  });
-  return `#/dashboard?${params.toString()}`;
+function tabSet(key: string, value: string | null): void {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    /* blocked: the landing page just shows no note */
+  }
+}
+
+/**
+ * Read a tab value once and remove it.
+ *
+ * @param key - The sessionStorage key.
+ * @returns The value, or '' when there is none.
+ */
+function tabTake(key: string): string {
+  try {
+    const value = sessionStorage.getItem(key) || '';
+    sessionStorage.removeItem(key);
+    return value;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Leave a note for the landing page ("Sign in to open My team.").
+ *
+ * @param text - What the person should read above the sign-in box.
+ */
+export const setSignInNotice = (text: string) => tabSet(NOTICE_KEY, text);
+
+/** @returns The landing page's note, once; '' when there is none. */
+export const takeSignInNotice = () => tabTake(NOTICE_KEY);
+
+/**
+ * Remember the page to open once the person has signed in.
+ *
+ * @param path - A route such as '/team'.
+ */
+export const setAfterSignIn = (path: string) => tabSet(AFTER_KEY, path);
+
+/** @returns The page to open after sign-in, once; '' when none was asked for. */
+export const takeAfterSignIn = () => tabTake(AFTER_KEY);
+
+/**
+ * Keep a new hire's verified-email token for this tab, so /new-hire survives a refresh.
+ *
+ * @param verified - From verifyCode, or null to forget it.
+ */
+export const saveNewHire = (verified: VerifiedEmail | null) =>
+  tabSet(NEW_HIRE_KEY, verified ? JSON.stringify(verified) : null);
+
+/**
+ * The new hire's verified-email token for this tab, if it has not expired (24 hours).
+ *
+ * @returns The token, or null.
+ */
+export function loadNewHire(): VerifiedEmail | null {
+  try {
+    const raw = sessionStorage.getItem(NEW_HIRE_KEY);
+    const verified = raw ? (JSON.parse(raw) as VerifiedEmail) : null;
+    return verified && !expired(verified.exp) ? verified : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -148,6 +272,47 @@ export const holdRequest = (body: {
  */
 export const submitMyRequest = (session: EmployeeSession, type: RequestType, form: Record<string, unknown>) =>
   dashboard.post(`/me/requests/${type}`, form, {
+    params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+  });
+
+/** Balances in the dashboard's shape. */
+export interface Balances {
+  vacation_balance: number;
+  vacation_entitlement: number;
+  sick_balance: number;
+  sick_entitlement: number;
+  overtime: number;
+  carryover: number;
+  payout: number;
+}
+
+/** What a request would do, from the preview endpoint. Nothing is saved. */
+export interface RequestPreview {
+  /** Working days (leave), days added (overtime), or days moved (carry-over/payout). */
+  days: number;
+  current: Balances;
+  /** After approval; null when no balance changes or the request would be rejected. */
+  projected: Balances | null;
+  /** Why nothing changes, when that is the case. */
+  unchanged: string;
+  /** Things worth knowing (skipped holidays, next-year rules). */
+  notes: string[];
+  /** Set when the request would be rejected automatically. */
+  warning: string;
+  next_year: boolean;
+}
+
+/**
+ * Preview what the form would do to the signed-in employee's balances.
+ *
+ * @param session - The saved sign-in.
+ * @param type - Which form.
+ * @param form - The form body, exactly as it would be submitted.
+ * @returns The preview.
+ * @throws AxiosError 400 for a form that is not ready, 401 sign-in expired.
+ */
+export const previewMyRequest = (session: EmployeeSession, type: RequestType, form: Record<string, unknown>) =>
+  dashboard.post<RequestPreview>(`/me/requests/${type}/preview`, form, {
     params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
   });
 
