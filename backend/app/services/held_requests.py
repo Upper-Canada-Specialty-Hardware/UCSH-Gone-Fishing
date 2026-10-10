@@ -348,11 +348,14 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
     if not employee:
         return []                                              # still not on staff
 
-    # Without the SubmitterEmail column, a request only finds its person through
-    # the site's user list. Park it as waiting_site rather than create an unroutable item.
+    # Without SubmitterEmail (requests still in SharePoint, columns not there), a
+    # request only finds its person through the site's user list. Park it as
+    # waiting_site rather than create an unroutable item. Never the case once
+    # requests live in Postgres.
     from app.services.leave_requests import _resolve_user_lookup_id
+    from app.services.request_submitter import requests_linked_by_email
     waiting_for_site = (
-        not settings.REQUEST_EMAIL_COLUMNS_ENABLED and not await _resolve_user_lookup_id(email)
+        not requests_linked_by_email() and not await _resolve_user_lookup_id(email)
     )
 
     results: list[ReleaseResult] = []

@@ -14,6 +14,7 @@ each audience gets, since the same fact calls for a different next step.
 
 import asyncio
 
+from app.graph import sharepoint
 from app.services import notify_blocked as nb
 from app.services.overlap_detection import (
     conflict_warning,
@@ -229,7 +230,7 @@ def _run_notify(monkeypatch, items, fields, email="someone@ucsh.ca"):
     async def _send_email(**kwargs):
         sent.append(kwargs)
 
-    monkeypatch.setattr(nb.sp_client, "get_list_items", _get_list_items)
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", _get_list_items)
     monkeypatch.setattr(nb, "send_email", _send_email)
     count = asyncio.run(
         nb.notify_requests_blocked_by_approval("leave", "11", fields, email)
@@ -288,7 +289,7 @@ def test_an_unreadable_list_loses_the_notice_not_the_approval(monkeypatch):
     async def _boom(*args, **kwargs):
         raise RuntimeError("Graph is down")
 
-    monkeypatch.setattr(nb.sp_client, "get_list_items", _boom)
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", _boom)
     count = asyncio.run(
         nb.notify_requests_blocked_by_approval("leave", "11", APPROVED_FIELDS, "someone@ucsh.ca")
     )

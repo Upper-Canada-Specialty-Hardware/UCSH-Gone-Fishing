@@ -1,13 +1,28 @@
 import logging
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.request_store import is_request_list, request_store, requests_in_postgres
 
 logger = logging.getLogger(__name__)
 
 
 async def dispatch_change(list_id: str, item: dict):
-    """Route SP list changes to the correct service pipeline."""
+    """Route SP list changes to the correct service pipeline.
+
+    Once requests live in Postgres, a change on a SharePoint request list can
+    only be a Microsoft Form item (the app no longer writes there). The item is
+    first moved into Postgres, and the Postgres copy, under its new id, is what
+    gets processed. An item moved before is skipped.
+
+    Args:
+        list_id: The SharePoint list the change came from.
+        item: The changed item as SharePoint sent it.
+    """
+    if requests_in_postgres() and is_request_list(list_id):
+        from app.services.request_copy import move_form_item_into_postgres
+        item = await move_form_item_into_postgres(list_id, str(item.get("id", "")))
+        if item is None:
+            return                                              # already in Postgres, or gone
     fields = item.get("fields", {})
     item_id = item.get("id")
 
@@ -38,7 +53,7 @@ async def _handle_leave_request_change(item_id: str, fields: dict):
         return
 
     # No ManagerLookupId → SP-created item, auto-process it
-    item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, item_id)
+    item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, item_id)
     f = item["fields"]
     if not f.get("StartDate") or not f.get("EndDate"):
         logger.warning(
@@ -89,7 +104,7 @@ async def _handle_overtime_request_change(item_id: str, fields: dict):
         return
 
     # No Manager → SP-created item, auto-process it
-    item = await sp_client.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, item_id)
+    item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, item_id)
     f = item["fields"]
     if not f.get("Hours"):
         logger.warning("Overtime #%s missing Hours — skipping auto-process", item_id)
@@ -126,7 +141,7 @@ async def _handle_carryover_payout_change(item_id: str, fields: dict):
     if system_state and system_state != "Not Processed":
         return
 
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, item_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, item_id)
     f = item["fields"]
     if not f.get("Days"):
         logger.warning("Carryover #%s missing Days — skipping auto-process", item_id)

@@ -242,6 +242,19 @@ def test_a_failed_release_is_kept_for_a_retry(world):
     assert retry.status == "released"
 
 
+def test_with_requests_in_postgres_an_unlinked_person_is_released_at_once(world, monkeypatch):
+    # No waiting for the SharePoint site once requests live in Postgres (#196).
+    monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    world.linked = False
+    email = _email()
+    _hold(email)
+    world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
+
+    [result] = asyncio.run(held_requests.release_held_requests(email))
+    assert result.status == "released" and len(world.created) == 1
+
+
 def test_without_the_email_column_an_unlinked_person_waits_for_the_site(world, monkeypatch):
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
     world.linked = False

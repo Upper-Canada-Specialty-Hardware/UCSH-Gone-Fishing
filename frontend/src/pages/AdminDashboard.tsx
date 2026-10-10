@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Box, Typography, Paper, CircularProgress, Alert, Snackbar } from '@mui/material';
+import { Box, Typography, Paper, CircularProgress, Alert, Snackbar, Stack } from '@mui/material';
 import TopBar from '../components/TopBar';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
 import AdminHome from '../components/admin/AdminHome';
@@ -14,6 +14,7 @@ import HolidaysManager from '../components/HolidaysManager';
 import RequestsScreen from '../components/admin/RequestsScreen';
 import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
+import RequestStorageCard from '../components/admin/RequestStorageCard';
 import { Enter, leaveDelay } from '../components/Motion';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
@@ -513,7 +514,13 @@ export default function AdminDashboard() {
                 </Paper>
               )}
 
-              {tab === 'checks' && <RequestColumnsCard processingEnabled={processingEnabled} />}
+              {tab === 'checks' && (
+                <Stack spacing={2}>
+                  {/* Where requests live, and the copy before the move to Postgres. */}
+                  <RequestStorageCard processingEnabled={processingEnabled} />
+                  <RequestColumnsCard processingEnabled={processingEnabled} />
+                </Stack>
+              )}
 
               {tab === 'holidays' && <HolidaysManager />}
               </Enter>
