@@ -49,7 +49,7 @@ function takeAddEmployeePrefill(): { title: string; email_address: string; locat
   }
 }
 
-/** The tabs, keyed by url segment (#/manager/<key>). "add" is reached by its button. */
+/** The tabs, keyed by url segment (#/team/<key>). "add" is reached by its button. */
 const TABS = ['today', 'calendar', 'team', 'trends', 'history', 'add'] as const;
 type TabKey = typeof TABS[number];
 
@@ -93,13 +93,13 @@ export default function ManagerDashboard() {
   const [prefill] = useState(takeAddEmployeePrefill);
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'today';
   /** Open a tab (changes the url). @param k - Tab key. */
-  const go = useCallback((k: TabKey) => navigate(`/manager/${k}`), [navigate]);
+  const go = useCallback((k: TabKey) => navigate(`/team/${k}`), [navigate]);
 
   // Opened from an "add this new hire" email: go straight to Add employee.
   // Runs on arrival only; later tab changes are the manager's own.
   const [arrived] = useState(() => !!prefill && tab !== 'add');
   useEffect(() => {
-    if (arrived) navigate('/manager/add', { replace: true });
+    if (arrived) navigate('/team/add', { replace: true });
   }, [arrived, navigate]);
 
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');

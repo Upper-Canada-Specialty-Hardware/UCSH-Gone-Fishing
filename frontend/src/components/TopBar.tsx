@@ -4,6 +4,8 @@ import DesktopWindowsOutlinedIcon from '@mui/icons-material/DesktopWindowsOutlin
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
 import MenuIcon from '@mui/icons-material/Menu';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { canSeeTeam, clearSession, loadSession } from '../api/intake';
 import { useColorMode } from '../colorMode';
 
 /** The app's name, shown in the bar and on the request page. */
@@ -64,20 +66,83 @@ export function ColorModeButton() {
   );
 }
 
+/** The signed-in pages, in the order the tabs show. */
+const PAGES = [
+  { path: '/my', label: 'My requests' },
+  { path: '/my/request', label: 'New request' },
+  { path: '/team', label: 'My team', team: true },     // managers only
+];
+
 /**
- * The bar across the top of every dashboard.
+ * The page tabs and the person's name with Sign out, for anyone signed in.
+ * My team only shows for a manager. Nothing shows when nobody is signed in.
+ *
+ * @returns The tabs and account controls, or null.
+ */
+function SignedInNav() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const session = loadSession();
+  if (!session) return null;
+  // The open tab: /my/request is its own tab, every other /my page is My requests.
+  const current = pathname.startsWith('/my/request') ? '/my/request' : pathname.startsWith('/team') ? '/team' : '/my';
+  /** Sign out everywhere and go back to the landing page. */
+  const signOut = () => {
+    clearSession();
+    navigate('/', { replace: true });
+  };
+  return (
+    <>
+      <Box
+        component="nav"
+        aria-label="Pages"
+        sx={{
+          display: 'flex', alignSelf: 'stretch', overflowX: 'auto', scrollbarWidth: 'none',
+          order: { xs: 3, sm: 0 }, width: { xs: '100%', sm: 'auto' }, ml: { xs: -1, sm: 1 },
+        }}
+      >
+        {PAGES.filter((p) => !p.team || canSeeTeam(session)).map((p) => (
+          <Button
+            key={p.path}
+            color="inherit"
+            onClick={() => navigate(p.path)}
+            aria-current={current === p.path ? 'page' : undefined}
+            sx={{
+              borderRadius: 0, px: 1.5, minHeight: { xs: 44, sm: 56 }, whiteSpace: 'nowrap', fontWeight: 600,
+              color: current === p.path ? 'text.primary' : 'text.secondary',
+              borderBottom: 3, borderColor: current === p.path ? 'secondary.main' : 'transparent',
+            }}
+          >
+            {p.label}
+          </Button>
+        ))}
+      </Box>
+      <Box sx={{ flex: 1 }} />
+      {session.name && (
+        <Typography variant="body2" sx={{ fontWeight: 500, display: { xs: 'none', md: 'block' } }}>{session.name}</Typography>
+      )}
+      <Button size="small" variant="outlined" color="inherit" onClick={signOut} sx={{ borderColor: 'divider' }}>
+        Sign out
+      </Button>
+    </>
+  );
+}
+
+/**
+ * The bar across the top of every page after sign-in, and of the admin dashboard.
  *
  * @param props.onMenu - When given, a menu button shows on small screens (the admin sidebar).
+ * @param props.nav - Show the page tabs and Sign out (left off on the admin dashboard, its own page).
  * @returns The bar.
  */
-export default function TopBar({ onMenu }: { onMenu?: () => void }) {
+export default function TopBar({ onMenu, nav }: { onMenu?: () => void; nav?: boolean }) {
   return (
     <Box
       component="header"
       sx={{
         position: 'sticky', top: 0, zIndex: 20,
-        display: 'flex', alignItems: 'center', gap: 1.5,
-        px: { xs: 2, sm: 3 }, height: 56,
+        display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: { xs: 'wrap', sm: 'nowrap' },
+        px: { xs: 2, sm: 3 }, minHeight: 56, pt: { xs: nav ? 1 : 0, sm: 0 },
         bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider',
       }}
     >
@@ -92,8 +157,8 @@ export default function TopBar({ onMenu }: { onMenu?: () => void }) {
         </Button>
       )}
       <BrandMark />
-      <Typography sx={{ fontWeight: 700 }}>{APP_NAME}</Typography>
-      <Box sx={{ flex: 1 }} />
+      <Typography sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{APP_NAME}</Typography>
+      {nav ? <SignedInNav /> : <Box sx={{ flex: 1 }} />}
       <ColorModeButton />
     </Box>
   );
