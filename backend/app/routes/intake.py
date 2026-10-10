@@ -28,7 +28,7 @@ from app.config import settings
 from app.graph.email import send_email
 from app.services import email_codes, held_requests
 from app.services.dashboard_tokens import generate_dashboard_token
-from app.services.employee import LOCATION_PROVINCE_MAP, get_employee_by_email
+from app.services.employee import LOCATION_PROVINCE_MAP, get_employee_by_email, is_manager
 from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,26 @@ async def request_code(body: CodeRequest, request: Request):
     return _CODE_SENT
 
 
+async def _manages_anyone(name: str) -> bool:
+    """Whether anyone in the Staff Directory lists this person as a manager.
+
+    Args:
+        name: The employee's Staff Directory name.
+
+    Returns:
+        True for a manager. False when nobody lists them, or when the check
+        fails: they still sign in, just without My team, and the next sign-in
+        tries again.
+    """
+    if not name:
+        return False
+    try:
+        return await is_manager(name)
+    except Exception:  # noqa: BLE001 - a failed lookup must not block sign-in
+        logger.exception("Could not check whether the signed-in person is a manager")
+        return False
+
+
 @router.post("/verify")
 async def verify_code(body: VerifyRequest):
     """Check a code, then say who the person is.
@@ -161,7 +181,9 @@ async def verify_code(body: VerifyRequest):
 
     Returns:
         For a Staff Directory employee: {"status": "employee", "name", and the
-        dashboard token fields role/uid/token/exp}. For anyone else:
+        dashboard token fields role/uid/token/exp}. role is "manager" when
+        someone lists them as a manager (it opens My team as well as their own
+        pages), otherwise "employee". For anyone else:
         {"status": "unknown", "verified": {email, exp, token}}.
 
     Raises:
@@ -175,11 +197,13 @@ async def verify_code(body: VerifyRequest):
 
     employee = await get_employee_by_email(email)
     if employee is not None:
+        name = employee.get("fields", {}).get("Title", "")
+        role = "manager" if await _manages_anyone(name) else "employee"
         # Same signed token the emailed dashboard links carry; 30 days by default.
-        session_token = generate_dashboard_token("employee", employee["id"])
+        session_token = generate_dashboard_token(role, employee["id"])
         return {
             "status": "employee",
-            "name": employee.get("fields", {}).get("Title", ""),
+            "name": name,
             **session_token,                                   # role, uid, token, exp
         }
 

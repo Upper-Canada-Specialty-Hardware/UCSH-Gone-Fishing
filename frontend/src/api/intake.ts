@@ -3,11 +3,10 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 /**
- * Calls for the public request page. Kept apart from the dashboard client
- * (./client.ts) on purpose: that client reads its token from sessionStorage
- * and sends any 401 to the "link expired" page, while the request page keeps
- * its own 30-day sign-in in localStorage and handles an expired one itself
- * (by asking for a new code).
+ * Calls for the landing and request pages, and the one sign-in every page
+ * shares (loadSession). Kept apart from the dashboard client (./client.ts),
+ * which sends any 401 back to the landing page, because the request page
+ * handles an expired sign-in itself by asking for a new code.
  */
 const intake = axios.create({ baseURL: `${API_URL}/api/intake` });
 const dashboard = axios.create({ baseURL: `${API_URL}/api/dashboard` });
@@ -39,68 +38,87 @@ export interface Supervisor {
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
 const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day sign-in
-const HANDOFF_KEY = 'request_page_handoff';   // sessionStorage key for a sign-in handed over by the employee dashboard
+const LINK_KEYS = ['dashboard_token', 'dashboard_role', 'dashboard_uid', 'dashboard_exp'];   // sessionStorage, from an emailed link
+const NOTICE_KEY = 'sign_in_notice';           // sessionStorage: why someone was sent to the landing page
+const AFTER_KEY = 'after_sign_in';             // sessionStorage: the page to open once signed in
+const NEW_HIRE_KEY = 'new_hire_verified';      // sessionStorage: a new hire's verified-email token
 
 /**
- * One stored sign-in, if present and not expired; an expired one is removed.
+ * Whether a sign-in's expiry (unix seconds) has passed.
  *
- * @param store - localStorage (the 30-day sign-in) or sessionStorage (a dashboard handoff).
- * @param key - The key it is kept under.
- * @returns The session, or null.
+ * @param exp - The token's exp field.
+ * @returns True once it has expired.
  */
-function readSession(store: Storage, key: string): EmployeeSession | null {
-  const raw = store.getItem(key);
+const expired = (exp: string) => Number(exp) * 1000 <= Date.now();
+
+/**
+ * The sign-in from an emailed dashboard link, kept for this browser tab only.
+ *
+ * @returns The link's token fields as a session (no name or email), or null.
+ */
+function linkSession(): EmployeeSession | null {
+  const [token, role, uid, exp] = LINK_KEYS.map((k) => sessionStorage.getItem(k));
+  if (!token || !role || !uid || !exp) return null;
+  if (expired(exp)) {
+    LINK_KEYS.forEach((k) => sessionStorage.removeItem(k));
+    return null;
+  }
+  return { token, role, uid, exp, name: '', email: '' };
+}
+
+/**
+ * This device's 30-day sign-in from the emailed code.
+ *
+ * @returns The session, or null when there is none or it expired (then removed).
+ */
+function deviceSession(): EmployeeSession | null {
+  const raw = localStorage.getItem(SESSION_KEY);
   if (!raw) return null;
   const session = JSON.parse(raw) as EmployeeSession;
-  if (Number(session.exp) * 1000 <= Date.now()) {      // exp is unix seconds
-    store.removeItem(key);
+  if (expired(session.exp)) {
+    localStorage.removeItem(SESSION_KEY);
     return null;
   }
   return session;
 }
 
 /**
- * The sign-in to use, if any and not expired: one handed over by the employee
- * dashboard in this tab first, then this device's 30-day sign-in.
+ * The one sign-in every page uses. An emailed link opened in this tab wins,
+ * so a manager's link works even on a computer someone else signed in on;
+ * otherwise this device's 30-day sign-in from the emailed code.
  *
- * @returns The session, or null when there is none, it expired, or storage is blocked.
+ * @returns The session, or null when nobody is signed in, it expired, or storage is blocked.
  */
 export function loadSession(): EmployeeSession | null {
   try {
-    return readSession(sessionStorage, HANDOFF_KEY) ?? readSession(localStorage, SESSION_KEY);
+    return linkSession() ?? deviceSession();
   } catch {
     return null;                                       // private window or blocked storage
   }
 }
 
 /**
- * Hand the employee dashboard's sign-in to the request page, for this browser
- * tab only. It is the same signed employee token, so the request page skips
- * the email code. It is deliberately not saved for 30 days: an admin who opens
- * someone's dashboard and follows "Make a request" must not stay signed in as
- * that person on their own device.
+ * Whether a sign-in opens My team (the manager dashboard).
  *
- * @param session - Built from the dashboard's token and the employee's name and email.
+ * @param session - The current sign-in.
+ * @returns True for the manager and admin roles.
  */
-export function handOffSession(session: EmployeeSession): void {
-  try {
-    sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(session));
-  } catch {
-    /* storage blocked: the request page asks for a code instead */
-  }
-}
+export const canSeeTeam = (session: EmployeeSession | null) =>
+  !!session && (session.role === 'manager' || session.role === 'admin');
 
 /**
- * Whether the current sign-in came from the employee dashboard in this tab,
- * so the request page can say so.
+ * Keep an emailed dashboard link's sign-in for this browser tab.
  *
- * @returns True when a dashboard handoff is present.
+ * @param fields - token, role, uid and exp from the link.
  */
-export function isHandedOff(): boolean {
+export function saveLinkSession(fields: { token: string; role: string; uid: string; exp: string }): void {
   try {
-    return !!sessionStorage.getItem(HANDOFF_KEY);
+    sessionStorage.setItem('dashboard_token', fields.token);
+    sessionStorage.setItem('dashboard_role', fields.role);
+    sessionStorage.setItem('dashboard_uid', fields.uid);
+    sessionStorage.setItem('dashboard_exp', fields.exp);
   } catch {
-    return false;                                      // blocked storage: no handoff either
+    /* storage blocked: the pages ask for a code instead */
   }
 }
 
@@ -117,27 +135,88 @@ export function saveSession(session: EmployeeSession): void {
   }
 }
 
-/** Forget the sign-in ("Not you? Sign out"). */
+/** Sign out everywhere: this device's 30-day sign-in and this tab's link. */
 export function clearSession(): void {
   try {
     localStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem(HANDOFF_KEY);            // a dashboard handoff too
+    LINK_KEYS.forEach((k) => sessionStorage.removeItem(k));
   } catch {
     /* nothing to clear */
   }
 }
 
 /**
- * The employee's own dashboard link, built from the saved sign-in.
+ * Store a value for this tab, ignoring blocked storage.
  *
- * @param session - The saved sign-in.
- * @returns A hash URL the existing dashboard sign-in handler accepts.
+ * @param key - The sessionStorage key.
+ * @param value - The value, or null to remove it.
  */
-export function dashboardHref(session: EmployeeSession): string {
-  const params = new URLSearchParams({
-    token: session.token, role: session.role, uid: session.uid, exp: session.exp,
-  });
-  return `#/dashboard?${params.toString()}`;
+function tabSet(key: string, value: string | null): void {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    /* blocked: the landing page just shows no note */
+  }
+}
+
+/**
+ * Read a tab value once and remove it.
+ *
+ * @param key - The sessionStorage key.
+ * @returns The value, or '' when there is none.
+ */
+function tabTake(key: string): string {
+  try {
+    const value = sessionStorage.getItem(key) || '';
+    sessionStorage.removeItem(key);
+    return value;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Leave a note for the landing page ("Sign in to open My team.").
+ *
+ * @param text - What the person should read above the sign-in box.
+ */
+export const setSignInNotice = (text: string) => tabSet(NOTICE_KEY, text);
+
+/** @returns The landing page's note, once; '' when there is none. */
+export const takeSignInNotice = () => tabTake(NOTICE_KEY);
+
+/**
+ * Remember the page to open once the person has signed in.
+ *
+ * @param path - A route such as '/team'.
+ */
+export const setAfterSignIn = (path: string) => tabSet(AFTER_KEY, path);
+
+/** @returns The page to open after sign-in, once; '' when none was asked for. */
+export const takeAfterSignIn = () => tabTake(AFTER_KEY);
+
+/**
+ * Keep a new hire's verified-email token for this tab, so /new-hire survives a refresh.
+ *
+ * @param verified - From verifyCode, or null to forget it.
+ */
+export const saveNewHire = (verified: VerifiedEmail | null) =>
+  tabSet(NEW_HIRE_KEY, verified ? JSON.stringify(verified) : null);
+
+/**
+ * The new hire's verified-email token for this tab, if it has not expired (24 hours).
+ *
+ * @returns The token, or null.
+ */
+export function loadNewHire(): VerifiedEmail | null {
+  try {
+    const raw = sessionStorage.getItem(NEW_HIRE_KEY);
+    const verified = raw ? (JSON.parse(raw) as VerifiedEmail) : null;
+    return verified && !expired(verified.exp) ? verified : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
