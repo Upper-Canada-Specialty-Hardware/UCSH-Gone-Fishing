@@ -28,8 +28,8 @@ import logging
 from datetime import date, datetime
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
 from app.services.request_submitter import submitter_email_of
+from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ async def check_leave_overlap(
     if not _parse_date(start_date) or not _parse_date(end_date):
         return None
 
-    items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
     return find_leave_conflict(
         items,
         submitter_lookup_id=submitter_lookup_id,
@@ -293,7 +293,7 @@ async def check_overtime_overlap(
     if not _parse_date(overtime_date):
         return None  # nothing to compare; skip the list read
 
-    items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+    items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
     return find_overtime_conflict(
         items,
         submitter_lookup_id=submitter_lookup_id,

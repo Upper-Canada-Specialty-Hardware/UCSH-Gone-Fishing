@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.graph.sharepoint import sp_client
+from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +108,13 @@ async def write_audit_log(
     Wrapped in try/except so it never blocks the approval/refund flow.
     """
     try:
-        item = await sp_client.get_list_item(list_id, item_id)
+        item = await request_store.get_list_item(list_id, item_id)
         raw = item["fields"].get("BalanceAuditLog", "") or ""
 
         existing = json.loads(raw) if raw.strip() else []
         existing.append(builder.build_entry())
 
-        await sp_client.update_list_item_fields(
+        await request_store.update_list_item_fields(
             list_id, item_id, {"BalanceAuditLog": json.dumps(existing)}
         )
     except Exception:

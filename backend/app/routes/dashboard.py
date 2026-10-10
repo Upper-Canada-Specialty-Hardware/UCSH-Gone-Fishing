@@ -24,6 +24,7 @@ from app.services.employee_validation import (
 )
 from app.services.overlap_detection import find_conflict_for_row
 from app.routes.approval import HANDLERS
+from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -388,7 +389,7 @@ async def my_requests(
     # Leave requests — SubmittedTest Person/Group field
     if not type or type == "leave":
         try:
-            items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+            items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         except Exception:
             logger.exception("Failed to fetch leave requests")
             items = []
@@ -407,7 +408,7 @@ async def my_requests(
     # Overtime — SubmittedBy Person/Group field
     if not type or type == "overtime":
         try:
-            items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+            items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         except Exception:
             logger.exception("Failed to fetch overtime requests")
             items = []
@@ -426,7 +427,7 @@ async def my_requests(
     # Carryover/Payout — match by EmployeeID (SD item ID)
     if not type or type == "carryover-payout":
         try:
-            items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+            items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         except Exception:
             logger.exception("Failed to fetch carryover requests")
             items = []
@@ -505,7 +506,7 @@ async def team_pending(user: AuthUser):
 
     # Leave — check submitter in my_employees (dynamic manager lookup)
     try:
-        items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch leave items for team pending")
         items = []
@@ -524,7 +525,7 @@ async def team_pending(user: AuthUser):
 
     # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
     try:
-        items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+        items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch overtime items for team pending")
         items = []
@@ -544,7 +545,7 @@ async def team_pending(user: AuthUser):
 
     # Carryover/Payout — check submitter in my_employees
     try:
-        items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:
         logger.exception("Failed to fetch carryover items for team pending")
         items = []
@@ -593,7 +594,7 @@ async def team_requests(
     # Leave — check submitter in my_employees (dynamic manager lookup)
     if not type or type == "leave":
         try:
-            items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+            items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         except Exception:
             logger.exception("Failed to fetch leave items for team requests")
             items = []
@@ -614,7 +615,7 @@ async def team_requests(
     # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
     if not type or type == "overtime":
         try:
-            items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+            items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         except Exception:
             logger.exception("Failed to fetch overtime items for team requests")
             items = []
@@ -636,7 +637,7 @@ async def team_requests(
     # Carryover/Payout — check submitter in my_employees
     if not type or type == "carryover-payout":
         try:
-            items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+            items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         except Exception:
             logger.exception("Failed to fetch carryover items for team requests")
             items = []
@@ -680,7 +681,7 @@ async def team_calendar(
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
     my_employees = mgr_to_emp_names.get(manager_name, set())
 
-    all_leave = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    all_leave = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
 
     events = []
     for item in all_leave:
@@ -1029,7 +1030,7 @@ async def admin_requests(
     results = []
 
     if not type or type == "leave":
-        items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
             if item.get("Status") == "Pending" and not _is_fully_processed(item, "leave"):
                 continue
@@ -1040,7 +1041,7 @@ async def admin_requests(
             results.append(item)
 
     if not type or type == "overtime":
-        items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+        items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
         for item in _filter_requests(items, None, status, from_date, to_date):
             if item.get("Status") == "Pending" and not _is_fully_processed(item, "overtime"):
                 continue
@@ -1051,7 +1052,7 @@ async def admin_requests(
             results.append(item)
 
     if not type or type == "carryover-payout":
-        items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
         for item in _filter_requests(items, None, status, from_date, to_date):
             if item.get("Status") == "Pending" and not _is_fully_processed(item, "carryover-payout"):
                 continue
@@ -1075,7 +1076,7 @@ async def admin_pending():
         (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout"),
     ]:
         try:
-            items = await sp_client.get_list_items(list_id)
+            items = await request_store.get_list_items(list_id)
             for item in items:
                 f = item.get("fields", {})
                 if f.get("Status") != "Pending":
@@ -1193,7 +1194,7 @@ async def admin_stuck_requests():
     stuck = []
 
     try:
-        items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch leave requests for stuck check")
         items = []
@@ -1393,9 +1394,9 @@ async def admin_send_dashboard_link(target_id: str):
 async def admin_stats():
 
     # Gather counts
-    leave_items = await sp_client.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
-    overtime_items = await sp_client.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
-    carryover_items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+    leave_items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    overtime_items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+    carryover_items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
 
     def _count_by_status(items):
         counts = {}
@@ -1516,7 +1517,7 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
 
     # Fetch current item from SharePoint
     try:
-        item = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+        item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
     except Exception:
         logger.exception("Reprocess: failed to fetch leave request #%s", request_id)
         raise HTTPException(status_code=404, detail="Leave request not found")
@@ -1539,7 +1540,7 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
         raise HTTPException(status_code=500, detail="Reprocessing failed — check server logs")
 
     # Re-fetch and diagnose remaining issues
-    updated = await sp_client.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    updated = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
     uf = updated.get("fields", {})
 
     staff_by_name, _by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
