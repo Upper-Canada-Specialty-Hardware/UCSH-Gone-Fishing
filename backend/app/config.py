@@ -48,9 +48,28 @@ class Settings(BaseSettings):
     # not there makes SharePoint refuse the whole item.
     REQUEST_EMAIL_COLUMNS_ENABLED: bool = False
 
-    # Email (SMTP2GO)
+    # Email (SMTP2GO): the fallback mailer; always available.
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
+
+    # Email (UCSH mailer): internal HTTPS service over Microsoft High Volume
+    # Email, used for staff (UCSH-domain) recipients once switched on. Off and
+    # blank by default, so nothing changes until an operator fills these in.
+    MAILER_ENABLED: bool = False                       # master switch for the UCSH mailer
+    MAILER_URL: str = ""                               # base url, e.g. https://mailer.internal (no trailing /v1/send)
+    MAILER_KEY: str = ""                               # static per-product bearer key from the mailer owner
+    MAILER_FROM: str = ""                              # sender address; only needed when the key has several senders
+    MAILER_FROM_NAME: str = "UCSH Out of Office"       # display name shown to staff recipients
+
+    # Which email domains count as internal (routed to the UCSH mailer). Comma
+    # separated; must match the mailer's own ALLOWED_DOMAINS (ucsh.com only) or
+    # it will refuse recipients it considers external.
+    INTERNAL_EMAIL_DOMAINS: str = "ucsh.com"
+
+    # Reply-To for emails that name no person to answer (auto-rejections,
+    # receipts). The sending accounts have no inbox, so without one a reply
+    # goes nowhere. Blank = no Reply-To on those emails.
+    EMAIL_REPLY_TO: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

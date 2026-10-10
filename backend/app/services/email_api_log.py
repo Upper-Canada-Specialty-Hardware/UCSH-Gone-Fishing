@@ -45,8 +45,46 @@ RESPONSE_MAX_CHARS = 8000
 # days also matches the dashboard link lifetime and the first reminder.
 DEFAULT_WINDOW_DAYS = 30
 
-# Recipient fields of the SMTP2GO payload, in the order they are recorded.
+# Recipient fields of a payload, in the order they are recorded.
 RECIPIENT_FIELDS = ("to", "cc")
+
+# Payload keys that carry a secret and must never be stored. SMTP2GO puts its
+# key in the body (api_key); the UCSH mailer puts its key in the
+# Authorization header, which is never handed to the recorder, so these extra
+# names are belt-and-braces only.
+_SECRET_KEYS = ("api_key", "authorization", "bearer_token")
+# Payload keys that carry a message body: stored as a byte length and a
+# SHA-256 only, never the text, because bodies carry signed approval links and
+# this table is read by an unauthenticated admin endpoint. "html_body" is the
+# SMTP2GO field; "html" and "text" are the UCSH mailer's fields.
+_BODY_KEYS = ("html_body", "html", "text")
+
+# Which email service a stored row went to, derived from its request url so no
+# column is needed. The admin Email Log tab labels each row with this.
+SERVICE_SMTP2GO = "smtp2go"
+SERVICE_UCSH_MAILER = "ucsh_mailer"
+SERVICE_UNKNOWN = "unknown"
+
+
+def service_for_url(request_url: str | None) -> str:
+    """Name the email service a logged exchange went to, from its url.
+
+    Deriving the service from the stored ``request_url`` keeps the
+    providers distinguishable on the admin page without adding a column.
+
+    Args:
+        request_url: The endpoint the request went to, as stored on the row.
+
+    Returns:
+        One of the ``SERVICE_*`` constants. ``SERVICE_UNKNOWN`` when the url
+        matches none of them (e.g. an operator set an odd mailer url).
+    """
+    url = (request_url or "").lower()                              # tolerate None
+    if "smtp2go" in url:                                           # api.smtp2go.com
+        return SERVICE_SMTP2GO
+    if url.endswith("/v1/send"):                                   # the UCSH mailer's send path
+        return SERVICE_UCSH_MAILER
+    return SERVICE_UNKNOWN
 
 
 @dataclass
@@ -97,22 +135,28 @@ def as_utc(value: datetime | None) -> datetime | None:
 
 
 def redact_request(payload: dict) -> dict:
-    """Copy of the SMTP2GO payload that is safe to store.
+    """Copy of an email payload that is safe to store.
+
+    Works for both providers. The SMTP2GO payload (``api_key`` +
+    ``html_body``) comes out exactly as before; the UCSH mailer payload
+    (``html`` / ``text`` bodies, key in a header) is redacted the same way.
 
     Args:
-        payload: The exact JSON body posted to SMTP2GO.
+        payload: The exact JSON body posted to the email service.
 
     Returns:
-        The payload without ``api_key``, and with ``html_body`` replaced by
-        ``html_body_bytes`` and ``html_body_sha256``. Everything else, the
-        recipients included, is copied as sent.
+        The payload with every secret key dropped and every body field
+        replaced by ``<field>_bytes`` and ``<field>_sha256``. Everything else,
+        the recipients included, is copied as sent.
     """
-    safe = {k: v for k, v in payload.items() if k not in ("api_key", "html_body")}
-    body = payload.get("html_body")
-    if body is not None:
-        raw = body.encode("utf-8")                                   # size and hash of the bytes sent
-        safe["html_body_bytes"] = len(raw)
-        safe["html_body_sha256"] = hashlib.sha256(raw).hexdigest()
+    dropped = _SECRET_KEYS + _BODY_KEYS                              # keys not copied verbatim
+    safe = {k: v for k, v in payload.items() if k not in dropped}   # keep the rest unchanged
+    for field in _BODY_KEYS:                                        # summarise each body present
+        body = payload.get(field)
+        if isinstance(body, str):                                   # only real text bodies
+            raw = body.encode("utf-8")                              # size and hash of the bytes sent
+            safe[f"{field}_bytes"] = len(raw)
+            safe[f"{field}_sha256"] = hashlib.sha256(raw).hexdigest()
     return safe
 
 
@@ -168,6 +212,60 @@ def classify_response(
     return summary
 
 
+def combine_summaries(summaries: list[ExchangeSummary]) -> ExchangeSummary:
+    """Fold one send's per-call summaries into a single whole-send summary.
+
+    A send can now be split across two services (and the mailer's refusal
+    fallback can add a call), so ``send_email`` collects several summaries and
+    returns one. A single summary is returned unchanged, so a send that touches only
+    one service (the default, SMTP2GO-only) returns exactly what that one call
+    produced and nothing about the existing behaviour shifts.
+
+    For several calls the counts are summed, the first id seen is kept, and
+    ``http_status``/``response_body`` are left empty because each call already
+    has its own row holding its verbatim answer. The combined outcome is:
+    ``accepted`` when every call was accepted, ``partially_accepted`` when some
+    succeeded and some did not, ``rejected`` when none succeeded, and
+    ``not_attempted`` when nothing was sent.
+
+    Args:
+        summaries: One summary per call made for a single ``send_email``.
+
+    Returns:
+        The whole-send summary.
+    """
+    if not summaries:                                              # nothing was sent at all
+        return ExchangeSummary(outcome=OUTCOME_NOT_ATTEMPTED)
+    if len(summaries) == 1:                                        # one service: unchanged behaviour
+        return summaries[0]
+    succeeded_vals = [s.succeeded for s in summaries if s.succeeded is not None]
+    failed_vals = [s.failed for s in summaries if s.failed is not None]
+    succeeded = sum(succeeded_vals) if succeeded_vals else None    # None only when nobody reported
+    failed = sum(failed_vals) if failed_vals else None
+    outcomes = [s.outcome for s in summaries]
+    any_ok = any(o in (OUTCOME_ACCEPTED, OUTCOME_PARTIALLY_ACCEPTED) for o in outcomes)
+    any_bad = any(
+        o in (OUTCOME_REJECTED, OUTCOME_HTTP_ERROR, OUTCOME_NO_RESPONSE, OUTCOME_UNREADABLE)
+        for o in outcomes
+    )
+    if all(o == OUTCOME_NOT_ATTEMPTED for o in outcomes):          # no routable recipient anywhere
+        outcome = OUTCOME_NOT_ATTEMPTED
+    elif any_ok and any_bad:                                       # a mix: some out, some not
+        outcome = OUTCOME_PARTIALLY_ACCEPTED
+    elif any_ok:                                                   # everything that went, went
+        outcome = OUTCOME_ACCEPTED
+    else:                                                          # nothing succeeded
+        outcome = OUTCOME_REJECTED
+    return ExchangeSummary(
+        outcome=outcome,
+        succeeded=succeeded,
+        failed=failed,
+        email_id=next((s.email_id for s in summaries if s.email_id), None),
+        request_id=next((s.request_id for s in summaries if s.request_id), None),
+        no_response_reason=next((s.no_response_reason for s in summaries if s.no_response_reason), None),
+    )
+
+
 def _recipient_rows(payload: dict) -> list[EmailApiLogRecipient]:
     """One recipient row per usable address in the payload's To and CC.
 
@@ -193,25 +291,35 @@ async def record_exchange(
     payload: dict,
     attempted_at: datetime,
     duration_ms: int | None,
+    sender: str | None = None,
+    subject: str | None = None,
 ) -> None:
     """Write one email_api_log row and its recipient rows. Never raises.
 
+    One row per logical call, whatever the provider. The SMTP2GO path calls
+    this with just the payload (sender/subject read off it, recipients read
+    off its ``to``/``cc`` lists). The UCSH mailer path passes
+    ``sender``/``subject`` explicitly, because its payload renames those.
+
     Args:
         summary: The classified answer (or the reason there is none).
-        request_url: Endpoint the request went to.
+        request_url: Endpoint the request went to; also names the service.
         payload: The exact payload posted; redacted here before storage.
         attempted_at: When the request was made (UTC).
         duration_ms: Round trip in milliseconds; None when never called.
+        sender: Sender to store; falls back to ``payload["sender"]`` when None.
+        subject: Subject to store; falls back to ``payload["subject"]``.
     """
     try:
         safe = redact_request(payload)
+        rows = _recipient_rows(payload)
         async with async_session() as session:
             session.add(EmailApiLog(
                 attempted_at=attempted_at,
                 duration_ms=duration_ms,
                 request_url=request_url,
-                sender=str(payload.get("sender") or ""),
-                subject=str(payload.get("subject") or ""),
+                sender=str(sender if sender is not None else (payload.get("sender") or "")),
+                subject=str(subject if subject is not None else (payload.get("subject") or "")),
                 request_json=json.dumps(safe, ensure_ascii=False),  # verbatim minus secrets
                 http_status=summary.http_status,
                 response_body=summary.response_body,
@@ -221,7 +329,7 @@ async def record_exchange(
                 failed_count=summary.failed,
                 smtp2go_email_id=summary.email_id,
                 smtp2go_request_id=summary.request_id,
-                recipients=_recipient_rows(payload),               # cascades with the log row
+                recipients=rows,                                   # cascades with the log row
             ))
             await session.commit()
     except Exception:
