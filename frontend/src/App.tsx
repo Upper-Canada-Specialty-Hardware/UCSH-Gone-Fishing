@@ -5,6 +5,7 @@ import EmployeeDashboard from './pages/EmployeeDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import Expired from './pages/Expired';
+import RequestPage from './pages/RequestPage';
 
 const theme = createTheme({
   typography: {
@@ -29,6 +30,16 @@ function AuthHandler() {
     const exp = searchParams.get('exp');
 
     if (token && role && uid && exp) {
+      // A supervisor's "add this new hire" email link carries the person's
+      // details; keep them for the Add Employee tab to prefill.
+      const addEmail = searchParams.get('add_email');
+      if (addEmail) {
+        sessionStorage.setItem('add_employee_prefill', JSON.stringify({
+          title: searchParams.get('add_name') || '',
+          email_address: addEmail,
+          location: searchParams.get('add_location') || '',
+        }));
+      }
       sessionStorage.setItem('dashboard_token', token);
       sessionStorage.setItem('dashboard_role', role);
       sessionStorage.setItem('dashboard_uid', uid);
@@ -65,6 +76,9 @@ export default function App() {
         </AppBar>
         <Container maxWidth="lg" sx={{ pb: 4 }}>
           <Routes>
+            {/* The public request page is the landing page: bookmarks, links and QR codes. */}
+            <Route path="/" element={<RequestPage />} />
+            <Route path="/request" element={<RequestPage />} />
             <Route path="/dashboard" element={<AuthHandler />} />
             <Route path="/employee" element={<EmployeeDashboard />} />
             <Route path="/manager" element={<ManagerDashboard />} />

@@ -97,10 +97,10 @@ async def _resend(req_type: str, item_id: str, fields: dict) -> None:
         await send_approval_email(item_id, is_reminder=True)
     elif req_type == "overtime":
         from app.services.overtime_requests import send_approval_email
-        from app.services.employee import resolve_person_field, get_all_managers_for_employee
-        employee = await resolve_person_field(
-            fields.get("SubmittedBy") or fields.get("SubmittedByLookupId")
-        )
+        from app.services.employee import get_all_managers_for_employee
+        from app.services.request_submitter import resolve_request_submitter
+        # SubmitterEmail first, then the SubmittedBy person column.
+        employee = await resolve_request_submitter(fields, "SubmittedBy")
         if not employee:
             return
         managers = await get_all_managers_for_employee(employee)

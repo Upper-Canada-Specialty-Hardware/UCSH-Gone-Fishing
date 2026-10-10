@@ -10,6 +10,7 @@ from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_employee_by_id, is_manager
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.request_submitter import SUBMITTER_PERSON_COLUMNS, submitter_email_of
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -133,9 +134,23 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
+class _PersonNames(dict):
+    """{SharePoint user id: display name}, plus staff names by email.
+
+    A plain dict for every existing caller. ``by_email`` lets
+    _resolve_sp_user_name name a request by its SubmitterEmail column when
+    the person column is empty (submitter never visited the site).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.by_email: dict[str, str] = {}                     # lowercase email -> staff name
+
+
 async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     """Fetch Staff Directory and User Information List.
-    Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts.
+    Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts;
+    sp_user_to_name also carries ``by_email`` (see _PersonNames).
     """
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     by_name: dict[str, dict] = {}
@@ -164,7 +179,12 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
                         mgr_to_emp_names.setdefault(mgr_name, set()).add(emp_name)
 
     # SP User Information List: map SP user IDs → display names
-    sp_user_to_name: dict[int, str] = {}
+    sp_user_to_name = _PersonNames()
+    for item in items:                                         # staff names by email, for SubmitterEmail
+        fields = item.get("fields", {})
+        email = (fields.get("EmailAddress") or "").strip().lower()
+        if email and fields.get("Title"):
+            sp_user_to_name.by_email[email] = fields["Title"]
     try:
         user_items = await sp_client.get_list_items("User Information List", top=5000)
         for u in user_items:
@@ -179,7 +199,24 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
 
 
 def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: dict) -> str:
-    """Resolve a SP Person/Group lookup field to a display name."""
+    """Resolve a SP Person/Group lookup field to a display name.
+
+    For the submitter columns, a SubmitterEmail on the item wins: it names the
+    submitter even when the person column could not be set.
+
+    Args:
+        item_data: The request item's fields.
+        field_prefix: The person column, e.g. "SubmittedTest" or "Manager".
+        sp_user_to_name: From _build_staff_lookups.
+
+    Returns:
+        The display name, or "" when nothing resolves.
+    """
+    if field_prefix in SUBMITTER_PERSON_COLUMNS:
+        email = submitter_email_of(item_data)
+        name = getattr(sp_user_to_name, "by_email", {}).get(email) if email else None
+        if name:
+            return name
     lookup_id = item_data.get(f"{field_prefix}LookupId")
     if lookup_id:
         try:
@@ -732,9 +769,10 @@ async def team_create_employee(user: AuthUser, body: dict):
 
     from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
-        return await create_employee(body, [manager_sp_user_id])
+        record = await create_employee(body, [manager_sp_user_id])
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return await _after_employee_created(record)
 
 
 # ============================
@@ -779,9 +817,38 @@ async def admin_create_employee(body: dict):
 
     from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
-        return await create_employee(body, manager_ids)
+        record = await create_employee(body, manager_ids)
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return await _after_employee_created(record)
+
+
+async def _after_employee_created(record: dict) -> dict:
+    """Follow-ups once Add Employee has written a record, on either dashboard.
+
+    Submits any requests the person made on the request page while they were
+    not on staff yet. This never undoes or blocks the create: a failure is
+    reported in the response and stays visible on the admin dashboard.
+
+    Args:
+        record: The created record from create_employee.
+
+    Returns:
+        The record plus "released": one {"held_id", "status", "detail"} per
+        held request for this email.
+    """
+    from app.services.held_requests import release_held_requests
+    email = record.get("fields", {}).get("EmailAddress", "")      # held rows are keyed by email
+    try:
+        results = await release_held_requests(email)
+        record["released"] = [vars(r) for r in results]
+    except Exception:  # noqa: BLE001 - the employee exists either way
+        logger.exception("Could not release held requests for a new employee")
+        record["released"] = []
+        record.setdefault("notices", []).append(
+            "Their waiting requests could not be submitted; see Held Requests on the admin dashboard."
+        )
+    return record
 
 
 @router.get("/admin/balances")
@@ -1474,6 +1541,88 @@ async def admin_manager_assignments():
     from app.services.manager_assignments import get_all_assignments
     assignments = await get_all_assignments()
     return {"assignments": assignments}
+
+
+@router.get("/admin/held-requests")
+async def admin_held_requests(include_closed: bool = Query(False)):
+    """Requests from the request page waiting for their submitter to be added.
+
+    Unauthenticated like every other /admin/* route.
+
+    Args:
+        include_closed: Also list released and cancelled ones.
+
+    Returns:
+        {"held": [...]} newest first.
+    """
+    from app.services.held_requests import list_held_requests
+    return {"held": await list_held_requests(include_closed)}
+
+
+@router.post("/admin/held-requests/{held_id}/release")
+async def admin_release_held_request(held_id: int):
+    """Retry submitting one held request whose person is now on staff.
+
+    Args:
+        held_id: The held request's id.
+
+    Returns:
+        {"results": [...]}; empty when the person is still not on staff.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.held_requests import held_request_email, release_held_requests
+    email = await held_request_email(held_id)
+    if email is None:
+        raise HTTPException(status_code=404, detail="Held request not found")
+    results = await release_held_requests(email, only_id=held_id)
+    if not results:
+        raise HTTPException(status_code=409, detail="They are not in the Staff Directory yet. Add them first.")
+    return {"results": [vars(r) for r in results]}
+
+
+@router.post("/admin/held-requests/{held_id}/cancel")
+async def admin_cancel_held_request(held_id: int):
+    """Cancel one held request (a mistake or a duplicate).
+
+    Args:
+        held_id: The held request's id.
+
+    Returns:
+        {"cancelled": true}.
+    """
+    from app.services.held_requests import cancel_held_request
+    if not await cancel_held_request(held_id):
+        raise HTTPException(status_code=404, detail="No open held request with that id")
+    return {"cancelled": True}
+
+
+@router.get("/admin/request-columns")
+async def admin_request_columns():
+    """Report whether SubmitterEmail and RequestSource exist on the request lists.
+
+    Unauthenticated like every other /admin/* route. Read only.
+
+    Returns:
+        The report from request_submitter.ensure_request_columns.
+    """
+    from app.services.request_submitter import ensure_request_columns
+    return await ensure_request_columns(create=False)
+
+
+@router.post("/admin/request-columns")
+async def admin_add_request_columns():
+    """Add SubmitterEmail and RequestSource to any request list missing them.
+
+    Needs the app's Sites.Manage.All permission. Adds only optional text
+    columns, so existing items and the Microsoft Form flow are unaffected.
+    Turn REQUEST_EMAIL_COLUMNS_ENABLED on once the report says ready.
+
+    Returns:
+        The report from request_submitter.ensure_request_columns.
+    """
+    from app.services.request_submitter import ensure_request_columns
+    return await ensure_request_columns(create=True)
 
 
 @router.get("/admin/sp-users")

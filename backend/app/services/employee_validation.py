@@ -1025,9 +1025,10 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
         # inert rather than mis-wired. It only needs fixing if they are meant
         # to submit requests.
         return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
-            f"The email {email} was not found in the Microsoft 365 directory. This "
-            "person cannot submit a request until the record carries the email of "
-            "their Microsoft 365 account."
+            f"The email {email} is not linked to the SharePoint site yet. This "
+            "person can use the request page, which links requests by email, but "
+            "not the Microsoft Form until they have a Microsoft 365 account and "
+            "have opened the site."
         )}
     # From here the email resolved, so the account count is 1; what can still go
     # wrong is which Staff Directory record it lands on.

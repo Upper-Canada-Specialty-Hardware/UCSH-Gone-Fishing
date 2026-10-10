@@ -18,8 +18,28 @@ import {
   createEmployee,
 } from '../api/client';
 
+/**
+ * A new hire's details left by the supervisor's "add this person" email link
+ * (see AuthHandler in App.tsx). Read once, then cleared so a refresh does not
+ * prefill again.
+ *
+ * @returns The prefill, or null.
+ */
+function takeAddEmployeePrefill(): { title: string; email_address: string; location: string } | null {
+  const raw = sessionStorage.getItem('add_employee_prefill');
+  if (!raw) return null;
+  sessionStorage.removeItem('add_employee_prefill');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export default function ManagerDashboard() {
-  const [tab, setTab] = useState(0);
+  const [prefill] = useState(takeAddEmployeePrefill);
+  // Opened from an "add this new hire" email: go straight to Add Employee (tab 4).
+  const [tab, setTab] = useState(prefill ? 4 : 0);
   const [calendarView, setCalendarView] = useState<'month' | 'timeline'>('timeline');
   const [members, setMembers] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
@@ -161,6 +181,7 @@ export default function ManagerDashboard() {
         <AddEmployee
           processingEnabled={processingEnabled}
           submitEmployee={createEmployee}
+          prefill={prefill}
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
           }
