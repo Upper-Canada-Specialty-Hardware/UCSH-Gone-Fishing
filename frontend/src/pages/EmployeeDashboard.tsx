@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Alert, Box, Button, Chip, CircularProgress, Paper, Tab, Tabs, Typography } from '@mui/material';
+import { Alert, Avatar, Box, Button, Chip, CircularProgress, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
 import RequestHistory from '../components/RequestHistory';
@@ -98,6 +98,35 @@ function Section({ title, rows, empty }: { title: string; rows: any[]; empty: st
 }
 
 /**
+ * One labelled value in the header's record (a dt/dd pair inside the dl).
+ *
+ * @param props.label - The field's name, e.g. "Department".
+ * @param props.children - The value.
+ * @returns The pair.
+ */
+function Detail({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Box sx={{ minWidth: 0 }}>
+      <Typography component="dt" variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+        {label}
+      </Typography>
+      {/* dd carries a browser margin; zero it so values line up under their labels. */}
+      <Box component="dd" sx={{ m: 0, mt: 0.25, overflowWrap: 'anywhere' }}>{children}</Box>
+    </Box>
+  );
+}
+
+/**
+ * A person's initials for their chip, e.g. "Jordan Lee" gives "JL".
+ *
+ * @param name - The display name.
+ * @returns Up to two capital letters.
+ */
+function initials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+}
+
+/**
  * The employee dashboard, in three tabs kept in the url:
  * Overview (all five balances, what is waiting, coming up and recent),
  * This year (days off by month and by kind, overtime earned, carry-over and
@@ -180,18 +209,43 @@ export default function EmployeeDashboard() {
   // The "by kind" bars: the longest bar fills the track.
   const kindRows = myKindRows(mine);
   const top = Math.max(1, ...kindRows.map((r) => r[1]));
+  // The header's record: [label, value]; an empty value shows "Not set".
+  const details: [string, string][] = [
+    ['Department', employee?.department || ''],
+    ['Location', employee?.location || ''],
+    ['Employee type', employee?.employee_type || ''],
+    ['Email', employee?.email || ''],
+  ];
+  // The backend sends managers as one "A, B" string; split it for the chips.
+  const managers = String(employee?.managers || '').split(',').map((s) => s.trim()).filter(Boolean);
   return (
     <Box sx={{ display: 'grid', gap: 2.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
           <Typography variant="h4">Hi {firstName(employee?.name || '') || 'there'}</Typography>
-          <Typography color="text.secondary">
-            {[employee?.department, employee?.location].filter(Boolean).join(' · ')}
-          </Typography>
-          {/* Who approves this person's requests, from the Staff Directory. */}
-          <Typography variant="body2" color="text.secondary">
-            {employee?.managers ? `Your requests go to ${employee.managers}` : 'No manager is set for you yet. Ask HR to add one.'}
-          </Typography>
+          {/* The person's Staff Directory record, one labelled value each. */}
+          <Box component="dl" sx={{ m: 0, mt: 1.25, display: 'flex', flexWrap: 'wrap', columnGap: 3.5, rowGap: 1.25 }}>
+            {details.map(([label, value]) => (
+              <Detail key={label} label={label}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: value ? 'text.primary' : 'text.secondary' }}>
+                  {value || 'Not set'}
+                </Typography>
+              </Detail>
+            ))}
+            {/* Everyone who approves this person's requests, one chip each. */}
+            <Detail label={managers.length === 1 ? 'Manager' : 'Managers'}>
+              {managers.length ? (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                  {managers.map((m) => (
+                    <Chip key={m} size="small" variant="outlined" label={m}
+                      avatar={<Avatar sx={{ bgcolor: 'primary.main', '&&': { color: 'primary.contrastText', fontWeight: 700 } }}>{initials(m)}</Avatar>} />
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="text.secondary">None set yet. Ask HR to add one.</Typography>
+              )}
+            </Detail>
+          </Box>
         </Box>
         <Button variant="contained" size="large" onClick={makeRequest}>Make a request</Button>
       </Box>
