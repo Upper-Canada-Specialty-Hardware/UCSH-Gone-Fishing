@@ -165,3 +165,6 @@ export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
 export const addRequestColumns = () => api.post('/admin/request-columns');
+// Admin - where the request lists live, and the copy from SharePoint before the move
+export const getRequestStorage = () => api.get('/admin/request-storage');
+export const copyRequestsToPostgres = () => api.post('/admin/request-storage/copy');

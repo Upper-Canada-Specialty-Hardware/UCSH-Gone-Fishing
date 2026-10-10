@@ -273,6 +273,57 @@ class PostgresRequestList:
             await session.delete(row)
             await session.commit()
 
+    async def save_copy(self, item_id: int, fields: dict, created_at: datetime | None,
+                        modified_at: datetime | None) -> bool:
+        """Write a SharePoint item into this table under its own id (insert or overwrite).
+
+        Used only by the copy from SharePoint, before requests move: the
+        SharePoint item is still the original, so its fields replace whatever
+        an earlier copy stored.
+
+        Args:
+            item_id: The SharePoint item id, kept as this row's id.
+            fields: The item's fields as Graph returned them.
+            created_at: The item's createdDateTime.
+            modified_at: The item's lastModifiedDateTime.
+
+        Returns:
+            True when the row was new, False when an earlier copy was overwritten.
+        """
+        async with async_session() as session:
+            row = await session.get(self.model, item_id)
+            created = row is None
+            if created:
+                row = self.model(id=item_id)
+                session.add(row)
+            row.fields = _stored(fields)
+            row.created_at = created_at or utcnow()
+            row.modified_at = modified_at or row.created_at
+            row.sp_item_id = str(item_id)
+            await session.commit()
+        return created
+
+    async def count(self) -> int:
+        """How many items the table holds.
+
+        Returns:
+            The row count.
+        """
+        async with async_session() as session:
+            return len((await session.execute(select(self.model.id))).all())
+
+    async def sp_item_ids(self) -> set[str]:
+        """The SharePoint item ids already copied or moved into this table.
+
+        Returns:
+            A set of SharePoint item ids, as strings.
+        """
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(self.model.sp_item_id).where(self.model.sp_item_id.is_not(None))
+            )).all()
+        return {r[0] for r in rows}
+
     async def find_by_sp_item_id(self, sp_item_id: str) -> dict | None:
         """The row copied or moved from a given SharePoint item, if there is one.
 

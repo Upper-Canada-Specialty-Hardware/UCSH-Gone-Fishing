@@ -1759,6 +1759,42 @@ async def admin_add_request_columns():
     return await ensure_request_columns(create=True)
 
 
+@router.get("/admin/request-storage")
+async def admin_request_storage():
+    """Where the request lists live, and how many items each side holds.
+
+    Unauthenticated like every other /admin/* route. Read only.
+
+    Returns:
+        The report from request_copy.request_storage_report.
+    """
+    from app.services.request_copy import request_storage_report
+    return await request_storage_report()
+
+
+@router.post("/admin/request-storage/copy")
+async def admin_copy_requests_to_postgres():
+    """Copy every request from the three SharePoint lists into Postgres.
+
+    Safe to run again while requests still live in SharePoint; refused once
+    STORAGE_REQUESTS is "postgres".
+
+    Returns:
+        The summary from request_copy.copy_requests_from_sharepoint.
+
+    Raises:
+        HTTPException: 503 while processing is disabled; 409 once requests
+            already live in Postgres.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    from app.services.request_copy import RequestsAlreadyMoved, copy_requests_from_sharepoint
+    try:
+        return await copy_requests_from_sharepoint()
+    except RequestsAlreadyMoved as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 @router.get("/admin/sp-users")
 async def admin_sp_users():
     from app.services.manager_assignments import get_staff_as_sp_users
