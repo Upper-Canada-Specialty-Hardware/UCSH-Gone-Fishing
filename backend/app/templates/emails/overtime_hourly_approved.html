@@ -1,6 +1,5 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #16a34a;">Overtime Approved - Hourly - {{ submitter_name }}</h2>
-  <h3>Time Make-Up Request Details</h3>
-  <p>{{ fields.get('Title', '') }}</p>
-  <p>Date: {{ fields.get('StartDate', '') }}<br>Hours: {{ fields.get('Hours', '') }}<br>Approved by: {{ manager_name }}</p>
-</div>
+{# Employee's hourly-overtime approved notice. Restyled to the shared layout. #}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Overtime Approved - Hourly - {{ submitter_name }}</h2>
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Time Make-Up Request Details</h3>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ fields.get('Title', '') }}</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Date: {{ fields.get('StartDate', '') }}<br>Hours: {{ fields.get('Hours', '') }}<br>Approved by: {{ manager_name }}</p>

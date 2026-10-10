@@ -1,0 +1,54 @@
+{# The one shared UCSH Out of Office email shell.
+
+   Applied once, centrally, in app/graph/email.py (send_email) to the whole body
+   (content plus any dashboard footer), so every email, templated or inline,
+   gets the same frame with no per-caller change. The marker comment below lets
+   the wrapper detect an already-wrapped body and skip a second wrap.
+
+   Built for classic Outlook (Word engine): a full HTML document, VML/mso office
+   settings, nested tables with bgcolor attributes rather than CSS backgrounds,
+   a fixed 600px mso table, and fonts set inline on every text cell because
+   Outlook does not inherit them from <body>. #}
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" lang="en">
+<head>
+<!-- ucsh-ooo-layout -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<!-- stop iOS Mail / Outlook auto-linking and tinting dates, phone numbers and addresses -->
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no">
+<!--[if mso]>
+<xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml>
+<![endif]-->
+<title>UCSH Out of Office</title>
+</head>
+<body style="margin:0;padding:0;background:#f7f3ec;">
+{#- outer full-width canvas, centring the card -#}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f7f3ec" style="width:100%;background:#f7f3ec;">
+  <tr>
+    <td align="center" style="padding:24px 16px;">
+      <!--[if mso]><table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600"><tr><td><![endif]-->
+      {#- inner card: real width 600, fluid down to phone width -#}
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:100%;max-width:600px;">
+        <tr>
+          {#- header band: brand green, white wordmark -#}
+          <td bgcolor="#2f5d50" style="background:#2f5d50;padding:18px 28px;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;color:#ffffff;">UCSH Out of Office</td>
+        </tr>
+        <tr>
+          {#- content cell: the rendered email (trusted HTML) drops in here -#}
+          <td bgcolor="#fffdf9" style="background:#fffdf9;padding:24px 28px;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;">
+            {{ content | safe }}
+          </td>
+        </tr>
+        <tr>
+          {#- muted footer line under the card -#}
+          <td style="padding:12px 28px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#6b6257;">Automatic email from UCSH Out of Office.</td>
+        </tr>
+      </table>
+      <!--[if mso]></td></tr></table><![endif]-->
+    </td>
+  </tr>
+</table>
+</body>
+</html>

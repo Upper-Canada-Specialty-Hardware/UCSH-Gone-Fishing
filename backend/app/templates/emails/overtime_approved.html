@@ -1,13 +1,13 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #16a34a;">{{ submitter_name }} Overtime Approved</h2>
-  <h3>Time Make-Up Request Details</h3>
-  <p>{{ fields.get('Title', '') }}</p>
-  <p>Date: {{ fields.get('StartDate', '') }}<br>Hours: {{ fields.get('Hours', '') }}<br>Approved by: {{ manager_name }}</p>
-  <h3>New Balances</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ balances.CurrentVacationBalance }} Days</td></tr>
-    <tr><td style="padding: 4px;">Sick Leave:</td><td>{{ balances.CurrentSickDayBalance }} Days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ balances.CarryOver }} Days</td></tr>
-    <tr><td style="padding: 4px;">Time Make-Up:</td><td>{{ balances.CurrentOvertimeBalance }} Days</td></tr>
-  </table>
-</div>
+{# Employee's overtime (time make-up) approved notice. Restyled to the layout. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">{{ submitter_name }} Overtime Approved</h2>
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Time Make-Up Request Details</h3>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ fields.get('Title', '') }}</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Date: {{ fields.get('StartDate', '') }}<br>Hours: {{ fields.get('Hours', '') }}<br>Approved by: {{ manager_name }}</p>
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">New Balances</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', balances.CurrentVacationBalance ~ ' Days') }}
+  {{ ui.row('Sick Leave:', balances.CurrentSickDayBalance ~ ' Days') }}
+  {{ ui.row('Carry Over:', balances.CarryOver ~ ' Days') }}
+  {{ ui.row('Time Make-Up:', balances.CurrentOvertimeBalance ~ ' Days') }}
+</table>

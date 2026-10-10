@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # Email (SMTP2GO): the fallback mailer; always available.
     SMTP2GO_API_KEY: str
     SENDER_EMAIL: str = "HR@s2gms.com"
+    # Display name shown next to SENDER_EMAIL in the inbox; blank sends the bare address.
+    SENDER_NAME: str = "UCSH Out of Office"
 
     # Email (UCSH mailer): internal HTTPS service over Microsoft High Volume
     # Email, used for staff (UCSH-domain) recipients once switched on. Off and
