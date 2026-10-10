@@ -10,13 +10,12 @@ import { approveSummary, daysOffByMonth } from '../components/manager/teamStats'
 import { daysToCarryReset, myKindRows, myYear } from '../components/employee/myStats';
 import { STATUS_COLOR } from '../components/dataGridDefaults';
 import { getMyBalances, getMyRequests } from '../api/client';
-import { handOffSession } from '../api/intake';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
 
-/** The tabs, keyed by url segment (#/employee/<key>). */
+/** The tabs, keyed by url segment (#/my/<key>). */
 const TABS = ['overview', 'year', 'history'] as const;
 type TabKey = typeof TABS[number];
 
@@ -131,9 +130,8 @@ function initials(name: string): string {
  * Overview (all five balances, what is waiting, coming up and recent),
  * This year (days off by month and by kind, overtime earned, carry-over and
  * payout, how fast requests get approved) and History (every request, with
- * the audit trail). Make a request opens the request page already signed in:
- * the dashboard's own signed token is handed to the request page for this tab
- * (see handOffSession), so no email code is needed.
+ * the audit trail). This is My requests at #/my; Make a request opens
+ * #/my/request with the same sign-in, so no email code is needed.
  *
  * @returns The employee dashboard.
  */
@@ -143,7 +141,7 @@ export default function EmployeeDashboard() {
   const params = useParams();
   // The open tab comes from the url, so a bookmark or the back button lands on it.
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'overview';
-  const go = useCallback((k: TabKey) => navigate(`/employee/${k}`), [navigate]);
+  const go = useCallback((k: TabKey) => navigate(`/my/${k}`), [navigate]);
 
   const [balances, setBalances] = useState<any>(null);
   const [employee, setEmployee] = useState<any>(null);
@@ -184,18 +182,8 @@ export default function EmployeeDashboard() {
   const monthly = useMemo(() => daysOffByMonth(requests, year), [requests, year]);
   const approve = useMemo(() => approveSummary(requests), [requests]);
 
-  /** Hand this dashboard's sign-in to the request page and open it at the form. */
-  const makeRequest = () => {
-    const token = sessionStorage.getItem('dashboard_token');
-    const role = sessionStorage.getItem('dashboard_role');
-    const uid = sessionStorage.getItem('dashboard_uid');
-    const exp = sessionStorage.getItem('dashboard_exp');
-    // Without a complete token the request page simply asks for an email code.
-    if (token && role && uid && exp && employee) {
-      handOffSession({ token, role, uid, exp, name: employee.name || '', email: employee.email || '' });
-    }
-    navigate('/request');
-  };
+  /** Open a new request; the request page uses the same sign-in. */
+  const makeRequest = () => navigate('/my/request');
 
   if (loading) {
     return <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}><CircularProgress /></Box>;

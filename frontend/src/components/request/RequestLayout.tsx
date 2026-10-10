@@ -24,9 +24,10 @@ export interface StepItem {
  *
  * @param props.words - Headline and the line under it; empty strings show nothing.
  * @param props.steps - The steps, in order.
+ * @param props.brand - Show the app's name and the light/dark switch (off under the top bar, which has both).
  * @returns The panel.
  */
-export function SidePanel({ words, steps }: { words: [string, string]; steps: StepItem[] }) {
+export function SidePanel({ words, steps, brand = true }: { words: [string, string]; steps: StepItem[]; brand?: boolean }) {
   const theme = useTheme();
   const ink = theme.tokens.primaryInk;                 // text on the panel colour
   return (
@@ -46,11 +47,13 @@ export function SidePanel({ words, steps }: { words: [string, string]; steps: St
       }}
     >
       <Box sx={{ position: 'relative', zIndex: 1 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
-          <BrandMark bg={ink} fg={theme.palette.primary.main} />
-          <Typography sx={{ fontWeight: 700, flex: 1 }}>{APP_NAME}</Typography>
-          <Box sx={{ '& .MuiButton-root': { borderColor: 'currentColor', color: ink } }}><ColorModeButton /></Box>
-        </Box>
+        {brand && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
+            <BrandMark bg={ink} fg={theme.palette.primary.main} />
+            <Typography sx={{ fontWeight: 700, flex: 1 }}>{APP_NAME}</Typography>
+            <Box sx={{ '& .MuiButton-root': { borderColor: 'currentColor', color: ink } }}><ColorModeButton /></Box>
+          </Box>
+        )}
         {words[0] && (
           <Typography
             component="h1"
