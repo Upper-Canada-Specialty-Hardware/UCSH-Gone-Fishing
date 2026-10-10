@@ -20,7 +20,7 @@ from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_intake import RequestFormError, parse_request_form, submit_request
 from app.services.request_preview import preview_request
-from app.services.request_submitter import SOURCE_REQUEST_PAGE
+from app.services.request_submitter import SOURCE_REQUEST_PAGE, requests_linked_by_email
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,10 +58,12 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
     if not employee:
         raise HTTPException(status_code=404, detail="Your staff record could not be found.")
 
-    # Without the SubmitterEmail column, the only link from a request back to
-    # its person is the person column, which needs them in the site's user
-    # list. Refuse up front rather than create a request nobody is told about.
-    if not settings.REQUEST_EMAIL_COLUMNS_ENABLED:
+    # Without SubmitterEmail (requests still in SharePoint, columns not there),
+    # the only link from a request back to its person is the person column,
+    # which needs them in the site's user list. Refuse up front rather than
+    # create a request nobody is told about. Never the case once requests live
+    # in Postgres.
+    if not requests_linked_by_email():
         email = employee["fields"].get("EmailAddress", "")
         if not await _resolve_user_lookup_id(email):
             raise HTTPException(
