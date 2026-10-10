@@ -1,18 +1,19 @@
-"""Routing one send across SMTP2GO and the UCSH mailer.
+"""Routing one send across SMTP2GO, the UCSH mailer and Clerk.
 
-These cover the per-recipient routing in ``app/graph/email.py`` and the mailer
-client. The guarantees under test: each recipient reaches the service its
-domain designates (UCSH -> mailer while it is on, everything else -> SMTP2GO);
-the client builds the right request with its key in a header; it retries only
-what it is allowed to, with the same idempotency key, and leaves exactly one
-redacted log row per logical call; a misconfigured but enabled mailer falls
-back to SMTP2GO; one failing group does not stop the other and the first
-failure is raised; and with the mailer off the behaviour and logging are
-unchanged.
+These cover the new per-recipient routing in ``app/graph/email.py`` and the two
+new clients. The guarantees under test: each recipient reaches the service its
+domain designates (UCSH -> mailer, else -> Clerk, anything switched off ->
+SMTP2GO); each client builds the right request with its secret in a header; the
+mailer and Clerk retry only what they are allowed to, with the same idempotency
+key, and leave exactly one redacted log row per logical call; a misconfigured
+but enabled service falls back to SMTP2GO; one failing group does not stop the
+others and the first failure is raised; and with both new services off the
+behaviour and logging are unchanged.
 """
 
 import asyncio
 import json
+import re
 
 import httpx
 import pytest
@@ -20,7 +21,7 @@ from sqlalchemy import delete, select
 
 from app.config import settings
 from app.database import Base, async_session, engine
-from app.graph import email as email_module, mailer_client
+from app.graph import clerk_email, email as email_module, mailer_client
 from app.models import EmailApiLog, EmailApiLogRecipient
 from app.services import email_api_log as log_service
 from app import templates_render
@@ -80,11 +81,12 @@ class _FakeHttp:
 
 @pytest.fixture
 def no_sleep(monkeypatch):
-    """Make the mailer client's retry backoff instant."""
+    """Make both clients' retry backoff instant."""
     async def _instant(_seconds):
         pass
 
     monkeypatch.setattr(mailer_client, "_sleep", _instant)
+    monkeypatch.setattr(clerk_email, "_sleep", _instant)
 
 
 def _mailer_accepted(status="sent", recipients=1, message_ids=("m1",)):
@@ -95,11 +97,27 @@ def _mailer_accepted(status="sent", recipients=1, message_ids=("m1",)):
     })
 
 
+def _clerk_accepted(email_id="eml_1", suppression_reason=None):
+    return _resp(200, {
+        "id": email_id,
+        "status": "queued",
+        "to_email_address": "jane@gmail.com",
+        "delivered_by_clerk": True,
+        "suppression_reason": suppression_reason,
+    })
+
+
 def _enable_mailer(monkeypatch):
     monkeypatch.setattr(settings, "MAILER_ENABLED", True)
     monkeypatch.setattr(settings, "MAILER_URL", "https://mailer.internal")
     monkeypatch.setattr(settings, "MAILER_KEY", "mk_secret")
     monkeypatch.setattr(settings, "MAILER_FROM", "ooo@ucsh.com")
+
+
+def _enable_clerk(monkeypatch):
+    monkeypatch.setattr(settings, "CLERK_EMAIL_ENABLED", True)
+    monkeypatch.setattr(settings, "CLERK_SECRET_KEY", "sk_live_secret")
+    monkeypatch.setattr(settings, "CLERK_FROM_EMAIL", "noreply@verified.com")
 
 
 def _install_smtp2go(monkeypatch, response):
@@ -114,24 +132,46 @@ def _install_smtp2go(monkeypatch, response):
     return fake
 
 
-# ----- routing by domain for each switch setting -----
+# ----- routing by domain for each switch combination -----
 
-def test_routing_sends_everything_to_smtp2go_when_the_mailer_is_off():
-    smtp, mailer = email_module._route_recipients(
+def test_routing_sends_everything_to_smtp2go_when_both_off():
+    smtp, mailer, clerk = email_module._route_recipients(
         ["staff@ucsh.com", "temp@ucaccess.com"], ["out@gmail.com"]
     )
     assert smtp == {"to": ["staff@ucsh.com", "temp@ucaccess.com"], "cc": ["out@gmail.com"]}
     assert mailer == {"to": [], "cc": []}
+    assert clerk == []
 
 
-def test_routing_internal_to_mailer_external_to_smtp2go_when_the_mailer_is_on(monkeypatch):
+def test_routing_internal_to_mailer_external_to_smtp2go_when_only_mailer_on(monkeypatch):
     _enable_mailer(monkeypatch)
-    smtp, mailer = email_module._route_recipients(
-        ["staff@ucsh.com", "out@gmail.com"], ["boss@ucsh.com", "temp@ucaccess.com"]
+    smtp, mailer, clerk = email_module._route_recipients(
+        ["staff@ucsh.com"], ["out@gmail.com"]
+    )
+    assert mailer == {"to": ["staff@ucsh.com"], "cc": []}
+    assert smtp == {"to": [], "cc": ["out@gmail.com"]}  # external stays on smtp2go, clerk off
+    assert clerk == []
+
+
+def test_routing_external_to_clerk_internal_to_smtp2go_when_only_clerk_on(monkeypatch):
+    _enable_clerk(monkeypatch)
+    smtp, mailer, clerk = email_module._route_recipients(
+        ["staff@ucsh.com"], ["out@gmail.com"]
+    )
+    assert clerk == [("out@gmail.com", "cc")]
+    assert smtp == {"to": ["staff@ucsh.com"], "cc": []}  # internal stays on smtp2go, mailer off
+    assert mailer == {"to": [], "cc": []}
+
+
+def test_routing_splits_internal_and_external_when_both_on(monkeypatch):
+    _enable_mailer(monkeypatch)
+    _enable_clerk(monkeypatch)
+    smtp, mailer, clerk = email_module._route_recipients(
+        ["staff@ucsh.com", "out@gmail.com"], ["boss@ucsh.com", "vendor@example.org"]
     )
     assert mailer == {"to": ["staff@ucsh.com"], "cc": ["boss@ucsh.com"]}
-    # Only ucsh.com is internal by default: ucaccess.com stays on smtp2go like any outside address.
-    assert smtp == {"to": ["out@gmail.com"], "cc": ["temp@ucaccess.com"]}
+    assert sorted(clerk) == [("out@gmail.com", "to"), ("vendor@example.org", "cc")]
+    assert smtp == {"to": [], "cc": []}  # nothing falls through
 
 
 # ----- the UCSH mailer payload, headers and classifier -----
@@ -259,26 +299,80 @@ def test_mailer_does_not_retry_hard_errors(monkeypatch, no_sleep, status, code):
     asyncio.run(flow())
 
 
+# ----- Clerk one call per recipient -----
+
+def test_clerk_send_one_call_per_recipient_with_right_json_and_key(monkeypatch):
+    _enable_clerk(monkeypatch)
+    monkeypatch.setattr(settings, "CLERK_REPLY_TO", "reply@verified.com")
+    fake = _FakeHttp(_clerk_accepted())
+    monkeypatch.setattr(clerk_email, "_http", fake)
+
+    async def flow():
+        await _reset()
+        summary = await clerk_email.send("jane@gmail.com", "to", "Subj", "<p>hi</p>", "base_abc")
+        (call,) = fake.calls
+        assert call["url"] == "https://api.clerk.com/v1/email"
+        assert call["json"] == {
+            "to": {"address": "jane@gmail.com"},
+            "from": {"address": "noreply@verified.com"},
+            "subject": "Subj",
+            "html": "<p>hi</p>",
+            "reply_to": {"address": "reply@verified.com"},
+        }
+        assert call["headers"]["Authorization"] == "Bearer sk_live_secret"
+        assert call["headers"]["Idempotency-Key"] == "base_abc"
+        assert summary.outcome == "accepted" and summary.email_id == "eml_1"
+        (row,) = await _rows()
+        assert "sk_live_secret" not in row.request_json
+        assert [r.address for r in row.recipients] == ["jane@gmail.com"]
+        assert log_service.service_for_url(row.request_url) == "clerk"
+
+    asyncio.run(flow())
+
+
+def test_clerk_key_is_within_the_allowed_charset():
+    key = email_module._clerk_key("abc123", "Jane.Doe+tag@gmail.com")
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,255}", key)
+    # Same base + same address is stable (so a retry reuses the key).
+    assert key == email_module._clerk_key("abc123", "jane.doe+tag@GMAIL.com")
+
+
+def test_clerk_suppression_is_recorded_as_rejected(monkeypatch):
+    _enable_clerk(monkeypatch)
+    fake = _FakeHttp(_clerk_accepted(suppression_reason="hard_bounce"))
+    monkeypatch.setattr(clerk_email, "_http", fake)
+
+    async def flow():
+        await _reset()
+        summary = await clerk_email.send("jane@gmail.com", "to", "S", "<p>b</p>", "k")
+        assert summary.outcome == "rejected" and summary.failed == 1
+
+    asyncio.run(flow())
+
+
 # ----- end to end through send_email -----
 
-def test_send_email_splits_between_mailer_and_smtp2go(monkeypatch):
+def test_send_email_fans_out_to_mailer_and_clerk(monkeypatch):
     _enable_mailer(monkeypatch)
+    _enable_clerk(monkeypatch)
     smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
     m = _FakeHttp(_mailer_accepted(recipients=1))
+    c = _FakeHttp(_clerk_accepted())
     monkeypatch.setattr(mailer_client, "_http", m)
+    monkeypatch.setattr(clerk_email, "_http", c)
 
     async def flow():
         await _reset()
         summary = await email_module.send_email(
             to=["staff@ucsh.com", "jane@gmail.com"], subject="S", html_body="<p>hi</p>"
         )
-        (call,) = smtp.calls
-        assert call["json"]["to"] == ["jane@gmail.com"]  # the outside address stayed on smtp2go
+        assert smtp.calls == []            # no recipient fell through to smtp2go
         assert len(m.calls) == 1           # one mailer call for the internal group
+        assert len(c.calls) == 1           # one clerk call for the one external recipient
         rows = await _rows()
         assert len(rows) == 2              # exactly one row per logical call
         assert {log_service.service_for_url(r.request_url) for r in rows} == {
-            "ucsh_mailer", "smtp2go"
+            "ucsh_mailer", "clerk"
         }
         assert summary.outcome == "accepted"
         assert summary.succeeded == 2      # counts summed across services
@@ -304,12 +398,15 @@ def test_misconfigured_enabled_service_falls_back_to_smtp2go(monkeypatch):
     asyncio.run(flow())
 
 
-def test_one_group_failing_still_attempts_the_other_and_raises(monkeypatch, no_sleep):
+def test_one_group_failing_still_attempts_the_others_and_raises_first(monkeypatch, no_sleep):
     _enable_mailer(monkeypatch)
-    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
-    # The mailer fails hard; the smtp2go group is still sent.
+    _enable_clerk(monkeypatch)
+    _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    # Mailer (attempted first) fails hard; clerk (attempted after) also fails.
     m = _FakeHttp(_resp(400, {"error": "invalid_request", "message": "bad"}))
+    c = _FakeHttp(_resp(401, {"error": "unauthorized", "message": "bad key"}))
     monkeypatch.setattr(mailer_client, "_http", m)
+    monkeypatch.setattr(clerk_email, "_http", c)
 
     async def flow():
         await _reset()
@@ -317,15 +414,15 @@ def test_one_group_failing_still_attempts_the_other_and_raises(monkeypatch, no_s
             await email_module.send_email(
                 to=["staff@ucsh.com", "jane@gmail.com"], subject="S", html_body="<p>b</p>"
             )
-        assert excinfo.value.response.status_code == 400  # the mailer's failure is raised
-        assert len(smtp.calls) == 1                       # smtp2go still sent its group
+        assert excinfo.value.response.status_code == 400  # the first failure, the mailer's
+        assert len(c.calls) == 1                          # clerk still attempted after the mailer failed
         rows = await _rows()
-        assert {r.outcome for r in rows} == {"http_error", "accepted"}  # both calls recorded
+        assert {r.outcome for r in rows} == {"http_error"}  # both failures recorded
 
     asyncio.run(flow())
 
 
-def test_mailer_off_is_a_single_smtp2go_send(monkeypatch):
+def test_both_services_off_is_a_single_smtp2go_send(monkeypatch):
     smtp = _install_smtp2go(
         monkeypatch,
         _resp(200, {"request_id": "r", "data": {"succeeded": 2, "failed": 0, "email_id": "e"}}),
@@ -349,7 +446,7 @@ def test_mailer_off_is_a_single_smtp2go_send(monkeypatch):
 
 
 def test_a_group_with_only_cc_still_gets_the_mail(monkeypatch):
-    # To is internal (mailer) and the CC is outside, so the CC is
+    # To is internal (mailer), the CC is outside and Clerk is off, so the CC is
     # alone on SMTP2GO; it must be sent there, not logged as "not attempted".
     _enable_mailer(monkeypatch)
     smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
@@ -380,10 +477,10 @@ def test_refused_addresses_reads_only_recipient_not_internal():
     assert mailer_client.refused_addresses(ValueError("no response")) == set()
 
 
-def test_refused_address_goes_to_smtp2go_and_the_rest_resend(monkeypatch, no_sleep):
-    # The app is set to treat ucaccess.com as internal, the mailer does not:
-    # the mailer refuses the whole request, so the ucsh.com address is re-sent
-    # through the mailer with a new key and the ucaccess.com one goes to SMTP2GO.
+def test_refused_address_goes_the_outside_way_and_the_rest_resend(monkeypatch, no_sleep):
+    # The app is set to treat ucaccess.com as internal, the mailer does not: the mailer
+    # refuses the whole request, so the ucsh.com address is re-sent through the
+    # mailer with a new key and the ucaccess.com one goes to SMTP2GO (Clerk off).
     _enable_mailer(monkeypatch)
     monkeypatch.setattr(settings, "INTERNAL_EMAIL_DOMAINS", "ucsh.com,ucaccess.com")
     smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
@@ -404,6 +501,25 @@ def test_refused_address_goes_to_smtp2go_and_the_rest_resend(monkeypatch, no_sle
         assert second["headers"]["Idempotency-Key"] != first["headers"]["Idempotency-Key"]  # new body, new key
         (call,) = smtp.calls
         assert call["json"]["to"] == ["temp@ucaccess.com"]  # promoted from cc on the fallback
+
+    asyncio.run(flow())
+
+
+def test_refused_address_goes_to_clerk_when_clerk_is_on(monkeypatch, no_sleep):
+    _enable_mailer(monkeypatch)
+    _enable_clerk(monkeypatch)
+    monkeypatch.setattr(settings, "INTERNAL_EMAIL_DOMAINS", "ucsh.com,ucaccess.com")
+    smtp = _install_smtp2go(monkeypatch, _resp(200, {"data": {"succeeded": 1, "failed": 0}}))
+    m = _FakeHttp(_resp(400, {"error": "recipient_not_internal", "message": "m", "addresses": ["temp@ucaccess.com"]}))
+    c = _FakeHttp(_clerk_accepted())
+    monkeypatch.setattr(mailer_client, "_http", m)
+    monkeypatch.setattr(clerk_email, "_http", c)
+
+    async def flow():
+        await _reset()
+        await email_module.send_email(to=["temp@ucaccess.com"], subject="S", html_body="<p>b</p>")
+        assert len(m.calls) == 1                     # nothing left for the mailer to resend
+        assert len(c.calls) == 1 and smtp.calls == []
 
     asyncio.run(flow())
 

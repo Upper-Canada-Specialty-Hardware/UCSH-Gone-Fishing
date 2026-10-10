@@ -14,8 +14,8 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  (services/held_requests.py).
 
 Mailbox control is the identity proof. Sending goes through send_email, so
-whichever email service that routes to (SMTP2GO today; the UCSH mailer for
-UCSH addresses once it is switched on) needs no change here.
+whichever email service that routes to (SMTP2GO today; HVE and Clerk later)
+needs no change here.
 """
 
 import logging

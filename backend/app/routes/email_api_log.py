@@ -107,7 +107,7 @@ def _serialize(row: EmailApiLog) -> dict:
         "to": [r.address for r in row.recipients if r.field == "to"],
         "cc": [r.address for r in row.recipients if r.field == "cc"],
         "request_url": row.request_url,
-        "service": service_for_url(row.request_url),               # smtp2go | ucsh_mailer
+        "service": service_for_url(row.request_url),               # smtp2go | ucsh_mailer | clerk
         "request": request,
         "response_body": row.response_body,
         "no_response_reason": row.no_response_reason,
