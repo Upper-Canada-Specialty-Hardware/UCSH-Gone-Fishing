@@ -77,7 +77,7 @@ export default function App() {
           <Route path="/" element={<RequestPage />} />
           <Route path="/request" element={<RequestPage />} />
           <Route path="/dashboard" element={<AuthHandler />} />
-          <Route path="/employee" element={<Framed><EmployeeDashboard /></Framed>} />
+          <Route path="/employee/:tab?" element={<Framed><EmployeeDashboard /></Framed>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/manager/:tab?" element={<Framed><ManagerDashboard /></Framed>} />
           <Route path="/admin/:screen?" element={<AdminDashboard />} />
