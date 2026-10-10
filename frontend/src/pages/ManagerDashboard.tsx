@@ -10,6 +10,7 @@ import RequestHistory from '../components/RequestHistory';
 import AddEmployee from '../components/AddEmployee';
 import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
+import { Enter, Leaving, leaveDelay } from '../components/Motion';
 import { InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline, VacationRings } from '../components/manager/Charts';
 import {
   absencesFrom, approveSummary, clashesFor, daysOffByMonth, inPerDay, insights, offThisWeek, totalsByKind, workingDays,
@@ -115,6 +116,7 @@ export default function ManagerDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());   // decided cards on their way out
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
 
   useEffect(() => {
@@ -139,7 +141,8 @@ export default function ManagerDashboard() {
   }, []);
 
   /**
-   * Approve or reject, then drop the request from the waiting list.
+   * Approve or reject, then drop the request from the waiting list: the card
+   * fades and folds away first, then it is removed.
    *
    * @param type - 'leave', 'overtime' or 'carryover-payout'.
    * @param id - The SharePoint item id.
@@ -149,7 +152,12 @@ export default function ManagerDashboard() {
     setActionLoading(`${type}-${id}`);
     try {
       await (yes ? approveRequest(type, id) : rejectRequest(type, id));
-      setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+      const key = `${type}-${id}`;
+      setLeaving((prev) => new Set(prev).add(key));                  // start the fade
+      setTimeout(() => {
+        setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
+        setLeaving((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      }, leaveDelay());                                               // 0 when less motion is asked for
       setSnack({ open: true, message: yes ? 'Request approved' : 'Request rejected', severity: 'success' });
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -217,6 +225,8 @@ export default function ManagerDashboard() {
         <Tab value="history" label="History" />
       </Tabs>
 
+      {/* The tab's body eases in each time the tab changes. */}
+      <Enter key={tab} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))' }}>
@@ -237,8 +247,8 @@ export default function ManagerDashboard() {
                 <>
                   {/* Oldest first; only the first five until the manager asks for the rest. */}
                   {(queueExpanded ? waiting : waiting.slice(0, 5)).map((item) => (
+                    <Leaving key={`${item.request_type}-${item.id}`} leaving={leaving.has(`${item.request_type}-${item.id}`)}>
                     <DecisionCard
-                      key={`${item.request_type}-${item.id}`}
                       item={item}
                       clashes={clashesFor(item, absences, labelOf)}
                       processingEnabled={processingEnabled}
@@ -247,6 +257,7 @@ export default function ManagerDashboard() {
                       onReject={() => decide(item.request_type, String(item.id), false)}
                       colorOf={colorOf}
                     />
+                    </Leaving>
                   ))}
                   {/* Reveal or re-fold everything past the first five. */}
                   {waiting.length > 5 && (
@@ -459,6 +470,7 @@ export default function ManagerDashboard() {
           }
         />
       )}
+      </Enter>
 
       <Snackbar
         open={snack.open}

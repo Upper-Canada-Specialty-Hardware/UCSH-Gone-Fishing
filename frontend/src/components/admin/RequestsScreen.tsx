@@ -8,6 +8,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
 import AuditTrailDialog from '../AuditTrailDialog';
 import { STATUS_COLOR } from '../dataGridDefaults';
+import { LEAVE_MS, REDUCED_MOTION } from '../Motion';
 import RequestDrawer, { ActionButton, RequestActions, rowActions } from './RequestDrawer';
 import {
   DIAGNOSTIC_LABELS, HeldRow, RequestRow, RequestView, TYPE_FILTERS, fromHeld, fromSharePoint,
@@ -63,6 +64,8 @@ interface Props {
   onAddHeld: (row: HeldRow) => void;
   onRetryHeld: (id: number) => Promise<void>;
   onCancelHeld: (id: number) => Promise<void>;
+  /** "<request_type>-<id>" of decided pending requests that are fading out. */
+  leaving?: Set<string>;
 }
 
 /**
@@ -225,7 +228,13 @@ export default function RequestsScreen(props: Props) {
                       tabIndex={0}
                       onClick={() => setOpenKey(r.key)}
                       onKeyDown={(e) => { if (e.key === 'Enter') setOpenKey(r.key); }}
-                      sx={{ cursor: 'pointer' }}
+                      sx={{
+                        cursor: 'pointer',
+                        // A decided pending row fades and drifts off before it is removed.
+                        transition: `opacity ${LEAVE_MS}ms ease, transform ${LEAVE_MS}ms ease`,
+                        [`@media ${REDUCED_MOTION}`]: { transition: 'none' },
+                        ...(r.source === 'pending' && props.leaving?.has(`${r.request_type}-${r.id}`) && { opacity: 0, transform: 'translateX(16px)' }),
+                      }}
                     >
                       <TableCell>
                         <Typography sx={{ fontWeight: 600, whiteSpace: { sm: 'nowrap' } }}>{r.who}</Typography>
