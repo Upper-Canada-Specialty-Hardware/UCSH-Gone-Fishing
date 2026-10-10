@@ -46,14 +46,16 @@ def _ip() -> str:
 def client(monkeypatch):
     """The intake router alone, with email sending and the directory stubbed.
 
-    Returns a TestClient with ``.sent`` (emails "sent") and ``.staff`` (the
-    stand-in Staff Directory, keyed by lowercase email) attached.
+    Returns a TestClient with ``.sent`` (emails "sent"), ``.staff`` (the
+    stand-in Staff Directory, keyed by lowercase email) and ``.managers``
+    (names someone lists as their manager) attached.
     """
     app = FastAPI()
     app.include_router(intake.router, prefix="/api/intake")
     test_client = TestClient(app)
     test_client.sent = []
     test_client.staff = {}
+    test_client.managers = set()
 
     async def fake_send_email(to, subject, html_body, **kwargs):
         test_client.sent.append({"to": to, "subject": subject, "html": html_body})
@@ -62,7 +64,11 @@ def client(monkeypatch):
         return test_client.staff.get(email.strip().lower())
 
     monkeypatch.setattr(intake, "send_email", fake_send_email)
+    async def fake_is_manager(name):
+        return name in test_client.managers
+
     monkeypatch.setattr(intake, "get_employee_by_email", fake_get_employee_by_email)
+    monkeypatch.setattr(intake, "is_manager", fake_is_manager)
     return test_client
 
 
@@ -173,6 +179,33 @@ def test_a_known_employee_gets_a_valid_thirty_day_dashboard_token(client, fixed_
     assert body["role"] == "employee" and body["uid"] == "42"
     assert validate_dashboard_token("employee", "42", body["token"], body["exp"]) == (True, "")
     assert int(body["exp"]) - time.time() > 29 * 86400
+
+
+def test_a_manager_signs_in_with_the_manager_role(client, fixed_code):
+    email = _unique("boss")
+    client.staff[email] = {"id": "7", "fields": {"Title": "Sam Supervisor"}}
+    client.managers.add("Sam Supervisor")                 # someone lists Sam as their manager
+    _ask(client, email)
+
+    body = _verify(client, email, fixed_code).json()
+
+    assert body["role"] == "manager" and body["uid"] == "7"
+    assert validate_dashboard_token("manager", "7", body["token"], body["exp"]) == (True, "")
+
+
+def test_a_failed_manager_check_still_signs_in_as_employee(client, fixed_code, monkeypatch):
+    email = _unique("lookupdown")
+    client.staff[email] = {"id": "8", "fields": {"Title": "Lee Lead"}}
+
+    async def broken_is_manager(name):
+        raise RuntimeError("SharePoint unavailable")
+
+    monkeypatch.setattr(intake, "is_manager", broken_is_manager)
+    _ask(client, email)
+
+    body = _verify(client, email, fixed_code).json()
+
+    assert body["status"] == "employee" and body["role"] == "employee"
 
 
 def test_an_unknown_address_gets_a_verified_email_token(client, fixed_code):

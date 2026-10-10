@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Box, Typography, TextField, Button, Alert, CircularProgress, MenuItem, Link,
 } from '@mui/material';
@@ -13,8 +14,8 @@ import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import { buildTheme } from '../theme';
 import {
   EmployeeSession, RequestType, Supervisor, VerifiedEmail,
-  clearSession, dashboardHref, errorText, getSupervisors, holdRequest,
-  isHandedOff, loadSession, requestCode, saveSession, submitMyRequest, verifyCode,
+  clearSession, errorText, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
+  saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
 /**
@@ -64,39 +65,17 @@ function Lead({ children }: { children: ReactNode }) {
 }
 
 /**
- * Who is signed in, with a way out.
- *
- * @param props.name - The employee.
- * @param props.fromDashboard - True when the sign-in came from their dashboard.
- * @param props.onSignOut - Forget the sign-in.
- * @returns The strip.
- */
-function SignedInAs({ name, fromDashboard, onSignOut }: { name: string; fromDashboard: boolean; onSignOut: () => void }) {
-  const theme = useTheme();
-  const initials = name.split(' ').map((w) => w[0]).slice(0, 2).join('');   // e.g. "AE"
-  return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, bgcolor: theme.tokens.hover, borderRadius: '12px', px: 1.5, py: 1.25, flexWrap: 'wrap' }}>
-      <Box sx={{
-        width: 30, height: 30, borderRadius: '50%', bgcolor: 'primary.main', color: theme.tokens.primaryInk,
-        display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700, flex: 'none', transition: 'background-color .5s ease',
-      }}>
-        {initials}
-      </Box>
-      <Typography variant="body2" sx={{ flex: 1, minWidth: 160 }}>
-        Signed in as <b>{name}</b>{fromDashboard ? ' from your dashboard' : ''}
-      </Typography>
-      <Link component="button" variant="body2" onClick={onSignOut}>Not you? Sign out</Link>
-    </Box>
-  );
-}
-
-/**
- * The public request page: the in-house way to ask for leave, overtime or a
- * carry-over/payout, with no Microsoft sign-in. Someone types their email and
- * proves they own it with an emailed code. A Staff Directory employee is then
- * signed in on this device for 30 days and their request goes straight to
- * their manager. Anyone else (a new hire not added yet) picks their
- * supervisor, and the request waits until that supervisor adds them.
+ * The sign-in, request and new-hire pages: the in-house way to ask for leave,
+ * overtime or a carry-over/payout, with no Microsoft sign-in. It serves three
+ * addresses:
+ * - #/ (the public landing page): someone types their email and proves they
+ *   own it with an emailed code. A Staff Directory employee is then signed in
+ *   on this device for 30 days and moves on to My requests (or the page they
+ *   had opened). Anyone else moves on to #/new-hire.
+ * - #/my/request: a signed-in employee's new request, which goes straight to
+ *   their manager.
+ * - #/new-hire: someone not on staff yet picks their supervisor, and the
+ *   request waits until that supervisor adds them.
  *
  * The page is split in two: a coloured panel with the steps, and the current
  * step beside it. Once past signing in, the page colour and the panel's words
@@ -118,7 +97,11 @@ export default function RequestPage() {
   const [resendIn, setResendIn] = useState(0);
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
-  const [fromDashboard, setFromDashboard] = useState(false);   // signed in by the employee dashboard
+  const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
+  const signedInPage = pathname.startsWith('/my/request');    // under the top bar with the page tabs
 
   // New-hire details.
   const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
@@ -127,16 +110,31 @@ export default function RequestPage() {
   const [location, setLocation] = useState('');
   const [supervisorId, setSupervisorId] = useState('');
 
-  // A returning employee skips the code while their 30-day sign-in lasts.
+  // Pick up where this address starts: a new hire's verified email, the
+  // shared sign-in for a new request, or the landing page's note.
   useEffect(() => {
+    if (newHirePage) {
+      const v = loadNewHire();
+      if (!v) {                                        // no verified email in this tab (or it expired)
+        navigate('/', { replace: true });
+        return;
+      }
+      setVerified(v);
+      setEmail(v.email);
+      setStep('newhire');
+      loadSupervisors(v);
+      return;
+    }
     const saved = loadSession();
     if (saved) {
-      setFromDashboard(isHandedOff());                 // opened from the employee dashboard in this tab
       setSession(saved);
       setEmail(saved.email);
       setStep('form');
+      return;
     }
-  }, []);
+    const note = takeSignInNotice();
+    if (note) setNotice(note);                         // read once; a second run finds nothing
+  }, [newHirePage]);
 
   // Count down to when a new code may be asked for.
   useEffect(() => {
@@ -165,7 +163,22 @@ export default function RequestPage() {
     }
   };
 
-  /** Check the code, then go to the employee form or the new-hire form. */
+  /**
+   * Load the supervisors and locations a new hire can pick from.
+   *
+   * @param v - The new hire's verified-email token.
+   */
+  async function loadSupervisors(v: VerifiedEmail) {
+    try {
+      const options = await getSupervisors(v);
+      setSupervisors(options.data.supervisors || []);
+      setLocations(options.data.locations || []);
+    } catch {
+      setError('The supervisor list could not be loaded. Refresh the page and start again.');
+    }
+  }
+
+  /** Check the code, then move on: staff to their pages, anyone else to #/new-hire. */
   const checkCode = async () => {
     setError(''); setBusy(true);
     try {
@@ -173,19 +186,10 @@ export default function RequestPage() {
       if (res.data.status === 'employee') {
         const signedIn: EmployeeSession = { ...res.data, email: email.trim().toLowerCase() };
         saveSession(signedIn);                          // 30 days on this device
-        setSession(signedIn);
-        setFromDashboard(false);
-        setStep('form');
+        navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
       } else {
-        setVerified(res.data.verified);
-        setStep('newhire');                             // the code is used up; never go back to it
-        try {
-          const options = await getSupervisors(res.data.verified);
-          setSupervisors(options.data.supervisors || []);
-          setLocations(options.data.locations || []);
-        } catch {
-          setError('The supervisor list could not be loaded. Refresh the page and start again.');
-        }
+        saveNewHire(res.data.verified);                 // the code is used up; this tab keeps the 24-hour pass
+        navigate('/new-hire', { replace: true });
       }
     } catch (err) {
       setError(errorText(err, 'That code could not be checked. Try again.'));
@@ -205,8 +209,9 @@ export default function RequestPage() {
       setStep('done');
     } catch (err: any) {
       if (err?.response?.status === 401) {              // the 30 days ran out
-        signOut();
-        setError('Your sign-in has expired. Enter your email to get a new code.');
+        clearSession();
+        setSignInNotice('Your sign-in has ended. Enter your email for a new code.');
+        navigate('/', { replace: true });
       } else {
         setError(errorText(err, 'Your request could not be sent. Try again.'));
       }
@@ -225,6 +230,7 @@ export default function RequestPage() {
         request_type: type, form: buildRequestBody(type, values),
       });
       setHeldWith(res.data.supervisor_name);
+      saveNewHire(null);                                // held: a refresh must not send it twice
       setDoneText(
         `You are not in the Staff Directory yet, so we asked ${res.data.supervisor_name} to add you. `
         + 'Your request is sent to them automatically as soon as they do, and you will get an email.',
@@ -232,7 +238,11 @@ export default function RequestPage() {
       setStep('done');
     } catch (err: any) {
       if (err?.response?.status === 401 || err?.response?.status === 409) {
-        setStep('email');                               // expired, or now on staff: start again
+        // Expired, or on staff now: start again from the landing page, which says why.
+        saveNewHire(null);
+        setSignInNotice(errorText(err, 'Start again with your email.'));
+        navigate('/', { replace: true });
+        return;
       }
       setError(errorText(err, 'Your request could not be sent. Try again.'));
     } finally {
@@ -240,21 +250,15 @@ export default function RequestPage() {
     }
   };
 
-  /** Forget this device's sign-in and start over. */
-  const signOut = () => {
-    clearSession();
-    setSession(null);
-    setFromDashboard(false);
-    setEmail('');
-    setCode('');
-    setStep('email');
-  };
-
-  /** Start another request, keeping the sign-in. */
+  /** Start another request, keeping the sign-in; a new hire starts again from the landing page. */
   const another = () => {
+    if (!session) {
+      navigate('/', { replace: true });
+      return;
+    }
     setValues({ ...EMPTY_REQUEST });
     setError('');
-    setStep(session ? 'form' : 'email');
+    setStep('form');
   };
 
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -295,11 +299,13 @@ export default function RequestPage() {
   return (
     <ThemeProvider theme={theme}>
       <Box sx={{
-        minHeight: '100dvh', bgcolor: 'background.default', color: 'text.primary',
+        // Under the top bar the page fills what is left of the screen.
+        minHeight: signedInPage ? { xs: 'auto', md: 'calc(100dvh - 56px)' } : '100dvh', bgcolor: 'background.default', color: 'text.primary',
         display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'minmax(0, 1fr) minmax(0, 1.1fr)' },
         gridTemplateRows: { xs: 'auto 1fr', md: 'auto' },
       }}>
-        <SidePanel words={words} steps={steps} />
+        {/* Signed in, the top bar already shows the name, and no sign-in steps are left to show. */}
+        <SidePanel words={words} steps={signedInPage ? [] : steps} brand={!signedInPage} />
 
         <Box component="main" sx={{ px: { xs: 2, sm: 5, md: 'clamp(16px, 5vw, 64px)' }, py: { xs: 3, md: 6 }, display: 'grid', alignContent: { xs: 'start', md: 'center' } }}>
           <Box
@@ -318,8 +324,9 @@ export default function RequestPage() {
           >
             {step === 'email' && (
               <>
-                <Heading>Make a request</Heading>
-                <Lead>We email you a 6-digit code to confirm it is you.</Lead>
+                {notice && <Alert severity="info">{notice}</Alert>}
+                <Heading>Sign in</Heading>
+                <Lead>We email you a 6-digit code to confirm it is you. You then stay signed in on this device for 30 days.</Lead>
                 {error && <Alert severity="error">{error}</Alert>}
                 <TextField
                   label="Your email" type="email" autoComplete="email" autoFocus
@@ -330,6 +337,9 @@ export default function RequestPage() {
                 <Button variant="contained" size="large" sx={big} disabled={!emailOk || busy} onClick={sendCode} startIcon={spinner}>
                   Email me a code
                 </Button>
+                <Typography variant="body2" color="text.secondary">
+                  New and no work email yet? Use your personal email. Your supervisor is asked to add you.
+                </Typography>
               </>
             )}
 
@@ -354,7 +364,6 @@ export default function RequestPage() {
 
             {step === 'form' && session && (
               <>
-                <SignedInAs name={session.name} fromDashboard={fromDashboard} onSignOut={signOut} />
                 {error && <Alert severity="error">{error}</Alert>}
                 <TypeCards value={type} onPick={setType} />
                 <RequestForm type={type} values={values} onChange={setValue} />
@@ -363,7 +372,6 @@ export default function RequestPage() {
                 <Button variant="contained" size="large" sx={big} disabled={!formReady || busy} onClick={submitAsEmployee} startIcon={spinner}>
                   Send request
                 </Button>
-                <Link href={dashboardHref(session)} variant="body2">My balances and past requests</Link>
               </>
             )}
 
@@ -410,7 +418,7 @@ export default function RequestPage() {
                 <NextSteps items={next} />
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button variant="contained" onClick={another}>Make another request</Button>
-                  {session && <Button variant="outlined" href={dashboardHref(session)}>My balances and past requests</Button>}
+                  {session && <Button variant="outlined" onClick={() => navigate('/my')}>See my requests</Button>}
                 </Box>
               </>
             )}
