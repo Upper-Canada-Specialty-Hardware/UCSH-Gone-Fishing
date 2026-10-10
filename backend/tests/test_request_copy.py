@@ -92,3 +92,56 @@ def test_the_report_counts_what_is_left_to_copy(sharepoint_lists):
     run(request_copy.copy_requests_from_sharepoint())
     after = run(request_copy.request_storage_report())
     assert after["lists"]["leave"]["only_in_sharepoint"] == 0
+
+
+# The Microsoft Form fallback (#195): once requests live in Postgres, a new item
+# the Form writes to a SharePoint list is moved into Postgres and processed there.
+
+FORM_ITEM = {
+    "id": "950", "createdDateTime": "2026-10-10T13:00:00Z",
+    "fields": {"LeaveType": "Vacation", "Status": "Pending", "StartDate": "2026-11-02",
+               "EndDate": "2026-11-02", "SubmittedTestLookupId": "21"},
+}
+
+
+@pytest.fixture
+def form_item(sharepoint_lists, monkeypatch):
+    """Requests in Postgres; SharePoint holds one new Form item (or none, once deleted)."""
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    inbox = {"950": FORM_ITEM}
+
+    async def fake_item(list_id, item_id):
+        return inbox.get(str(item_id))
+
+    monkeypatch.setattr(request_copy.sp_client, "get_list_item_or_none", fake_item)
+    return inbox
+
+
+def test_a_form_item_is_moved_once_with_a_new_id(form_item):
+    moved = run(request_copy.move_form_item_into_postgres(LEAVE, "950"))
+    assert moved["fields"]["LeaveType"] == "Vacation"
+    assert moved["fields"]["SubmitterEmail"] == "pat@ucsh.com"
+    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))["id"] == moved["id"]
+    assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None   # never twice
+
+
+def test_a_deleted_form_item_is_skipped(form_item):
+    form_item.clear()
+    assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None
+
+
+def test_the_dispatcher_processes_the_postgres_copy(form_item, monkeypatch):
+    from app.services import leave_requests
+    from app.tasks import dispatcher
+    handled = []
+
+    async def record(item_id):
+        handled.append(str(item_id))
+
+    for name in ("auto_calculate_days", "auto_assign_manager", "send_bereavement_alert"):
+        monkeypatch.setattr(leave_requests, name, record)
+    run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
+    moved = run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))
+    assert handled == [moved["id"]] * 3                         # processed under its Postgres id
+    run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
+    assert len(handled) == 3                                    # a second notice changes nothing

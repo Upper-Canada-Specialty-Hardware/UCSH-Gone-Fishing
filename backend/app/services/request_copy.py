@@ -16,6 +16,8 @@ person column, so every request can be traced to its employee by email alone.
 import logging
 from datetime import datetime
 
+from sqlalchemy.exc import IntegrityError
+
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.repositories.request_store import request_list_tables, requests_in_postgres
@@ -150,6 +152,46 @@ async def copy_requests_from_sharepoint() -> dict:
         report[name] = {"source_count": len(items), "created": created, "updated": updated}
         logger.info("Request copy (%s): %d read, %d created, %d updated", name, len(items), created, updated)
     return {"lists": report}
+
+
+async def move_form_item_into_postgres(list_id: str, sp_item_id: str) -> dict | None:
+    """Move one new SharePoint item (from the Microsoft Form) into Postgres (#195).
+
+    Once requests live in Postgres, the Form and its Power Automate flow keep
+    writing to the SharePoint lists, which then act only as an inbox. Each new
+    item is copied into Postgres under a new id, with sp_item_id naming the
+    SharePoint item, and is processed from there. An item moved before (or
+    copied before the move) is not moved again, so a later edit made in
+    SharePoint changes nothing.
+
+    Args:
+        list_id: The SharePoint request list the item is in.
+        sp_item_id: The SharePoint item id.
+
+    Returns:
+        The new Postgres item in the Graph list-item shape, or None when the
+        item was already moved, has been deleted, or another worker moved it
+        at the same moment.
+    """
+    table = request_list_tables()[list_id]
+    if await table.find_by_sp_item_id(str(sp_item_id)):
+        logger.info("Form item %s on %s is already in Postgres; SharePoint changes are ignored", sp_item_id, list_id)
+        return None
+    item = await sp_client.get_list_item_or_none(list_id, sp_item_id)      # the full item, not a delta stub
+    if item is None:
+        return None                                             # deleted in SharePoint before we got to it
+    setting_name = next(name for name in LIST_NAMES if getattr(settings, name) == list_id)
+    fields = copy_fields(item.get("fields", {}), PERSON_COLUMNS[setting_name], await _user_emails())
+    try:
+        moved = await table.create_list_item(
+            list_id, fields, sp_item_id=str(sp_item_id),
+            created_at=_when(item.get("createdDateTime")),
+        )
+    except IntegrityError:
+        logger.info("Form item %s on %s was moved by another worker", sp_item_id, list_id)
+        return None
+    logger.info("Moved Form item %s on %s into Postgres as #%s", sp_item_id, list_id, moved["id"])
+    return moved
 
 
 async def request_storage_report() -> dict:
