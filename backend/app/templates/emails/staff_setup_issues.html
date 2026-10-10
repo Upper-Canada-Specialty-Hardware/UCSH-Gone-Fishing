@@ -4,20 +4,24 @@
 
    Each issue carries the plain-language title and fix from
    app/services/setup_problem_copy.py, with the check's own detail between them
-   so the reader gets the specifics of their record and not just the category. #}
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #b45309;">Staff Directory Record Needs Attention</h2>
-  <p>You created a record that does not have the correct setup as per UCSH Out of Office's requirements. Please fix the issues below accordingly.</p>
+   so the reader gets the specifics of their record and not just the category.
+   Restyled to the shared layout; wording and variables are unchanged. #}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Staff Directory Record Needs Attention</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">You created a record that does not have the correct setup as per UCSH Out of Office's requirements. Please fix the issues below accordingly.</p>
 
-  <p style="margin: 16px 0;">Record: <strong>{{ employee_name }}</strong></p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:16px 0;">Record: <strong>{{ employee_name }}</strong></p>
 
-  {% for issue in issues %}
-  <div style="border-left: 3px solid #b45309; padding-left: 12px; margin: 16px 0;">
-    <p style="margin: 0 0 4px; font-weight: bold;">{{ issue.title }}</p>
-    <p style="margin: 0 0 4px;">{{ issue.detail }}</p>
-    <p style="margin: 0; color: #6b7280;">{{ issue.fix }}</p>
-  </div>
-  {% endfor %}
+{% for issue in issues %}
+{#- one failing check: bgcolor cell with a left accent so Outlook keeps it -#}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;margin:16px 0;">
+  <tr>
+    <td bgcolor="#fdf6ec" style="background:#fdf6ec;padding:12px 16px;border-left:4px solid #b45309;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1f1a14;">
+      <p style="margin:0 0 4px;font-weight:bold;">{{ issue.title }}</p>
+      <p style="margin:0 0 4px;">{{ issue.detail }}</p>
+      <p style="margin:0;color:#6b6257;">{{ issue.fix }}</p>
+    </td>
+  </tr>
+</table>
+{% endfor %}
 
-  {% if record_url %}<p style="margin: 16px 0;"><a href="{{ record_url }}">Open this record in SharePoint</a></p>{% endif %}
-</div>
+{% if record_url %}<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;margin:16px 0;"><a href="{{ record_url }}" style="color:#2f5d50;">Open this record in SharePoint</a></p>{% endif %}

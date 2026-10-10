@@ -14,9 +14,46 @@ _env = Environment(loader=FileSystemLoader("app/templates/emails"), autoescape=T
 # HTML-escaped on the way into the email.
 _env.filters["request_description"] = extract_request_description
 
+# A hidden comment carried in _layout.html. render_layout looks for it to tell
+# an already-wrapped body from a bare one, and tests assert a send went out
+# wrapped by checking for it in the HTML.
+LAYOUT_MARKER = "ucsh-ooo-layout"
+
 
 def _render(template_name: str, **kwargs) -> str:
     return _env.get_template(template_name).render(**kwargs)
+
+
+def render_layout(content_html: str) -> str:
+    """Wrap one email's rendered content in the shared Outlook-safe shell.
+
+    Applied once in send_email to the full body (content plus any dashboard
+    footer), so every email shares the same header band, card and footer line.
+
+    Args:
+        content_html: The inner HTML, already rendered and trusted (it comes
+            from these templates, never from unescaped user input).
+
+    Returns:
+        A full HTML document around ``content_html``; the input unchanged when
+        it is already wrapped, so wrapping twice is a no-op.
+    """
+    if LAYOUT_MARKER in content_html:                 # already wrapped: do not nest a second shell
+        return content_html
+    return _render("_layout.html", content=content_html)
+
+
+def render_dashboard_footer(dashboard_links: list[dict]) -> str:
+    """Render the dashboard-links footer appended to many emails.
+
+    Args:
+        dashboard_links: One ``{"label", "url"}`` per dashboard the recipient
+            can open; an empty list renders nothing.
+
+    Returns:
+        The footer HTML, with Outlook-safe buttons and the do-not-forward note.
+    """
+    return _render("dashboard_footer.html", dashboard_links=dashboard_links)
 
 
 # --- Leave Requests ---

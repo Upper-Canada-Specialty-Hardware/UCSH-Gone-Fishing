@@ -1,62 +1,66 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #1e40af;">Leave Request</h2>
-  {% include "conflict_warning.html" %}
-  {% if previous_snapshot %}
-  {% set edited_keys = [] %}
-  {% if previous_snapshot.get('Days') != fields.get('Days') %}{% set _ = edited_keys.append('Days') %}{% endif %}
-  {% if previous_snapshot.get('LeaveType') != fields.get('LeaveType') %}{% set _ = edited_keys.append('LeaveType') %}{% endif %}
-  {% if previous_snapshot.get('StartDate') != fields.get('StartDate') %}{% set _ = edited_keys.append('StartDate') %}{% endif %}
-  {% if previous_snapshot.get('EndDate') != fields.get('EndDate') %}{% set _ = edited_keys.append('EndDate') %}{% endif %}
-  {% if edited_keys %}
-  <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 12px 0;">
-    <p style="margin: 0 0 8px; font-weight: bold; color: #92400e;">This request was edited by an admin. Updated values:</p>
-    <ul style="margin: 0; padding-left: 20px; color: #78350f;">
-      {% if 'Days' in edited_keys %}<li>Days: {{ previous_snapshot.get('Days', '') }} &rarr; {{ fields.get('Days', '') }}</li>{% endif %}
-      {% if 'LeaveType' in edited_keys %}<li>Leave Type: {{ previous_snapshot.get('LeaveType', '') }} &rarr; {{ fields.get('LeaveType', '') }}</li>{% endif %}
-      {% if 'StartDate' in edited_keys %}<li>Start Date: {{ previous_snapshot.get('StartDate', '') }} &rarr; {{ fields.get('StartDate', '') }}</li>{% endif %}
-      {% if 'EndDate' in edited_keys %}<li>End Date: {{ previous_snapshot.get('EndDate', '') }} &rarr; {{ fields.get('EndDate', '') }}</li>{% endif %}
-    </ul>
-    <p style="margin: 8px 0 0; font-size: 12px; color: #92400e;">Any previous approval emails for this request are no longer valid &mdash; please use the buttons below.</p>
-  </div>
+{# Approval email a manager receives for a leave request. The outer div and
+   width are gone: the shared layout supplies them. Every variable and
+   conditional is unchanged; only the markup was restyled to the layout. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Leave Request</h2>
+{% include "conflict_warning.html" %}
+{% if previous_snapshot %}
+{% set edited_keys = [] %}
+{% if previous_snapshot.get('Days') != fields.get('Days') %}{% set _ = edited_keys.append('Days') %}{% endif %}
+{% if previous_snapshot.get('LeaveType') != fields.get('LeaveType') %}{% set _ = edited_keys.append('LeaveType') %}{% endif %}
+{% if previous_snapshot.get('StartDate') != fields.get('StartDate') %}{% set _ = edited_keys.append('StartDate') %}{% endif %}
+{% if previous_snapshot.get('EndDate') != fields.get('EndDate') %}{% set _ = edited_keys.append('EndDate') %}{% endif %}
+{% if edited_keys %}
+{#- admin-edit notice: bgcolor cell with a left accent (Outlook ignores div backgrounds) -#}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;margin:12px 0;">
+  <tr>
+    <td bgcolor="#fef3c7" style="background:#fef3c7;padding:12px 16px;border-left:4px solid #f59e0b;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#78350f;">
+      <p style="margin:0 0 8px;font-weight:bold;">This request was edited by an admin. Updated values:</p>
+      <ul style="margin:0;padding-left:20px;">
+        {% if 'Days' in edited_keys %}<li>Days: {{ previous_snapshot.get('Days', '') }} &rarr; {{ fields.get('Days', '') }}</li>{% endif %}
+        {% if 'LeaveType' in edited_keys %}<li>Leave Type: {{ previous_snapshot.get('LeaveType', '') }} &rarr; {{ fields.get('LeaveType', '') }}</li>{% endif %}
+        {% if 'StartDate' in edited_keys %}<li>Start Date: {{ previous_snapshot.get('StartDate', '') }} &rarr; {{ fields.get('StartDate', '') }}</li>{% endif %}
+        {% if 'EndDate' in edited_keys %}<li>End Date: {{ previous_snapshot.get('EndDate', '') }} &rarr; {{ fields.get('EndDate', '') }}</li>{% endif %}
+      </ul>
+      <p style="margin:8px 0 0;font-size:12px;">Any previous approval emails for this request are no longer valid, please use the buttons below.</p>
+    </td>
+  </tr>
+</table>
+{% endif %}
+{% endif %}
+<p style="margin:0 0 12px;">A leave request requires your approval.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {{ ui.row('Requested by:', submitter_name) }}
+  {{ ui.row('Leave Type:', fields.get('LeaveType', '')) }}
+  {{ ui.row('Start Date:', fields.get('StartDate', '')) }}
+  {{ ui.row('End Date:', fields.get('EndDate', '')) }}
+  {{ ui.row('Days:', fields.get('Days', '')) }}
+  {% if fields.get('LeaveType') == 'Half Day or Partial Day Off' %}
+  {{ ui.row('Hours:', ((fields.get('Days', 0) or 0) * 8) ~ ' hours') }}
   {% endif %}
+  {% set description = fields.get('Title', '') | request_description('leave') %}
+  {% if description %}
+  {{ ui.row('Description:', description) }}
   {% endif %}
-  <p>A leave request requires your approval.</p>
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr><td style="padding: 8px; font-weight: bold;">Requested by:</td><td style="padding: 8px;">{{ submitter_name }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
-    {% if fields.get('LeaveType') == 'Half Day or Partial Day Off' %}
-    <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ (fields.get('Days', 0) or 0) * 8 }} hours</td></tr>
-    {% endif %}
-    {% set description = fields.get('Title', '') | request_description('leave') %}
-    {% if description %}
-    <tr><td style="padding: 8px; font-weight: bold;">Description:</td><td style="padding: 8px;">{{ description }}</td></tr>
-    {% endif %}
-  </table>
-  {% if emp_fields %}
-  <h3>Current Balances</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ emp_fields.get('CurrentVacationBalance', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ emp_fields.get('CurrentSickDayBalance', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ emp_fields.get('CarryOver', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ emp_fields.get('CurrentOvertimeBalance', 0) }} days</td></tr>
-  </table>
-  {% if projected %}
-  <h3>Projected Balances (if approved)</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ projected.CurrentVacationBalance }} days</td></tr>
-    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ projected.CurrentSickDayBalance }} days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ projected.CarryOver }} days</td></tr>
-    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ projected.CurrentOvertimeBalance }} days</td></tr>
-  </table>
-  {% else %}
-  <p style="color: #6b7280; font-style: italic;">No balance change for this leave type.</p>
-  {% endif %}
-  {% endif %}
-  <p style="margin: 24px 0;">
-    <a href="{{ approve_url }}" style="display: inline-block; padding: 12px 32px; background: #22c55e; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin-right: 12px;">Approve</a>
-    <a href="{{ reject_url }}" style="display: inline-block; padding: 12px 32px; background: #ef4444; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Reject</a>
-  </p>
-</div>
+</table>
+{% if emp_fields %}
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Current Balances</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', emp_fields.get('CurrentVacationBalance', 0) ~ ' days') }}
+  {{ ui.row('Sick/Personal:', emp_fields.get('CurrentSickDayBalance', 0) ~ ' days') }}
+  {{ ui.row('Carry Over:', emp_fields.get('CarryOver', 0) ~ ' days') }}
+  {{ ui.row('Make-Up:', emp_fields.get('CurrentOvertimeBalance', 0) ~ ' days') }}
+</table>
+{% if projected %}
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Projected Balances (if approved)</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', projected.CurrentVacationBalance ~ ' days') }}
+  {{ ui.row('Sick/Personal:', projected.CurrentSickDayBalance ~ ' days') }}
+  {{ ui.row('Carry Over:', projected.CarryOver ~ ' days') }}
+  {{ ui.row('Make-Up:', projected.CurrentOvertimeBalance ~ ' days') }}
+</table>
+{% else %}
+<p style="color:#6b6257;font-style:italic;margin:8px 0 0;">No balance change for this leave type.</p>
+{% endif %}
+{% endif %}
+{{ ui.approve_reject(approve_url, reject_url) }}

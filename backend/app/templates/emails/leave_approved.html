@@ -1,14 +1,14 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #16a34a;">Leave Request: Approved</h2>
-  <p>Your leave request has been approved by <strong>{{ manager_name }}</strong>.</p>
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
-    {% set description = fields.get('Title', '') | request_description('leave') %}
-    {% if description %}
-    <tr><td style="padding: 8px; font-weight: bold;">Description:</td><td style="padding: 8px;">{{ description }}</td></tr>
-    {% endif %}
-  </table>
-</div>
+{# Employee's leave approved notice. Restyled to the shared layout. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Leave Request: Approved</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Your leave request has been approved by <strong>{{ manager_name }}</strong>.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {{ ui.row('Leave Type:', fields.get('LeaveType', '')) }}
+  {{ ui.row('Start Date:', fields.get('StartDate', '')) }}
+  {{ ui.row('End Date:', fields.get('EndDate', '')) }}
+  {{ ui.row('Days:', fields.get('Days', '')) }}
+  {% set description = fields.get('Title', '') | request_description('leave') %}
+  {% if description %}
+  {{ ui.row('Description:', description) }}
+  {% endif %}
+</table>

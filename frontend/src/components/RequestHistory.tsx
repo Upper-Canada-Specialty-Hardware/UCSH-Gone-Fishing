@@ -35,10 +35,16 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
   const theme = useTheme();
   // True on phone-width screens; drives which columns start hidden.
   const narrow = useMediaQuery(theme.breakpoints.down('sm'));
-  // Which columns are shown; starts from the width but the toolbar's Columns menu can still change it.
-  const [columnVisibilityModel, setColumnVisibilityModel] = useState<GridColumnVisibilityModel>(() => (narrow ? { ...HIDDEN_ON_NARROW } : {}));
+  // The starting column set: phones hide the low-value columns; an employee's own
+  // table hides Manager(s), which is the same on every row and named in the page header.
+  const defaultVisibility = useMemo<GridColumnVisibilityModel>(
+    () => ({ ...(narrow ? HIDDEN_ON_NARROW : {}), ...(showEmployee ? {} : { managers: false }) }),
+    [narrow, showEmployee],
+  );
+  // Which columns are shown; starts from the default but the toolbar's Columns menu can still change it.
+  const [columnVisibilityModel, setColumnVisibilityModel] = useState<GridColumnVisibilityModel>(defaultVisibility);
   // Crossing the phone breakpoint resets to that width's sensible default.
-  useEffect(() => setColumnVisibilityModel(narrow ? { ...HIDDEN_ON_NARROW } : {}), [narrow]);
+  useEffect(() => setColumnVisibilityModel(defaultVisibility), [defaultVisibility]);
 
   const rows = useMemo(
     () =>
@@ -75,13 +81,7 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         // Roomy and minWidth-floored so an employee name is never clipped (it also wraps, see the grid sx).
         ? [{ field: 'employee_name', headerName: 'Employee', width: 200, minWidth: 160 } as GridColDef]
         : []),
-      { field: 'managers', headerName: 'Manager(s)', width: 200 },
-      { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
-      { field: 'description', headerName: 'Description', width: 200 },
-      { field: 'StartDate', headerName: 'Start', width: 120 },
-      { field: 'EndDate', headerName: 'End', width: 120 },
-      { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
-      { field: 'Hours', headerName: 'Hours', width: 80, type: 'number' },
+      // Status right after who and what, so it is visible without scrolling sideways.
       {
         field: 'Status',
         headerName: 'Status',
@@ -96,6 +96,13 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
           />
         ),
       },
+      { field: 'managers', headerName: 'Manager(s)', width: 200 },
+      { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
+      { field: 'description', headerName: 'Description', width: 200 },
+      { field: 'StartDate', headerName: 'Start', width: 120 },
+      { field: 'EndDate', headerName: 'End', width: 120 },
+      { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
+      { field: 'Hours', headerName: 'Hours', width: 80, type: 'number' },
       { field: 'Created', headerName: 'Created', width: 120 },
       { field: 'ApprovedDate', headerName: 'Approved Date', width: 120 },
     ];

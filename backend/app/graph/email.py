@@ -315,7 +315,13 @@ async def send_email(
         httpx.HTTPStatusError: A service answered 4xx/5xx (rows written first).
         httpx.HTTPError: A request never completed (rows written first).
     """
+    # Content plus any dashboard footer, then the one shared layout, applied
+    # here so every email (templated or inline) is wrapped exactly once and no
+    # caller has to know about it. render_layout is idempotent on an already
+    # wrapped body. Imported locally to avoid an import cycle at module load.
+    from app.templates_render import render_layout
     full_body = html_body + dashboard_footer if dashboard_footer else html_body
+    full_body = render_layout(full_body)                           # UCSH Out of Office shell
     valid_to = [addr for addr in to if addr]                       # drop blanks/None
     valid_cc = [addr for addr in (cc or []) if addr]
 

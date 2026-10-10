@@ -3,23 +3,23 @@
    it can no longer be approved as it stands, which nothing else would.
 
    Carries the same warning block every other email uses, so the wording of the
-   clash is identical wherever it appears. #}
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #b45309;">{{ request_type_display }} Request #{{ request_id }} Cannot Be Approved</h2>
-  {% include "conflict_warning.html" %}
+   clash is identical wherever it appears. Restyled to the shared layout;
+   variables and conditionals are unchanged. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">{{ request_type_display }} Request #{{ request_id }} Cannot Be Approved</h2>
+{% include "conflict_warning.html" %}
 
-  <h3>Your Request</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    {% if request_type == "leave" %}
-    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '')[:10] }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '')[:10] }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
-    {% else %}
-    <tr><td style="padding: 8px; font-weight: bold;">Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '')[:10] }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Hours:</td><td style="padding: 8px;">{{ fields.get('Hours', '') }}</td></tr>
-    {% endif %}
-  </table>
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Your Request</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {% if request_type == "leave" %}
+  {{ ui.row('Leave Type:', fields.get('LeaveType', '')) }}
+  {{ ui.row('Start Date:', fields.get('StartDate', '')[:10]) }}
+  {{ ui.row('End Date:', fields.get('EndDate', '')[:10]) }}
+  {{ ui.row('Days:', fields.get('Days', '')) }}
+  {% else %}
+  {{ ui.row('Date:', fields.get('StartDate', '')[:10]) }}
+  {{ ui.row('Hours:', fields.get('Hours', '')) }}
+  {% endif %}
+</table>
 
-  <p style="color: #6b7280;">Nothing has been cancelled. This request is still with your manager, who decides whether to reject it.</p>
-</div>
+<p style="color:#6b6257;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;margin:0 0 12px;">Nothing has been cancelled. This request is still with your manager, who decides whether to reject it.</p>

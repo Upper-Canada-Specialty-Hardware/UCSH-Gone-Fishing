@@ -1,35 +1,36 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #1e40af;">Leave Request Received</h2>
-  <p>Your leave request has been received and is pending manager approval.</p>
-  {% include "conflict_warning.html" %}
-  <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-    <tr><td style="padding: 8px; font-weight: bold;">Leave Type:</td><td style="padding: 8px;">{{ fields.get('LeaveType', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{{ fields.get('StartDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">End Date:</td><td style="padding: 8px;">{{ fields.get('EndDate', '') }}</td></tr>
-    <tr><td style="padding: 8px; font-weight: bold;">Days:</td><td style="padding: 8px;">{{ fields.get('Days', '') }}</td></tr>
-    {% set description = fields.get('Title', '') | request_description('leave') %}
-    {% if description %}
-    <tr><td style="padding: 8px; font-weight: bold;">Description:</td><td style="padding: 8px;">{{ description }}</td></tr>
-    {% endif %}
-  </table>
-  {% if emp_fields %}
-  <h3>Current Balances</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ emp_fields.get('CurrentVacationBalance', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ emp_fields.get('CurrentSickDayBalance', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ emp_fields.get('CarryOver', 0) }} days</td></tr>
-    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ emp_fields.get('CurrentOvertimeBalance', 0) }} days</td></tr>
-  </table>
-  {% if projected %}
-  <h3>Projected Balances (if approved)</h3>
-  <table style="border-collapse: collapse; width: 100%; margin: 8px 0;">
-    <tr><td style="padding: 4px;">Vacation:</td><td>{{ projected.CurrentVacationBalance }} days</td></tr>
-    <tr><td style="padding: 4px;">Sick/Personal:</td><td>{{ projected.CurrentSickDayBalance }} days</td></tr>
-    <tr><td style="padding: 4px;">Carry Over:</td><td>{{ projected.CarryOver }} days</td></tr>
-    <tr><td style="padding: 4px;">Make-Up:</td><td>{{ projected.CurrentOvertimeBalance }} days</td></tr>
-  </table>
-  {% else %}
-  <p style="color: #6b7280; font-style: italic;">No balance change for this leave type.</p>
+{# Employee's leave received confirmation. Restyled to the shared layout;
+   variables and conditionals are unchanged. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Leave Request Received</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Your leave request has been received and is pending manager approval.</p>
+{% include "conflict_warning.html" %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {{ ui.row('Leave Type:', fields.get('LeaveType', '')) }}
+  {{ ui.row('Start Date:', fields.get('StartDate', '')) }}
+  {{ ui.row('End Date:', fields.get('EndDate', '')) }}
+  {{ ui.row('Days:', fields.get('Days', '')) }}
+  {% set description = fields.get('Title', '') | request_description('leave') %}
+  {% if description %}
+  {{ ui.row('Description:', description) }}
   {% endif %}
-  {% endif %}
-</div>
+</table>
+{% if emp_fields %}
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Current Balances</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', emp_fields.get('CurrentVacationBalance', 0) ~ ' days') }}
+  {{ ui.row('Sick/Personal:', emp_fields.get('CurrentSickDayBalance', 0) ~ ' days') }}
+  {{ ui.row('Carry Over:', emp_fields.get('CarryOver', 0) ~ ' days') }}
+  {{ ui.row('Make-Up:', emp_fields.get('CurrentOvertimeBalance', 0) ~ ' days') }}
+</table>
+{% if projected %}
+<h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Projected Balances (if approved)</h3>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  {{ ui.row('Vacation:', projected.CurrentVacationBalance ~ ' days') }}
+  {{ ui.row('Sick/Personal:', projected.CurrentSickDayBalance ~ ' days') }}
+  {{ ui.row('Carry Over:', projected.CarryOver ~ ' days') }}
+  {{ ui.row('Make-Up:', projected.CurrentOvertimeBalance ~ ' days') }}
+</table>
+{% else %}
+<p style="color:#6b6257;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;font-style:italic;margin:8px 0 0;">No balance change for this leave type.</p>
+{% endif %}
+{% endif %}

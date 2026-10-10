@@ -1,0 +1,39 @@
+{# Reusable, Outlook-safe building blocks shared by every email template.
+
+   Classic Outlook for Windows renders with Word, which drops CSS padding,
+   border-radius and background on an <a>, so a styled link button collapses to
+   a thin coloured link. The button macro sidesteps that with a VML fill shown
+   only to Outlook and a normal anchor shown to everyone else. The row macro is
+   the one label/value line used by every detail and balance table so they all
+   line up the same way. #}
+
+{% macro button(url, label, color, width=200) -%}
+{#- bulletproof button: VML rectangle for classic Outlook, real <a> elsewhere -#}
+<!--[if mso]>
+<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ url }}" style="height:42px;v-text-anchor:middle;width:{{ width }}px;" arcsize="15%" strokecolor="{{ color }}" fillcolor="{{ color }}">
+<w:anchorlock/>
+<center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:bold;">{{ label }}</center>
+</v:roundrect>
+<![endif]-->
+<!--[if !mso]><!-->
+<a href="{{ url }}" style="display:inline-block;background:{{ color }};color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:bold;line-height:1;text-decoration:none;padding:12px 28px;border-radius:6px;">{{ label }}</a>
+<!--<![endif]-->
+{%- endmacro %}
+
+{% macro approve_reject(approve_url, reject_url) -%}
+{#- the Approve/Reject pair, green then red, side by side in one table row -#}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;">
+  <tr>
+    <td style="padding-right:12px;">{{ button(approve_url, "Approve", "#15803d") }}</td>
+    <td>{{ button(reject_url, "Reject", "#b91c1c") }}</td>
+  </tr>
+</table>
+{%- endmacro %}
+
+{% macro row(label, value) -%}
+{#- one detail/balance line: muted label (~40%), ink value, hairline divider -#}
+<tr>
+  <td width="40%" style="width:40%;padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#6b6257;vertical-align:top;">{{ label }}</td>
+  <td style="padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1f1a14;vertical-align:top;">{{ value }}</td>
+</tr>
+{%- endmacro %}

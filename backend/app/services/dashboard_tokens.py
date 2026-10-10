@@ -72,27 +72,24 @@ async def build_dashboard_links(employee_id: str | int) -> list[dict]:
 
 
 async def build_dashboard_footer_html(employee_id: str | int) -> str:
-    """Generate dashboard footer HTML for an employee."""
+    """Generate dashboard footer HTML for an employee.
+
+    Args:
+        employee_id: The recipient, used to work out which dashboards they can
+            open (their own, their team's, the admin one).
+
+    Returns:
+        The footer HTML with one Outlook-safe button per dashboard and the
+        do-not-forward note, or "" when the person has no dashboards.
+    """
     links = await build_dashboard_links(employee_id)
     if not links:
         return ""
 
-    link_buttons = " ".join(
-        f'<a href="{link["url"]}" style="display:inline-block;padding:8px 20px;background:#1e40af;'
-        f'color:white;text-decoration:none;border-radius:4px;font-size:13px;margin-right:8px;'
-        f'margin-bottom:4px;">{link["label"]}</a>'
-        for link in links
-    )
-    return (
-        f'<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;'
-        f'font-family:\'Segoe UI\',sans-serif;">'
-        f'<p style="color:#6b7280;font-size:13px;margin-bottom:8px;">View your dashboards:</p>'
-        f'{link_buttons}'
-        f'<p style="color:#991b1b;font-size:12px;margin-top:12px;margin-bottom:0;">'
-        f'Do not forward this email to anyone. It contains cryptographed links that '
-        f'provide access to your employee and manager\'s dashboards.</p>'
-        f'</div>'
-    )
+    # Rendered from a template with the shared button macro, so the footer's
+    # buttons survive classic Outlook like every other button in these emails.
+    from app import templates_render
+    return templates_render.render_dashboard_footer(links)
 
 
 def _sign(role: str, user_id: str, expiry: str) -> str:

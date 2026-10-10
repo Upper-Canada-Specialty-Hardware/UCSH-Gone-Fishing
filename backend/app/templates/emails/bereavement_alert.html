@@ -1,7 +1,7 @@
-<div style="font-family: 'Segoe UI', sans-serif; max-width: 600px;">
-  <h2 style="color: #b45309;">Jury Duty / Bereavement Alert</h2>
-  <p>Employee (<strong>{{ submitter_name }}</strong>) has leave for <strong>{{ fields.get('LeaveType', '') }}</strong>.</p>
-  {% set description = fields.get('Title', '') | request_description('leave') %}
-  {% if description %}<p>Description:<br>{{ description }}</p>{% endif %}
-  <p>{{ fields.get('StartDate', '') }} to {{ fields.get('EndDate', '') }}</p>
-</div>
+{# Alert sent to admins/HR when a jury-duty or bereavement leave is logged.
+   Restyled to the shared layout; wording and variables are unchanged. #}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Jury Duty / Bereavement Alert</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Employee (<strong>{{ submitter_name }}</strong>) has leave for <strong>{{ fields.get('LeaveType', '') }}</strong>.</p>
+{% set description = fields.get('Title', '') | request_description('leave') %}
+{% if description %}<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Description:<br>{{ description }}</p>{% endif %}
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ fields.get('StartDate', '') }} to {{ fields.get('EndDate', '') }}</p>
