@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from app.config import settings
+from app.graph import sharepoint
 from app.services.approval_links import (
     generate_approval_url,
     validate_approval_token,
@@ -183,7 +184,7 @@ def _get_list_item_raises(status_code):
     async def _raise(list_id, item_id):
         raise _http_error(status_code)
 
-    client = reminders.sp_client
+    client = sharepoint.sp_client                               # the shared client request_store forwards to
     had_own = "get_list_item" in client.__dict__
     previous = client.__dict__.get("get_list_item")
     client.get_list_item = _raise

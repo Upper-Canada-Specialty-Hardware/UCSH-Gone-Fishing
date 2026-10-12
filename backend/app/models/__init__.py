@@ -10,10 +10,14 @@ from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
 from app.models.email_code import EmailCode
 from app.models.held_request import HeldRequest
 
-# Company Holidays: the one business domain served from Postgres. The other
-# business tables that once backed a wider storage move (employees, the three
-# request lists, manager assignments) were dropped; only holidays remain here.
+# Company Holidays and the three request lists, served from Postgres once their
+# storage setting says so (STORAGE_HOLIDAYS, STORAGE_REQUESTS).
 from app.models.holiday import Holiday
+from app.models.request_item import (
+    CarryoverPayoutRequestItem,
+    LeaveRequestItem,
+    OvertimeRequestItem,
+)
 
 __all__ = [
     # plumbing
@@ -30,4 +34,7 @@ __all__ = [
     "HeldRequest",
     # business
     "Holiday",
+    "LeaveRequestItem",
+    "OvertimeRequestItem",
+    "CarryoverPayoutRequestItem",
 ]

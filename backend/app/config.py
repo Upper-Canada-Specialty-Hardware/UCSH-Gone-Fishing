@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # ever set to an unimplemented backend.
     STORAGE_HOLIDAYS: str = "sharepoint"
     STORAGE_EMPLOYEES: str = "sharepoint"
+    # The leave, overtime and carry-over/payout lists (app/repositories/
+    # request_store.py). Set to "postgres" only after the admin dashboard's
+    # "Copy requests from SharePoint" has run; from then on the Microsoft Form's
+    # new items are moved into Postgres as they arrive.
+    STORAGE_REQUESTS: str = "sharepoint"
 
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""

@@ -43,6 +43,20 @@ SOURCE_API = "API"                          # the /api/forms endpoints
 SUBMITTER_PERSON_COLUMNS = ("SubmittedTest", "SubmittedBy")
 
 
+def requests_linked_by_email() -> bool:
+    """Whether new requests can carry SubmitterEmail, so no site membership is needed.
+
+    True once requests live in Postgres (a row takes any field), or while they
+    are still in SharePoint once REQUEST_EMAIL_COLUMNS_ENABLED says the lists
+    have the two columns.
+
+    Returns:
+        True when a request can name its submitter by email.
+    """
+    from app.repositories.request_store import requests_in_postgres
+    return requests_in_postgres() or settings.REQUEST_EMAIL_COLUMNS_ENABLED
+
+
 def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
     """The extra fields to write on a new request item, when enabled.
 
@@ -52,10 +66,10 @@ def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
 
     Returns:
         {"SubmitterEmail", "RequestSource"} with whatever is known, or an
-        empty dict while REQUEST_EMAIL_COLUMNS_ENABLED is off.
+        empty dict while requests_linked_by_email() is False.
     """
-    if not settings.REQUEST_EMAIL_COLUMNS_ENABLED:
-        return {}                                              # columns may not exist yet
+    if not requests_linked_by_email():
+        return {}                                              # the SharePoint columns may not exist yet
     fields: dict = {}
     if submitter_email:
         fields[SUBMITTER_EMAIL_COLUMN] = submitter_email.strip().lower()

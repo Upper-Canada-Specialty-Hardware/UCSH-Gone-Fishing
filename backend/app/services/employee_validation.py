@@ -65,6 +65,7 @@ from app.services.balance import (
     simulate_overtime_impact,
     simulate_carryover_payout_impact,
 )
+from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
 
@@ -1260,7 +1261,7 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
             ("overtime", settings.SP_LIST_OVERTIME_REQUESTS, "SubmittedBy"),
         ):
             try:
-                items = await sp_client.get_list_items(list_id)
+                items = await request_store.get_list_items(list_id)
             except Exception:  # noqa: BLE001 - one unreadable list must not sink the report
                 logger.exception("Setup check: could not read the %s request list", kind)
                 continue
@@ -1271,7 +1272,7 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
     # Carry-over/payout stores the Staff Directory id outright, so it works even
     # when the Microsoft 365 lookup failed.
     try:
-        co_po_items = await sp_client.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        co_po_items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:  # noqa: BLE001
         logger.exception("Setup check: could not read the carry-over/payout list")
         co_po_items = []

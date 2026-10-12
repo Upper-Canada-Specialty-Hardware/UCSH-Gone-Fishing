@@ -135,6 +135,15 @@ def test_without_the_email_column_an_unlinked_employee_is_told_why(client, monke
     assert client.created == []
 
 
+def test_with_requests_in_postgres_an_unlinked_employee_can_submit(client, monkeypatch):
+    # The "not on the SharePoint site yet" case (#196): no columns, no site visit, still sent.
+    monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    client.linked = False
+    assert _submit(client, "leave", VACATION).status_code == 200
+    assert len(client.created) == 1
+
+
 def test_with_the_email_column_an_unlinked_employee_can_submit(client):
     client.linked = False
     assert _submit(client, "leave", VACATION).status_code == 200

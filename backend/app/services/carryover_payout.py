@@ -26,6 +26,7 @@ from app.services.audit_trail import (
     AuditTrailBuilder,
     write_audit_log,
 )
+from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ async def process_new_carryover_payout(
     # SubmitterEmail and RequestSource (carryover already matches by email below).
     fields.update(submitter_columns(submitter_email, source))
 
-    item = await sp_client.create_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, fields)
+    item = await request_store.create_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, fields)
     item_id = item["id"]
     logger.info("Created carryover/payout request #%s", item_id)
 
@@ -105,7 +106,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str):
             update["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
             update["AllManagersLookupId"] = lookup_ids
 
-    await sp_client.update_list_item_fields(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, update)
+    await request_store.update_list_item_fields(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, update)
     logger.info("Assigned manager %s to CO/PO request #%s", mgr_fields.get("Title"), request_id)
 
     # Trigger approval pipeline
@@ -114,7 +115,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str):
 
 async def run_approval_pipeline(request_id: str | int):
     """Pre-validate → send confirmation → send approval email."""
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
     if not fields.get("ManagerLookupId"):
@@ -123,7 +124,7 @@ async def run_approval_pipeline(request_id: str | int):
         return
 
     # Set SystemState to Processing
-    await sp_client.update_list_item_fields(
+    await request_store.update_list_item_fields(
         settings.SP_LIST_CARRYOVER_PAYOUT, request_id, {"SystemState": "Processing"}
     )
 
@@ -154,7 +155,7 @@ async def run_approval_pipeline(request_id: str | int):
             # Payout cap auto-reject
             from app.services.auto_reject_titles import append_auto_reject_tag
             reason = f"Payout cap exceeded — new total would be {new_payout} days (max 5)."
-            await sp_client.update_list_item_fields(
+            await request_store.update_list_item_fields(
                 settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
                 {
                     "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
@@ -183,7 +184,7 @@ async def run_approval_pipeline(request_id: str | int):
             f"Vacation balance would go to {new_vacation} days "
             f"({current_vacation} - {days})."
         )
-        await sp_client.update_list_item_fields(
+        await request_store.update_list_item_fields(
             settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
             {
                 "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
@@ -235,7 +236,7 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
     Reads fresh SP + employee state so it can be called standalone (e.g. from
     the admin edit endpoint after fields have been updated).
     """
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -335,7 +336,7 @@ async def admin_edit_carryover_payout(
     reason: str,
 ) -> dict:
     """Apply an admin-driven edit to a pending CO/PO request, re-send approval email."""
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":
@@ -368,14 +369,14 @@ async def admin_edit_carryover_payout(
     }
 
     async with lock_manager.lock(employee_id):
-        fresh = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+        fresh = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
         ff = fresh["fields"]
         if ff.get("Status") != "Pending":
             return {"error": "Request status changed during edit — refresh and try again"}
         if ff.get("SystemState") == "Processed":
             return {"error": "Request was just processed — refresh and try again"}
 
-        await sp_client.update_list_item_fields(
+        await request_store.update_list_item_fields(
             settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
             {
                 "TypeofRequest": new_type,
@@ -400,7 +401,7 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "approve"):
         return {"error": "Already processed"}
 
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
     if fields.get("SystemState") == "Processed":
@@ -434,7 +435,7 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
                 f"{final_vacation} days ({fresh_vacation} - {days})."
             )
             # System override reject
-            await sp_client.update_list_item_fields(
+            await request_store.update_list_item_fields(
                 settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
                 {
                     "Title": append_auto_reject_tag(fields.get("Title", ""), reason),
@@ -495,7 +496,7 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
 
     # Update request
     new_balance_str = f"{{Vacation:{final_vacation}, CarryOver:{final_carryover}, Payout:{final_payout}}}"
-    await sp_client.update_list_item_fields(
+    await request_store.update_list_item_fields(
         settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
         {"Status": "Approved", "SystemState": "Processed", "NewBalance": new_balance_str, "ApprovedDate": date.today().isoformat()},
     )
@@ -535,7 +536,7 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
 
 async def refund_carryover_payout(request_id: str | int, admin_id: str | int) -> dict:
     """Reverse an approved carryover/payout — restore vacation, subtract from CO/Payout, recalc RAD."""
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
     if fields.get("Status") != "Approved" or fields.get("SystemState") != "Processed":
@@ -591,7 +592,7 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
     await write_audit_log(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, audit)
 
     # Update SP status
-    await sp_client.update_list_item_fields(
+    await request_store.update_list_item_fields(
         settings.SP_LIST_CARRYOVER_PAYOUT, request_id, {"Status": "Refunded"},
     )
 
@@ -623,7 +624,7 @@ async def reject_carryover_payout(request_id: str | int, manager_id: str | int) 
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "reject"):
         return {"error": "Already processed"}
 
-    item = await sp_client.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
     if fields.get("SystemState") == "Processed":
@@ -632,7 +633,7 @@ async def reject_carryover_payout(request_id: str | int, manager_id: str | int) 
     employee_id = fields.get("EmployeeID")
     request_type = fields.get("TypeofRequest", "")
 
-    await sp_client.update_list_item_fields(
+    await request_store.update_list_item_fields(
         settings.SP_LIST_CARRYOVER_PAYOUT, request_id,
         {"Status": "Rejected", "SystemState": "Processed"},
     )
