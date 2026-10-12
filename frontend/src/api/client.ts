@@ -168,3 +168,6 @@ export const addRequestColumns = () => api.post('/admin/request-columns');
 // Admin - where the request lists live, and the copy from SharePoint before the move
 export const getRequestStorage = () => api.get('/admin/request-storage');
 export const copyRequestsToPostgres = () => api.post('/admin/request-storage/copy');
+// Admin - whether staff may send carry-over and payout requests (off outside the season)
+export const getCarryoverPayoutSwitch = () => api.get<{ open: boolean }>('/admin/carryover-payout');
+export const setCarryoverPayoutSwitch = (open: boolean) => api.put<{ open: boolean }>('/admin/carryover-payout', { open });

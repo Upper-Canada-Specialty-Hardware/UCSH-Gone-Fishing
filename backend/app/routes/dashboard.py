@@ -1759,6 +1759,43 @@ async def admin_add_request_columns():
     return await ensure_request_columns(create=True)
 
 
+class CarryoverPayoutSwitch(BaseModel):
+    """The admin's on/off choice for carry-over and payout requests."""
+
+    open: bool
+
+
+@router.get("/admin/carryover-payout")
+async def admin_carryover_payout_status():
+    """Whether staff may send carry-over and payout requests right now (#203).
+
+    Unauthenticated like every other /admin/* route. Read only.
+
+    Returns:
+        {"open": bool}; false until an admin opens them.
+    """
+    from app.services.app_settings import carryover_payout_open
+    return {"open": await carryover_payout_open()}
+
+
+@router.put("/admin/carryover-payout")
+async def admin_set_carryover_payout(body: CarryoverPayoutSwitch):
+    """Open or close carry-over and payout requests for staff (#203).
+
+    Only new requests from the request page and /api/forms are affected.
+    Requests already sent keep going through approval, and the Microsoft
+    Form stays under HR's control on the bulletin board.
+
+    Args:
+        body: {"open": true} to accept them, {"open": false} to refuse them.
+
+    Returns:
+        {"open": bool}, the value now stored.
+    """
+    from app.services.app_settings import CARRYOVER_PAYOUT_OPEN, set_setting
+    return {"open": await set_setting(CARRYOVER_PAYOUT_OPEN, body.open)}
+
+
 @router.get("/admin/request-storage")
 async def admin_request_storage():
     """Where the request lists live, and how many items each side holds.

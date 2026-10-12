@@ -103,14 +103,18 @@ const TYPE_ICONS: Record<RequestType, ReactNode> = {
  *
  * @param props.value - The chosen form.
  * @param props.onPick - Called with the form picked.
+ * @param props.hidden - Forms not offered right now (carry-over outside its season).
  * @returns The group of cards.
  */
-export function TypeCards({ value, onPick }: { value: RequestType; onPick: (t: RequestType) => void }) {
+export function TypeCards({ value, onPick, hidden = [] }: {
+  value: RequestType; onPick: (t: RequestType) => void; hidden?: RequestType[];
+}) {
   const theme = useTheme();
+  const shown = REQUEST_TYPES.filter((t) => !hidden.includes(t.value));   // closed forms are left out
   return (
     <Box role="group" aria-label="What is the request for?"
-      sx={{ display: 'grid', gap: 1.25, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(3, minmax(0, 1fr))' } }}>
-      {REQUEST_TYPES.map((t) => {
+      sx={{ display: 'grid', gap: 1.25, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: `repeat(${shown.length}, minmax(0, 1fr))` } }}>
+      {shown.map((t) => {
         const on = value === t.value;
         return (
           <ButtonBase
