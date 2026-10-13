@@ -13,6 +13,7 @@ import { getMyBalances, getMyRequests } from '../api/client';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
+import { greeting } from '../utils/greeting';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
 
 /** The tabs, keyed by url segment (#/my/<key>). */
@@ -210,7 +211,8 @@ export default function EmployeeDashboard() {
     <Box sx={{ display: 'grid', gap: 2.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
-          <Typography variant="h4">Hi {firstName(employee?.name || '') || 'there'}</Typography>
+          {/* Same greeting as the manager and admin dashboards, by this device's clock. */}
+          <Typography variant="h4">{greeting()}{employee?.name ? `, ${firstName(employee.name)}` : ''}</Typography>
           {/* The person's Staff Directory record, one labelled value each. */}
           <Box component="dl" sx={{ m: 0, mt: 1.25, display: 'flex', flexWrap: 'wrap', columnGap: 3.5, rowGap: 1.25 }}>
             {details.map(([label, value]) => (
