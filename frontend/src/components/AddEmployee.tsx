@@ -245,7 +245,7 @@ export default function AddEmployee({
 
         <Divider textAlign="left">
           <Typography variant="caption" color="text.secondary">
-            Opening balances (leave blank for a new hire)
+            Opening balances
           </Typography>
         </Divider>
         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
