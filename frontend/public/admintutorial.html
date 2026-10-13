@@ -374,6 +374,14 @@ pre.resp { background: var(--chip); border-radius: 8px; padding: 10px; font-size
 .type[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); box-shadow: 0 0 0 1px var(--primary) inset; }
 .type .ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--chip); font-size: 16px; }
 .type[aria-pressed="true"] .ico { background: var(--primary); color: var(--primary-ink); }
+.type.off { opacity: .55; cursor: not-allowed; background: var(--hover); }
+.type.off .ico { opacity: .7; }
+.supresults { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.supresults button { border: 1.5px solid var(--line2); background: var(--paper); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.supresults button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); }
+.deptchips { display: flex; flex-wrap: wrap; gap: 8px; }
+.deptchips button { border: 1.5px solid var(--line2); background: var(--paper); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.deptchips button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); }
 .lchips { display: flex; flex-wrap: wrap; gap: 8px; }
 .lchips button { border: 1.5px solid var(--line2); background: var(--paper); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
 .lchips button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); }
@@ -670,7 +678,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   };
 
   var state = { role: 'admin', authed: true, coDates: null, tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, ptab: 'Requests', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
-    rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', name: '', loc: 'British Columbia', sup: 'Sam Supervisor', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
+    rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', name: '', first: '', last: '', dept: '', sup: 'Sam Supervisor', supq: '', supmode: 'name', supemail: '', loc: 'British Columbia', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
   try { var ss = localStorage.getItem('proto-skin2'); if (ss) state.skin = ss; var sm = localStorage.getItem('proto-mode'); if (sm) state.mode = sm; } catch (e) {}
   try { var sa = localStorage.getItem('ucshoo-anim'); if (sa === 'on' || sa === 'auto') state.animMode = sa; } catch (e) {}   // remembered Animations choice
 
@@ -714,6 +722,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function first(n) { return n.split(' ')[0]; }
   // The admin home greeting by the time of day, like AdminHome.tsx.
   function hoursGreeting() { var h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; }
+  // Plausible departments a new starter picks from, each with people they might name as supervisor.
+  var DEPTS = ['Installation', 'Service', 'Office', 'Warehouse', 'Estimating'];
+  var DEPT_PEOPLE = {
+    Installation: ['Sam Supervisor', 'Dana Fieldston', 'Marco Reyes', 'Priya Nandakumar'],
+    Service: ['Lee Lead', 'Chris Bennett', 'Omar Haddad'],
+    Office: ['Pat Manager', 'Robin Clerke', 'Nina Alvarez'],
+    Warehouse: ['Gail Warden', 'Tomas Novak', 'Hassan Ali'],
+    Estimating: ['Erin Takahashi', 'Victor Ilmanov']
+  };
   var P = ' needs-processing';
 
   // HR's daily work at the top; troubleshooting below a plain divider, smaller, no heading.
@@ -1159,7 +1176,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', me3.vac - d3 < 0 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '');
       }
     }
-    return '<div class="field">What do you need?<div class="types">' + RTYPES.map(function (t) { return '<button class="type" type="button" data-rpt="' + t[0] + '" aria-pressed="' + (s.type === t[0]) + '"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>' + t[2] + '</span></button>'; }).join('') + '</div></div>' + f;
+    // Carry-over and payout are closed until HR saves dates on the admin home, like the live page.
+    var coOpen = !!(state.coDates && (state.coDates.first || state.coDates.last));
+    return '<div class="field">What do you need?<div class="types">' + RTYPES.map(function (t) {
+      if (t[0] === 'carryover-payout' && !coOpen) return '<button class="type off" type="button" disabled aria-disabled="true"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>Not open right now.</span></button>';
+      return '<button class="type" type="button" data-rpt="' + t[0] + '" aria-pressed="' + (s.type === t[0]) + '"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>' + t[2] + '</span></button>';
+    }).join('') + '</div></div>' + f;
   }
   // Spend n days down the balance engine's chain; the last pot is the backstop and may go negative.
   function spend(me, n, order) {
@@ -1206,7 +1228,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     REQS.unshift(r);
   }
   var SIGNED = { step: 'form', session: 'Avery Example', email: 'avery.example@ucsh.com' };
-  var NEWHIRE = { step: 'newhire', session: null, email: 'jordan.sample@gmail.com', name: 'Jordan Sample', loc: 'Barrie', sup: 'Sam Supervisor' };
+  var NEWHIRE = { step: 'about', session: null, email: 'jordan.sample@gmail.com', first: 'Jordan', last: 'Sample', name: 'Jordan Sample', dept: 'Installation', sup: 'Sam Supervisor', supq: 'Sam', supmode: 'name', supemail: '' };
   function mix() { var o = {}; Array.prototype.forEach.call(arguments, function (a) { for (var k in a) o[k] = a[k]; }); return o; }
   var CASES = [
     ['Signing in', [
@@ -1665,7 +1687,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div class="tbrand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' +
       '<h2>The admin dashboard, up close</h2>' +
       '<p>This is a full, offline copy of the admin dashboard that HR uses to keep UCSH Out of Office running: approvals, new hires, staff and balances, holidays, the email log and the data checks. Nothing here is sent or saved. Pick a path and a short tour points at the real buttons as you go.</p>' +
-      '<p style="font-size:12.5px;margin-top:-2px">You open the real dashboard from your own bookmark, with no sign-in. Keep that bookmark inside HR; do not share it outside the team, since the link is the only thing that gates it. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Riley Newhire).</p>' +
+      '<p style="font-size:12.5px;margin-top:-2px">You open the real dashboard from your own HR bookmark and sign in with the admin password, which starts as 123 until HR changes it under Admin password. Keep the password inside HR. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Riley Newhire).</p>' +
       '<div class="ttracks">' + trackBtn('daily', TRACK_DESC.daily, seen) + trackBtn('people', TRACK_DESC.people, seen) + trackBtn('records', TRACK_DESC.records, seen) + '</div>' +
       '<div class="tfoot"><button class="ghost" type="button" data-texplore="1">Just explore</button></div>' +
       '</div></div>';
@@ -1747,7 +1769,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (state.role === 'manager') return '#/team' + (state.mtab && state.mtab !== 'today' ? '/' + state.mtab : '');
     if (state.role === 'employee') return '#/my' + (state.etab && state.etab !== 'overview' ? '/' + state.etab : '');
     if (state.rp.session) return '#/my/request';
-    return state.rp.step === 'newhire' || state.rp.step === 'done' ? '#/new-hire' : '#/';
+    return state.rp.step === 'about' || state.rp.step === 'newhire' || state.rp.step === 'done' ? '#/new-hire' : '#/';
   }
   // App bar tabs by role, who is signed in, and the practice bar's state.
   function chrome() {
@@ -1760,7 +1782,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }
     $('navtabs').innerHTML = tabs;
     $('who').innerHTML = state.role === 'admin' ? '<span class="adminpill">Admin</span>' : p ? av(s) + '<span>' + esc(s) + '</span><button class="signout" type="button" data-act="rpsignout">Sign out</button>' : '';
-    var v = state.role === 'admin' && !p ? 'admin' : s === 'Avery Example' ? 'avery' : s === 'Sam Supervisor' ? 'sam' : !s && (state.rp.step === 'newhire' || state.rp.step === 'done') ? 'jordan' : 'out';
+    var v = state.role === 'admin' && !p ? 'admin' : s === 'Avery Example' ? 'avery' : s === 'Sam Supervisor' ? 'sam' : !s && (state.rp.step === 'about' || state.rp.step === 'newhire' || state.rp.step === 'done') ? 'jordan' : 'out';
     document.querySelectorAll('[data-visit]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-visit') === v)); });
     $('addr').innerHTML = 'ucshoutofoffice.up.railway.app<b>/' + hashNow() + '</b>';
   }
@@ -1784,8 +1806,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
   function requestPage() {
     var s = state.rp, step = s.step, mood = moodOf(s), words = MOODS[mood] !== undefined ? MOODS[mood] : ['Time off, without the paperwork.', 'Leave, overtime, or a carry-over or payout. No Microsoft sign-in needed.'];
-    var order = step === 'newhire' ? ['email', 'code', 'newhire', 'done'] : ['email', 'code', 'form', 'done'];
-    var labels = { email: 'Your email', code: 'The code we email you', form: 'Your request', newhire: 'About you and your request', done: 'Sent' };
+    var order = (step === 'about' || step === 'newhire') ? ['email', 'code', 'about', 'newhire', 'done'] : ['email', 'code', 'form', 'done'];
+    var labels = { email: 'Your email', code: 'The code we email you', form: 'Your request', about: 'About you', newhire: 'Your request', done: 'Sent' };
     var at = order.indexOf(step);
     var side = '<aside class="rp-side"><div><div class="rp-brand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' + (words[0] ? '<h1>' + words[0] + '</h1>' : '') + (words[1] ? '<p>' + words[1] + '</p>' : '') + '</div>' +
       '<ol class="rp-steps">' + order.map(function (k, i) { return '<li class="' + (i === at ? 'on' : i < at ? 'done' : '') + '"><span class="dot">' + (i < at ? '✓' : i + 1) + '</span>' + labels[k] + '</li>'; }).join('') + '</ol></aside>';
@@ -1805,11 +1827,35 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<p class="small muted" style="margin:0">Practice copy: enter any 6 digits to continue.</p>';
     } else if (step === 'form') {
       body = err + rpForm(true) + '<button class="btn pri lg" type="button" data-act="rpsubmit">Send request</button>';
-    } else if (step === 'newhire') {
+    } else if (step === 'about') {
+      // The new-hire's own details, their own screen before the request itself.
+      var supGiven = s.supmode === 'email' ? /@/.test(s.supemail || '') : !!s.sup;                 // supervisor counts as given either way
+      var ready = !!(s.first && s.first.trim() && s.last && s.last.trim() && s.dept && supGiven);   // Continue unlocks only when all four are set
+      var deptChips = DEPTS.map(function (d) { return '<button type="button" data-about-dept="' + esc(d) + '" aria-pressed="' + (d === s.dept) + '">' + esc(d) + '</button>'; }).join('');
+      var supBlock = '';
+      if (s.dept) {                                                                                 // supervisor picker appears once a department is chosen
+        if (s.supmode === 'email') {                                                                // email fallback for a supervisor not in the list
+          supBlock = '<label class="field">Supervisor\'s work email<input class="input big" type="email" data-about="supemail" value="' + esc(s.supemail || '') + '" placeholder="name@ucsh.com"></label>' +
+            '<button class="linkbtn" type="button" data-about-supmode="name">Search by name instead</button>';
+        } else {
+          var q = (s.supq || '').trim().toLowerCase();                                              // search over everyone in the department, 2+ letters
+          var matches = q.length >= 2 ? (DEPT_PEOPLE[s.dept] || []).filter(function (n) { return n.toLowerCase().indexOf(q) >= 0; }) : [];
+          var results = q.length < 2 ? '<p class="small muted" style="margin:0">Type two or more letters to find your supervisor.</p>'
+            : (matches.length ? '<div class="supresults" role="group" aria-label="Matching people">' + matches.map(function (n) { return '<button type="button" data-about-sup="' + esc(n) + '" aria-pressed="' + (n === s.sup) + '">' + esc(n) + '</button>'; }).join('') + '</div>' : '<p class="small muted" style="margin:0">Nobody in ' + esc(s.dept) + ' matches that.</p>');
+          supBlock = '<label class="field">Your supervisor<input class="input big" data-about="supq" value="' + esc(s.supq || '') + '" placeholder="Search ' + esc(s.dept) + '"></label>' + results +
+            '<button class="linkbtn" type="button" data-about-supmode="email">Can\'t find them? Use their work email</button>';
+        }
+      }
       body = '<h2>Tell us who you are</h2><div class="note">' + esc(s.email) + ' is not in the Staff Directory yet. Tell us who you are and who your supervisor is; they will be asked to add you, and your request goes to them once they do.</div>' + err +
-        '<label class="field">Your first and last name<input class="input big" data-rp="name" value="' + esc(s.name) + '"></label>' +
-        '<div class="row2"><label class="field">Your location<select class="input big" data-rpsel="loc">' + LOCATIONS.map(function (l) { return '<option' + (l === s.loc ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></label>' +
-        '<label class="field">Your supervisor<select class="input big" data-rpsel="sup">' + MANAGERS.map(function (m) { var p = person(m); return '<option value="' + m + '"' + (m === s.sup ? ' selected' : '') + '>' + m + ' (' + p.loc + ')</option>'; }).join('') + '</select></label></div>' + rpForm(false) +
+        '<div class="row2"><label class="field">First name<input class="input big" data-about="first" value="' + esc(s.first || '') + '"></label><label class="field">Last name<input class="input big" data-about="last" value="' + esc(s.last || '') + '"></label></div>' +
+        '<div class="field">Your department<div class="deptchips" role="group" aria-label="Department">' + deptChips + '</div></div>' +
+        (s.dept ? supBlock : '<p class="small muted" style="margin:0">Pick your department to find your supervisor.</p>') +
+        '<button class="btn pri lg" type="button" data-act="rpcontinue"' + (ready ? '' : ' disabled') + '>Continue to your request</button>';
+    } else if (step === 'newhire') {
+      // The request itself, with a one-line summary of who you said you are and a way back.
+      var supLabel = s.supmode === 'email' ? (s.supemail || 'your supervisor') : (s.sup || 'your supervisor');
+      body = '<h2>Your request</h2><div class="note" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>' + esc(s.name || 'You') + ' · ' + esc(s.dept || '') + ' · supervisor ' + esc(supLabel) + '</span><button class="linkbtn" type="button" data-act="rpchange" style="margin-left:auto">Change</button></div>' + err +
+        rpForm(false) +
         '<button class="btn pri lg" type="button" data-act="rpsubmit">Send request</button>';
     } else {
       var held = !s.session;
@@ -2091,6 +2137,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (t.hasAttribute('data-try')) { var flat = []; CASES.forEach(function (g) { flat = flat.concat(g[1]); }); state.rp = mix(JSON.parse(RP_BASE), flat[+t.getAttribute('data-try')][2]); state.role = 'request'; render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute('data-rpt')) { state.rp.type = t.getAttribute('data-rpt'); state.rp.err = ''; if (!rpRepaint()) render(); return; }   // mood fades, panel stays
     if (t.hasAttribute('data-rpl')) { state.rp.leave = t.getAttribute('data-rpl'); if (!rpRepaint()) render(); return; }
+    if (t.hasAttribute('data-about-dept')) { var nd = t.getAttribute('data-about-dept'); if (nd !== state.rp.dept) { state.rp.dept = nd; state.rp.sup = ''; state.rp.supq = ''; state.rp.supmode = 'name'; state.rp.supemail = ''; } render(); return; }   // a new department clears the supervisor pick
+    if (t.hasAttribute('data-about-sup')) { state.rp.sup = t.getAttribute('data-about-sup'); state.rp.supq = state.rp.sup; render(); return; }   // choose a supervisor from the results
+    if (t.hasAttribute('data-about-supmode')) { state.rp.supmode = t.getAttribute('data-about-supmode'); render(); return; }   // swap between name search and work email
     if (t.id === 'menuBtn') { var o = !$('side').classList.contains('open'); $('side').classList.toggle('open', o); $('scrim').classList.toggle('open', o); t.setAttribute('aria-expanded', String(o)); return; }
     var act = t.getAttribute('data-act');
     if (!act) return;
@@ -2156,11 +2205,16 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (code.length < 6) { state.rp.err = 'Enter all 6 digits.'; render(); return; }
         if (code === '000000') { state.rp.tries--; state.rp.err = 'That code is not right. ' + state.rp.tries + ' tries left.'; render(); return; }
         var st = STAFF.filter(function (p) { return p.email && p.email.toLowerCase() === state.rp.email.toLowerCase(); })[0];
-        state.rp.err = ''; state.rp.notice = ''; state.rp.session = st ? st.name : null; state.rp.step = st ? 'form' : 'newhire'; if (st) { state.role = state.after || 'employee'; state.after = null; } render(); window.scrollTo(0, 0); return;
+        state.rp.err = ''; state.rp.notice = ''; state.rp.session = st ? st.name : null; state.rp.step = st ? 'form' : 'about'; if (st) { state.role = state.after || 'employee'; state.after = null; } render(); window.scrollTo(0, 0); return;
       case 'rpremember': state.rp.email = 'avery.example@ucsh.com'; state.rp.session = 'Avery Example'; state.rp.step = 'form'; state.rp.err = ''; render(); return;
       case 'rpsignout': state.rp = mix(JSON.parse(RP_BASE), { notice: 'Signed out. This browser no longer remembers you.' }); state.role = 'request'; state.after = null; state.flow = null; render(); window.scrollTo(0, 0); return;
       case 'rpas': var who2 = t.getAttribute('data-who'); state.rp.email = person(who2).email; state.rp.session = who2; state.rp.step = 'form'; state.rp.err = ''; state.rp.notice = ''; state.role = state.after || 'employee'; state.after = null; render(); window.scrollTo(0, 0); return;
       case 'godash': state.role = t.getAttribute('data-r'); if (state.role === 'admin') state.screen = 'home'; render(); window.scrollTo(0, 0); return;
+      case 'rpcontinue':
+        // Combine the two name fields and move from "About you" to the request itself.
+        state.rp.name = ((state.rp.first || '') + ' ' + (state.rp.last || '')).trim();
+        state.rp.step = 'newhire'; state.rp.err = ''; render(); window.scrollTo(0, 0); return;
+      case 'rpchange': state.rp.step = 'about'; state.rp.err = ''; render(); window.scrollTo(0, 0); return;   // the "Change" link back to About you
       case 'rpsubmit':
         if (state.rp.step === 'newhire' && !state.rp.name.trim()) { state.rp.err = 'Enter your first and last name.'; render(); return; }
         if (state.rp.type === 'leave' && state.rp.leave !== 'Half Day or Partial Day Off' && state.rp.end < state.rp.start) { state.rp.err = 'The last day away is before the first.'; render(); return; }
@@ -2193,6 +2247,17 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       state.rp[rk] = e.target.value;
       // Dates change the preview; re-render only then so typing in text boxes keeps focus.
       if (e.target.type === 'date') render();
+      return;
+    }
+    // "About you" fields re-render live (name enables Continue, search filters the list), then focus is restored.
+    var ab = e.target.getAttribute && e.target.getAttribute('data-about');
+    if (ab) {
+      state.rp[ab] = e.target.value;
+      if (ab === 'first' || ab === 'last') state.rp.name = ((state.rp.first || '') + ' ' + (state.rp.last || '')).trim();
+      var apos = e.target.selectionStart;
+      render();
+      var ag = document.querySelector('[data-about="' + ab + '"]');
+      if (ag) { ag.focus(); try { ag.setSelectionRange(apos, apos); } catch (er) {} }
       return;
     }
     var dg = e.target.getAttribute && e.target.getAttribute('data-dig');
