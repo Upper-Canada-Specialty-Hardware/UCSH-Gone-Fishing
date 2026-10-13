@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Alert, Box, Button, Chip, CircularProgress, Paper, Snackbar, Tab, Tabs, TextField, Typography,
+  Alert, Box, Button, Paper, Snackbar, Tab, Tabs, TextField, Typography,
 } from '@mui/material';
+import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
 import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
@@ -10,7 +11,11 @@ import RequestHistory from '../components/RequestHistory';
 import AddEmployee from '../components/AddEmployee';
 import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
-import { Enter, Leaving, leaveDelay } from '../components/Motion';
+import {
+  AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, riseAt, staggerChildren, useDirection,
+} from '../components/Motion';
+import { TeamSkeleton } from '../components/Skeletons';
+import PillToggle from '../components/PillToggle';
 import { InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline, VacationRings } from '../components/manager/Charts';
 import {
   absencesFrom, approveSummary, clashesFor, daysOffByMonth, inPerDay, insights, offThisWeek, totalsByKind, workingDays,
@@ -116,7 +121,8 @@ export default function ManagerDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [leaving, setLeaving] = useState<Set<string>>(new Set());   // decided cards on their way out
+  // Decided cards showing their outcome before they leave: key to true (approved) or false (rejected).
+  const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
 
   useEffect(() => {
@@ -142,7 +148,8 @@ export default function ManagerDashboard() {
 
   /**
    * Approve or reject, then drop the request from the waiting list: the card
-   * fades and folds away first, then it is removed.
+   * shows its outcome for a moment, then leaves (right when approved, left when
+   * rejected) and the cards below slide up into its place.
    *
    * @param type - 'leave', 'overtime' or 'carryover-payout'.
    * @param id - The SharePoint item id.
@@ -153,10 +160,10 @@ export default function ManagerDashboard() {
     try {
       await (yes ? approveRequest(type, id) : rejectRequest(type, id));
       const key = `${type}-${id}`;
-      setLeaving((prev) => new Set(prev).add(key));                  // start the fade
+      setDecided((prev) => new Map(prev).set(key, yes));             // the card shows its outcome
       setTimeout(() => {
         setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
-        setLeaving((prev) => { const next = new Set(prev); next.delete(key); return next; });
+        setDecided((prev) => { const next = new Map(prev); next.delete(key); return next; });
       }, leaveDelay());                                               // 0 when less motion is asked for
       setSnack({ open: true, message: yes ? 'Request approved' : 'Request rejected', severity: 'success' });
     } catch (err: any) {
@@ -187,11 +194,10 @@ export default function ManagerDashboard() {
   const calFrom = mondayOf(today());                     // the calendar shows four weeks from this Monday
   // The Team tab's members after the name filter, matched on the typed text.
   const q = teamSearch.trim().toLowerCase();
-  const teamShown = q ? members.filter((m) => (m.name || '').toLowerCase().includes(q)) : members;
+  const teamShown = q ? members.filter((mem) => (mem.name || '').toLowerCase().includes(q)) : members;
+  const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
 
-  if (loading) {
-    return <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}><CircularProgress /></Box>;
-  }
+  if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
   }
@@ -200,13 +206,18 @@ export default function ManagerDashboard() {
   const daysOffTotal = cumulative.length ? cumulative[cumulative.length - 1] : 0;
 
   return (
-    <Box sx={{ display: 'grid', gap: 2.5 }}>
+    <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
       {/* Greeting, what is waiting, the team's size, and the new-hire shortcut. */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 240 }}>
           <Typography variant="h4">{greeting()}{managerName ? `, ${firstName(managerName)}` : ''}</Typography>
+          {/* The count follows each decision; at zero the line fades to "all caught up". */}
           <Typography color="text.secondary">
-            {waiting.length ? `${waiting.length} request${waiting.length > 1 ? 's need' : ' needs'} your decision.` : 'You are all caught up.'}
+            <Swap k={waiting.length ? 'some' : 'none'} y={4}>
+              {waiting.length
+                ? <span><CountUp value={waiting.length} duration={0.3} /> request{waiting.length > 1 ? 's need' : ' needs'} your decision.</span>
+                : 'You are all caught up.'}
+            </Swap>
             {' '}{members.length} {members.length === 1 ? 'person' : 'people'} on your team.
           </Typography>
         </Box>
@@ -218,18 +229,18 @@ export default function ManagerDashboard() {
       )}
 
       <Tabs value={tab === 'add' ? false : tab} onChange={(_, v) => go(v)} variant="scrollable" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider' }}>
-        <Tab value="today" label={waiting.length ? `Today (${waiting.length})` : 'Today'} />
+        <Tab value="today" label={waiting.length ? <span>Today (<Swap k={waiting.length}>{waiting.length}</Swap>)</span> : 'Today'} />
         <Tab value="calendar" label="Calendar" />
         <Tab value="team" label="Team" />
         <Tab value="trends" label="Trends" />
         <Tab value="history" label="History" />
       </Tabs>
 
-      {/* The tab's body eases in each time the tab changes. */}
-      <Enter key={tab} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
+      {/* The tab's body slides in from the side of the tab picked. */}
+      <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
-          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))' }}>
+          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
             <Kpi label="Waiting on you" value={String(waiting.length)} note={waiting.length ? `oldest ${oldest} day${oldest === 1 ? '' : 's'}` : 'nothing waiting'} warn={oldest > 7} />
             <Kpi label="Off this week" value={String(offThisWeek(names, absences))} note={`of ${members.length} on the team`} />
             <Kpi
@@ -242,37 +253,58 @@ export default function ManagerDashboard() {
           </Box>
 
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1.1fr) minmax(0, 1fr)' }, alignItems: 'start' }}>
-            <Box sx={{ display: 'grid', gap: 2 }}>
-              {waiting.length ? (
-                <>
-                  {/* Oldest first; only the first five until the manager asks for the rest. */}
-                  {(queueExpanded ? waiting : waiting.slice(0, 5)).map((item) => (
-                    <Leaving key={`${item.request_type}-${item.id}`} leaving={leaving.has(`${item.request_type}-${item.id}`)}>
-                    <DecisionCard
-                      item={item}
-                      clashes={clashesFor(item, absences, labelOf)}
-                      processingEnabled={processingEnabled}
-                      busy={actionLoading === `${item.request_type}-${item.id}`}
-                      onApprove={() => decide(item.request_type, String(item.id), true)}
-                      onReject={() => decide(item.request_type, String(item.id), false)}
-                      colorOf={colorOf}
-                    />
-                    </Leaving>
-                  ))}
-                  {/* Reveal or re-fold everything past the first five. */}
-                  {waiting.length > 5 && (
-                    <Button variant="text" onClick={() => setQueueExpanded((v) => !v)} sx={{ justifySelf: 'start', textTransform: 'none' }}>
+            {/* The queue: a decided card leaves (right when approved, left when rejected) and the
+                cards below slide up into its place; extra cards arrive one by one. */}
+            <Box sx={{ display: 'grid', gap: 2, position: 'relative' }}>
+              <AnimatePresence mode="popLayout" initial={false}>
+                {/* Oldest first; only the first five until the manager asks for the rest. */}
+                {(queueExpanded ? waiting : waiting.slice(0, 5)).map((item, i) => {
+                  const key = `${item.request_type}-${item.id}`;
+                  const outcome = decided.get(key);
+                  return (
+                    <m.div
+                      key={key}
+                      layout
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0, transition: { ...SPRING, delay: Math.max(0, i - 4) * 0.07 } }}
+                      exit={outcome === undefined
+                        ? { opacity: 0, transition: EXIT }
+                        : { opacity: 0, x: outcome ? 60 : -60, rotate: outcome ? 1.5 : -1.5, transition: { duration: 0.3, ease: [0.4, 0, 1, 1] } }}
+                    >
+                      <DecisionCard
+                        item={item}
+                        index={i}
+                        decided={outcome}
+                        clashes={clashesFor(item, absences, labelOf)}
+                        processingEnabled={processingEnabled}
+                        busy={actionLoading === key}
+                        onApprove={() => decide(item.request_type, String(item.id), true)}
+                        onReject={() => decide(item.request_type, String(item.id), false)}
+                        colorOf={colorOf}
+                      />
+                    </m.div>
+                  );
+                })}
+                {/* Reveal or re-fold everything past the first five. */}
+                {waiting.length > 5 && (
+                  <m.div key="more" layout style={{ justifySelf: 'start' }}>
+                    <Button variant="text" onClick={() => setQueueExpanded((v) => !v)} sx={{ textTransform: 'none' }}>
                       {queueExpanded ? 'Show fewer' : `Show ${waiting.length - 5} more`}
                     </Button>
-                  )}
-                </>
-              ) : (
-                <Paper sx={{ p: 4, display: 'grid', justifyItems: 'center', gap: 0.5, textAlign: 'center' }}>
-                  <Box sx={{ width: 44, height: 44, borderRadius: 999, display: 'grid', placeItems: 'center', bgcolor: alpha(theme.palette.success.main, 0.14), color: 'success.main', fontWeight: 800, fontSize: 20 }}>✓</Box>
-                  <Typography sx={{ fontWeight: 700 }}>You are all caught up</Typography>
-                  <Typography variant="body2" color="text.secondary">New requests from your team show up here.</Typography>
-                </Paper>
-              )}
+                  </m.div>
+                )}
+                {waiting.length === 0 && (
+                  <m.div key="caught-up" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
+                    <Paper sx={{ p: 4, display: 'grid', justifyItems: 'center', gap: 0.5, textAlign: 'center' }}>
+                      <Box sx={{ width: 44, height: 44, borderRadius: 999, display: 'grid', placeItems: 'center', bgcolor: alpha(theme.palette.success.main, 0.14), color: 'success.main' }}>
+                        <DrawnTick size={26} delay={0.2} />
+                      </Box>
+                      <Typography sx={{ fontWeight: 700 }}>You are all caught up</Typography>
+                      <Typography variant="body2" color="text.secondary">New requests from your team show up here.</Typography>
+                    </Paper>
+                  </m.div>
+                )}
+              </AnimatePresence>
             </Box>
             <Box sx={{ display: 'grid', gap: 2 }}>
               <Panel title="Next two weeks" aside="dashed = asked">
@@ -284,7 +316,7 @@ export default function ManagerDashboard() {
               </Panel>
               {notes.length > 0 && (
                 <Panel title="Worth knowing">
-                  <Box component="ul" sx={{ m: 0, p: 0, listStyle: 'none', display: 'grid', gap: 1.25 }}>
+                  <Box component="ul" sx={{ m: 0, p: 0, listStyle: 'none', display: 'grid', gap: 1.25, ...staggerChildren({ delay: 200, step: 60 }) }}>
                     {notes.map((n) => (
                       <Box component="li" key={n.text} sx={{ display: 'flex', gap: 1.25, alignItems: 'flex-start' }}>
                         <Box
@@ -314,20 +346,25 @@ export default function ManagerDashboard() {
               <Typography sx={{ fontWeight: 700 }}>
                 {calendarView === 'timeline' ? `${shortDate(dayKey(calFrom))} to ${shortDate(dayKey(addDays(calFrom, 27)))}` : 'Approved leave'}
               </Typography>
-              <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
-                {(['timeline', 'month'] as const).map((v) => (
-                  <Chip
-                    key={v} label={v === 'timeline' ? 'Timeline' : 'Month'} onClick={() => setCalendarView(v)} aria-pressed={calendarView === v}
-                    color={calendarView === v ? 'primary' : 'default'} variant={calendarView === v ? 'filled' : 'outlined'}
-                  />
-                ))}
+              <Box sx={{ ml: 'auto' }}>
+                <PillToggle
+                  name="calendar-view" label="Calendar view" value={calendarView} onChange={setCalendarView}
+                  options={[{ key: 'timeline', label: 'Timeline' }, { key: 'month', label: 'Month' }]}
+                />
               </Box>
             </Box>
-            <Box sx={{ p: 2 }}>
-              {calendarView === 'timeline'
-                ? <LeaveTimeline names={names} absences={absences} from={calFrom} days={28} colorOf={colorOf} labelOf={labelOf} showToggle />
-                : <TeamCalendar events={calendarEvents} />}
-            </Box>
+            {/* Switching views cross-fades, and the card's height follows. */}
+            <AutoHeight>
+              <AnimatePresence mode="wait" initial={false}>
+                <m.div key={calendarView} initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: 0.22 } }} exit={{ opacity: 0, transition: EXIT }}>
+                  <Box sx={{ p: 2 }}>
+                    {calendarView === 'timeline'
+                      ? <LeaveTimeline names={names} absences={absences} from={calFrom} days={28} colorOf={colorOf} labelOf={labelOf} showToggle />
+                      : <TeamCalendar events={calendarEvents} />}
+                  </Box>
+                </m.div>
+              </AnimatePresence>
+            </AutoHeight>
             {calendarView === 'timeline' && (
               // Each row already shows its own dot and name, so the only key left is the dashed = asked one.
               <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', px: 2, pb: 2, fontSize: 13, color: 'text.secondary' }}>
@@ -338,7 +375,7 @@ export default function ManagerDashboard() {
             )}
           </Paper>
           <Panel title="Who is in, day by day" aside="if every request is approved; weekdays only, holidays not marked">
-            <InPerDayChart points={inPerDay(names, absences, workingDays(calFrom, 28))} team={names.length} />
+            <Seen><InPerDayChart points={inPerDay(names, absences, workingDays(calFrom, 28))} team={names.length} /></Seen>
           </Panel>
         </>
       )}
@@ -351,12 +388,14 @@ export default function ManagerDashboard() {
             size="small" fullWidth placeholder="Start typing a name" sx={{ maxWidth: 360 }}
           />
           <Panel title="Vacation left"><VacationRings members={teamShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
-          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))' }}>
-            {teamShown.map((m) => {
-              const b = m.balances || {};
+          {/* A search fades out the people who no longer match while the rest slide together. */}
+          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', position: 'relative' }}>
+            <AnimatePresence mode="popLayout" initial={false}>
+            {teamShown.map((mem, k) => {
+              const b = mem.balances || {};
               // Their next time away from today on, approved or asked.
               const nextOff = absences
-                .filter((a) => a.who === m.name && a.end >= today())
+                .filter((a) => a.who === mem.name && a.end >= today())
                 .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
               /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
               const line = (label: string, v: number, of?: number) => (
@@ -366,15 +405,28 @@ export default function ManagerDashboard() {
                 </Box>
               );
               return (
-                <Paper key={m.id} sx={{ p: 2, display: 'grid', gap: 0.75, alignContent: 'start' }}>
+                <m.div
+                  key={mem.id}
+                  layout
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96, transition: EXIT }}
+                  style={{ display: 'grid' }}
+                >
+                {/* A card lifts slightly under the pointer so it reads as one object. */}
+                <Paper sx={{
+                  p: 2, display: 'grid', gap: 0.75, alignContent: 'start', ...riseAt(k, { step: 40, max: 8 }),
+                  transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
+                  '&:hover': { transform: 'translateY(-2px)', borderColor: theme.tokens.line2 },
+                }}>
                   <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center', mb: 0.5 }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(m.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
-                      {initials(m.name)}
+                    <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(mem.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
+                      {initials(mem.name)}
                     </Box>
                     <Box sx={{ minWidth: 0 }}>
                       {/* Wrap a long name onto a second line instead of cutting it off. */}
-                      <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</Typography>
-                      <Typography variant="caption" color="text.secondary">{m.department || 'No department'} · {m.location || 'No location'}</Typography>
+                      <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{mem.name}</Typography>
+                      <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
                     </Box>
                   </Box>
                   {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
@@ -393,11 +445,15 @@ export default function ManagerDashboard() {
                     ) : <Typography variant="body2" color="text.secondary">No time off booked.</Typography>}
                   </Box>
                 </Paper>
+                </m.div>
               );
             })}
-            <Button variant="outlined" onClick={() => go('add')} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px` }}>
-              + Add a new hire
-            </Button>
+            <m.div key="add" layout style={{ display: 'grid' }}>
+              <Button variant="outlined" onClick={() => go('add')} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px` }}>
+                + Add a new hire
+              </Button>
+            </m.div>
+            </AnimatePresence>
           </Box>
         </>
       )}
@@ -413,23 +469,22 @@ export default function ManagerDashboard() {
                   </Box>
                 ))}
               </Box>
-              <MonthlyBars months={monthly} upTo={today().getMonth()} />
+              <Seen><MonthlyBars months={monthly} upTo={today().getMonth()} /></Seen>
             </Panel>
           </Box>
           <Panel title="By kind" aside={`${year}, approved`}>
-            <Box sx={{ display: 'grid', gap: 1.5 }}>
+            <Seen sx={{ display: 'grid', gap: 1.5 }}>
               {(() => {
                 const rows = totalsByKind(requests, year);
                 const top = Math.max(1, ...rows.map((r) => r[1]));   // the longest bar fills the track
-                return rows.map(([label, v, k]) => (
+                return rows.map(([label, v, k], i) => (
                   <Box key={label} sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 150px) minmax(0, 1fr) 48px', gap: 1.5, alignItems: 'center' }}>
                     <Typography variant="body2" color="text.secondary">{label}</Typography>
                     <Box sx={{ height: 10, borderRadius: 999, bgcolor: theme.tokens.hover, overflow: 'hidden' }}>
                       <Box
                         sx={{
                           height: '100%', width: `${(v / top) * 100}%`, bgcolor: kindColor(k, theme.palette.mode), borderRadius: 999,
-                          transformOrigin: 'left', animation: 'grow .7s both ease-out', '@keyframes grow': { from: { transform: 'scaleX(0)' } },
-                          '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+                          transformOrigin: 'left', animation: `${KF.growX} .7s ease-out ${0.15 + i * 0.07}s both`,
                         }}
                       />
                     </Box>
@@ -437,14 +492,14 @@ export default function ManagerDashboard() {
                   </Box>
                 ));
               })()}
-            </Box>
+            </Seen>
           </Panel>
           <Panel title="Time to approve">
             <Box sx={{ display: 'grid', gap: 0.75 }}>
               <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 34, fontWeight: 600 }}>
                 {approve.avg === null ? 'No approvals yet' : `${approve.avg.toFixed(1)} days`}
               </Typography>
-              <Sparkline values={approve.months.map((m) => m.avg)} height={60} />
+              <Seen><Sparkline values={approve.months.map((mo) => mo.avg)} height={60} /></Seen>
               <Typography variant="caption" color="text.secondary">
                 Average days from a request arriving to its approval over the last 90 days; the line is each of the last six months.
               </Typography>

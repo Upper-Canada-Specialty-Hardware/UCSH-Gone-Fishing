@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Box, Typography, Paper, CircularProgress, Alert, Snackbar, Stack } from '@mui/material';
+import { Box, Typography, Paper, Alert, Snackbar, Stack } from '@mui/material';
 import TopBar from '../components/TopBar';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
 import AdminHome from '../components/admin/AdminHome';
@@ -17,6 +17,7 @@ import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
 import AdminPasswordCard from '../components/admin/AdminPasswordCard';
 import { Enter, leaveDelay } from '../components/Motion';
+import { AdminSkeleton } from '../components/Skeletons';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
   getAdminBalances,
@@ -284,15 +285,18 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  // Resolves true once the link is on the clipboard, so the button can confirm in place.
   const handleCopyEmployeeLink = useCallback(async (targetId: string) => {
     try {
       const res = await getEmployeeDashboardLink(targetId);
       await navigator.clipboard.writeText(res.data.url);
       setSnack({ open: true, message: 'Employee dashboard link copied to clipboard', severity: 'success' });
+      return true;
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : 'Failed to copy link';
       setSnack({ open: true, message, severity: 'error' });
+      return false;
     }
   }, []);
 
@@ -421,9 +425,7 @@ export default function AdminDashboard() {
           sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
         >
           {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
-              <CircularProgress />
-            </Box>
+            <AdminSkeleton screen={tab} table={!!REQUEST_VIEWS[tab]} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
           ) : (
             <>
               {!processingEnabled && (

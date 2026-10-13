@@ -28,6 +28,7 @@ from app.config import settings
 
 from app.graph.email import send_email
 from app.services import email_codes, held_requests
+from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.dashboard_tokens import generate_dashboard_token
 from app.services.employee import get_employee_by_email, is_manager
 from app.services.request_intake import RequestFormError
@@ -258,6 +259,28 @@ async def supervisor_search(
     """
     _require_verified(email, exp, token)
     return {"people": await held_requests.search_department(department, q)}
+
+
+@router.get("/request-types")
+async def request_types():
+    """Which request types the page may offer right now (#176).
+
+    Public and read-only: the page asks before showing the type cards, so a
+    closed type is greyed out. The submit endpoints check again, so this
+    answer is only a convenience.
+
+    Returns:
+        {"carryover_payout_open": bool, "carryover_payout_window":
+        {"start", "end"} or None, "today": the Toronto date checked}.
+    """
+    window, today = await carryover_payout_window(), toronto_today()
+    return {
+        "carryover_payout_open": window_is_open(window, today),
+        "carryover_payout_window": (
+            {"start": window[0].isoformat(), "end": window[1].isoformat()} if window else None
+        ),
+        "today": today.isoformat(),                            # so the page words "opens on" the same way
+    }
 
 
 @router.post("/held")

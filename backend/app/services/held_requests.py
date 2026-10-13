@@ -44,7 +44,7 @@ from app.services.employee import (
     get_employee_by_email,
     get_employee_by_name,
 )
-from app.services.request_intake import parse_request_form, submit_request
+from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 
 logger = logging.getLogger(__name__)
@@ -256,11 +256,13 @@ async def hold_request(
 
     Raises:
         HoldError: On a bad name, department, supervisor or too many waiting.
-        RequestFormError: On a bad form.
+        RequestFormError: On a bad form, or a carry-over/payout request
+            while those are closed.
     """
     name = " ".join((name or "").split())                      # collapse stray spaces
     if len(name.split(" ")) < 2:
         raise HoldError("Enter your first and last name.")
+    await ensure_request_type_open(request_type)               # carry-over/payout only in season, before anything else is checked
     # The Staff Directory's own spelling, so Add Employee is prefilled with it.
     department = next((d for d in await list_departments() if d.lower() == _clean(department).lower()), None)
     if department is None:

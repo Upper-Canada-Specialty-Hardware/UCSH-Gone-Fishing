@@ -9,6 +9,7 @@ from app.models.staff_setup_nudge import StaffSetupNudge
 from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
 from app.models.email_code import EmailCode
 from app.models.held_request import HeldRequest
+from app.models.app_setting import AppSetting
 from app.models.admin_password import AdminPassword
 
 # Company Holidays and the three request lists, served from Postgres once their
@@ -33,6 +34,7 @@ __all__ = [
     "EmailApiLogRecipient",
     "EmailCode",
     "HeldRequest",
+    "AppSetting",
     "AdminPassword",
     # business
     "Holiday",
