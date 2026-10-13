@@ -18,19 +18,34 @@
   .btn-reject:hover { background: #dc2626; }
   .btn-cancel { background: #9ca3af; margin-left: 12px; }
   .btn-cancel:hover { background: #6b7280; }
+  /* Motion: the card rises in, then the icon draws itself. Off when less motion is asked for. */
+  .card { animation: rise .36s cubic-bezier(.2,.8,.2,1) both; }
+  .icon svg { width: 56px; height: 56px; display: block; margin: 0 auto; fill: none; stroke: currentColor; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+  .icon .ring { stroke-width: 2.5; opacity: .35; stroke-dasharray: 1; animation: draw .6s cubic-bezier(.2,.8,.2,1) .15s both; }
+  .icon .mark { stroke-dasharray: 1; animation: draw .42s cubic-bezier(.2,.8,.2,1) .32s both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+  @keyframes draw { from { stroke-dashoffset: 1; } }
+  /* The confirm button dips while pressed, and holds with a spinner while it sends. */
+  .btn { transition: background-color .15s ease, transform .1s ease; display: inline-flex; align-items: center; gap: 10px; }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { cursor: default; opacity: .85; }
+  .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: spin .7s linear infinite !important; } }
 </style>
 </head>
 <body>
 <div class="card">
   {% if action == "approve" %}
-  <div class="icon icon-approve">&#10003;</div>
+  <div class="icon icon-approve"><svg viewBox="0 0 56 56" aria-hidden="true"><circle class="ring" cx="28" cy="28" r="26" pathLength="1"/><path class="mark" d="M17 29l7 7 15-16" pathLength="1"/></svg></div>
   <h1 class="approve">Confirm Approval</h1>
   {% else %}
-  <div class="icon icon-reject">&#10007;</div>
+  <div class="icon icon-reject"><svg viewBox="0 0 56 56" aria-hidden="true"><circle class="ring" cx="28" cy="28" r="26" pathLength="1"/><path class="mark" d="M19 19l18 18M37 19L19 37" pathLength="1"/></svg></div>
   <h1 class="reject">Confirm Rejection</h1>
   {% endif %}
   <p>Are you sure you want to <strong>{{ action }}</strong> this {{ request_type | replace('-', ' ') }} request #{{ request_id }}?</p>
-  <form method="POST" onsubmit="if(this.dataset.submitted){return false;}this.dataset.submitted='1';var b=this.querySelector('button');b.disabled=true;b.textContent='Processing...';">
+  <form method="POST" onsubmit="if(this.dataset.submitted){return false;}this.dataset.submitted='1';var b=this.querySelector('button');b.disabled=true;b.innerHTML='<span class=&quot;spin&quot;></span>Processing...';">
     <input type="hidden" name="token" value="{{ token }}">
     <input type="hidden" name="mgr" value="{{ mgr }}">
     <input type="hidden" name="exp" value="{{ exp }}">
