@@ -16,7 +16,8 @@ import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
 import AdminPasswordCard from '../components/admin/AdminPasswordCard';
-import { Enter, Loading, leaveDelay } from '../components/Motion';
+import { Enter, leaveDelay } from '../components/Motion';
+import { AdminSkeleton } from '../components/Skeletons';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
   getAdminBalances,
@@ -424,7 +425,7 @@ export default function AdminDashboard() {
           sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
         >
           {loading ? (
-            <Loading />
+            <AdminSkeleton screen={tab} table={!!REQUEST_VIEWS[tab]} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
           ) : (
             <>
               {!processingEnabled && (
