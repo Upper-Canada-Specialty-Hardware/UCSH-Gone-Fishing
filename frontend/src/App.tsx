@@ -84,7 +84,8 @@ function LinkSignIn() {
     sessionStorage.setItem('add_employee_prefill', JSON.stringify({
       title: params.get('add_name') || '',
       email_address: addEmail,
-      location: params.get('add_location') || '',
+      department: params.get('add_department') || '',
+      location: params.get('add_location') || '',       // links emailed before #226
     }));
   }
   saveLinkSession({ token, role, uid, exp });

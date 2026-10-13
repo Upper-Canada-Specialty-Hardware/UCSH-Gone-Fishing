@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Box, Typography, TextField, Button, Alert, CircularProgress, MenuItem, Link,
+  Box, Typography, TextField, Button, Alert, CircularProgress, Link,
 } from '@mui/material';
 import { ThemeProvider, useTheme } from '@mui/material/styles';
 import { AnimatePresence, m } from 'motion/react';
@@ -12,12 +12,13 @@ import BalancePreview from '../components/request/BalancePreview';
 import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
+import WhoYouAre, { EMPTY_STARTER, NewStarter, starterReady } from '../components/request/WhoYouAre';
 import { buildTheme } from '../theme';
 import { carryoverClosedReason } from '../utils/carryoverWindow';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  EmployeeSession, RequestType, Supervisor, VerifiedEmail,
-  clearSession, errorText, getRequestTypes, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
+  EmployeeSession, RequestType, VerifiedEmail,
+  clearSession, errorText, getRequestTypes, holdRequest, loadNewHire, loadSession, requestCode,
   saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
@@ -26,10 +27,11 @@ import {
  * - email: type your email
  * - code: type the 6-digit code that was emailed
  * - form: signed in as an employee; pick a form and fill it in
- * - newhire: email is on no staff record; say who you are, pick a supervisor, fill in the form
+ * - newhire: email is on no staff record; say who you are and who your supervisor is
+ * - newhire-request: then pick a form and fill it in
  * - done: submitted (or held for a new hire)
  */
-type Step = 'email' | 'code' | 'form' | 'newhire' | 'done';
+type Step = 'email' | 'code' | 'form' | 'newhire' | 'newhire-request' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
 
@@ -96,7 +98,8 @@ const STEP_LABELS: Record<Step, string> = {
   email: 'Your email',
   code: 'The code we email you',
   form: 'Your request',
-  newhire: 'About you and your request',
+  newhire: 'About you',
+  'newhire-request': 'Your request',
   done: 'Sent',
 };
 
@@ -135,8 +138,9 @@ function Lead({ children }: { children: ReactNode }) {
  *   had opened). Anyone else moves on to #/new-hire.
  * - #/my/request: a signed-in employee's new request, which goes straight to
  *   their manager.
- * - #/new-hire: someone not on staff yet picks their supervisor, and the
- *   request waits until that supervisor adds them.
+ * - #/new-hire: someone not on staff yet says who they are and who their
+ *   supervisor is, then makes the request, which waits until that
+ *   supervisor adds them.
  *
  * The page is split in two: a coloured panel with the steps, and the current
  * step beside it. Once past signing in, the page colour and the panel's words
@@ -171,12 +175,8 @@ export default function RequestPage() {
   const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
   const signedInPage = pathname.startsWith('/my/request');    // under the top bar with the page tabs
 
-  // New-hire details.
-  const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
-  const [locations, setLocations] = useState<string[]>([]);
-  const [name, setName] = useState('');
-  const [location, setLocation] = useState('');
-  const [supervisorId, setSupervisorId] = useState('');
+  // What a new starter says about themselves (#226).
+  const [starter, setStarter] = useState<NewStarter>(EMPTY_STARTER);
 
   // Carry-over and payout are only taken between the dates an admin set (#176).
   useEffect(() => {
@@ -203,8 +203,7 @@ export default function RequestPage() {
       }
       setVerified(v);
       setEmail(v.email);
-      setStep('newhire');
-      loadSupervisors(v);
+      setStep('newhire');                              // who you are comes first
       return;
     }
     const saved = loadSession();
@@ -245,21 +244,6 @@ export default function RequestPage() {
       setBusy(false);
     }
   };
-
-  /**
-   * Load the supervisors and locations a new hire can pick from.
-   *
-   * @param v - The new hire's verified-email token.
-   */
-  async function loadSupervisors(v: VerifiedEmail) {
-    try {
-      const options = await getSupervisors(v);
-      setSupervisors(options.data.supervisors || []);
-      setLocations(options.data.locations || []);
-    } catch {
-      setError('The supervisor list could not be loaded. Refresh the page and start again.');
-    }
-  }
 
   /** Check the code, then move on: staff to their pages, anyone else to #/new-hire. */
   const checkCode = async () => {
@@ -310,7 +294,14 @@ export default function RequestPage() {
     setError(''); setBusy(true);
     try {
       const res = await holdRequest({
-        verified, name: name.trim(), location, supervisor_id: supervisorId,
+        verified,
+        first_name: starter.first.trim(),
+        last_name: starter.last.trim(),
+        department: starter.department,
+        // The search pick, or the typed work email when the search did not find them.
+        ...(starter.useEmail
+          ? { supervisor_email: starter.supervisorEmail.trim() }
+          : { supervisor_id: starter.supervisor?.id }),
         request_type: type, form: buildRequestBody(type, values),
       });
       setHeldWith(res.data.supervisor_name);
@@ -347,7 +338,7 @@ export default function RequestPage() {
 
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const formReady = isRequestReady(type, values);
-  const newHireReady = formReady && name.trim().split(/\s+/).length >= 2 && !!location && !!supervisorId;
+  const newHireReady = formReady && starterReady(starter);
 
   // The page colour follows the kind of request once the person is past signing in.
   const outer = useTheme();
@@ -357,8 +348,8 @@ export default function RequestPage() {
   const words = mood ? MOODS[mood].words : DEFAULT_WORDS;
 
   // The steps in the side panel: a new hire's third step is about them, not just the request.
-  const held = step === 'newhire' || (step === 'done' && !session);
-  const order: Step[] = ['email', 'code', held ? 'newhire' : 'form', 'done'];
+  const held = step === 'newhire' || step === 'newhire-request' || (step === 'done' && !session);
+  const order: Step[] = held ? ['email', 'code', 'newhire', 'newhire-request', 'done'] : ['email', 'code', 'form', 'done'];
   const at = order.indexOf(step);
   const steps: StepItem[] = order.map((k, i) => ({
     label: STEP_LABELS[k],
@@ -464,7 +455,8 @@ export default function RequestPage() {
               </>
             )}
 
-            {step === 'newhire' && (
+            {/* A new starter says who they are first (#226), then makes the request. */}
+            {step === 'newhire' && verified && (
               <>
                 <Heading>Tell us who you are</Heading>
                 <Alert severity="info">
@@ -472,19 +464,23 @@ export default function RequestPage() {
                   supervisor is; they will be asked to add you, and your request goes to them once they do.
                 </Alert>
                 <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
-                <TextField label="Your first and last name" required value={name} onChange={(e) => setName(e.target.value)} />
-                <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' } }}>
-                  <TextField label="Your location" required select value={location} onChange={(e) => setLocation(e.target.value)}>
-                    {locations.map((l) => <MenuItem key={l} value={l}>{l}</MenuItem>)}
-                  </TextField>
-                  <TextField label="Your supervisor" required select value={supervisorId}
-                    onChange={(e) => setSupervisorId(e.target.value)}
-                    helperText={supervisors.length === 0 ? 'No supervisors could be loaded. Try again later.' : undefined}>
-                    {supervisors.map((s) => (
-                      <MenuItem key={s.id} value={s.id}>{s.name}{s.location ? ` (${s.location})` : ''}</MenuItem>
-                    ))}
-                  </TextField>
-                </Box>
+                <WhoYouAre verified={verified} value={starter} onChange={setStarter} onError={setError} />
+                <Button variant="contained" size="large" sx={big} disabled={!starterReady(starter)}
+                  onClick={() => { setError(''); setStep('newhire-request'); }}>
+                  Continue to your request
+                </Button>
+              </>
+            )}
+
+            {step === 'newhire-request' && (
+              <>
+                <Heading>Your request</Heading>
+                <Lead>
+                  {starter.first.trim()} {starter.last.trim()}, {starter.department}. Supervisor:{' '}
+                  {starter.useEmail ? starter.supervisorEmail.trim() : starter.supervisor?.name}.{' '}
+                  <Link component="button" variant="body2" onClick={() => { setError(''); setStep('newhire'); }}>Change</Link>
+                </Lead>
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <TypeCards value={type} onPick={setType} closed={closedTypes} />
                 {/* Another form cross-fades in, and the block's height follows. */}
                 <AutoHeight>

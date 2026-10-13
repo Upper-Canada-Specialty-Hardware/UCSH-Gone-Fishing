@@ -43,7 +43,7 @@ import {
  *
  * @returns The prefill, or null.
  */
-function takeAddEmployeePrefill(): { title: string; email_address: string; location: string } | null {
+function takeAddEmployeePrefill(): { title: string; email_address: string; department?: string; location?: string } | null {
   const raw = sessionStorage.getItem('add_employee_prefill');
   if (!raw) return null;
   sessionStorage.removeItem('add_employee_prefill');

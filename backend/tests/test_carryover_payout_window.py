@@ -131,7 +131,7 @@ def test_leave_is_never_affected(client):
 def test_a_new_hire_cannot_hold_one_while_closed():
     with pytest.raises(request_intake.RequestTypeClosed):
         run(held_requests.hold_request(
-            "newhire@gmail.com", "Lee New", "Barrie", "3", "carryover-payout", PAYOUT,
+            "newhire@gmail.com", "Lee New", "Shop", "3", "carryover-payout", PAYOUT,   # refused before the department is looked up
         ))
 
 
