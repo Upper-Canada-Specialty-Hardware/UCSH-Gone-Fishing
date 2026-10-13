@@ -1761,6 +1761,99 @@ async def admin_add_request_columns():
     return await ensure_request_columns(create=True)
 
 
+class CarryoverPayoutWindow(BaseModel):
+    """The dates carry-over and payout requests are accepted between.
+
+    Both None clears the window, which closes them.
+    """
+
+    start: dt_date | None = None
+    end: dt_date | None = None
+
+
+def _window_body(window, today) -> dict:
+    """The window as the admin card reads it.
+
+    Args:
+        window: (start, end) or None.
+        today: Today in Toronto.
+
+    Returns:
+        {"start", "end" (ISO or None), "open": bool, "today": ISO}.
+    """
+    from app.services.app_settings import window_is_open
+    return {
+        "start": window[0].isoformat() if window else None,
+        "end": window[1].isoformat() if window else None,
+        "open": window_is_open(window, today),
+        "today": today.isoformat(),
+    }
+
+
+@router.get("/admin/carryover-payout")
+async def admin_carryover_payout_window():
+    """The dates carry-over and payout requests are open between (#176).
+
+    Unauthenticated like every other /admin/* route. Read only.
+
+    Returns:
+        {"start", "end", "open", "today"}; no dates and closed by default.
+    """
+    from app.services.app_settings import carryover_payout_window, toronto_today
+    return _window_body(await carryover_payout_window(), toronto_today())
+
+
+@router.put("/admin/carryover-payout")
+async def admin_set_carryover_payout_window(body: CarryoverPayoutWindow):
+    """Set or clear the dates carry-over and payout requests are open (#176).
+
+    Only new requests from the request page, held requests and /api/forms
+    are affected. Requests already sent keep going through approval, and the
+    Microsoft Form stays under HR's control on the bulletin board.
+
+    Args:
+        body: {"start", "end"} as YYYY-MM-DD, both inclusive; both null clears.
+
+    Returns:
+        The stored window, as GET returns it.
+
+    Raises:
+        HTTPException: 400 for one date only, or an end before the start.
+    """
+    from app.services.app_settings import set_carryover_payout_window, toronto_today
+    try:
+        window = await set_carryover_payout_window(body.start, body.end)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _window_body(window, toronto_today())
+
+
+@router.get("/admin/carryover-payout/export")
+async def admin_export_carryover_payout():
+    """Download carry-over and payout information as an Excel file (#176).
+
+    Two sheets: every employee's vacation, carry-over and payout balances,
+    and the carry-over and payout requests (only those made inside the set
+    window when there is one). Unauthenticated like every other /admin/*
+    route. Read only.
+
+    Returns:
+        The .xlsx file as an attachment.
+    """
+    from fastapi.responses import Response
+    from app.services.app_settings import carryover_payout_window, toronto_today
+    from app.services.carryover_export import build_workbook, export_filename
+    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)    # every employee
+    requests = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+    window, today = await carryover_payout_window(), toronto_today()
+    data = build_workbook(staff, requests, window)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{export_filename(today)}"'},
+    )
+
+
 @router.get("/admin/request-storage")
 async def admin_request_storage():
     """Where the request lists live, and how many items each side holds.
