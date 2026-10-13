@@ -8,7 +8,6 @@ from app.config import settings
 from app.services.leave_requests import process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
 from app.services.carryover_payout import process_new_carryover_payout
-from app.services.request_intake import RequestTypeClosed, ensure_request_type_open
 from app.services.request_submitter import SOURCE_API
 
 logger = logging.getLogger(__name__)
@@ -86,10 +85,6 @@ async def receive_overtime_form(data: OvertimeFormData):
 async def receive_carryover_payout_form(data: CarryoverPayoutFormData):
     if (resp := _check_processing()):
         return resp
-    try:
-        await ensure_request_type_open("carryover-payout")     # closed outside the season (#203)
-    except RequestTypeClosed as e:
-        raise HTTPException(status_code=400, detail=str(e))
     try:
         item = await process_new_carryover_payout(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}

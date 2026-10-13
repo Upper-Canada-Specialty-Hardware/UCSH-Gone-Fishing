@@ -14,7 +14,7 @@ import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import { buildTheme } from '../theme';
 import {
   EmployeeSession, RequestType, Supervisor, VerifiedEmail,
-  clearSession, errorText, getRequestTypes, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
+  clearSession, errorText, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
   saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
@@ -98,7 +98,6 @@ export default function RequestPage() {
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
-  const [carryoverOpen, setCarryoverOpen] = useState(false);   // closed until the server says otherwise
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
@@ -110,18 +109,6 @@ export default function RequestPage() {
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
   const [supervisorId, setSupervisorId] = useState('');
-
-  // Carry-over and payout are only offered while an admin has them open (#203).
-  useEffect(() => {
-    getRequestTypes()
-      .then((r) => setCarryoverOpen(r.data.carryover_payout_open))
-      .catch(() => setCarryoverOpen(false));                  // unknown: do not offer them
-  }, []);
-  // A closed form cannot stay picked (e.g. closed while the page was open).
-  useEffect(() => {
-    if (!carryoverOpen && type === 'carryover-payout') setType('leave');
-  }, [carryoverOpen, type]);
-  const hiddenTypes: RequestType[] = carryoverOpen ? [] : ['carryover-payout'];
 
   // Pick up where this address starts: a new hire's verified email, the
   // shared sign-in for a new request, or the landing page's note.
@@ -378,7 +365,7 @@ export default function RequestPage() {
             {step === 'form' && session && (
               <>
                 {error && <Alert severity="error">{error}</Alert>}
-                <TypeCards value={type} onPick={setType} hidden={hiddenTypes} />
+                <TypeCards value={type} onPick={setType} />
                 <RequestForm type={type} values={values} onChange={setValue} />
                 {/* Days and balances after approval, once the form is complete. */}
                 <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} />
@@ -409,7 +396,7 @@ export default function RequestPage() {
                     ))}
                   </TextField>
                 </Box>
-                <TypeCards value={type} onPick={setType} hidden={hiddenTypes} />
+                <TypeCards value={type} onPick={setType} />
                 <RequestForm type={type} values={values} onChange={setValue} />
                 <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire} startIcon={spinner}>
                   Send request

@@ -18,12 +18,7 @@ from app.config import settings
 from app.routes.dashboard import AuthUser, _format_balances
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
-from app.services.request_intake import (
-    RequestFormError,
-    ensure_request_type_open,
-    parse_request_form,
-    submit_request,
-)
+from app.services.request_intake import RequestFormError, parse_request_form, submit_request
 from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE, requests_linked_by_email
 
@@ -44,8 +39,7 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
         {"status": "submitted", "request_type", "item_id"}.
 
     Raises:
-        HTTPException: 400 for a form that cannot become a request, or a
-            carry-over/payout request while those are closed; 404 when
+        HTTPException: 400 for a form that cannot become a request; 404 when
             the staff record is gone; 409 when the request could not be routed
             to anyone yet; 503 while processing is off; 502 when SharePoint
             refused the write.
@@ -57,7 +51,6 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
         )
     try:
         form = parse_request_form(request_type, body)          # checked before any SharePoint call
-        await ensure_request_type_open(request_type)           # carry-over/payout only in season (#203)
     except RequestFormError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

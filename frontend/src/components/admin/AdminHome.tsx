@@ -1,7 +1,6 @@
 import { Box, ButtonBase, Paper, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
-import CarryoverSwitchCard from './CarryoverSwitchCard';
 import { daysWaiting, requestKind, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
 
 interface Props {
@@ -121,9 +120,6 @@ export default function AdminHome({ pending, heldCount, stuckCount, setupCount, 
           })
         )}
       </Paper>
-
-      {/* Opened for the carry-over season, closed the rest of the year. */}
-      <CarryoverSwitchCard />
     </Box>
   );
 }

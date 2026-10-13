@@ -100,10 +100,7 @@ def test_overtime_must_be_in_half_hours(client):
     assert good.status_code == 200 and client.created[0][0] == "overtime"
 
 
-def test_carryover_takes_only_the_two_choices(client, monkeypatch):
-    async def is_open():
-        return True                                             # an admin has opened them (#203)
-    monkeypatch.setattr(request_intake, "carryover_payout_open", is_open)
+def test_carryover_takes_only_the_two_choices(client):
     assert _submit(client, "carryover-payout", {"type_of_request": "Cash", "days": 1}).status_code == 400
     assert _submit(client, "carryover-payout", {"type_of_request": "Payout", "days": 2}).status_code == 200
 

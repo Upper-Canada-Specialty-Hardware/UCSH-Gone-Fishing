@@ -27,7 +27,6 @@ from app.config import settings
 
 from app.graph.email import send_email
 from app.services import email_codes, held_requests
-from app.services.app_settings import carryover_payout_open
 from app.services.dashboard_tokens import generate_dashboard_token
 from app.services.employee import LOCATION_PROVINCE_MAP, get_employee_by_email, is_manager
 from app.services.request_intake import RequestFormError
@@ -231,20 +230,6 @@ async def supervisors(email: str = Query(...), exp: str = Query(...), token: str
         "supervisors": await held_requests.list_supervisors(),
         "locations": list(LOCATION_PROVINCE_MAP),
     }
-
-
-@router.get("/request-types")
-async def request_types():
-    """Which request types the page may offer right now (#203).
-
-    Public and read-only: the page asks before showing the type cards, so a
-    closed type is never offered. The submit endpoints check again, so this
-    answer is only a convenience.
-
-    Returns:
-        {"carryover_payout_open": bool}.
-    """
-    return {"carryover_payout_open": await carryover_payout_open()}
 
 
 @router.post("/held")

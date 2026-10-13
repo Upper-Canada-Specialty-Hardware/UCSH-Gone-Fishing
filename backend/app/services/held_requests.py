@@ -45,7 +45,7 @@ from app.services.employee import (
     get_employee_by_email,
     get_employee_by_name,
 )
-from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
+from app.services.request_intake import parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 
 logger = logging.getLogger(__name__)
@@ -187,8 +187,7 @@ async def hold_request(
 
     Raises:
         HoldError: On a bad name, location, supervisor or too many waiting.
-        RequestFormError: On a bad form, or a carry-over/payout request
-            while those are closed.
+        RequestFormError: On a bad form.
     """
     name = " ".join((name or "").split())                      # collapse stray spaces
     if len(name.split(" ")) < 2:
@@ -196,7 +195,6 @@ async def hold_request(
     if location not in LOCATION_PROVINCE_MAP:
         raise HoldError("Choose your location from the list.")
     checked = parse_request_form(request_type, form)           # same checks as for staff
-    await ensure_request_type_open(request_type)               # carry-over/payout only in season (#203)
 
     supervisor = next((s for s in await list_supervisors() if s["id"] == str(supervisor_id)), None)
     if supervisor is None:

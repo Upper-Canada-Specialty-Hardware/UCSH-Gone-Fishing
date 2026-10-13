@@ -37,14 +37,6 @@ export interface Supervisor {
 
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
-/**
- * Which request types the page may offer right now.
- *
- * @returns {carryover_payout_open}; false outside the carry-over season.
- */
-export const getRequestTypes = () =>
-  intake.get<{ carryover_payout_open: boolean }>('/request-types');
-
 const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day sign-in
 const LINK_KEYS = ['dashboard_token', 'dashboard_role', 'dashboard_uid', 'dashboard_exp'];   // sessionStorage, from an emailed link
 const NOTICE_KEY = 'sign_in_notice';           // sessionStorage: why someone was sent to the landing page

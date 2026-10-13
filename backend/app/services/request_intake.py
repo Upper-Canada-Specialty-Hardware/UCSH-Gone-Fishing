@@ -19,7 +19,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from app.services.app_settings import carryover_payout_open
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.leave_requests import ALLOWED_LEAVE_TYPES, process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
@@ -32,36 +31,6 @@ HOURS_PER_DAY = 8                              # a full working day, as the bala
 
 class RequestFormError(ValueError):
     """A form that cannot become a request; the message is for the person."""
-
-
-class RequestTypeClosed(RequestFormError):
-    """A request type an admin has closed, e.g. carry-over outside its season."""
-
-
-CARRYOVER_CLOSED_MESSAGE = (
-    "Carry-over and payout requests are not open right now. "
-    "HR opens them at the time of year they are taken."
-)
-
-
-async def ensure_request_type_open(request_type: str) -> None:
-    """Refuse a request type an admin has closed (#203).
-
-    Only carry-over/payout can be closed; leave and overtime are always open.
-    Called by every way staff send a new request (request page, held request,
-    /api/forms), not by approvals or the Microsoft Form, which HR opens and
-    closes on the bulletin board.
-
-    Args:
-        request_type: "leave", "overtime" or "carryover-payout".
-
-    Raises:
-        RequestTypeClosed: When carry-over/payout requests are closed.
-    """
-    if request_type != "carryover-payout":
-        return                                                 # leave and overtime: always open
-    if not await carryover_payout_open():
-        raise RequestTypeClosed(CARRYOVER_CLOSED_MESSAGE)
 
 
 def _half_hour_steps(value: float, label: str) -> float:
