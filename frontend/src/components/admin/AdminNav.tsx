@@ -1,5 +1,10 @@
 import { Box, ButtonBase, Divider, Drawer, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import { LayoutGroup, m } from 'motion/react';
+import { Bump, EASE, KF, SPRING } from '../Motion';
+
+/** The shared rise-in keyframes, here sliding in from the left. */
+const KF_RISE = KF.rise;
 
 /** One entry in the admin sidebar. */
 export interface NavItem {
@@ -38,7 +43,15 @@ interface Props {
 export default function AdminNav({ groups, current, onSelect, mobileOpen, onCloseMobile }: Props) {
   const theme = useTheme();
 
-  const list = (
+  /**
+   * The menu. In the phone drawer its items follow the drawer in, one after another.
+   *
+   * @param inDrawer - True for the slide-out copy.
+   * @returns The list.
+   */
+  const list = (inDrawer: boolean) => {
+  let n = 0;                                           // running item count, for the drawer's stagger
+  return (
     <Box component="nav" aria-label="Admin" sx={{ p: 1.5, display: 'grid', gap: 0.25 }}>
       {groups.map((g, gi) => (
         <Box key={gi} sx={{ display: 'grid', gap: 0.25, mb: 1 }}>
@@ -50,6 +63,7 @@ export default function AdminNav({ groups, current, onSelect, mobileOpen, onClos
           ) : gi > 0 ? <Divider sx={{ my: 1 }} /> : null}
           {g.items.map((it) => {
             const on = it.key === current;
+            const order = n++;
             return (
               <ButtonBase
                 key={it.key}
@@ -58,24 +72,41 @@ export default function AdminNav({ groups, current, onSelect, mobileOpen, onClos
                 sx={{
                   justifyContent: 'space-between', gap: 1, px: 1.5, py: 1, borderRadius: '10px',
                   fontSize: 14, fontWeight: on ? 700 : 500, textAlign: 'left',
-                  color: on ? 'primary.main' : 'text.primary',
-                  bgcolor: on ? theme.tokens.primarySoft : 'transparent',
-                  '&:hover': { bgcolor: on ? theme.tokens.primarySoft : theme.tokens.hover },
+                  color: on ? 'primary.main' : 'text.primary', transition: 'color .2s ease',
+                  '&:hover': { bgcolor: on ? 'transparent' : theme.tokens.hover },
+                  '& > span:not(.nav-hl)': { position: 'relative', zIndex: 1 },
+                  ...(inDrawer && {
+                    '--enter-x': '-10px', '--enter-y': '0px',
+                    animation: `${KF_RISE} .3s ${EASE.out} ${120 + order * 20}ms both`,
+                  }),
                 }}
               >
+                {/* One highlight that glides to the screen opened. */}
+                {on && (
+                  <m.span
+                    layoutId="admin-nav-hl"
+                    className="nav-hl"
+                    transition={SPRING}
+                    style={{ position: 'absolute', inset: 0, borderRadius: 10, background: theme.tokens.primarySoft, zIndex: 0 }}
+                  />
+                )}
                 <span>{it.label}</span>
                 {it.count !== undefined && (
-                  <Box
-                    component="span"
-                    sx={{
-                      minWidth: 22, px: 0.75, borderRadius: 999, fontSize: 12, fontWeight: 700, textAlign: 'center',
-                      // Something waiting: terracotta; nothing: quiet grey.
-                      color: it.count > 0 ? theme.tokens.accent : 'text.secondary',
-                      bgcolor: it.count > 0 ? alpha(theme.tokens.accent, 0.14) : theme.tokens.chip,
-                    }}
-                  >
-                    {it.count}
-                  </Box>
+                  // A count that changes pops, so an action's effect shows in the menu.
+                  <Bump value={it.count}>
+                    <Box
+                      component="span"
+                      sx={{
+                        minWidth: 22, px: 0.75, borderRadius: 999, fontSize: 12, fontWeight: 700, textAlign: 'center',
+                        // Something waiting: terracotta; nothing: quiet grey.
+                        color: it.count > 0 ? theme.tokens.accent : 'text.secondary',
+                        bgcolor: it.count > 0 ? alpha(theme.tokens.accent, 0.14) : theme.tokens.chip,
+                        transition: 'color .2s ease, background-color .2s ease',
+                      }}
+                    >
+                      {it.count}
+                    </Box>
+                  </Bump>
                 )}
               </ButtonBase>
             );
@@ -84,6 +115,7 @@ export default function AdminNav({ groups, current, onSelect, mobileOpen, onClos
       ))}
     </Box>
   );
+  };
 
   return (
     <>
@@ -95,11 +127,12 @@ export default function AdminNav({ groups, current, onSelect, mobileOpen, onClos
           position: 'sticky', top: 56, height: 'calc(100vh - 56px)', overflowY: 'auto',
         }}
       >
-        {list}
+        {/* Each copy of the menu keeps its own highlight. */}
+        <LayoutGroup id="admin-nav-wide">{list(false)}</LayoutGroup>
       </Box>
       {/* Narrow screens: the same list in a slide-out drawer. */}
       <Drawer open={mobileOpen} onClose={onCloseMobile} sx={{ display: { md: 'none' } }} PaperProps={{ sx: { width: 270 } }}>
-        {list}
+        <LayoutGroup id="admin-nav-drawer">{list(true)}</LayoutGroup>
       </Drawer>
     </>
   );

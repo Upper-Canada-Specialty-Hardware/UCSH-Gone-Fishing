@@ -2,6 +2,7 @@ import { ReactNode } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { Container } from '@mui/material';
 import { ColorModeProvider } from './colorMode';
+import { Enter, MotionProvider } from './components/Motion';
 import TopBar from './components/TopBar';
 import EmployeeDashboard from './pages/EmployeeDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
@@ -21,7 +22,8 @@ function Framed({ children }: { children: ReactNode }) {
   return (
     <>
       <TopBar nav />
-      <Container maxWidth="lg" sx={{ py: { xs: 2, sm: 4 } }}>{children}</Container>
+      {/* A new page eases in under the bar; the bar itself stays put. */}
+      <Container maxWidth="lg" sx={{ py: { xs: 2, sm: 4 } }}><Enter>{children}</Enter></Container>
     </>
   );
 }
@@ -124,12 +126,13 @@ function Ended() {
 export default function App() {
   return (
     <ColorModeProvider>
+      <MotionProvider>
       <HashRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/request" element={<Navigate to="/my/request" replace />} />
           <Route path="/new-hire" element={<RequestPage />} />
-          <Route path="/my/request" element={<SignedIn><TopBar nav /><RequestPage /></SignedIn>} />
+          <Route path="/my/request" element={<SignedIn><TopBar nav /><Enter><RequestPage /></Enter></SignedIn>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/my/:tab?" element={<SignedIn><Framed><EmployeeDashboard /></Framed></SignedIn>} />
           <Route path="/team/:tab?" element={<SignedIn team><Framed><ManagerDashboard /></Framed></SignedIn>} />
@@ -142,6 +145,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </HashRouter>
+      </MotionProvider>
     </ColorModeProvider>
   );
 }
