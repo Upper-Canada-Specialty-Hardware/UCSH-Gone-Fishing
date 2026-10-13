@@ -1,14 +1,16 @@
 import { useState } from 'react';
 import { Box, Button, Tooltip, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import { AnimatePresence, m } from 'motion/react';
 import { kindColor } from '../../constants/leaveColors';
 import { addDays, dayKey, isWeekend, today } from '../../utils/dates';
 import { ColorOf, LabelOf } from '../../utils/personColor';
 import { shortDate } from '../../utils/requestText';
 import { Absence } from './teamStats';
+import { CountUp, EASE, EXIT, INSTANT, KF, SPRING, useCalm } from '../Motion';
 
-/** Turns an animation off for anyone whose system asks for reduced motion. */
-const CALM = { '@media (prefers-reduced-motion: reduce)': { animation: 'none' } };
+/** Ease-out cubic, for a drawn line whose progress the dots below follow. */
+const DRAW_EASE = 'cubic-bezier(.33,1,.68,1)';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -40,6 +42,7 @@ export function LeaveTimeline({
   colorOf: ColorOf; labelOf: LabelOf; showToggle?: boolean; maxRows?: number; onShowMore?: () => void;
 }) {
   const theme = useTheme();
+  const calm = useCalm();
   const last = addDays(from, days - 1);
   const t = dayKey(today());
   const cols = Array.from({ length: days }, (_, i) => addDays(from, i));
@@ -57,6 +60,8 @@ export function LeaveTimeline({
   const hiddenByCap = chosen.length - shown.length;
   // What to say when there is no row to draw.
   const emptyText = names.length === 0 ? 'No one on your team yet.' : 'No one is away in this window.';
+  // How many bars grow in, so today's line can drop in after the last one.
+  const barCount = shown.reduce((sum, who) => sum + absences.filter((a) => a.who === who && a.end >= from && a.start <= last).length, 0);
 
   return (
     <Box sx={{ display: 'grid', gap: 1 }}>
@@ -74,7 +79,8 @@ export function LeaveTimeline({
         // Nothing to draw: a plain line rather than an empty grid.
         <Typography variant="body2" color="text.secondary">{emptyText}</Typography>
       ) : (
-      <Box sx={{ overflowX: 'auto' }}>
+      // Room above and below for today's line, so it never adds a vertical scrollbar.
+      <Box sx={{ overflowX: 'auto', overflowY: 'hidden', py: '2px' }}>
       <Box sx={{ minWidth: days > 14 ? 720 : 440, display: 'grid', gap: 0.75 }}>
         {/* Day header: weekday letter and date, weekends muted, today marked. */}
         <Box sx={{ display: 'grid', gridTemplateColumns: '96px 1fr', alignItems: 'end' }}>
@@ -91,10 +97,19 @@ export function LeaveTimeline({
           </Box>
         </Box>
 
+        {/* Rows fold in and out when the set changes (Show everyone), so the others close up smoothly. */}
+        <AnimatePresence initial={false}>
         {shown.map((who) => {
           const mine = absences.filter((a) => a.who === who && a.end >= from && a.start <= last);
           return (
-            <Box key={who} sx={{ display: 'grid', gridTemplateColumns: '96px 1fr', alignItems: 'center' }}>
+            <m.div
+              key={who}
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0, transition: calm ? INSTANT : EXIT }}
+              transition={calm ? INSTANT : SPRING}
+              style={{ display: 'grid', gridTemplateColumns: '96px 1fr', alignItems: 'center' }}
+            >
               <Typography variant="body2" noWrap sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 0.75 }}>
                 <Box component="span" sx={{ width: 8, height: 8, borderRadius: 999, bgcolor: colorOf(who), flex: 'none' }} />
                 {labelOf(who)}
@@ -119,9 +134,7 @@ export function LeaveTimeline({
                           ...(a.pending
                             ? { color: c, border: `1.5px dashed ${c}`, bgcolor: alpha(c, 0.08) }
                             : { color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', bgcolor: c }),
-                          transformOrigin: 'left', animation: `tlgrow .5s ${0.1 + 0.06 * n++}s both cubic-bezier(.2,.8,.2,1)`,
-                          '@keyframes tlgrow': { from: { transform: 'scaleX(0)', opacity: 0 }, to: { transform: 'scaleX(1)', opacity: 1 } },
-                          ...CALM,
+                          transformOrigin: 'left', animation: `${KF.growXFade} .5s ${EASE.out} ${0.1 + 0.06 * n++}s both`,
                         }}
                       >
                         {a.label}
@@ -129,14 +142,19 @@ export function LeaveTimeline({
                     </Tooltip>
                   );
                 })}
-                {/* Today's line. */}
+                {/* Today's line, dropping in once the bars have grown. */}
                 {cols.some((d) => dayKey(d) === t) && (
-                  <Box sx={{ position: 'absolute', top: -2, bottom: -2, width: 2, borderRadius: 1, bgcolor: theme.tokens.accent, left: `calc(${pct(cols.findIndex((d) => dayKey(d) === t))} + ${50 / days}%)` }} />
+                  <Box sx={{
+                    position: 'absolute', top: -2, bottom: -2, width: 2, borderRadius: 1, bgcolor: theme.tokens.accent,
+                    left: `calc(${pct(cols.findIndex((d) => dayKey(d) === t))} + ${50 / days}%)`,
+                    transformOrigin: 'top', animation: `${KF.growY} .3s ${EASE.out} ${0.35 + 0.06 * barCount}s both`,
+                  }} />
                 )}
               </Box>
-            </Box>
+            </m.div>
           );
         })}
+        </AnimatePresence>
       </Box>
       </Box>
       )}
@@ -166,10 +184,10 @@ export function Sparkline({ values, height = 30 }: { values: number[]; height?: 
   return (
     <Box component="svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden sx={{ width: '100%', height, display: 'block', mt: 0.5 }}>
       <Box
-        component="polyline" points={pts}
+        component="polyline" points={pts} pathLength={1}
         sx={{
           fill: 'none', stroke: theme.palette.primary.main, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
-          strokeDasharray: 400, animation: 'draw 1.2s .2s both ease-out', '@keyframes draw': { from: { strokeDashoffset: 400 }, to: { strokeDashoffset: 0 } }, ...CALM,
+          strokeDasharray: 1, animation: `${KF.draw} 1.2s ease-out .2s both`,
         }}
       />
     </Box>
@@ -204,12 +222,16 @@ export function InPerDayChart({ points, team }: { points: { day: Date; in: numbe
       ))}
       <line x1={pad} x2={W - pad} y1={y(usual)} y2={y(usual)} stroke={theme.tokens.accent} strokeDasharray="4 4" />
       <text x={W - pad} y={y(usual) - 6} textAnchor="end" fill={theme.tokens.accent}>usual cover: {usual}</text>
-      <path d={area} fill={alpha(theme.palette.primary.main, 0.12)} />
-      <Box component="path" d={line} sx={{ fill: 'none', stroke: theme.palette.primary.main, strokeWidth: 2.5, strokeDasharray: 2000, animation: 'draw 1.4s both ease-out', '@keyframes draw': { from: { strokeDashoffset: 2000 }, to: { strokeDashoffset: 0 } }, ...CALM }} />
+      <Box component="path" d={area} fill={alpha(theme.palette.primary.main, 0.12)} sx={{ animation: `${KF.fade} .5s ease-out .7s both` }} />
+      <Box component="path" d={line} pathLength={1} sx={{ fill: 'none', stroke: theme.palette.primary.main, strokeWidth: 2.5, strokeDasharray: 1, animation: `${KF.draw} 1.4s ${DRAW_EASE} both` }} />
+      {/* Each thin day pops in as the line reaches it. */}
       {points.map((p, k) => p.in < usual && (
-        <circle key={k} cx={x(k)} cy={y(p.in)} r={5} fill={theme.tokens.accent}>
+        <Box
+          component="circle" key={k} cx={x(k)} cy={y(p.in)} r={5} fill={theme.tokens.accent}
+          sx={{ transformBox: 'fill-box', transformOrigin: 'center', animation: `${KF.popIn} .45s cubic-bezier(.2,1.6,.4,1) ${1.4 * (1 - Math.cbrt(1 - k / (points.length - 1)))}s both` }}
+        >
           <title>{`${shortDate(dayKey(p.day))}: ${p.in} of ${team} in`}</title>
-        </circle>
+        </Box>
       ))}
       {points.map((p, k) => k % 3 === 0 && (
         <text key={`l${k}`} x={x(k)} y={H - 6} textAnchor="middle">{shortDate(dayKey(p.day))}</text>
@@ -256,7 +278,7 @@ export function MonthlyBars({ months, upTo }: { months: { vacation: number; sick
               return (
                 <Box
                   component="rect" key={s} x={cx - bw / 2} y={y1} width={bw} height={h} rx={3} fill={fills[s]}
-                  sx={{ transformBox: 'fill-box', transformOrigin: 'bottom', animation: `rise .6s ${k * 0.05}s both ease-out`, '@keyframes rise': { from: { transform: 'scaleY(0)' }, to: { transform: 'scaleY(1)' } }, ...CALM }}
+                  sx={{ transformBox: 'fill-box', transformOrigin: 'bottom', animation: `${KF.growY} .6s ease-out ${k * 0.05}s both` }}
                 >
                   <title>{`${MONTHS[k]}: ${v} day${v === 1 ? '' : 's'} ${s}`}</title>
                 </Box>
@@ -281,36 +303,49 @@ export function MonthlyBars({ months, upTo }: { months: { vacation: number; sick
  */
 export function VacationRings({ members, colorOf, labelOf }: { members: any[]; colorOf: ColorOf; labelOf: LabelOf }) {
   const theme = useTheme();
-  const r = 38, c = 2 * Math.PI * r;
+  const r = 38;
   // One scrollable strip instead of N wrapped rows, so the panel stays one row tall on any team size.
   if (members.length === 0) return <Typography variant="body2" color="text.secondary">No matches.</Typography>;
   return (
-    <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
-      {members.map((m, k) => {
-        const left = m.balances?.vacation_balance ?? 0;
-        const of = m.balances?.vacation_entitlement ?? 0;
+    <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1, position: 'relative' }}>
+      {/* A search fades out the people who no longer match while the rest slide together. */}
+      <AnimatePresence mode="popLayout" initial={false}>
+      {members.map((mem, k) => {
+        const left = mem.balances?.vacation_balance ?? 0;
+        const of = mem.balances?.vacation_entitlement ?? 0;
         const frac = of > 0 ? Math.max(0, Math.min(1, left / of)) : 0;
         return (
-          <Box key={m.id ?? m.name} sx={{ flex: 'none', width: 118, display: 'grid', justifyItems: 'center', textAlign: 'center', gap: 0.25 }}>
+          <m.div
+            key={mem.id ?? mem.name}
+            layout
+            initial={{ opacity: 0, scale: 0.94 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.94, transition: EXIT }}
+            style={{ flex: 'none', width: 118, display: 'grid', justifyItems: 'center', textAlign: 'center', gap: 2 }}
+          >
             <Box sx={{ position: 'relative', width: 92, height: 92 }}>
               <svg viewBox="0 0 92 92" width={92} height={92} aria-hidden>
                 <circle cx={46} cy={46} r={r} fill="none" stroke={theme.tokens.hover} strokeWidth={9} />
                 <Box
-                  component="circle" cx={46} cy={46} r={r} fill="none" stroke={colorOf(m.name)} strokeWidth={9} strokeLinecap="round"
-                  strokeDasharray={c} strokeDashoffset={c * (1 - frac)} transform="rotate(-90 46 46)"
-                  sx={{ animation: `ring 1s ${k * 0.1}s both ease-out`, '@keyframes ring': { from: { strokeDashoffset: c } }, ...CALM }}
+                  component="circle" cx={46} cy={46} r={r} fill="none" stroke={colorOf(mem.name)} strokeWidth={9} strokeLinecap="round"
+                  pathLength={1} strokeDasharray={1} strokeDashoffset={1 - frac} transform="rotate(-90 46 46)"
+                  sx={{ animation: `${KF.draw} 1s ease-out ${k * 0.1}s both` }}
                 />
               </svg>
               <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeContent: 'center', lineHeight: 1.1 }}>
-                <Typography sx={{ fontFamily: theme.tokens.display, fontWeight: 600, fontSize: 20, color: left < 0 ? 'error.main' : 'text.primary' }}>{left}</Typography>
+                {/* The days count up as the ring fills. */}
+                <Typography sx={{ fontFamily: theme.tokens.display, fontWeight: 600, fontSize: 20, color: left < 0 ? 'error.main' : 'text.primary' }}>
+                  <CountUp from={0} value={left} delay={k * 0.1} duration={1} />
+                </Typography>
                 {of > 0 && <Typography variant="caption" color="text.secondary">of {of}</Typography>}
               </Box>
             </Box>
-            <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{labelOf(m.name)}</Typography>
+            <Typography variant="body2" sx={{ fontWeight: 700, maxWidth: '100%' }} noWrap>{labelOf(mem.name)}</Typography>
             <Typography variant="caption" color="text.secondary">vacation left</Typography>
-          </Box>
+          </m.div>
         );
       })}
+      </AnimatePresence>
     </Box>
   );
 }
@@ -337,7 +372,10 @@ export function BalanceMeter({ cur, next, max }: { cur: number; next: number; ma
         sx={{
           position: 'absolute', top: 0, bottom: 0, left: `${(lo / top) * 100}%`, width: `${((hi - lo) / top) * 100}%`,
           background: `repeating-linear-gradient(45deg, ${change}, ${change} 3px, ${alpha(change, 0.45)} 3px, ${alpha(change, 0.45)} 6px)`,
-          transformOrigin: 'left', animation: 'tlgrow .6s .2s both ease-out', '@keyframes tlgrow': { from: { transform: 'scaleX(0)' }, to: { transform: 'scaleX(1)' } }, ...CALM,
+          transformOrigin: 'left', animation: `${KF.growX} .6s ease-out .2s both`,
+          // While its card is hovered the stripes drift, to say "this part would change". Still at rest.
+          // Both animations stay listed, so leaving the card never replays the grow.
+          'article:hover &': { animation: `${KF.growX} .6s ease-out .2s both, ${KF.stripes} .9s linear infinite` },
         }}
       />
     </Box>
