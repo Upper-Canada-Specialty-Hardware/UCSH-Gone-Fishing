@@ -13,6 +13,7 @@ import { getMyBalances, getMyRequests } from '../api/client';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
+import { greeting } from '../utils/greeting';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
 import { CountUp, EASE, Enter, KF, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
 import { EmployeeSkeleton } from '../components/Skeletons';
@@ -220,7 +221,8 @@ export default function EmployeeDashboard() {
     <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
-          <Typography variant="h4" sx={riseAt(0)}>Hi {firstName(employee?.name || '') || 'there'}</Typography>
+          {/* Same greeting as the manager and admin dashboards, by this device's clock. */}
+          <Typography variant="h4" sx={riseAt(0)}>{greeting()}{employee?.name ? `, ${firstName(employee.name)}` : ''}</Typography>
           {/* The person's Staff Directory record, one labelled value each, settling in after the greeting. */}
           <Box component="dl" sx={{ m: 0, mt: 1.25, display: 'flex', flexWrap: 'wrap', columnGap: 3.5, rowGap: 1.25, ...staggerChildren({ delay: 60 }) }}>
             {details.map(([label, value]) => (

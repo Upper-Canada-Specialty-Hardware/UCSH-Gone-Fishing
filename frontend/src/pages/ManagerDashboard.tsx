@@ -35,6 +35,7 @@ import {
   rejectRequest,
   createEmployee,
 } from '../api/client';
+import { greeting } from '../utils/greeting';
 
 /**
  * A new hire's details left by the supervisor's "add this person" email link
@@ -60,16 +61,6 @@ type TabKey = typeof TABS[number];
 
 /** The monthly chart's legend: label and the kind whose colour it uses. */
 const MONTH_LEGEND: [string, RequestKind][] = [['Vacation', 'vacation'], ['Sick', 'sick'], ['Other', 'bereavement']];
-
-/**
- * "Good morning" by the time of day here.
- *
- * @returns The greeting.
- */
-function greeting(): string {
-  const h = new Date().getHours();
-  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-}
 
 /**
  * Initials for an avatar.

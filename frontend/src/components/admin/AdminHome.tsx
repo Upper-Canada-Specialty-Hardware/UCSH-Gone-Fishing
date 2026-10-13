@@ -4,6 +4,7 @@ import { CountUp, EASE, KF, riseAt } from '../Motion';
 import KindPill from '../KindPill';
 import CarryoverWindowCard from './CarryoverWindowCard';
 import { daysWaiting, requestKind, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
+import { greeting } from '../../utils/greeting';
 
 interface Props {
   /** Every pending request (admin view, all teams). */
@@ -16,16 +17,6 @@ interface Props {
   setupCount: number;
   /** Open a screen by key. */
   onGo: (key: string) => void;
-}
-
-/**
- * "Good morning" by the time of day here.
- *
- * @returns The greeting.
- */
-function greeting(): string {
-  const h = new Date().getHours();
-  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 }
 
 /**

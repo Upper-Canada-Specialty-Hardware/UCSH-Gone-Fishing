@@ -963,7 +963,8 @@ async def _after_employee_created(record: dict) -> dict:
     """Follow-ups once Add Employee has written a record, on either dashboard.
 
     Submits any requests the person made on the request page while they were
-    not on staff yet. This never undoes or blocks the create: a failure is
+    not on staff yet, then sends them the welcome email. Neither undoes or
+    blocks the create: a failure is
     reported in the response and stays visible on the admin dashboard.
 
     Args:
@@ -971,7 +972,8 @@ async def _after_employee_created(record: dict) -> dict:
 
     Returns:
         The record plus "released": one {"held_id", "status", "detail"} per
-        held request for this email.
+        held request for this email, and "welcome_email": "sent", "skipped"
+        (no address) or "failed".
     """
     from app.services.held_requests import release_held_requests
     email = record.get("fields", {}).get("EmailAddress", "")      # held rows are keyed by email
@@ -983,6 +985,18 @@ async def _after_employee_created(record: dict) -> dict:
         record["released"] = []
         record.setdefault("notices", []).append(
             "Their waiting requests could not be submitted; see Held Requests on the admin dashboard."
+        )
+
+    # Welcome email with how to sign in and the staff tutorial (#227). After
+    # the release, so anything they asked for is already on its way.
+    from app.services.welcome_email import send_welcome_email
+    try:
+        record["welcome_email"] = "sent" if await send_welcome_email(record) else "skipped"
+    except Exception:  # noqa: BLE001 - the employee exists either way
+        logger.exception("Could not send the welcome email to a new employee")
+        record["welcome_email"] = "failed"
+        record.setdefault("notices", []).append(
+            "The welcome email could not be sent. They can still sign in on the site with their email."
         )
     return record
 
