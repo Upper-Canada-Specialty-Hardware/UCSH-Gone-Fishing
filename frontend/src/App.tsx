@@ -6,6 +6,7 @@ import TopBar from './components/TopBar';
 import EmployeeDashboard from './pages/EmployeeDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import AdminDashboard from './pages/AdminDashboard';
+import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
 import { canSeeTeam, loadSession, saveLinkSession, setAfterSignIn, setSignInNotice } from './api/intake';
 
@@ -132,7 +133,8 @@ export default function App() {
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/my/:tab?" element={<SignedIn><Framed><EmployeeDashboard /></Framed></SignedIn>} />
           <Route path="/team/:tab?" element={<SignedIn team><Framed><ManagerDashboard /></Framed></SignedIn>} />
-          <Route path="/admin/:screen?" element={<AdminDashboard />} />
+          {/* The admin password screen comes first (#228); the server checks every admin call too. */}
+          <Route path="/admin/:screen?" element={<AdminGate><AdminDashboard /></AdminGate>} />
           <Route path="/dashboard" element={<LinkSignIn />} />
           <Route path="/employee/:tab?" element={<Moved to="/my" />} />
           <Route path="/manager/:tab?" element={<Moved to="/team" />} />

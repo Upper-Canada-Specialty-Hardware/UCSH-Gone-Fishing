@@ -15,6 +15,7 @@ import RequestsScreen from '../components/admin/RequestsScreen';
 import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
+import AdminPasswordCard from '../components/admin/AdminPasswordCard';
 import { Enter, leaveDelay } from '../components/Motion';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
@@ -58,6 +59,7 @@ const SCREEN_TITLES: Record<string, string> = {
   stuck: 'Stuck requests',
   emails: 'Email log',
   checks: 'Data checks',
+  password: 'Admin password',
 };
 
 /** The four screens that are views of the one requests table. */
@@ -399,6 +401,7 @@ export default function AdminDashboard() {
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
       { key: 'checks', label: 'Data checks' },
+      { key: 'password', label: 'Admin password' },
     ] },
   ];
 
@@ -523,6 +526,8 @@ export default function AdminDashboard() {
               )}
 
               {tab === 'holidays' && <HolidaysManager />}
+
+              {tab === 'password' && <AdminPasswordCard />}
               </Enter>
             </>
           )}
