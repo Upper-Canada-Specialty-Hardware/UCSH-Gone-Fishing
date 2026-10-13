@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from app.services.app_settings import carryover_payout_open
+from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.leave_requests import ALLOWED_LEAVE_TYPES, process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
@@ -44,8 +44,26 @@ CARRYOVER_CLOSED_MESSAGE = (
 )
 
 
+def carryover_closed_message(window, today) -> str:
+    """Why carry-over and payout are closed, in words for the person.
+
+    Args:
+        window: (start, end) dates, or None when no dates are set.
+        today: Today in Toronto.
+
+    Returns:
+        When they open next, when they closed, or the general message.
+    """
+    if window is None:
+        return CARRYOVER_CLOSED_MESSAGE                        # no dates set
+    start, end = (f"{d:%B} {d.day}, {d.year}" for d in window)  # "November 1, 2026" on any OS
+    if today < window[0]:
+        return f"Carry-over and payout requests open on {start}, until {end}."
+    return f"Carry-over and payout requests closed on {end}."
+
+
 async def ensure_request_type_open(request_type: str) -> None:
-    """Refuse a request type an admin has closed (#203).
+    """Refuse a request type outside the dates an admin set (#176).
 
     Only carry-over/payout can be closed; leave and overtime are always open.
     Called by every way staff send a new request (request page, held request,
@@ -56,12 +74,13 @@ async def ensure_request_type_open(request_type: str) -> None:
         request_type: "leave", "overtime" or "carryover-payout".
 
     Raises:
-        RequestTypeClosed: When carry-over/payout requests are closed.
+        RequestTypeClosed: Outside the window, or when no window is set.
     """
     if request_type != "carryover-payout":
         return                                                 # leave and overtime: always open
-    if not await carryover_payout_open():
-        raise RequestTypeClosed(CARRYOVER_CLOSED_MESSAGE)
+    window, today = await carryover_payout_window(), toronto_today()
+    if not window_is_open(window, today):
+        raise RequestTypeClosed(carryover_closed_message(window, today))
 
 
 def _half_hour_steps(value: float, label: str) -> float:

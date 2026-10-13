@@ -3,24 +3,27 @@
 Each setting is one row of app_settings, by name. A setting with no row has
 its default, so a fresh database behaves like a closed, untouched one.
 
-The first one is CARRYOVER_PAYOUT_OPEN (#203): whether staff may send
-carry-over and payout requests. HR only takes them at one time of year, so it
-is off by default and an admin turns it on for that period.
+The first one is CARRYOVER_PAYOUT_WINDOW (#176): the dates between which staff
+may send carry-over and payout requests. HR only takes them at one time of
+year, so there are no dates by default, which means closed.
 """
 
 import logging
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.database import async_session
 from app.models.app_setting import AppSetting
 
 logger = logging.getLogger(__name__)
 
-CARRYOVER_PAYOUT_OPEN = "carryover_payout_open"   # bool: carry-over and payout requests accepted
+CARRYOVER_PAYOUT_WINDOW = "carryover_payout_window"   # {"start", "end"} ISO dates, or None
+TORONTO = ZoneInfo("America/Toronto")                # the company's calendar day
 
 # Each setting's value while it has no row.
 DEFAULTS: dict[str, Any] = {
-    CARRYOVER_PAYOUT_OPEN: False,                   # closed until an admin opens them
+    CARRYOVER_PAYOUT_WINDOW: None,                  # no dates: closed until an admin sets them
 }
 
 
@@ -64,10 +67,86 @@ async def set_setting(key: str, value: Any) -> Any:
     return value
 
 
-async def carryover_payout_open() -> bool:
-    """Whether staff may send carry-over and payout requests right now.
+def toronto_today() -> date:
+    """Today's date in Toronto, the calendar the window is set in.
 
     Returns:
-        True only after an admin opened them.
+        The Toronto calendar date right now.
     """
-    return bool(await get_setting(CARRYOVER_PAYOUT_OPEN))
+    return datetime.now(TORONTO).date()
+
+
+def parse_window(value: Any) -> tuple[date, date] | None:
+    """Read a stored window back into dates.
+
+    Args:
+        value: The stored setting: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} or None.
+
+    Returns:
+        (start, end), or None when no usable dates are stored.
+    """
+    if not isinstance(value, dict):
+        return None                                            # never set, or cleared
+    try:
+        return date.fromisoformat(value["start"]), date.fromisoformat(value["end"])
+    except (KeyError, TypeError, ValueError):
+        logger.warning("Ignoring an unreadable carry-over window: %r", value)
+        return None                                            # unreadable counts as closed
+
+
+def window_is_open(window: tuple[date, date] | None, today: date) -> bool:
+    """Whether a day falls inside the window, both ends included.
+
+    Args:
+        window: (start, end) or None.
+        today: The day to test.
+
+    Returns:
+        False with no window; otherwise start <= today <= end.
+    """
+    return window is not None and window[0] <= today <= window[1]
+
+
+async def carryover_payout_window() -> tuple[date, date] | None:
+    """The dates carry-over and payout requests are accepted between.
+
+    Returns:
+        (start, end), or None when an admin has not set them.
+    """
+    return parse_window(await get_setting(CARRYOVER_PAYOUT_WINDOW))
+
+
+async def set_carryover_payout_window(start: date | None, end: date | None) -> tuple[date, date] | None:
+    """Store the window, or clear it with no dates.
+
+    Args:
+        start: First day requests are accepted, or None to clear.
+        end: Last day requests are accepted, or None to clear.
+
+    Returns:
+        The stored (start, end), or None once cleared.
+
+    Raises:
+        ValueError: Only one date given, or the end before the start.
+    """
+    if start is None and end is None:
+        await set_setting(CARRYOVER_PAYOUT_WINDOW, None)       # cleared: closed
+        return None
+    if start is None or end is None:
+        raise ValueError("Set both a start and an end date, or clear both.")
+    if end < start:
+        raise ValueError("The end date cannot be before the start date.")
+    await set_setting(CARRYOVER_PAYOUT_WINDOW, {"start": start.isoformat(), "end": end.isoformat()})
+    return start, end
+
+
+async def carryover_payout_open(today: date | None = None) -> bool:
+    """Whether staff may send carry-over and payout requests on a given day.
+
+    Args:
+        today: The day to test; defaults to today in Toronto.
+
+    Returns:
+        True only inside the window an admin set.
+    """
+    return window_is_open(await carryover_payout_window(), today or toronto_today())

@@ -12,6 +12,7 @@ import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import { buildTheme } from '../theme';
+import { carryoverClosedReason } from '../utils/carryoverWindow';
 import {
   EmployeeSession, RequestType, Supervisor, VerifiedEmail,
   clearSession, errorText, getRequestTypes, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
@@ -83,6 +84,9 @@ function Lead({ children }: { children: ReactNode }) {
  *
  * @returns The request page.
  */
+/** Shown on the carry-over card until the server answers, or when it cannot be reached. */
+const CARRYOVER_UNKNOWN = 'Not open right now.';
+
 export default function RequestPage() {
   const [step, setStep] = useState<Step>('email');
   const [type, setType] = useState<RequestType>('leave');
@@ -98,7 +102,8 @@ export default function RequestPage() {
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
-  const [carryoverOpen, setCarryoverOpen] = useState(false);   // closed until the server says otherwise
+  // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
+  const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
@@ -111,17 +116,19 @@ export default function RequestPage() {
   const [location, setLocation] = useState('');
   const [supervisorId, setSupervisorId] = useState('');
 
-  // Carry-over and payout are only offered while an admin has them open (#203).
+  // Carry-over and payout are only taken between the dates an admin set (#176).
   useEffect(() => {
     getRequestTypes()
-      .then((r) => setCarryoverOpen(r.data.carryover_payout_open))
-      .catch(() => setCarryoverOpen(false));                  // unknown: do not offer them
+      .then(({ data }) => setCarryoverClosed(
+        carryoverClosedReason(data.carryover_payout_open, data.carryover_payout_window, data.today),
+      ))
+      .catch(() => setCarryoverClosed(CARRYOVER_UNKNOWN));    // unknown: do not offer them
   }, []);
   // A closed form cannot stay picked (e.g. closed while the page was open).
   useEffect(() => {
-    if (!carryoverOpen && type === 'carryover-payout') setType('leave');
-  }, [carryoverOpen, type]);
-  const hiddenTypes: RequestType[] = carryoverOpen ? [] : ['carryover-payout'];
+    if (carryoverClosed && type === 'carryover-payout') setType('leave');
+  }, [carryoverClosed, type]);
+  const closedTypes: Partial<Record<RequestType, string>> = carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
 
   // Pick up where this address starts: a new hire's verified email, the
   // shared sign-in for a new request, or the landing page's note.
@@ -378,7 +385,7 @@ export default function RequestPage() {
             {step === 'form' && session && (
               <>
                 {error && <Alert severity="error">{error}</Alert>}
-                <TypeCards value={type} onPick={setType} hidden={hiddenTypes} />
+                <TypeCards value={type} onPick={setType} closed={closedTypes} />
                 <RequestForm type={type} values={values} onChange={setValue} />
                 {/* Days and balances after approval, once the form is complete. */}
                 <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} />
@@ -409,7 +416,7 @@ export default function RequestPage() {
                     ))}
                   </TextField>
                 </Box>
-                <TypeCards value={type} onPick={setType} hidden={hiddenTypes} />
+                <TypeCards value={type} onPick={setType} closed={closedTypes} />
                 <RequestForm type={type} values={values} onChange={setValue} />
                 <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire} startIcon={spinner}>
                   Send request

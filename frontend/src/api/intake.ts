@@ -37,13 +37,21 @@ export interface Supervisor {
 
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
+/** What the page needs to know about carry-over and payout right now. */
+export interface RequestTypesInfo {
+  carryover_payout_open: boolean;
+  /** The dates an admin set (YYYY-MM-DD), or null when none are set. */
+  carryover_payout_window: { start: string; end: string } | null;
+  /** Today in Toronto, as the server checked it. */
+  today: string;
+}
+
 /**
  * Which request types the page may offer right now.
  *
- * @returns {carryover_payout_open}; false outside the carry-over season.
+ * @returns Whether carry-over and payout are open, and the dates they open between.
  */
-export const getRequestTypes = () =>
-  intake.get<{ carryover_payout_open: boolean }>('/request-types');
+export const getRequestTypes = () => intake.get<RequestTypesInfo>('/request-types');
 
 const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day sign-in
 const LINK_KEYS = ['dashboard_token', 'dashboard_role', 'dashboard_uid', 'dashboard_exp'];   // sessionStorage, from an emailed link

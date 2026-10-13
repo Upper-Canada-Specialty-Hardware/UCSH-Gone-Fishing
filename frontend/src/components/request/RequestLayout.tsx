@@ -103,30 +103,35 @@ const TYPE_ICONS: Record<RequestType, ReactNode> = {
  *
  * @param props.value - The chosen form.
  * @param props.onPick - Called with the form picked.
- * @param props.hidden - Forms not offered right now (carry-over outside its season).
+ * @param props.closed - Forms not taken right now, each with the reason shown
+ *   on its greyed card (carry-over and payout outside HR's dates).
  * @returns The group of cards.
  */
-export function TypeCards({ value, onPick, hidden = [] }: {
-  value: RequestType; onPick: (t: RequestType) => void; hidden?: RequestType[];
+export function TypeCards({ value, onPick, closed = {} }: {
+  value: RequestType; onPick: (t: RequestType) => void; closed?: Partial<Record<RequestType, string>>;
 }) {
   const theme = useTheme();
-  const shown = REQUEST_TYPES.filter((t) => !hidden.includes(t.value));   // closed forms are left out
   return (
     <Box role="group" aria-label="What is the request for?"
-      sx={{ display: 'grid', gap: 1.25, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: `repeat(${shown.length}, minmax(0, 1fr))` } }}>
-      {shown.map((t) => {
-        const on = value === t.value;
+      sx={{ display: 'grid', gap: 1.25, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: `repeat(${REQUEST_TYPES.length}, minmax(0, 1fr))` } }}>
+      {REQUEST_TYPES.map((t) => {
+        const reason = closed[t.value];                          // set only while the form is closed
+        const on = value === t.value && !reason;
         return (
           <ButtonBase
             key={t.value}
             aria-pressed={on}
+            disabled={!!reason}                                  // greyed, cannot be picked
+            aria-disabled={!!reason}
             onClick={() => onPick(t.value)}
             sx={{
               textAlign: 'left', justifyContent: 'flex-start', alignItems: 'stretch', alignContent: 'start', justifyItems: 'start',
               display: 'grid', gap: 0.5, p: 1.5, borderRadius: '12px', transition: FADE,
               border: `1.5px solid ${on ? theme.palette.primary.main : theme.tokens.line2}`,
-              bgcolor: on ? theme.tokens.primarySoft : 'background.paper',
+              bgcolor: on ? theme.tokens.primarySoft : reason ? theme.tokens.chip : 'background.paper',
               boxShadow: on ? `0 0 0 1px ${theme.palette.primary.main} inset` : 'none',
+              opacity: reason ? 0.6 : 1,
+              '&.Mui-disabled': { pointerEvents: 'auto', cursor: 'not-allowed' },   // keeps the not-allowed cursor
             }}
           >
             <Box sx={{
@@ -136,7 +141,8 @@ export function TypeCards({ value, onPick, hidden = [] }: {
               {TYPE_ICONS[t.value]}
             </Box>
             <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{t.label}</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35 }}>{t.hint}</Typography>
+            {/* The reason replaces the hint on a closed card. */}
+            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35 }}>{reason || t.hint}</Typography>
           </ButtonBase>
         );
       })}
