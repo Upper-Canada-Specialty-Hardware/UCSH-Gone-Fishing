@@ -6,6 +6,7 @@ than falling back to 123; changing the password ends every session.
 """
 
 import asyncio
+import re
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -72,12 +73,24 @@ def _headers(token):
 
 
 def test_every_admin_route_in_the_app_is_guarded():
+    """Call every admin operation the real app publishes, with no session.
+
+    Asks the app for its published API list instead of walking ``app.routes``,
+    which newer FastAPI keeps as nested routers. The guard is a router
+    dependency, so it refuses before any path or body check runs.
+    """
     from app.main import app
-    admin_routes = [r for r in app.routes if getattr(r, "path", "").startswith(admin_auth.ADMIN_PATH)]
-    assert len(admin_routes) > 40                                       # the whole admin dashboard
-    for route in admin_routes:
-        calls = [d.call for d in route.dependant.dependencies]
-        assert admin_auth.admin_guard in calls, route.path
+    client = TestClient(app)                                            # no `with`: startup tasks stay off
+    calls = [
+        (method.upper(), re.sub(r"\{[^}]+\}", "1", path))               # any id stands in for a path value
+        for path, operations in app.openapi()["paths"].items()
+        if path.startswith(admin_auth.ADMIN_PATH)
+        for method in operations
+    ]
+    assert len(calls) > 40                                              # the whole admin dashboard
+    for method, path in calls:
+        response = client.request(method, path)
+        assert response.status_code == 401, f"{method} {path} answered {response.status_code}"
 
 
 def test_admin_calls_are_refused_without_a_session(client):
