@@ -4,6 +4,7 @@ import {
   Box, Typography, TextField, Button, Alert, CircularProgress, MenuItem, Link,
 } from '@mui/material';
 import { ThemeProvider, useTheme } from '@mui/material/styles';
+import { AnimatePresence, m } from 'motion/react';
 import RequestForm, {
   EMPTY_REQUEST, RequestValues, buildRequestBody, isRequestReady,
 } from '../components/RequestForm';
@@ -12,6 +13,7 @@ import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import { buildTheme } from '../theme';
+import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
   EmployeeSession, RequestType, Supervisor, VerifiedEmail,
   clearSession, errorText, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
@@ -29,6 +31,64 @@ import {
 type Step = 'email' | 'code' | 'form' | 'newhire' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
+
+/** The steps in the order they come, for which way a change of step slides. */
+const STEP_ORDER: Step[] = ['email', 'code', 'form', 'done'];
+
+/** A new step slides in from the side the person moved towards; the old one leaves the other way. */
+const STEP_MOTION = {
+  enter: (dir: number) => ({ opacity: 0, x: dir * 24 }),
+  show: { opacity: 1, x: 0, transition: SPRING },
+  leave: (dir: number) => ({ opacity: 0, x: dir * -24, transition: EXIT }),
+};
+
+/**
+ * A button's label with room made for a spinner while it works: the spinner
+ * opens in beside it and the label slides over instead of jumping.
+ *
+ * @param props.busy - Whether the button is working.
+ * @param props.children - The label.
+ * @returns The label.
+ */
+function BusyLabel({ busy, children }: { busy: boolean; children: ReactNode }) {
+  const calm = useCalm();
+  return (
+    <>
+      <AnimatePresence initial={false}>
+        {busy && (
+          <m.span
+            key="spin"
+            initial={{ opacity: 0, scale: 0.4, width: 0 }}
+            animate={{ opacity: 1, scale: 1, width: 24 }}
+            exit={{ opacity: 0, scale: 0.4, width: 0 }}
+            transition={calm ? INSTANT : undefined}
+            style={{ display: 'inline-flex', overflow: 'hidden', flex: 'none' }}
+          >
+            <CircularProgress size={16} color="inherit" />
+          </m.span>
+        )}
+      </AnimatePresence>
+      <span>{children}</span>
+    </>
+  );
+}
+
+/**
+ * A small ring that empties over the wait before a new code may be asked for.
+ * Hidden when less motion is asked for; the seconds in the link still count.
+ *
+ * @returns The ring.
+ */
+function ResendRing() {
+  return (
+    <Box component="svg" viewBox="0 0 16 16" aria-hidden
+      sx={{ width: 14, height: 14, flex: 'none', transform: 'rotate(-90deg)', '@media (prefers-reduced-motion: reduce)': { display: 'none' } }}>
+      <Box component="circle" cx={8} cy={8} r={6} sx={{ fill: 'none', stroke: (t) => t.palette.divider, strokeWidth: 2.5 }} />
+      <Box component="circle" cx={8} cy={8} r={6} pathLength={1}
+        sx={{ fill: 'none', stroke: (t) => t.palette.primary.main, strokeWidth: 2.5, strokeDasharray: 1, animation: `${KF.empty} ${RESEND_SECONDS}s linear both` }} />
+    </Box>
+  );
+}
 
 /** Each step's name in the side panel. */
 const STEP_LABELS: Record<Step, string> = {
@@ -98,6 +158,8 @@ export default function RequestPage() {
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
+  const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
+  const [misses, setMisses] = useState(0);                     // refused codes, to shake the boxes
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
@@ -155,6 +217,7 @@ export default function RequestPage() {
       setInfo(res.data.detail);                         // same text whoever they are
       setCode('');
       setResendIn(RESEND_SECONDS);
+      setSends((n) => n + 1);
       setStep('code');
     } catch (err) {
       setError(errorText(err, 'The code could not be sent. Try again in a few minutes.'));
@@ -193,6 +256,7 @@ export default function RequestPage() {
       }
     } catch (err) {
       setError(errorText(err, 'That code could not be checked. Try again.'));
+      setMisses((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -293,7 +357,7 @@ export default function RequestPage() {
     { title: 'You get an email', note: 'Your balance changes when it is approved' },
   ];
 
-  const spinner = busy ? <CircularProgress size={16} color="inherit" /> : undefined;   // inside a busy button
+  const dir = useDirection(step === 'newhire' ? 2 : STEP_ORDER.indexOf(step));
   const big = { py: 1.5, fontSize: 15 } as const;                                       // the main buttons' size
 
   return (
@@ -305,37 +369,32 @@ export default function RequestPage() {
         gridTemplateRows: { xs: 'auto 1fr', md: 'auto' },
       }}>
         {/* Signed in, the top bar already shows the name, and no sign-in steps are left to show. */}
-        <SidePanel words={words} steps={signedInPage ? [] : steps} brand={!signedInPage} />
+        <SidePanel words={words} steps={signedInPage ? [] : steps} brand={!signedInPage} glow={mood ? MOODS[mood].glow : undefined} />
 
         <Box component="main" sx={{ px: { xs: 2, sm: 5, md: 'clamp(16px, 5vw, 64px)' }, py: { xs: 3, md: 6 }, display: 'grid', alignContent: { xs: 'start', md: 'center' } }}>
+          <AnimatePresence mode="wait" initial={false} custom={dir}>
+          <m.div key={step} custom={dir} variants={STEP_MOTION} initial="enter" animate="show" exit="leave" style={{ width: 'min(520px, 100%)', minWidth: 0 }}>
           <Box
-            key={step}                                  // a new step replays the entrance
             sx={{
-              width: 'min(520px, 100%)', display: 'grid', gap: 2.25,
-              // Each part rises in, one after another; off for people who ask for less motion.
-              '@media (prefers-reduced-motion: no-preference)': {
-                '& > *': { animation: 'rise .45s ease-out both' },
-                '& > *:nth-of-type(2)': { animationDelay: '.05s' },
-                '& > *:nth-of-type(3)': { animationDelay: '.1s' },
-                '& > *:nth-of-type(n+4)': { animationDelay: '.15s' },
-              },
-              '@keyframes rise': { from: { opacity: 0, transform: 'translateY(8px)' } },
+              display: 'grid', gap: 2.25,
+              // Each part rises in, one after another.
+              ...staggerChildren({ step: 50, max: 3, dur: 450 }),
             }}
           >
             {step === 'email' && (
               <>
-                {notice && <Alert severity="info">{notice}</Alert>}
+                <Fold show={!!notice}><Alert severity="info">{notice}</Alert></Fold>
                 <Heading>Sign in</Heading>
                 <Lead>We email you a 6-digit code to confirm it is you. You then stay signed in on this device for 30 days.</Lead>
-                {error && <Alert severity="error">{error}</Alert>}
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <TextField
                   label="Your email" type="email" autoComplete="email" autoFocus
                   placeholder="you@ucsh.com or your personal email"
                   value={email} onChange={(e) => setEmail(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && emailOk && !busy && sendCode()}
                 />
-                <Button variant="contained" size="large" sx={big} disabled={!emailOk || busy} onClick={sendCode} startIcon={spinner}>
-                  Email me a code
+                <Button variant="contained" size="large" sx={big} disabled={!emailOk || busy} onClick={sendCode}>
+                  <BusyLabel busy={busy}>Email me a code</BusyLabel>
                 </Button>
                 <Typography variant="body2" color="text.secondary">
                   New and no work email yet? Use your personal email. Your supervisor is asked to add you.
@@ -347,30 +406,40 @@ export default function RequestPage() {
               <>
                 <Heading>Check your email</Heading>
                 <Lead>{info || `Sent to ${email.trim()}.`} Check your junk folder if it is not there.</Lead>
-                {error && <Alert severity="error">{error}</Alert>}
-                <CodeBoxes value={code} onChange={setCode} onEnter={() => code.length === 6 && !busy && checkCode()} />
-                <Button variant="contained" size="large" sx={big} disabled={code.length !== 6 || busy} onClick={checkCode} startIcon={spinner}>
-                  Continue
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
+                <CodeBoxes value={code} onChange={setCode} onEnter={() => code.length === 6 && !busy && checkCode()} misses={misses} />
+                <Button variant="contained" size="large" sx={big} disabled={code.length !== 6 || busy} onClick={checkCode}>
+                  <BusyLabel busy={busy}>Continue</BusyLabel>
                 </Button>
-                <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Link component="button" variant="body2" onClick={() => { setStep('email'); setError(''); }}>Use a different email</Link>
-                  <Link component="button" variant="body2" disabled={resendIn > 0 || busy} onClick={sendCode}
-                    sx={{ '&:disabled': { color: 'text.disabled', cursor: 'default', textDecoration: 'none' } }}>
-                    {resendIn > 0 ? `Send a new code (${resendIn}s)` : 'Send a new code'}
-                  </Link>
+                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                    {resendIn > 0 && <ResendRing key={sends} />}
+                    <Link component="button" variant="body2" disabled={resendIn > 0 || busy} onClick={sendCode}
+                      sx={{ fontVariantNumeric: 'tabular-nums', '&:disabled': { color: 'text.disabled', cursor: 'default', textDecoration: 'none' } }}>
+                      {resendIn > 0 ? `Send a new code (${resendIn}s)` : 'Send a new code'}
+                    </Link>
+                  </Box>
                 </Box>
               </>
             )}
 
             {step === 'form' && session && (
               <>
-                {error && <Alert severity="error">{error}</Alert>}
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <TypeCards value={type} onPick={setType} />
-                <RequestForm type={type} values={values} onChange={setValue} />
+                {/* Another form cross-fades in, and the block's height follows. */}
+                <AutoHeight>
+                  <AnimatePresence mode="wait" initial={false}>
+                    <m.div key={type} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: EXIT }}>
+                      <RequestForm type={type} values={values} onChange={setValue} />
+                    </m.div>
+                  </AnimatePresence>
+                </AutoHeight>
                 {/* Days and balances after approval, once the form is complete. */}
                 <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} />
-                <Button variant="contained" size="large" sx={big} disabled={!formReady || busy} onClick={submitAsEmployee} startIcon={spinner}>
-                  Send request
+                <Button variant="contained" size="large" sx={big} disabled={!formReady || busy} onClick={submitAsEmployee}>
+                  <BusyLabel busy={busy}>Send request</BusyLabel>
                 </Button>
               </>
             )}
@@ -382,7 +451,7 @@ export default function RequestPage() {
                   {email.trim()} is not in the Staff Directory yet. Tell us who you are and who your
                   supervisor is; they will be asked to add you, and your request goes to them once they do.
                 </Alert>
-                {error && <Alert severity="error">{error}</Alert>}
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <TextField label="Your first and last name" required value={name} onChange={(e) => setName(e.target.value)} />
                 <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' } }}>
                   <TextField label="Your location" required select value={location} onChange={(e) => setLocation(e.target.value)}>
@@ -397,22 +466,28 @@ export default function RequestPage() {
                   </TextField>
                 </Box>
                 <TypeCards value={type} onPick={setType} />
-                <RequestForm type={type} values={values} onChange={setValue} />
-                <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire} startIcon={spinner}>
-                  Send request
+                {/* Another form cross-fades in, and the block's height follows. */}
+                <AutoHeight>
+                  <AnimatePresence mode="wait" initial={false}>
+                    <m.div key={type} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: EXIT }}>
+                      <RequestForm type={type} values={values} onChange={setValue} />
+                    </m.div>
+                  </AnimatePresence>
+                </AutoHeight>
+                <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire}>
+                  <BusyLabel busy={busy}>Send request</BusyLabel>
                 </Button>
               </>
             )}
 
             {step === 'done' && (
               <>
-                {/* A tick that pops in. */}
+                {/* A tick that pops in, then draws itself. */}
                 <Box sx={(t) => ({
                   width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
-                  bgcolor: t.tokens.okSoft, color: 'success.main', fontSize: 30, fontWeight: 700,
-                  '@media (prefers-reduced-motion: no-preference)': { animation: 'pop .5s cubic-bezier(.2,1.6,.4,1) both !important' },
-                  '@keyframes pop': { from: { transform: 'scale(.4)', opacity: 0 } },
-                })}>✓</Box>
+                  bgcolor: t.tokens.okSoft, color: 'success.main',
+                  animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
+                })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
                 <Heading>{held ? 'Request saved' : 'Request sent'}</Heading>
                 <Lead>{doneText}</Lead>
                 <NextSteps items={next} />
@@ -423,6 +498,8 @@ export default function RequestPage() {
               </>
             )}
           </Box>
+          </m.div>
+          </AnimatePresence>
         </Box>
       </Box>
     </ThemeProvider>

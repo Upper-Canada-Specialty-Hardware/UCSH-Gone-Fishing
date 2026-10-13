@@ -1,5 +1,6 @@
 import { Box, ButtonBase, Paper, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import { CountUp, EASE, KF, riseAt } from '../Motion';
 import KindPill from '../KindPill';
 import { daysWaiting, requestKind, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
 
@@ -57,21 +58,27 @@ export default function AdminHome({ pending, heldCount, stuckCount, setupCount, 
       </Box>
 
       <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(210px, 100%), 1fr))' }}>
-        {tiles.map((t) => (
+        {tiles.map((t, i) => (
           <ButtonBase
             key={t.key}
             onClick={() => onGo(t.key)}
             sx={{
               display: 'grid', gap: 0.5, justifyContent: 'stretch', justifyItems: 'start', alignContent: 'start', textAlign: 'left', p: 2.25,
               borderRadius: `${theme.shape.borderRadius}px`, border: 1, borderColor: 'divider',
-              bgcolor: 'background.paper',
-              // A tile with work in it gets a terracotta edge so it is seen first.
-              boxShadow: t.n > 0 ? `inset 4px 0 0 ${theme.tokens.accent}` : 'none',
+              bgcolor: 'background.paper', overflow: 'hidden',
+              transition: 'border-color .2s ease, transform .12s ease',
               '&:hover': { borderColor: theme.tokens.line2 },
+              '&:active': { transform: 'scale(.98)' },
+              ...riseAt(i, { step: 50 }),
+              // A tile with work in it gets a terracotta edge so it is seen first; the edge draws down.
+              '&::before': t.n > 0 ? {
+                content: '""', position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, bgcolor: theme.tokens.accent,
+                transformOrigin: 'top', animation: `${KF.growY} .4s ${EASE.out} ${250 + i * 60}ms both`,
+              } : undefined,
             }}
           >
             <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>{t.label}</Typography>
-            <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 34, fontWeight: 600, lineHeight: 1.1 }}>{t.n}</Typography>
+            <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 34, fontWeight: 600, lineHeight: 1.1 }}><CountUp from={0} value={t.n} duration={0.7} /></Typography>
             <Typography variant="caption" sx={{ color: t.n > 0 ? 'text.primary' : 'text.secondary' }}>{t.note}</Typography>
           </ButtonBase>
         ))}
@@ -87,7 +94,7 @@ export default function AdminHome({ pending, heldCount, stuckCount, setupCount, 
         {oldest.length === 0 ? (
           <Typography color="text.secondary" sx={{ p: 2.5 }}>No requests are waiting.</Typography>
         ) : (
-          oldest.slice(0, 6).map((r) => {
+          oldest.slice(0, 6).map((r, i) => {
             const d = daysWaiting(r);
             return (
               <ButtonBase
@@ -99,6 +106,8 @@ export default function AdminHome({ pending, heldCount, stuckCount, setupCount, 
                   gridTemplateColumns: { xs: 'minmax(0,1fr) auto auto', sm: 'minmax(0,1.2fr) auto minmax(0,1fr) auto' },
                   gap: 2, alignItems: 'center', textAlign: 'left', px: 2.5, py: 1.25,
                   borderTop: 1, borderColor: 'divider', '&:hover': { bgcolor: theme.tokens.hover },
+                  // Oldest first, in time as well as place.
+                  ...riseAt(i, { delay: 150, step: 50, dur: 320 }),
                 }}
               >
                 <Typography noWrap sx={{ fontWeight: 600 }}>{requestWho(r)}</Typography>

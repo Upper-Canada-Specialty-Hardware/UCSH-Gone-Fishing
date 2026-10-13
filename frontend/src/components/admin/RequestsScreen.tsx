@@ -8,7 +8,9 @@ import { alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
 import AuditTrailDialog from '../AuditTrailDialog';
 import { STATUS_COLOR } from '../dataGridDefaults';
-import { LEAVE_MS, REDUCED_MOTION } from '../Motion';
+import { m } from 'motion/react';
+import { KF, LEAVE_MS, SPRING, Swap } from '../Motion';
+import PillToggle from '../PillToggle';
 import RequestDrawer, { ActionButton, RequestActions, rowActions } from './RequestDrawer';
 import {
   DIAGNOSTIC_LABELS, HeldRow, RequestRow, RequestView, TYPE_FILTERS, fromHeld, fromSharePoint,
@@ -167,19 +169,15 @@ export default function RequestsScreen(props: Props) {
       <Paper sx={{ overflow: 'hidden' }}>
         {/* Toolbar: the four views with their counts, then the type filter and search. */}
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: 1.5, borderBottom: 1, borderColor: 'divider' }}>
-          {VIEWS.map((v) => {
-            const on = v.key === view;
-            return (
-              <Chip
-                key={v.key}
-                label={`${v.label} ${byView[v.key].filter(matches).length}`}
-                onClick={() => { onView(v.key); setPage(0); }}
-                aria-pressed={on}
-                color={on ? 'primary' : 'default'}
-                variant={on ? 'filled' : 'outlined'}
-              />
-            );
-          })}
+          {/* One fill glides to the view picked; each count ticks when rows are decided. */}
+          <PillToggle
+            name="request-views" label="Views" value={view}
+            onChange={(k) => { onView(k); setPage(0); }}
+            options={VIEWS.map((v) => {
+              const n = byView[v.key].filter(matches).length;
+              return { key: v.key, label: <>{v.label} <Swap k={n}>{n}</Swap></> };
+            })}
+          />
           <TextField
             select size="small" value={type} label="Type"
             onChange={(e) => { setType(e.target.value); setPage(0); }}
@@ -217,10 +215,12 @@ export default function RequestsScreen(props: Props) {
                   <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }} />
                 </TableRow>
               </TableHead>
-              <TableBody>
+              {/* A new search, filter or page fades its rows in. */}
+              <TableBody key={`${view}|${type}|${query}|${page}|${rowsPerPage}`} sx={{ animation: `${KF.fade} .12s ease-out` }}>
                 {shown.map((r) => {
                   const main = rowActions(r)[0];               // the row shows its main action only
                   const late = r.waiting !== null && r.waiting > 7;
+                  const leaving = r.source === 'pending' && !!props.leaving?.has(`${r.request_type}-${r.id}`);
                   return (
                     <TableRow
                       key={r.key}
@@ -228,13 +228,14 @@ export default function RequestsScreen(props: Props) {
                       tabIndex={0}
                       onClick={() => setOpenKey(r.key)}
                       onKeyDown={(e) => { if (e.key === 'Enter') setOpenKey(r.key); }}
-                      sx={{
-                        cursor: 'pointer',
-                        // A decided pending row fades and drifts off before it is removed.
-                        transition: `opacity ${LEAVE_MS}ms ease, transform ${LEAVE_MS}ms ease`,
-                        [`@media ${REDUCED_MOTION}`]: { transition: 'none' },
-                        ...(r.source === 'pending' && props.leaving?.has(`${r.request_type}-${r.id}`) && { opacity: 0, transform: 'translateX(16px)' }),
-                      }}
+                      // A decided pending row fades and drifts off; once it is gone the rows below slide up.
+                      component={m.tr}
+                      layout="position"
+                      layoutDependency={shown.length}
+                      initial={false}
+                      animate={leaving ? { opacity: 0, x: 16 } : { opacity: 1, x: 0 }}
+                      transition={leaving ? { duration: LEAVE_MS / 1000, ease: 'easeOut' } : SPRING}
+                      sx={{ cursor: 'pointer' }}
                     >
                       <TableCell>
                         <Typography sx={{ fontWeight: 600, whiteSpace: { sm: 'nowrap' } }}>{r.who}</Typography>
