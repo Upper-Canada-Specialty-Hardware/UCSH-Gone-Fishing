@@ -12,8 +12,9 @@ import AddEmployee from '../components/AddEmployee';
 import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
 import {
-  AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, Loading, SPRING, Seen, Swap, leaveDelay, riseAt, staggerChildren, useDirection,
+  AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, riseAt, staggerChildren, useDirection,
 } from '../components/Motion';
+import { TeamSkeleton } from '../components/Skeletons';
 import PillToggle from '../components/PillToggle';
 import { InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline, VacationRings } from '../components/manager/Charts';
 import {
@@ -196,7 +197,7 @@ export default function ManagerDashboard() {
   const teamShown = q ? members.filter((mem) => (mem.name || '').toLowerCase().includes(q)) : members;
   const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
 
-  if (loading) return <Loading />;
+  if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
   }
