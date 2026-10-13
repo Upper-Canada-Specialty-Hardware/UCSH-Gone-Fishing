@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { Box, Paper, Skeleton } from '@mui/material';
+import { Box, Paper, Skeleton, Typography } from '@mui/material';
 import { KF } from './Motion';
 
 /*
@@ -8,8 +8,8 @@ import { KF } from './Motion';
  * The shimmer is a CSS animation, so the app's reduced-motion rule stills it.
  */
 
-/** Hides text from the eye but not from screen readers. */
-const SR_ONLY = { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' } as const;
+/** Hides text from the eye but not from screen readers. Sizes are px strings: in sx a bare 1 means 100%. */
+const SR_ONLY = { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' } as const;
 
 /** Tiles in a row, the same grid the dashboards use. */
 const TILE_GRID = (min: number) => ({ display: 'grid', gap: 2, gridTemplateColumns: `repeat(auto-fit, minmax(min(${min}px, 100%), 1fr))` });
@@ -195,6 +195,85 @@ export function TeamSkeleton({ tab }: { tab: string }) {
         </>
       ) : (
         <PanelBlock h={tab === 'calendar' ? 360 : 300} />
+      )}
+    </Frame>
+  );
+}
+
+/** A table's rows: a header line, then rows of cells. @param props.rows - How many rows. */
+function TableRows({ rows }: { rows: number }) {
+  return (
+    <>
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr) 90px', gap: 2, px: 2, py: 0.75, borderBottom: 1, borderColor: 'divider' }}>
+        {[70, 50, 60, 40].map((w, i) => <Line key={i} lh={24} w={w} h={10} />)}
+      </Box>
+      {Array.from({ length: rows }, (_, r) => (
+        <Box key={r} sx={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr) 90px', gap: 2, alignItems: 'center', px: 2, py: 2, borderBottom: 1, borderColor: 'divider' }}>
+          <Line lh={24} w="70%" h={14} />
+          <Line lh={24} w={96} h={22} />
+          <Line lh={24} w="60%" h={12} />
+          <Bar w={72} h={24} sx={{ borderRadius: 999 }} />
+        </Box>
+      ))}
+    </>
+  );
+}
+
+/**
+ * The admin dashboard's main area while it loads, shaped like the screen
+ * that will open: home's greeting, tiles and waiting list; the requests
+ * table with its toolbar; or a panel. The screen's real title shows at once.
+ *
+ * @param props.screen - The screen that will open.
+ * @param props.table - Whether it is a view of the requests table.
+ * @param props.title - Its title, shown above every screen but home.
+ * @returns The skeleton.
+ */
+export function AdminSkeleton({ screen, table, title }: { screen: string; table: boolean; title?: string }) {
+  return (
+    <Frame label="Loading the admin dashboard…">
+      {title && <Typography variant="h5">{title}</Typography>}
+      {screen === 'home' ? (
+        <Box sx={{ display: 'grid', gap: 3 }}>
+          <Box><Line lh={42} w="min(260px, 70%)" h={32} /><Line lh={24} w="min(340px, 90%)" h={14} /></Box>
+          <Box sx={TILE_GRID(210)}>
+            {Array.from({ length: 4 }, (_, i) => (
+              <Paper key={i} sx={{ p: 2.25, display: 'grid', gap: 0.5 }}>
+                <Line lh={20} w="55%" h={12} />
+                <Line lh={37} w={56} h={28} />
+                <Line lh={20} w="75%" h={10} />
+              </Paper>
+            ))}
+          </Box>
+          <Paper sx={{ overflow: 'hidden' }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', px: 2.5, py: 1.75, borderBottom: 1, borderColor: 'divider' }}>
+              <Line lh={24} w={140} h={14} /><Line lh={24} w={60} h={12} />
+            </Box>
+            {Array.from({ length: 6 }, (_, i) => (
+              // Phones drop the date column, as the real list does.
+              <Box key={i} sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0,1fr) auto auto', sm: 'minmax(0,1.2fr) auto minmax(0,1fr) auto' }, gap: 2, alignItems: 'center', px: 2.5, py: 1.25, borderTop: 1, borderColor: 'divider' }}>
+                <Line lh={24} w="60%" h={14} /><Bar w={84} h={22} sx={{ borderRadius: 999 }} />
+                <Box sx={{ display: { xs: 'none', sm: 'block' } }}><Line lh={24} w="50%" h={12} /></Box>
+                <Bar w={56} h={12} />
+              </Box>
+            ))}
+          </Paper>
+        </Box>
+      ) : table ? (
+        <>
+        {/* Each view has a line above its table saying what it holds. */}
+        <Box sx={{ mt: -1.5 }}><Line lh={24} w="min(420px, 80%)" h={14} /></Box>
+        <Paper sx={{ overflow: 'hidden' }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: 1.5, borderBottom: 1, borderColor: 'divider' }}>
+            {[96, 140, 76, 64].map((w, i) => <Bar key={i} w={w} h={32} sx={{ borderRadius: 999 }} />)}
+            <Box sx={{ flex: 1 }} />
+            <Bar w={150} h={40} /><Bar w={200} h={40} sx={{ maxWidth: '100%' }} />
+          </Box>
+          <TableRows rows={8} />
+        </Paper>
+        </>
+      ) : (
+        <PanelBlock h={360} />
       )}
     </Frame>
   );
