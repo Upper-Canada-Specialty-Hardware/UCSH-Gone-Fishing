@@ -8,8 +8,9 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  employee dashboard token (the same signed token the emailed
                  links carry). Anyone else gets a short "verified email" token
                  to carry into the new-hire path.
-* GET /supervisors, POST /held - the new-hire path, both needing that
-                 verified-email token: list the supervisors to pick from, then
+* GET /departments, GET /supervisor-search, POST /held - the new-hire
+                 path, all needing that verified-email token: the departments
+                 to pick from, a typed search for the supervisor in one, then
                  hold a request until the supervisor adds the person
                  (services/held_requests.py).
 
@@ -28,7 +29,7 @@ from app.config import settings
 from app.graph.email import send_email
 from app.services import email_codes, held_requests
 from app.services.dashboard_tokens import generate_dashboard_token
-from app.services.employee import LOCATION_PROVINCE_MAP, get_employee_by_email, is_manager
+from app.services.employee import get_employee_by_email, is_manager
 from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,17 @@ class VerifiedEmail(BaseModel):
 
 
 class HeldRequestBody(BaseModel):
-    """Body of POST /held: who they are, who supervises them, and the form."""
+    """Body of POST /held: who they are, who supervises them, and the form.
+
+    The supervisor is supervisor_id (picked from the search) or
+    supervisor_email (typed when the search did not find them), not both.
+    """
     verified: VerifiedEmail
-    name: str
-    location: str
-    supervisor_id: str
+    first_name: str
+    last_name: str
+    department: str
+    supervisor_id: str | None = None
+    supervisor_email: str | None = None
     request_type: str
     form: dict
 
@@ -211,9 +218,9 @@ async def verify_code(body: VerifyRequest):
     return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
 
 
-@router.get("/supervisors")
-async def supervisors(email: str = Query(...), exp: str = Query(...), token: str = Query(...)):
-    """The supervisors and locations a person not on staff can pick from.
+@router.get("/departments")
+async def departments(email: str = Query(...), exp: str = Query(...), token: str = Query(...)):
+    """The departments a person not on staff can pick from.
 
     Needs the verified-email token, so the staff list is never public.
 
@@ -223,13 +230,34 @@ async def supervisors(email: str = Query(...), exp: str = Query(...), token: str
         token: See email.
 
     Returns:
-        {"supervisors": [{"id", "name", "location"}], "locations": [...]}.
+        {"departments": [...]} as the Staff Directory spells them.
     """
     _require_verified(email, exp, token)
-    return {
-        "supervisors": await held_requests.list_supervisors(),
-        "locations": list(LOCATION_PROVINCE_MAP),
-    }
+    return {"departments": await held_requests.list_departments()}
+
+
+@router.get("/supervisor-search")
+async def supervisor_search(
+    department: str = Query(...), q: str = Query(""),
+    email: str = Query(...), exp: str = Query(...), token: str = Query(...),
+):
+    """People in a department whose name contains the typed text.
+
+    Anyone in the department, so a newly made supervisor is found too. Only a
+    few names per search, and none until two letters are typed.
+
+    Args:
+        department: The department picked.
+        q: What was typed.
+        email: Verified-email token fields, as query parameters.
+        exp: See email.
+        token: See email.
+
+    Returns:
+        {"people": [{"id", "name"}]}.
+    """
+    _require_verified(email, exp, token)
+    return {"people": await held_requests.search_department(department, q)}
 
 
 @router.post("/held")
@@ -237,7 +265,7 @@ async def hold(body: HeldRequestBody):
     """Hold a request from someone not on staff and email their supervisor.
 
     Args:
-        body: The verified-email token, name, location, supervisor and form.
+        body: The verified-email token, name, department, supervisor and form.
 
     Returns:
         {"status": "held", "supervisor_name"}.
@@ -255,7 +283,9 @@ async def hold(body: HeldRequestBody):
         raise HTTPException(status_code=409, detail="You are in the Staff Directory now. Start again to sign in.")
     try:
         row = await held_requests.hold_request(
-            email, body.name, body.location, body.supervisor_id, body.request_type, body.form,
+            email, f"{body.first_name} {body.last_name}", body.department,
+            body.supervisor_id, body.request_type, body.form,
+            supervisor_email=body.supervisor_email,
         )
     except (held_requests.HoldError, RequestFormError) as e:
         raise HTTPException(status_code=400, detail=str(e))

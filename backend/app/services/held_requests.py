@@ -6,7 +6,7 @@ in a form. Nothing can route that request yet (no balances, no manager), so:
 
 1. ``hold_request`` keeps it in the held_requests table and emails the
    supervisor a link to their dashboard's Add Employee tab, prefilled with the
-   person's name, email and location.
+   person's name, email and department.
 2. ``remind_held_requests`` (hourly, from tasks/held_request_reminders.py)
    emails the supervisor once more after 2 business days and the admins after 5.
 3. ``release_held_requests`` runs when Add Employee creates a record with that
@@ -41,7 +41,6 @@ from app.models.mixins import utcnow
 from app.services.dashboard_tokens import generate_dashboard_url
 from app.services.employee import (
     ADMIN_NAMES,
-    LOCATION_PROVINCE_MAP,
     get_employee_by_email,
     get_employee_by_name,
 )
@@ -104,19 +103,19 @@ def toronto_date(moment: datetime) -> date:
     return moment.astimezone(TORONTO).date()
 
 
-def add_employee_url(supervisor_id: str, name: str, email: str, location: str) -> str:
+def add_employee_url(supervisor_id: str, name: str, email: str, department: str) -> str:
     """The supervisor's dashboard link that opens Add Employee prefilled.
 
     Args:
         supervisor_id: Staff Directory id of the supervisor.
         name: Person's name as they typed it.
         email: Their verified address.
-        location: Their location.
+        department: The department they picked.
 
     Returns:
         A signed manager dashboard URL with add_* prefill parameters.
     """
-    prefill = urlencode({"add_name": name, "add_email": email, "add_location": location})
+    prefill = urlencode({"add_name": name, "add_email": email, "add_department": department})
     return f"{generate_dashboard_url('manager', supervisor_id)}&{prefill}"
 
 
@@ -139,70 +138,135 @@ def describe_form(request_type: str, form_data: dict) -> str:
     return f"{form_data['type_of_request']}, {form_data['days']} days"
 
 
-# ----- the supervisor list -----
+# ----- departments and the supervisor search -----
 
-async def list_supervisors() -> list[dict]:
-    """Everyone named as somebody's supervisor in the Staff Directory.
+MIN_SEARCH_LETTERS = 2      # typed letters before any name is shown
+MAX_SEARCH_RESULTS = 8      # names shown per search
+
+
+def _clean(text: str | None) -> str:
+    """Trimmed, single-spaced text; "" for None."""
+    return " ".join((text or "").split())
+
+
+async def _staff() -> list[dict]:
+    """Every Staff Directory record (the list is not indexed, so all of it)."""
+    return await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+
+
+async def list_departments() -> list[str]:
+    """The departments a new starter can pick, as the Staff Directory spells them.
 
     Returns:
-        [{"id", "name", "location"}] sorted by name, the people a new hire
-        can pick from.
+        Each distinct non-empty Department value once (case ignored), sorted.
     """
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    by_name = {
-        (s.get("fields", {}).get("Title") or "").strip().lower(): s for s in staff
-    }
-    names: set[str] = set()
-    for s in staff:                                            # AllManagers holds the supervisors
-        for entry in s.get("fields", {}).get("AllManagers") or []:
-            if isinstance(entry, dict) and entry.get("LookupValue"):
-                names.add(entry["LookupValue"].strip().lower())
-    supervisors = []
-    for name in names:
-        record = by_name.get(name)
-        if record:                                             # only those with a staff record
-            f = record.get("fields", {})
-            supervisors.append({"id": str(record["id"]), "name": f.get("Title", ""),
-                                "location": f.get("Location", "")})
-    return sorted(supervisors, key=lambda s: s["name"].lower())
+    seen: dict[str, str] = {}
+    for record in await _staff():
+        department = _clean(record.get("fields", {}).get("Department"))
+        if department:
+            seen.setdefault(department.lower(), department)    # first spelling wins
+    return sorted(seen.values(), key=str.lower)
+
+
+def _in_department(record: dict, department: str) -> bool:
+    """Whether a staff record is in the department (case and spacing ignored)."""
+    return _clean(record.get("fields", {}).get("Department")).lower() == _clean(department).lower()
+
+
+async def search_department(department: str, query: str) -> list[dict]:
+    """People in a department whose name contains the typed text.
+
+    Anyone in the department can be picked, not only people who supervise
+    someone already: a newly made supervisor has nobody under them yet.
+
+    Args:
+        department: One of list_departments.
+        query: What the new starter typed.
+
+    Returns:
+        Up to MAX_SEARCH_RESULTS [{"id", "name"}] sorted by name; none until
+        MIN_SEARCH_LETTERS letters are typed.
+    """
+    query = _clean(query).lower()
+    if len(query) < MIN_SEARCH_LETTERS:
+        return []
+    matches = [
+        {"id": str(r["id"]), "name": _clean(r.get("fields", {}).get("Title"))}
+        for r in await _staff()
+        if _in_department(r, department) and query in _clean(r.get("fields", {}).get("Title")).lower()
+    ]
+    return sorted(matches, key=lambda m: m["name"].lower())[:MAX_SEARCH_RESULTS]
+
+
+async def find_supervisor(department: str, supervisor_id: str | None, supervisor_email: str | None) -> dict:
+    """The supervisor a new starter named, by search pick or by work email.
+
+    Args:
+        department: The department the new starter picked.
+        supervisor_id: Staff Directory id from search_department, or None.
+        supervisor_email: The work email typed when the search did not find
+            them, or None. Anyone on staff, in any department.
+
+    Returns:
+        {"id", "name", "email"} of the supervisor.
+
+    Raises:
+        HoldError: When neither or both are given, the person is not found or
+            not in the department, or has no email on file.
+    """
+    supervisor_id = _clean(supervisor_id)
+    supervisor_email = _clean(supervisor_email).lower()
+    if bool(supervisor_id) == bool(supervisor_email):
+        raise HoldError("Pick your supervisor, or type their work email.")
+    if supervisor_id:
+        record = next((r for r in await _staff() if str(r["id"]) == supervisor_id), None)
+        if record is None or not _in_department(record, department):
+            raise HoldError("Pick your supervisor from the search.")
+    else:
+        record = await get_employee_by_email(supervisor_email)
+        if record is None:
+            raise HoldError("Nobody on staff has that work email. Check it, or ask HR.")
+    fields = record.get("fields", {})
+    email = _clean(fields.get("EmailAddress"))
+    if not email:
+        raise HoldError("That supervisor has no email on file. Pick another, or ask HR.")
+    return {"id": str(record["id"]), "name": _clean(fields.get("Title")), "email": email}
 
 
 # ----- holding -----
 
 async def hold_request(
-    email: str, name: str, location: str, supervisor_id: str, request_type: str, form: dict,
+    email: str, name: str, department: str, supervisor_id: str | None, request_type: str, form: dict,
+    *, supervisor_email: str | None = None,
 ) -> HeldRequest:
     """Keep a request from someone not on staff, and email their supervisor.
 
     Args:
         email: Verified, normalised address.
         name: Their name as typed.
-        location: One of the Staff Directory locations.
-        supervisor_id: Staff Directory id from list_supervisors.
+        department: One of the Staff Directory departments.
+        supervisor_id: Staff Directory id from search_department, or None.
         request_type: "leave", "overtime" or "carryover-payout".
         form: The form body.
+        supervisor_email: The supervisor's work email, typed when the search
+            did not find them; used instead of supervisor_id.
 
     Returns:
         The stored row.
 
     Raises:
-        HoldError: On a bad name, location, supervisor or too many waiting.
+        HoldError: On a bad name, department, supervisor or too many waiting.
         RequestFormError: On a bad form.
     """
     name = " ".join((name or "").split())                      # collapse stray spaces
     if len(name.split(" ")) < 2:
         raise HoldError("Enter your first and last name.")
-    if location not in LOCATION_PROVINCE_MAP:
-        raise HoldError("Choose your location from the list.")
+    # The Staff Directory's own spelling, so Add Employee is prefilled with it.
+    department = next((d for d in await list_departments() if d.lower() == _clean(department).lower()), None)
+    if department is None:
+        raise HoldError("Choose your department from the list.")
     checked = parse_request_form(request_type, form)           # same checks as for staff
-
-    supervisor = next((s for s in await list_supervisors() if s["id"] == str(supervisor_id)), None)
-    if supervisor is None:
-        raise HoldError("Choose your supervisor from the list.")
-    supervisor_record = await get_employee_by_name(supervisor["name"])
-    supervisor_email = (supervisor_record or {}).get("fields", {}).get("EmailAddress", "")
-    if not supervisor_email:
-        raise HoldError("That supervisor has no email on file. Choose another, or ask HR.")
+    supervisor = await find_supervisor(department, supervisor_id, supervisor_email)
 
     async with async_session() as session:
         waiting = (await session.scalars(
@@ -211,9 +275,9 @@ async def hold_request(
         if len(waiting) >= MAX_OPEN_PER_EMAIL:
             raise HoldError("You already have several requests waiting. Your supervisor has been told.")
         row = HeldRequest(
-            email=email, name=name, location=location,
+            email=email, name=name, department=department,
             supervisor_id=supervisor["id"], supervisor_name=supervisor["name"],
-            supervisor_email=supervisor_email,
+            supervisor_email=supervisor["email"],
             request_type=request_type, form_data=checked.model_dump(mode="json"),
             status="held", created_at=utcnow(),
         )
@@ -229,12 +293,17 @@ async def hold_request(
     return row
 
 
+def _where(row: HeldRequest) -> str:
+    """Department, or the location older rows were held with."""
+    return row.department or row.location or ""
+
+
 def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
     """HTML for the supervisor: who, what, and the Add Employee link."""
-    link = add_employee_url(row.supervisor_id, row.name, row.email, row.location)
+    link = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "")
     lead = "Reminder: " if reminder else ""
     return (
-        f"<p>{lead}{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(row.location)}) "
+        f"<p>{lead}{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
         f"picked you as their supervisor and made a {REQUEST_LABELS[row.request_type]} "
         "on the UCSH Out of Office request page.</p>"
         f"<p><b>{html.escape(describe_form(row.request_type, row.form_data))}</b></p>"
@@ -270,7 +339,7 @@ async def _email_admins(row: HeldRequest) -> None:
         logger.warning("No admin email found for held request #%s", row.id)
         return
     body = (
-        f"<p>{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(row.location)}) "
+        f"<p>{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
         f"has had a {REQUEST_LABELS[row.request_type]} on hold since "
         f"{toronto_date(row.created_at).isoformat()}, waiting for "
         f"{html.escape(row.supervisor_name)} to add them to the Staff Directory.</p>"
@@ -463,7 +532,8 @@ async def list_held_requests(include_closed: bool = False) -> list[dict]:
         rows = (await session.scalars(query)).all()
     return [
         {
-            "id": r.id, "email": r.email, "name": r.name, "location": r.location,
+            "id": r.id, "email": r.email, "name": r.name,
+            "department": r.department or "", "location": r.location or "",
             "supervisor_name": r.supervisor_name, "request_type": r.request_type,
             "summary": describe_form(r.request_type, r.form_data), "status": r.status,
             "created_at": r.created_at.isoformat() if r.created_at else None,

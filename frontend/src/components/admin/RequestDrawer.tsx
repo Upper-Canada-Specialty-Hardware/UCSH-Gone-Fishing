@@ -139,7 +139,7 @@ export default function RequestDrawer({ row, onClose, actions, processingEnabled
               {r.source === 'held' && (
                 <>
                   <dt>Email</dt>
-                  <dd>{r.raw.email} · {r.raw.location}</dd>
+                  <dd>{r.raw.email} · {r.raw.department || r.raw.location}</dd>
                 </>
               )}
             </Box>

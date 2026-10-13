@@ -107,10 +107,10 @@ export default function AdminDashboard() {
 
   // A held request's person, to prefill Add Employee from the Held Requests tab.
   const [addPrefill, setAddPrefill] = useState<
-    { title: string; email_address: string; location: string } | null
+    { title: string; email_address: string; department: string; location: string } | null
   >(null);
   const handleAddFromHeld = useCallback((row: HeldRow) => {
-    setAddPrefill({ title: row.name, email_address: row.email, location: row.location });
+    setAddPrefill({ title: row.name, email_address: row.email, department: row.department, location: row.location });
     setTab('add');                                     // the Add Employee screen
   }, [setTab]);
 

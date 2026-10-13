@@ -25,9 +25,11 @@ class HeldRequest(Base):
 
     # Verified, lowercased address; how adding the employee finds their requests.
     email: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    # Name and location as the person typed them; prefill Add Employee.
+    # Name and department as the person gave them; prefill Add Employee.
     name: Mapped[str] = mapped_column(String, nullable=False)
-    location: Mapped[str] = mapped_column(String, nullable=False)
+    department: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Rows held before #226 picked a location instead of a department.
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # The supervisor they picked: Staff Directory item id, plus the name and
     # email at the time, so the reminders do not depend on a later lookup.

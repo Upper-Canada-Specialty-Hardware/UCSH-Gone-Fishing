@@ -28,11 +28,10 @@ export interface VerifiedEmail {
   token: string;
 }
 
-/** One supervisor a new hire can pick. */
-export interface Supervisor {
+/** One person a new starter can pick as their supervisor. */
+export interface Person {
   id: string;
   name: string;
-  location: string;
 }
 
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
@@ -239,25 +238,39 @@ export const verifyCode = (email: string, code: string) =>
   intake.post('/verify', { email, code });
 
 /**
- * The supervisors and locations a new hire can choose from.
+ * The departments a new starter can choose from, as the Staff Directory spells them.
  *
  * @param verified - The token from verifyCode.
  * @throws AxiosError 401 when the token expired.
  */
-export const getSupervisors = (verified: VerifiedEmail) =>
-  intake.get('/supervisors', { params: verified });
+export const getDepartments = (verified: VerifiedEmail) =>
+  intake.get<{ departments: string[] }>('/departments', { params: verified });
+
+/**
+ * People in a department whose name contains the typed text (a few at most).
+ *
+ * @param verified - The token from verifyCode.
+ * @param department - The department picked.
+ * @param q - What was typed; nobody comes back for fewer than two letters.
+ * @throws AxiosError 401 when the token expired.
+ */
+export const searchSupervisors = (verified: VerifiedEmail, department: string, q: string) =>
+  intake.get<{ people: Person[] }>('/supervisor-search', { params: { ...verified, department, q } });
 
 /**
  * Hold a request from someone not on staff until their supervisor adds them.
  *
- * @param body - verified token, name, location, supervisor_id, request_type, form.
+ * @param body - verified token, name, department, the supervisor (supervisor_id
+ *   from the search, or supervisor_email), request_type and form.
  * @throws AxiosError 400 with a reason, 401 expired, 409 already on staff.
  */
 export const holdRequest = (body: {
   verified: VerifiedEmail;
-  name: string;
-  location: string;
-  supervisor_id: string;
+  first_name: string;
+  last_name: string;
+  department: string;
+  supervisor_id?: string;
+  supervisor_email?: string;
   request_type: RequestType;
   form: Record<string, unknown>;
 }) => intake.post('/held', body);
