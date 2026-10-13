@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -152,17 +152,26 @@ from app.routes.dashboard import router as dashboard_router
 from app.routes.email_api_log import router as email_api_log_router
 from app.routes.intake import router as intake_router
 from app.routes.self_service import router as self_service_router
+from app.routes.admin_auth import public_router as admin_sign_in_router, router as admin_password_router
+from app.services.admin_auth import admin_guard
+
+# Every /api/dashboard/admin/* call needs an admin session (#228). The guard
+# runs for each router at that prefix and checks only the /admin paths.
+ADMIN_GUARD = [Depends(admin_guard)]
 
 app.include_router(health_router)
 # Public request page sign-in: email a code, check it. Unauthenticated by design.
 app.include_router(intake_router, prefix="/api/intake", tags=["intake"])
 app.include_router(forms_router, prefix="/api/forms", tags=["forms"])
-app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # Same prefix as the dashboard router so the admin email-log lookup sits next
 # to the other /admin/* endpoints; kept in its own module to stay small.
-app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # An employee signed in on the request page submits a request (/me/requests/{type}).
-app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The admin password: sign in (public) and change it (behind the guard).
+app.include_router(admin_sign_in_router, prefix="/api/admin-auth", tags=["admin-auth"])
+app.include_router(admin_password_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])

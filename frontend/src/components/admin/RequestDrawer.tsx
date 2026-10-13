@@ -3,6 +3,7 @@ import { useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
 import KindPill from '../KindPill';
 import { DIAGNOSTIC_LABELS, OPEN_HELD, RequestRow } from './requestRows';
+import { riseAt, staggerChildren } from '../Motion';
 
 /** The balances shown in the panel, in the pending endpoint's keys. */
 const BALANCES: { key: string; label: string }[] = [
@@ -110,7 +111,8 @@ export default function RequestDrawer({ row, onClose, actions, processingEnabled
     <Drawer anchor="right" open={!!r} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 420 } } }}>
       {r && (
         <Box sx={{ display: 'grid', alignContent: 'start' }}>
-          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', p: 2, borderBottom: 1, borderColor: 'divider' }}>
+          {/* Once the panel has slid in, its sections settle top to bottom: who and what first. */}
+          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', p: 2, borderBottom: 1, borderColor: 'divider', ...riseAt(0, { delay: 120 }) }}>
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography sx={{ fontWeight: 700, fontSize: 17 }}>{r.who}</Typography>
               <Typography variant="body2" color="text.secondary">
@@ -121,7 +123,7 @@ export default function RequestDrawer({ row, onClose, actions, processingEnabled
             <IconButton aria-label="Close" onClick={onClose} size="small"><CloseIcon /></IconButton>
           </Box>
 
-          <Stack spacing={2} sx={{ p: 2 }}>
+          <Stack spacing={2} sx={{ p: 2, ...staggerChildren({ delay: 170, step: 50 }) }}>
             {/* What it is, in a short labelled list. */}
             <Box component="dl" sx={{ m: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 2, rowGap: 1, '& dt': { color: 'text.secondary', fontSize: 13 }, '& dd': { m: 0 } }}>
               <dt>Request</dt>
@@ -139,7 +141,7 @@ export default function RequestDrawer({ row, onClose, actions, processingEnabled
               {r.source === 'held' && (
                 <>
                   <dt>Email</dt>
-                  <dd>{r.raw.email} · {r.raw.location}</dd>
+                  <dd>{r.raw.email} · {r.raw.department || r.raw.location}</dd>
                 </>
               )}
             </Box>

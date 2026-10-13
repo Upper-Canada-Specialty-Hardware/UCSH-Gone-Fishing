@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Box, Typography, Paper, CircularProgress, Alert, Snackbar, Stack } from '@mui/material';
+import { Box, Typography, Paper, Alert, Snackbar, Stack } from '@mui/material';
 import TopBar from '../components/TopBar';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
 import AdminHome from '../components/admin/AdminHome';
@@ -15,7 +15,9 @@ import RequestsScreen from '../components/admin/RequestsScreen';
 import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
+import AdminPasswordCard from '../components/admin/AdminPasswordCard';
 import { Enter, leaveDelay } from '../components/Motion';
+import { AdminSkeleton } from '../components/Skeletons';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
 import {
   getAdminBalances,
@@ -58,6 +60,7 @@ const SCREEN_TITLES: Record<string, string> = {
   stuck: 'Stuck requests',
   emails: 'Email log',
   checks: 'Data checks',
+  password: 'Admin password',
 };
 
 /** The four screens that are views of the one requests table. */
@@ -105,10 +108,10 @@ export default function AdminDashboard() {
 
   // A held request's person, to prefill Add Employee from the Held Requests tab.
   const [addPrefill, setAddPrefill] = useState<
-    { title: string; email_address: string; location: string } | null
+    { title: string; email_address: string; department: string; location: string } | null
   >(null);
   const handleAddFromHeld = useCallback((row: HeldRow) => {
-    setAddPrefill({ title: row.name, email_address: row.email, location: row.location });
+    setAddPrefill({ title: row.name, email_address: row.email, department: row.department, location: row.location });
     setTab('add');                                     // the Add Employee screen
   }, [setTab]);
 
@@ -282,15 +285,18 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  // Resolves true once the link is on the clipboard, so the button can confirm in place.
   const handleCopyEmployeeLink = useCallback(async (targetId: string) => {
     try {
       const res = await getEmployeeDashboardLink(targetId);
       await navigator.clipboard.writeText(res.data.url);
       setSnack({ open: true, message: 'Employee dashboard link copied to clipboard', severity: 'success' });
+      return true;
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : 'Failed to copy link';
       setSnack({ open: true, message, severity: 'error' });
+      return false;
     }
   }, []);
 
@@ -399,6 +405,7 @@ export default function AdminDashboard() {
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
       { key: 'checks', label: 'Data checks' },
+      { key: 'password', label: 'Admin password' },
     ] },
   ];
 
@@ -418,9 +425,7 @@ export default function AdminDashboard() {
           sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
         >
           {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
-              <CircularProgress />
-            </Box>
+            <AdminSkeleton screen={tab} table={!!REQUEST_VIEWS[tab]} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
           ) : (
             <>
               {!processingEnabled && (
@@ -523,6 +528,8 @@ export default function AdminDashboard() {
               )}
 
               {tab === 'holidays' && <HolidaysManager />}
+
+              {tab === 'password' && <AdminPasswordCard />}
               </Enter>
             </>
           )}

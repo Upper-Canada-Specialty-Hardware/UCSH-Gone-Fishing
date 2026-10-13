@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box, Button, Chip, Drawer, IconButton, MenuItem, Paper, Stack, Tab, Table, TableBody, TableCell,
   TableHead, TableRow, Tabs, TextField, Typography,
@@ -9,6 +9,7 @@ import { STATUS_COLOR } from '../dataGridDefaults';
 import { EmployeeSetupSummary } from '../EmployeeSetupList';
 import { getManagerAssignments } from '../../api/client';
 import { requestKind, requestWhat, requestWhen } from '../../utils/requestText';
+import { Enter, Swap } from '../Motion';
 
 /** One person as /admin/balances returns them, plus their managers once loaded. */
 interface Person {
@@ -47,8 +48,8 @@ interface Props {
   setup: EmployeeSetupSummary | null;
   /** Open someone's dashboard in a new tab. */
   onOpenDashboard: (id: string, role: 'employee' | 'manager') => void;
-  /** Copy someone's employee dashboard link. */
-  onCopyLink: (id: string) => void;
+  /** Copy someone's employee dashboard link; resolves true once it is on the clipboard. */
+  onCopyLink: (id: string) => Promise<boolean>;
   /** Email a manager their dashboard link. */
   onSendLink: (id: string) => void;
   /** Open the manager assignments screen. */
@@ -94,6 +95,18 @@ export default function StaffScreen({ employees, requests, setup, onOpenDashboar
   const [group, setGroup] = useState('No grouping');
   const [openId, setOpenId] = useState<string | null>(null);
   const [panelTab, setPanelTab] = useState(0);
+  const [copiedId, setCopiedId] = useState<string | null>(null);   // whose link shows "Copied" for a moment
+  const copiedTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
+
+  /** Copy the link and confirm on the button itself. @param id - The person. */
+  const copyLink = async (id: string) => {
+    if (await onCopyLink(id)) {
+      setCopiedId(id);
+      window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopiedId(null), 1600);
+    }
+  };
   // Manager names by employee id; /admin/balances does not carry them.
   const [managersById, setManagersById] = useState<Record<string, string[]> | null>(null);
 
@@ -252,7 +265,8 @@ export default function StaffScreen({ employees, requests, setup, onOpenDashboar
               <Tab label="Links" />
             </Tabs>
 
-            <Box sx={{ p: 2 }}>
+            {/* Each tab's body fades in as it opens. */}
+            <Enter key={panelTab} sx={{ p: 2 }}>
               {panelTab === 0 && (theirs.length === 0 ? (
                 <Typography color="text.secondary">No requests yet.</Typography>
               ) : (
@@ -288,7 +302,9 @@ export default function StaffScreen({ employees, requests, setup, onOpenDashboar
                     <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>Their own dashboard</Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                       <Button variant="contained" onClick={() => onOpenDashboard(person.id, 'employee')}>Open employee dashboard</Button>
-                      <Button variant="outlined" onClick={() => onCopyLink(person.id)}>Copy link</Button>
+                      <Button variant="outlined" color={copiedId === person.id ? 'success' : 'primary'} onClick={() => copyLink(person.id)}>
+                        <Swap k={copiedId === person.id ? 'done' : 'copy'}>{copiedId === person.id ? '✓ Copied' : 'Copy link'}</Swap>
+                      </Button>
                     </Stack>
                   </Box>
                   {/* Only someone who manages people has a team dashboard. */}
@@ -303,7 +319,7 @@ export default function StaffScreen({ employees, requests, setup, onOpenDashboar
                   )}
                 </Stack>
               )}
-            </Box>
+            </Enter>
           </Box>
         )}
       </Drawer>

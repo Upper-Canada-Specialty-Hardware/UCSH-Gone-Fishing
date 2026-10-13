@@ -1,6 +1,8 @@
 import { Box, ButtonBase, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
+import { AnimatePresence, m } from 'motion/react';
 import type { RequestType } from '../api/intake';
+import { EXIT, SPRING, Swap } from './Motion';
 
 /**
  * The leave types the backend accepts, worded exactly as the balance engine
@@ -115,12 +117,24 @@ function LeaveChips({ value, onPick }: { value: string; onPick: (t: string) => v
               sx={{
                 px: 1.5, py: 0.75, borderRadius: 999, fontSize: 13, fontWeight: on ? 700 : 500,
                 border: `1.5px solid ${on ? theme.palette.primary.main : theme.tokens.line2}`,
-                bgcolor: on ? 'primary.main' : 'background.paper',
+                bgcolor: on ? 'transparent' : 'background.paper',
                 color: on ? theme.tokens.primaryInk : 'text.primary',
-                transition: 'background-color .4s ease, color .4s ease, border-color .4s ease',  // follows the mood change
+                transition: 'background-color .4s ease, color .4s ease, border-color .4s ease, transform .12s ease',  // follows the mood change
+                '&:active': { transform: 'scale(.97)' },
               }}
             >
-              {t}
+              {/* One fill that glides from the old type to the new, across lines too. */}
+              {on && (
+                <m.span
+                  layoutId="leave-chip-fill"
+                  transition={SPRING}
+                  style={{
+                    position: 'absolute', inset: -1.5, borderRadius: 999, zIndex: 0, pointerEvents: 'none',
+                    background: theme.palette.primary.main, transition: 'background-color .4s ease',
+                  }}
+                />
+              )}
+              <span style={{ position: 'relative', zIndex: 1 }}>{t}</span>
             </ButtonBase>
           );
         })}
@@ -151,17 +165,26 @@ export default function RequestForm({ type, values: v, onChange }: Props) {
       <Stack spacing={2}>
         <LeaveChips value={v.leave_type} onPick={(t) => onChange('leave_type', t)} />
         <Box sx={ROW2}>
-          <TextField label={partial ? 'Date' : 'First day away'} required {...dateProps}
+          <TextField label={<Swap k={partial ? 'date' : 'first'}>{partial ? 'Date' : 'First day away'}</Swap>} required {...dateProps}
             value={v.start_date} onChange={field('start_date')} />
-          {partial ? (
-            <TextField label="Hours away" required type="number" value={v.partial_hours}
-              onChange={field('partial_hours')}
-              slotProps={{ htmlInput: { min: 0.5, max: 7.5, step: 0.5 } }}
-              helperText="In half-hour steps, less than a full 8-hour day." />
-          ) : (
-            <TextField label="Last day away" required {...dateProps}
-              value={v.end_date} onChange={field('end_date')} />
-          )}
+          {/* A part day asks for hours instead of a last day; the field cross-fades. */}
+          <AnimatePresence mode="wait" initial={false}>
+            <m.div
+              key={partial ? 'hours' : 'last'}
+              initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: EXIT }}
+              style={{ display: 'grid', minWidth: 0 }}
+            >
+              {partial ? (
+                <TextField label="Hours away" required type="number" value={v.partial_hours}
+                  onChange={field('partial_hours')}
+                  slotProps={{ htmlInput: { min: 0.5, max: 7.5, step: 0.5 } }}
+                  helperText="In half-hour steps, less than a full 8-hour day." />
+              ) : (
+                <TextField label="Last day away" required {...dateProps}
+                  value={v.end_date} onChange={field('end_date')} />
+              )}
+            </m.div>
+          </AnimatePresence>
         </Box>
         <TextField label="Notes (optional)" multiline minRows={2} value={v.notes} onChange={field('notes')}
           helperText="Shown to your manager with the request." />

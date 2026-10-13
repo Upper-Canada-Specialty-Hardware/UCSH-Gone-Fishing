@@ -798,7 +798,7 @@ async def team_create_employee(user: AuthUser, body: dict):
 # --- Holidays editor ---------------------------------------------------------
 # The app itself never writes holidays during request processing; these exist so
 # HR maintains the calendar from the admin dashboard instead of the SharePoint
-# list. Unauthenticated like every other /admin/* route; writes sit behind the
+# list. Behind the admin password like every other /admin/* route; writes sit behind the
 # PROCESSING_ENABLED gate like the other admin writes.
 
 @router.get("/admin/holidays")
@@ -921,8 +921,8 @@ async def admin_create_employee(body: dict):
 
     The same creation as the manager version (`POST /team/employees`), sharing
     the same service, with two differences that follow from where it lives:
-    the admin dashboard carries no signed-in identity, so this is unauthenticated
-    like every other /admin/* route, and there is no implicit team — the admin
+    the admin dashboard carries no signed-in person (only the shared admin
+    password, #228), and there is no implicit team — the admin
     chooses the supervisor(s), passed as `manager_ids` (SharePoint user ids from
     the /admin/sp-users picker), rather than the record being assigned to the
     caller.
@@ -1287,9 +1287,8 @@ async def admin_validate_employee(employee_id: str):
     notification. Read-only, so it is deliberately NOT gated on
     PROCESSING_ENABLED (safe to run in reporting-only mode).
 
-    Part of the unauthenticated admin dashboard: like every other /admin/*
-    endpoint it carries no token or role check (the admin dashboard is an open
-    backdoor by design, and already exposes the same employee data elsewhere).
+    Behind the admin password like every other /admin/* endpoint (#228); no
+    per-person role check, as the admin dashboard already shows this data.
     """
     try:
         return await validate_employee_setup(employee_id)
@@ -1697,7 +1696,7 @@ async def admin_manager_assignments():
 async def admin_held_requests(include_closed: bool = Query(False)):
     """Requests from the request page waiting for their submitter to be added.
 
-    Unauthenticated like every other /admin/* route.
+    Behind the admin password like every other /admin/* route (#228).
 
     Args:
         include_closed: Also list released and cancelled ones.
@@ -1751,7 +1750,7 @@ async def admin_cancel_held_request(held_id: int):
 async def admin_request_columns():
     """Report whether SubmitterEmail and RequestSource exist on the request lists.
 
-    Unauthenticated like every other /admin/* route. Read only.
+    Behind the admin password like every other /admin/* route (#228). Read only.
 
     Returns:
         The report from request_submitter.ensure_request_columns.
@@ -1775,11 +1774,104 @@ async def admin_add_request_columns():
     return await ensure_request_columns(create=True)
 
 
+class CarryoverPayoutWindow(BaseModel):
+    """The dates carry-over and payout requests are accepted between.
+
+    Both None clears the window, which closes them.
+    """
+
+    start: dt_date | None = None
+    end: dt_date | None = None
+
+
+def _window_body(window, today) -> dict:
+    """The window as the admin card reads it.
+
+    Args:
+        window: (start, end) or None.
+        today: Today in Toronto.
+
+    Returns:
+        {"start", "end" (ISO or None), "open": bool, "today": ISO}.
+    """
+    from app.services.app_settings import window_is_open
+    return {
+        "start": window[0].isoformat() if window else None,
+        "end": window[1].isoformat() if window else None,
+        "open": window_is_open(window, today),
+        "today": today.isoformat(),
+    }
+
+
+@router.get("/admin/carryover-payout")
+async def admin_carryover_payout_window():
+    """The dates carry-over and payout requests are open between (#176).
+
+    Unauthenticated like every other /admin/* route. Read only.
+
+    Returns:
+        {"start", "end", "open", "today"}; no dates and closed by default.
+    """
+    from app.services.app_settings import carryover_payout_window, toronto_today
+    return _window_body(await carryover_payout_window(), toronto_today())
+
+
+@router.put("/admin/carryover-payout")
+async def admin_set_carryover_payout_window(body: CarryoverPayoutWindow):
+    """Set or clear the dates carry-over and payout requests are open (#176).
+
+    Only new requests from the request page, held requests and /api/forms
+    are affected. Requests already sent keep going through approval, and the
+    Microsoft Form stays under HR's control on the bulletin board.
+
+    Args:
+        body: {"start", "end"} as YYYY-MM-DD, both inclusive; both null clears.
+
+    Returns:
+        The stored window, as GET returns it.
+
+    Raises:
+        HTTPException: 400 for one date only, or an end before the start.
+    """
+    from app.services.app_settings import set_carryover_payout_window, toronto_today
+    try:
+        window = await set_carryover_payout_window(body.start, body.end)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _window_body(window, toronto_today())
+
+
+@router.get("/admin/carryover-payout/export")
+async def admin_export_carryover_payout():
+    """Download carry-over and payout information as an Excel file (#176).
+
+    Two sheets: every employee's vacation, carry-over and payout balances,
+    and the carry-over and payout requests (only those made inside the set
+    window when there is one). Unauthenticated like every other /admin/*
+    route. Read only.
+
+    Returns:
+        The .xlsx file as an attachment.
+    """
+    from fastapi.responses import Response
+    from app.services.app_settings import carryover_payout_window, toronto_today
+    from app.services.carryover_export import build_workbook, export_filename
+    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)    # every employee
+    requests = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+    window, today = await carryover_payout_window(), toronto_today()
+    data = build_workbook(staff, requests, window)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{export_filename(today)}"'},
+    )
+
+
 @router.get("/admin/request-storage")
 async def admin_request_storage():
     """Where the request lists live, and how many items each side holds.
 
-    Unauthenticated like every other /admin/* route. Read only.
+    Behind the admin password like every other /admin/* route (#228). Read only.
 
     Returns:
         The report from request_copy.request_storage_report.

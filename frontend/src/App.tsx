@@ -2,10 +2,12 @@ import { ReactNode } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { Container } from '@mui/material';
 import { ColorModeProvider } from './colorMode';
+import { Enter, MotionProvider } from './components/Motion';
 import TopBar from './components/TopBar';
 import EmployeeDashboard from './pages/EmployeeDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import AdminDashboard from './pages/AdminDashboard';
+import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
 import { canSeeTeam, loadSession, saveLinkSession, setAfterSignIn, setSignInNotice } from './api/intake';
 
@@ -20,7 +22,8 @@ function Framed({ children }: { children: ReactNode }) {
   return (
     <>
       <TopBar nav />
-      <Container maxWidth="lg" sx={{ py: { xs: 2, sm: 4 } }}>{children}</Container>
+      {/* A new page eases in under the bar; the bar itself stays put. */}
+      <Container maxWidth="lg" sx={{ py: { xs: 2, sm: 4 } }}><Enter>{children}</Enter></Container>
     </>
   );
 }
@@ -81,7 +84,8 @@ function LinkSignIn() {
     sessionStorage.setItem('add_employee_prefill', JSON.stringify({
       title: params.get('add_name') || '',
       email_address: addEmail,
-      location: params.get('add_location') || '',
+      department: params.get('add_department') || '',
+      location: params.get('add_location') || '',       // links emailed before #226
     }));
   }
   saveLinkSession({ token, role, uid, exp });
@@ -123,16 +127,18 @@ function Ended() {
 export default function App() {
   return (
     <ColorModeProvider>
+      <MotionProvider>
       <HashRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/request" element={<Navigate to="/my/request" replace />} />
           <Route path="/new-hire" element={<RequestPage />} />
-          <Route path="/my/request" element={<SignedIn><TopBar nav /><RequestPage /></SignedIn>} />
+          <Route path="/my/request" element={<SignedIn><TopBar nav /><Enter><RequestPage /></Enter></SignedIn>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/my/:tab?" element={<SignedIn><Framed><EmployeeDashboard /></Framed></SignedIn>} />
           <Route path="/team/:tab?" element={<SignedIn team><Framed><ManagerDashboard /></Framed></SignedIn>} />
-          <Route path="/admin/:screen?" element={<AdminDashboard />} />
+          {/* The admin password screen comes first (#228); the server checks every admin call too. */}
+          <Route path="/admin/:screen?" element={<AdminGate><AdminDashboard /></AdminGate>} />
           <Route path="/dashboard" element={<LinkSignIn />} />
           <Route path="/employee/:tab?" element={<Moved to="/my" />} />
           <Route path="/manager/:tab?" element={<Moved to="/team" />} />
@@ -140,6 +146,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </HashRouter>
+      </MotionProvider>
     </ColorModeProvider>
   );
 }

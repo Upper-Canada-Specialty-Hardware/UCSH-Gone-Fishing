@@ -2,6 +2,21 @@ import { ReactNode } from 'react';
 import { Box, Paper, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { Sparkline } from './manager/Charts';
+import { CountUp, KF } from './Motion';
+
+/**
+ * A tile's value with its number counting up (from 0 when the tile first
+ * shows, from the old value when it changes); text without a number shows as is.
+ *
+ * @param props.value - The formatted value, e.g. "12", "1.4 d", "None yet".
+ * @returns The value.
+ */
+function CountedValue({ value }: { value: string }) {
+  const hit = /^(-?\d+(?:\.(\d+))?)(.*)$/.exec(value);
+  if (!hit) return <>{value}</>;
+  const dec = hit[2]?.length ?? 0;
+  return <><CountUp from={0} value={parseFloat(hit[1])} format={(n) => n.toFixed(dec)} />{hit[3]}</>;
+}
 
 /**
  * One number tile: a label, the number, a line under it, and an optional sparkline.
@@ -19,8 +34,9 @@ export function Kpi({ label, value, note, warn, spark }: { label: string; value:
   return (
     <Paper sx={{ p: 2, display: 'grid', alignContent: 'start', gap: 0.25 }}>
       <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>{label}</Typography>
-      <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 32, fontWeight: 600, lineHeight: 1.15 }}>{value}</Typography>
-      <Typography variant="caption" sx={{ color: warn ? 'warning.main' : 'text.secondary', fontWeight: warn ? 700 : 400 }}>{note}</Typography>
+      <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 32, fontWeight: 600, lineHeight: 1.15 }}><CountedValue value={value} /></Typography>
+      {/* A late note pulses its warn colour once, after the number has counted. */}
+      <Typography variant="caption" sx={{ color: warn ? 'warning.main' : 'text.secondary', fontWeight: warn ? 700 : 400, animation: warn ? `${KF.pulse} .9s ease-in-out .9s` : 'none' }}>{note}</Typography>
       {spark && <Sparkline values={spark} />}
     </Paper>
   );
