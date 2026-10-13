@@ -6,6 +6,7 @@ import { ColorOf } from '../../utils/personColor';
 import { Clash } from './teamStats';
 import { askedAgo, daysWaiting, requestAmount, requestKind, requestNote, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
 import { BalanceMeter } from './Charts';
+import { Swap, riseAt } from '../Motion';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -26,6 +27,10 @@ interface Props {
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
+  /** Its place in the queue, so cards arrive oldest first. */
+  index?: number;
+  /** Set once decided: true approved, false rejected. The card shows it before it leaves. */
+  decided?: boolean;
   /** Each person's colour, for the avatar. */
   colorOf: ColorOf;
 }
@@ -56,7 +61,7 @@ function DateBox({ iso }: { iso?: string }) {
  * @param props - See {@link Props}.
  * @returns The card.
  */
-export default function DecisionCard({ item, clashes, processingEnabled, busy, onApprove, onReject, colorOf }: Props) {
+export default function DecisionCard({ item, clashes, processingEnabled, busy, onApprove, onReject, colorOf, index = 0, decided }: Props) {
   const theme = useTheme();
   const who = requestWho(item);
   const note = requestNote(item);
@@ -69,9 +74,14 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
     <Paper
       component="article"
       sx={{
-        p: 2.25, display: 'grid', gap: 1.75,
-        animation: 'cardin .45s both ease-out', '@keyframes cardin': { from: { opacity: 0, transform: 'translateY(8px)' } },
-        '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+        p: 2.25, display: 'grid', gap: 1.75, position: 'relative', overflow: 'hidden',
+        // Cards rise in one after another, oldest first.
+        ...riseAt(index, { step: 60, max: 4, dur: 450 }),
+        // Once decided, a wash in the outcome's colour before the card leaves.
+        '&::after': {
+          content: '""', position: 'absolute', inset: 0, pointerEvents: 'none', transition: 'opacity .16s ease',
+          bgcolor: decided === false ? theme.tokens.errSoft : theme.tokens.okSoft, opacity: decided === undefined ? 0 : 0.85,
+        },
       }}
     >
       {/* Who, when they asked, what kind, and a warning once it has waited over a week. */}
@@ -134,14 +144,15 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
         </Box>
       )}
 
-      <Box sx={{ display: 'flex', gap: 1 }}>
-        <Button variant="contained" color="success" disabled={!processingEnabled || busy} onClick={onApprove}
+      {/* The pressed button confirms in place ("Approved" with a tick) before the card leaves. */}
+      <Box sx={{ display: 'flex', gap: 1, position: 'relative', zIndex: 1 }}>
+        <Button variant="contained" color="success" disabled={!processingEnabled || busy || decided !== undefined} onClick={onApprove}
           title={!processingEnabled ? 'Processing is currently disabled' : undefined}>
-          Approve
+          <Swap k={decided === true ? 'done' : 'ask'}>{decided === true ? '✓ Approved' : 'Approve'}</Swap>
         </Button>
-        <Button variant="outlined" color="error" disabled={!processingEnabled || busy} onClick={onReject}
+        <Button variant="outlined" color="error" disabled={!processingEnabled || busy || decided !== undefined} onClick={onReject}
           title={!processingEnabled ? 'Processing is currently disabled' : undefined}>
-          Reject
+          <Swap k={decided === false ? 'done' : 'ask'}>{decided === false ? '✓ Rejected' : 'Reject'}</Swap>
         </Button>
       </Box>
     </Paper>

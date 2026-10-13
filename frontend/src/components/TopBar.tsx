@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react';
 import { Box, Button, Typography } from '@mui/material';
+import { m } from 'motion/react';
 import { useTheme } from '@mui/material/styles';
 import DesktopWindowsOutlinedIcon from '@mui/icons-material/DesktopWindowsOutlined';
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
@@ -7,6 +9,10 @@ import MenuIcon from '@mui/icons-material/Menu';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { canSeeTeam, clearSession, loadSession } from '../api/intake';
 import { useColorMode } from '../colorMode';
+import { KF } from './Motion';
+
+/** The away light pulses on the first mark that mounts, once per visit. */
+let pulsed = false;
 
 /** The app's name, shown in the bar and on the request page. */
 export const APP_NAME = 'UCSH Out of Office';
@@ -21,6 +27,12 @@ export const APP_NAME = 'UCSH Out of Office';
  */
 export function BrandMark({ bg, fg }: { bg?: string; fg?: string }) {
   const theme = useTheme();
+  const [pulse, setPulse] = useState(false);
+  useEffect(() => {
+    if (pulsed) return;
+    pulsed = true;
+    setPulse(true);
+  }, []);
   return (
     <Box
       aria-hidden
@@ -34,6 +46,11 @@ export function BrandMark({ bg, fg }: { bg?: string; fg?: string }) {
           content: '""', position: 'absolute', top: -2, right: -2, width: 8, height: 8,
           borderRadius: '50%', bgcolor: theme.tokens.accent, border: `2px solid ${bg || theme.palette.background.paper}`,
         },
+        // On the first visit the light pulses twice, then rests.
+        '&::before': pulse ? {
+          content: '""', position: 'absolute', top: -2, right: -2, width: 8, height: 8, borderRadius: '50%',
+          border: `2px solid ${theme.tokens.accent}`, opacity: 0, animation: `${KF.ping} .9s ease-out .6s 2`,
+        } : undefined,
       }}
     >
       OO
@@ -56,7 +73,12 @@ export function ColorModeButton() {
       size="small"
       variant="outlined"
       color="inherit"
-      startIcon={icon}
+      startIcon={
+        // The icon turns in as the mode changes.
+        <m.span key={mode} initial={{ rotate: -90, scale: 0.6, opacity: 0 }} animate={{ rotate: 0, scale: 1, opacity: 1 }} style={{ display: 'inline-flex' }}>
+          {icon}
+        </m.span>
+      }
       onClick={cycle}
       title={`Light or dark: ${mode === 'system' ? 'follows your computer' : label}. Click to change.`}
       sx={{ borderRadius: 999, borderColor: 'divider', px: 1.5 }}
@@ -109,11 +131,18 @@ function SignedInNav() {
             aria-current={current === p.path ? 'page' : undefined}
             sx={{
               borderRadius: 0, px: 1.5, minHeight: { xs: 44, sm: 56 }, whiteSpace: 'nowrap', fontWeight: 600,
-              color: current === p.path ? 'text.primary' : 'text.secondary',
-              borderBottom: 3, borderColor: current === p.path ? 'secondary.main' : 'transparent',
+              color: current === p.path ? 'text.primary' : 'text.secondary', '&:active': { transform: 'none' },
             }}
           >
             {p.label}
+            {/* One underline that glides to the open page's tab. */}
+            {current === p.path && (
+              <m.span
+                layoutId="page-tab-underline"
+                style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, borderRadius: '2px 2px 0 0' }}
+                className="page-tab-underline"
+              />
+            )}
           </Button>
         ))}
       </Box>
@@ -136,15 +165,26 @@ function SignedInNav() {
  * @returns The bar.
  */
 export default function TopBar({ onMenu, nav }: { onMenu?: () => void; nav?: boolean }) {
+  // Once the page scrolls under the bar it lifts with a soft shadow, so its edge reads.
+  const [raised, setRaised] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setRaised(window.scrollY > 4);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   return (
     <Box
       component="header"
-      sx={{
+      sx={(t) => ({
+        boxShadow: raised ? `0 6px 18px ${t.palette.mode === 'dark' ? 'rgb(0 0 0 / .45)' : 'rgb(31 26 20 / .08)'}` : 'none',
+        transition: t.transitions.create('box-shadow', { duration: t.transitions.duration.short }),
+        '& .page-tab-underline': { backgroundColor: t.palette.secondary.main },
         position: 'sticky', top: 0, zIndex: 20,
         display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: { xs: 'wrap', sm: 'nowrap' },
         px: { xs: 2, sm: 3 }, minHeight: 56, pt: { xs: nav ? 1 : 0, sm: 0 },
         bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider',
-      }}
+      })}
     >
       {onMenu && (
         <Button
