@@ -201,7 +201,7 @@ export default function EmployeeDashboard() {
   const details: [string, string][] = [
     ['Department', employee?.department || ''],
     ['Location', employee?.location || ''],
-    ['Employee type', employee?.employee_type || ''],
+    ['Employment type', employee?.employment_type || ''],   // Salary or Hourly, as Add Employee calls it
     ['Email', employee?.email || ''],
   ];
   // The backend sends managers as one "A, B" string; split it for the chips.
