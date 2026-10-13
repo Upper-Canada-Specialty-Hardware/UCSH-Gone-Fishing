@@ -13,10 +13,11 @@ import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import { buildTheme } from '../theme';
+import { carryoverClosedReason } from '../utils/carryoverWindow';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
   EmployeeSession, RequestType, Supervisor, VerifiedEmail,
-  clearSession, errorText, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
+  clearSession, errorText, getRequestTypes, getSupervisors, holdRequest, loadNewHire, loadSession, requestCode,
   saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
@@ -143,6 +144,9 @@ function Lead({ children }: { children: ReactNode }) {
  *
  * @returns The request page.
  */
+/** Shown on the carry-over card until the server answers, or when it cannot be reached. */
+const CARRYOVER_UNKNOWN = 'Not open right now.';
+
 export default function RequestPage() {
   const [step, setStep] = useState<Step>('email');
   const [type, setType] = useState<RequestType>('leave');
@@ -158,6 +162,8 @@ export default function RequestPage() {
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
+  // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
+  const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
   const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
   const [misses, setMisses] = useState(0);                     // refused codes, to shake the boxes
   const navigate = useNavigate();
@@ -171,6 +177,20 @@ export default function RequestPage() {
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
   const [supervisorId, setSupervisorId] = useState('');
+
+  // Carry-over and payout are only taken between the dates an admin set (#176).
+  useEffect(() => {
+    getRequestTypes()
+      .then(({ data }) => setCarryoverClosed(
+        carryoverClosedReason(data.carryover_payout_open, data.carryover_payout_window, data.today),
+      ))
+      .catch(() => setCarryoverClosed(CARRYOVER_UNKNOWN));    // unknown: do not offer them
+  }, []);
+  // A closed form cannot stay picked (e.g. closed while the page was open).
+  useEffect(() => {
+    if (carryoverClosed && type === 'carryover-payout') setType('leave');
+  }, [carryoverClosed, type]);
+  const closedTypes: Partial<Record<RequestType, string>> = carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
 
   // Pick up where this address starts: a new hire's verified email, the
   // shared sign-in for a new request, or the landing page's note.
@@ -427,7 +447,7 @@ export default function RequestPage() {
             {step === 'form' && session && (
               <>
                 <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
-                <TypeCards value={type} onPick={setType} />
+                <TypeCards value={type} onPick={setType} closed={closedTypes} />
                 {/* Another form cross-fades in, and the block's height follows. */}
                 <AutoHeight>
                   <AnimatePresence mode="wait" initial={false}>
@@ -465,7 +485,7 @@ export default function RequestPage() {
                     ))}
                   </TextField>
                 </Box>
-                <TypeCards value={type} onPick={setType} />
+                <TypeCards value={type} onPick={setType} closed={closedTypes} />
                 {/* Another form cross-fades in, and the block's height follows. */}
                 <AutoHeight>
                   <AnimatePresence mode="wait" initial={false}>
