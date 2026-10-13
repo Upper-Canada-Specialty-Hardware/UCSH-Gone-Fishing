@@ -75,6 +75,7 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str):
         logger.warning("Cannot assign manager — employee not found for CO/PO #%s", request_id)
         return
 
+    emp_fields = employee["fields"]
     employee_id = employee["id"]
 
     manager = await get_manager_for_employee(employee)
@@ -93,9 +94,17 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str):
     }
     if manager_lookup_id:
         update["ManagerLookupId"] = manager_lookup_id
-    # No AllManagers here: unlike the leave list, the carry-over/payout list has
-    # no such column, and SharePoint refuses a whole update that names a column
-    # the list lacks, so ManagerLookupId would never land (#199).
+
+    # Set AllManagers from employee's AllManagers field (multi-value Person/Group)
+    all_managers_field = emp_fields.get("AllManagers")
+    if all_managers_field and isinstance(all_managers_field, list):
+        lookup_ids = [
+            int(entry["LookupId"]) for entry in all_managers_field
+            if isinstance(entry, dict) and entry.get("LookupId")
+        ]
+        if lookup_ids:
+            update["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
+            update["AllManagersLookupId"] = lookup_ids
 
     await request_store.update_list_item_fields(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, update)
     logger.info("Assigned manager %s to CO/PO request #%s", mgr_fields.get("Title"), request_id)
