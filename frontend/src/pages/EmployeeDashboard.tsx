@@ -1,6 +1,6 @@
 import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Alert, Avatar, Box, Button, Chip, CircularProgress, Paper, Tab, Tabs, Typography } from '@mui/material';
+import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
 import RequestHistory from '../components/RequestHistory';
@@ -14,6 +14,7 @@ import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
+import { CountUp, EASE, Enter, KF, Loading, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
 
 /** The tabs, keyed by url segment (#/my/<key>). */
 const TABS = ['overview', 'year', 'history'] as const;
@@ -43,9 +44,10 @@ function fmt(n: number): string {
  * @param props.value - Days.
  * @param props.note - The line under it.
  * @param props.of - The yearly entitlement, for the bar; omit for none.
+ * @param props.count - Count the number up from 0 (on arrival only).
  * @returns The tile.
  */
-function Pot({ label, value, note, of }: { label: string; value: number; note: string; of?: number }) {
+function Pot({ label, value, note, of, count }: { label: string; value: number; note: string; of?: number; count?: boolean }) {
   const theme = useTheme();
   // Share left of the entitlement, kept between 0 and 1 for the bar.
   const left = of && of > 0 ? Math.max(0, Math.min(1, value / of)) : null;
@@ -53,12 +55,17 @@ function Pot({ label, value, note, of }: { label: string; value: number; note: s
     <Paper sx={{ p: 2, display: 'grid', gap: 0.5, alignContent: 'start' }}>
       <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>{label}</Typography>
       <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 32, fontWeight: 600, lineHeight: 1.15, color: value < 0 ? 'error.main' : 'text.primary' }}>
-        {fmt(value)}
+        {count ? <CountUp from={0} value={value} format={fmt} /> : fmt(value)}
       </Typography>
       {left !== null && (
-        // Low (under a fifth left) turns the bar to the warn colour.
+        // Low (under a fifth left) turns the bar to the warn colour. The bar fills in;
+        // a low one then pulses its warn colour once.
         <Box sx={{ height: 6, borderRadius: 999, bgcolor: theme.tokens.hover, overflow: 'hidden' }} aria-hidden>
-          <Box sx={{ height: '100%', width: `${left * 100}%`, borderRadius: 999, bgcolor: left < 0.2 ? 'warning.main' : 'primary.main' }} />
+          <Box sx={{
+            height: '100%', width: `${left * 100}%`, borderRadius: 999, bgcolor: left < 0.2 ? 'warning.main' : 'primary.main',
+            transformOrigin: 'left',
+            animation: `${KF.growX} .7s ${EASE.out} .12s both${left < 0.2 ? `, ${KF.pulse} .9s ease-in-out 1s` : ''}`,
+          }} />
         </Box>
       )}
       <Typography variant="caption" color="text.secondary">{note}</Typography>
@@ -80,15 +87,17 @@ function Section({ title, rows, empty }: { title: string; rows: any[]; empty: st
       <Typography sx={{ fontWeight: 700, px: 2.25, pt: 2, pb: 0.5 }}>{title}</Typography>
       {rows.length === 0 ? (
         <Typography variant="body2" color="text.secondary" sx={{ px: 2.25, pb: 1.5 }}>{empty}</Typography>
-      ) : rows.map((r) => {
+      ) : rows.map((r, i) => {
         const waited = r.Status === 'Pending' ? daysWaiting(r) : null;
         // A waiting request says how long it has waited; the rest show their status.
         const label = r.Status === 'Pending' ? (waited === 0 ? 'Sent today' : `Waiting ${waited} day${waited === 1 ? '' : 's'}`) : r.Status || 'Pending';
         return (
-          <Box key={`${r.request_type}-${r.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 2.25, py: 1.25, borderTop: 1, borderColor: 'divider', flexWrap: 'wrap' }}>
+          <Box key={`${r.request_type}-${r.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 2.25, py: 1.25, borderTop: 1, borderColor: 'divider', flexWrap: 'wrap', ...riseAt(i, { delay: 120, dur: 340 }) }}>
             <KindPill kind={requestKind(r)} label={requestWhat(r)} />
             <Typography variant="body2" sx={{ flex: 1, minWidth: 120 }}>{requestWhen(r)}</Typography>
-            <Chip size="small" label={label} color={STATUS_COLOR[r.Status] || 'default'} />
+            {/* The one thing still open breathes twice, then rests. */}
+            <Chip size="small" label={label} color={STATUS_COLOR[r.Status] || 'default'}
+              sx={{ animation: r.Status === 'Pending' ? `${KF.pulse} 1.4s ease-in-out .7s 2` : 'none' }} />
           </Box>
         );
       })}
@@ -142,6 +151,8 @@ export default function EmployeeDashboard() {
   // The open tab comes from the url, so a bookmark or the back button lands on it.
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'overview';
   const go = useCallback((k: TabKey) => navigate(`/my/${k}`), [navigate]);
+  const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
+  const arriving = useArrival();                        // numbers count up on arrival only
 
   const [balances, setBalances] = useState<any>(null);
   const [employee, setEmployee] = useState<any>(null);
@@ -185,9 +196,7 @@ export default function EmployeeDashboard() {
   /** Open a new request; the request page uses the same sign-in. */
   const makeRequest = () => navigate('/my/request');
 
-  if (loading) {
-    return <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}><CircularProgress /></Box>;
-  }
+  if (loading) return <Loading />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
   }
@@ -201,18 +210,18 @@ export default function EmployeeDashboard() {
   const details: [string, string][] = [
     ['Department', employee?.department || ''],
     ['Location', employee?.location || ''],
-    ['Employee type', employee?.employee_type || ''],
+    ['Employment type', employee?.employment_type || ''],   // Salary or Hourly, as Add Employee calls it
     ['Email', employee?.email || ''],
   ];
   // The backend sends managers as one "A, B" string; split it for the chips.
   const managers = String(employee?.managers || '').split(',').map((s) => s.trim()).filter(Boolean);
   return (
-    <Box sx={{ display: 'grid', gap: 2.5 }}>
+    <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
-          <Typography variant="h4">Hi {firstName(employee?.name || '') || 'there'}</Typography>
-          {/* The person's Staff Directory record, one labelled value each. */}
-          <Box component="dl" sx={{ m: 0, mt: 1.25, display: 'flex', flexWrap: 'wrap', columnGap: 3.5, rowGap: 1.25 }}>
+          <Typography variant="h4" sx={riseAt(0)}>Hi {firstName(employee?.name || '') || 'there'}</Typography>
+          {/* The person's Staff Directory record, one labelled value each, settling in after the greeting. */}
+          <Box component="dl" sx={{ m: 0, mt: 1.25, display: 'flex', flexWrap: 'wrap', columnGap: 3.5, rowGap: 1.25, ...staggerChildren({ delay: 60 }) }}>
             {details.map(([label, value]) => (
               <Detail key={label} label={label}>
                 <Typography variant="body2" sx={{ fontWeight: 600, color: value ? 'text.primary' : 'text.secondary' }}>
@@ -235,7 +244,7 @@ export default function EmployeeDashboard() {
             </Detail>
           </Box>
         </Box>
-        <Button variant="contained" size="large" onClick={makeRequest}>Make a request</Button>
+        <Button variant="contained" size="large" onClick={makeRequest} sx={riseAt(3, { step: 60 })}>Make a request</Button>
       </Box>
 
       <Tabs value={tab} onChange={(_, v) => go(v)} variant="scrollable" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider' }}>
@@ -244,15 +253,17 @@ export default function EmployeeDashboard() {
         <Tab value="history" label={`History (${requests.length})`} />
       </Tabs>
 
+      {/* The tab's body slides in from the side of the tab picked. */}
+      <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'overview' && (
         <>
-          {/* All five balances, each with how it works in a line. */}
-          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))' }}>
-            <Pot label="Vacation" value={b.vacation_balance ?? 0} of={b.vacation_entitlement} note={b.vacation_entitlement ? `left of ${fmt(b.vacation_entitlement)} days this year` : 'days left'} />
-            <Pot label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
-            <Pot label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
-            <Pot label="Carry Over" value={b.carryover ?? 0} note={`used before vacation, cleared April 1 (in ${resetIn} day${resetIn === 1 ? '' : 's'})`} />
-            <Pot label="Payout" value={b.payout ?? 0} note="days set aside to be paid out" />
+          {/* All five balances, each with how it works in a line; they arrive in reading order. */}
+          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
+            <Pot count={arriving} label="Vacation" value={b.vacation_balance ?? 0} of={b.vacation_entitlement} note={b.vacation_entitlement ? `left of ${fmt(b.vacation_entitlement)} days this year` : 'days left'} />
+            <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
+            <Pot count={arriving} label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
+            <Pot count={arriving} label="Carry Over" value={b.carryover ?? 0} note={`used before vacation, cleared April 1 (in ${resetIn} day${resetIn === 1 ? '' : 's'})`} />
+            <Pot count={arriving} label="Payout" value={b.payout ?? 0} note="days set aside to be paid out" />
           </Box>
 
           <Paper sx={{ overflow: 'hidden', pb: 0.5 }}>
@@ -271,7 +282,7 @@ export default function EmployeeDashboard() {
       {tab === 'year' && (
         <>
           {/* The year at a glance. */}
-          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))' }}>
+          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
             <Kpi label="Days off" value={fmt(mine.daysOff)} note={`approved, ${year}`} />
             {/* Days taken, not the vacation pot's drop: make-up and carry-over are spent first. */}
             <Kpi label="Vacation taken" value={fmt(mine.vacation)} note="days, part days included" />
@@ -292,27 +303,27 @@ export default function EmployeeDashboard() {
                   </Box>
                 ))}
               </Box>
-              <MonthlyBars months={monthly} upTo={today().getMonth()} />
+              {/* Charts start when they scroll into view. */}
+              <Seen><MonthlyBars months={monthly} upTo={today().getMonth()} /></Seen>
             </Panel>
 
             <Panel title="By kind" aside={`${year}, approved, in days`}>
-              <Box sx={{ display: 'grid', gap: 1.5 }}>
-                {kindRows.map(([label, v, k]) => (
+              <Seen sx={{ display: 'grid', gap: 1.5 }}>
+                {kindRows.map(([label, v, k], i) => (
                   <Box key={label} sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 150px) minmax(0, 1fr) 40px', gap: 1.5, alignItems: 'center' }}>
                     <Typography variant="body2" color="text.secondary">{label}</Typography>
                     <Box sx={{ height: 10, borderRadius: 999, bgcolor: theme.tokens.hover, overflow: 'hidden' }}>
                       <Box
                         sx={{
                           height: '100%', width: `${(v / top) * 100}%`, bgcolor: kindColor(k, theme.palette.mode), borderRadius: 999,
-                          transformOrigin: 'left', animation: 'grow .7s both ease-out', '@keyframes grow': { from: { transform: 'scaleX(0)' } },
-                          '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+                          transformOrigin: 'left', animation: `${KF.growX} .7s ease-out ${0.15 + i * 0.07}s both`,
                         }}
                       />
                     </Box>
                     <Typography variant="body2" sx={{ fontWeight: 700, textAlign: 'right' }}>{fmt(v)}</Typography>
                   </Box>
                 ))}
-              </Box>
+              </Seen>
             </Panel>
           </Box>
         </>
@@ -324,6 +335,7 @@ export default function EmployeeDashboard() {
           <RequestHistory requests={requests} />
         </Paper>
       )}
+      </Enter>
     </Box>
   );
 }

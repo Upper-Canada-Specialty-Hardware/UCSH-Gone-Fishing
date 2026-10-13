@@ -9,7 +9,16 @@ import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
 import PersonRemoveIcon from '@mui/icons-material/PersonRemove';
+import { AnimatePresence, m } from 'motion/react';
 import { bulkManagerAssignment } from '../api/client';
+import { EXIT, KF, EASE, SPRING, useDirection } from './Motion';
+
+/** Each step slides in like a page, from the side the person moved towards. */
+const STEP_MOTION = {
+  enter: (dir: number) => ({ opacity: 0, x: dir * 30 }),
+  show: { opacity: 1, x: 0, transition: SPRING },
+  leave: (dir: number) => ({ opacity: 0, x: dir * -30, transition: EXIT }),
+};
 
 interface SpUser {
   sp_user_id: number;
@@ -52,6 +61,7 @@ const OPERATIONS: { key: Operation; label: string; description: string; icon: Re
 
 export default function ManagerWizardDialog({ open, spUsers, onClose, onComplete }: Props) {
   const [activeStep, setActiveStep] = useState(0);
+  const dir = useDirection(activeStep);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [sourceManager, setSourceManager] = useState<SpUser | null>(null);
   const [targetManager, setTargetManager] = useState<SpUser | null>(null);
@@ -184,7 +194,12 @@ export default function ManagerWizardDialog({ open, spUsers, onClose, onComplete
     <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth>
       <DialogTitle>Manage Assignments</DialogTitle>
       <DialogContent>
-        <Stepper activeStep={activeStep} sx={{ mb: 3, mt: 1 }}>
+        {/* Each step's circle fills as it is reached, with a light pop. */}
+        <Stepper activeStep={activeStep} sx={{
+          mb: 3, mt: 1,
+          '& .MuiStepIcon-root': { transition: 'color .3s ease' },
+          '& .MuiStepIcon-root.Mui-active': { animation: `${KF.nudge} .45s ${EASE.out}` },
+        }}>
           {STEPS.map((label) => (
             <Step key={label}><StepLabel>{label}</StepLabel></Step>
           ))}
@@ -192,6 +207,8 @@ export default function ManagerWizardDialog({ open, spUsers, onClose, onComplete
 
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
+        <AnimatePresence mode="wait" initial={false} custom={dir}>
+        <m.div key={activeStep} custom={dir} variants={STEP_MOTION} initial="enter" animate="show" exit="leave">
         {/* Step 0: Choose Operation */}
         {activeStep === 0 && (
           <Box sx={{ display: 'flex', gap: 2 }}>
@@ -289,6 +306,8 @@ export default function ManagerWizardDialog({ open, spUsers, onClose, onComplete
             />
           </Box>
         )}
+        </m.div>
+        </AnimatePresence>
       </DialogContent>
       <DialogActions>
         {activeStep < 3 && (

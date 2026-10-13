@@ -131,7 +131,9 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
         "email": fields.get("EmailAddress", ""),
         "department": fields.get("Department", ""),
         "location": fields.get("Location", ""),
-        "employee_type": fields.get("EmployeeType", ""),
+        # "Salary" or "Hourly", the type Add Employee sets and the balance
+        # engine acts on. The Staff Directory has no EmployeeType column (#205).
+        "employment_type": fields.get("SalaryHourly", ""),
     }
 
 

@@ -1,4 +1,5 @@
 import { createTheme, Theme } from '@mui/material/styles';
+import { DUR, EASE, SlideUp, sinkDialog } from './components/Motion';
 
 /**
  * The extra colours the design uses beyond MUI's palette: soft tints for
@@ -99,6 +100,11 @@ export function buildTheme(mode: 'light' | 'dark', override?: PrimaryOverride): 
       display: DISPLAY_FONT,
     },
     shape: { borderRadius: 14 },
+    // MUI's own motion (Collapse, Drawer, Menu, Tooltip, Tabs) on the app's tokens (components/Motion.tsx).
+    transitions: {
+      easing: { easeOut: EASE.out, easeIn: EASE.in, easeInOut: EASE.inOut, sharp: 'cubic-bezier(.4,0,.6,1)' },
+      duration: { shortest: DUR.fast, shorter: 200, short: DUR.base, standard: 280, complex: 360, enteringScreen: DUR.base, leavingScreen: DUR.exit },
+    },
     typography: {
       fontFamily: BODY_FONT,
       // Headings use the serif; weights stay moderate so they read as calm, not loud.
@@ -114,7 +120,22 @@ export function buildTheme(mode: 'light' | 'dark', override?: PrimaryOverride): 
       MuiCssBaseline: {
         styleOverrides: {
           body: { WebkitFontSmoothing: 'antialiased' },
-          ':focus-visible': { outline: `2px solid ${c.accent}`, outlineOffset: 2 },
+          // The focus ring grows out from the edge instead of appearing.
+          ':focus-visible': { outline: `2px solid ${c.accent}`, outlineOffset: 2, animation: 'ooFocusRing .15s ease-out' },
+          '@keyframes ooFocusRing': { from: { outlineOffset: '0px', outlineColor: 'transparent' } },
+          // Light and dark cross-fade (colorMode.tsx runs it as a view transition).
+          '::view-transition-old(root), ::view-transition-new(root)': { animationDuration: '.3s' },
+          // Less motion, in one place: every CSS animation and transition ends at once.
+          // Spinners keep turning; Motion animations follow MotionConfig instead.
+          '@media (prefers-reduced-motion: reduce)': {
+            '*, *::before, *::after': {
+              animationDuration: '.01ms !important', animationDelay: '0s !important', animationIterationCount: '1 !important',
+              transitionDuration: '.01ms !important', transitionDelay: '0s !important', scrollBehavior: 'auto !important',
+            },
+            '.MuiCircularProgress-root, .MuiCircularProgress-circle': {
+              animationDuration: '1.4s !important', animationIterationCount: 'infinite !important',
+            },
+          },
         },
       },
       MuiPaper: {
@@ -127,13 +148,33 @@ export function buildTheme(mode: 'light' | 'dark', override?: PrimaryOverride): 
       },
       MuiCard: { defaultProps: { variant: 'outlined' } },
       MuiButton: {
-        styleOverrides: { root: { borderRadius: 10 } },
+        styleOverrides: {
+          // Buttons dip slightly while pressed, so a tap feels received before the network answers.
+          root: ({ theme }) => ({
+            borderRadius: 10,
+            transition: theme.transitions.create(['background-color', 'box-shadow', 'border-color', 'color', 'transform'], { duration: theme.transitions.duration.short }),
+            '&:active': { transform: 'scale(.97)' },
+            '@media (prefers-reduced-motion: reduce)': { '&:active': { transform: 'none' } },
+          }),
+        },
         defaultProps: { disableElevation: true },
       },
+      MuiIconButton: {
+        styleOverrides: {
+          root: {
+            '&:active': { transform: 'scale(.94)' },
+            '@media (prefers-reduced-motion: reduce)': { '&:active': { transform: 'none' } },
+          },
+        },
+      },
+      // Toasts slide up with the spring and drop away quickly.
+      MuiSnackbar: { defaultProps: { TransitionComponent: SlideUp } },
       MuiChip: { styleOverrides: { root: { fontWeight: 600 } } },
       MuiAlert: { styleOverrides: { root: { borderRadius: 12 } } },
       MuiTab: { styleOverrides: { root: { textTransform: 'none', fontWeight: 600 } } },
       MuiDialog: {
+        // On close the paper sinks back the way it rose while the fade runs.
+        defaultProps: { TransitionProps: { onExit: sinkDialog } },
         styleOverrides: {
           // Every dialog rises in a little as it fades in; none when less motion is asked for.
           paper: {

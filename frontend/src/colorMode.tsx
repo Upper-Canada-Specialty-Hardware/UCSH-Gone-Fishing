@@ -1,5 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { CssBaseline, ThemeProvider, useMediaQuery } from '@mui/material';
+import { prefersReduced } from './components/Motion';
 import { buildTheme } from './theme';
 
 /** What the person picked: follow the computer, or pin light or dark. */
@@ -50,13 +52,21 @@ export function ColorModeProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<ColorMode>(readStoredMode);
   const resolved: 'light' | 'dark' = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
 
-  /** Step to the next mode and remember it on this device. */
+  /**
+   * Step to the next mode and remember it on this device. Where the browser
+   * can, the page cross-fades between the two palettes instead of snapping.
+   */
   const cycle = useCallback(() => {
-    setMode((m) => {
+    const step = () => setMode((m) => {
       const next: ColorMode = m === 'system' ? 'light' : m === 'light' ? 'dark' : 'system';
       try { localStorage.setItem(STORAGE_KEY, next); } catch { /* not remembered; still applied */ }
       return next;
     });
+    if (typeof document.startViewTransition !== 'function' || prefersReduced()) {
+      step();
+      return;
+    }
+    document.startViewTransition(() => flushSync(step));   // the new palette is in the DOM before the fade
   }, []);
 
   const theme = useMemo(() => buildTheme(resolved), [resolved]);   // rebuild only when the look changes

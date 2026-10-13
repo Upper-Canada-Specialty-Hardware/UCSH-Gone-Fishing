@@ -7,6 +7,10 @@
   .icon { font-size: 48px; color: #f59e0b; }
   h1 { color: #d97706; margin: 16px 0 8px; }
   p { color: #555; }
+  /* Motion: a page that says something went wrong only fades in; it never bounces or shakes. */
+  .card { animation: fade .3s ease-out both; }
+  @keyframes fade { from { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
