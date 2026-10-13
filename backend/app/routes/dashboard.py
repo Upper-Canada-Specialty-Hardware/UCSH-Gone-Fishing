@@ -798,7 +798,7 @@ async def team_create_employee(user: AuthUser, body: dict):
 # --- Holidays editor ---------------------------------------------------------
 # The app itself never writes holidays during request processing; these exist so
 # HR maintains the calendar from the admin dashboard instead of the SharePoint
-# list. Unauthenticated like every other /admin/* route; writes sit behind the
+# list. Behind the admin password like every other /admin/* route; writes sit behind the
 # PROCESSING_ENABLED gate like the other admin writes.
 
 @router.get("/admin/holidays")
@@ -921,8 +921,8 @@ async def admin_create_employee(body: dict):
 
     The same creation as the manager version (`POST /team/employees`), sharing
     the same service, with two differences that follow from where it lives:
-    the admin dashboard carries no signed-in identity, so this is unauthenticated
-    like every other /admin/* route, and there is no implicit team — the admin
+    the admin dashboard carries no signed-in person (only the shared admin
+    password, #228), and there is no implicit team — the admin
     chooses the supervisor(s), passed as `manager_ids` (SharePoint user ids from
     the /admin/sp-users picker), rather than the record being assigned to the
     caller.
@@ -1273,9 +1273,8 @@ async def admin_validate_employee(employee_id: str):
     notification. Read-only, so it is deliberately NOT gated on
     PROCESSING_ENABLED (safe to run in reporting-only mode).
 
-    Part of the unauthenticated admin dashboard: like every other /admin/*
-    endpoint it carries no token or role check (the admin dashboard is an open
-    backdoor by design, and already exposes the same employee data elsewhere).
+    Behind the admin password like every other /admin/* endpoint (#228); no
+    per-person role check, as the admin dashboard already shows this data.
     """
     try:
         return await validate_employee_setup(employee_id)
@@ -1683,7 +1682,7 @@ async def admin_manager_assignments():
 async def admin_held_requests(include_closed: bool = Query(False)):
     """Requests from the request page waiting for their submitter to be added.
 
-    Unauthenticated like every other /admin/* route.
+    Behind the admin password like every other /admin/* route (#228).
 
     Args:
         include_closed: Also list released and cancelled ones.
@@ -1737,7 +1736,7 @@ async def admin_cancel_held_request(held_id: int):
 async def admin_request_columns():
     """Report whether SubmitterEmail and RequestSource exist on the request lists.
 
-    Unauthenticated like every other /admin/* route. Read only.
+    Behind the admin password like every other /admin/* route (#228). Read only.
 
     Returns:
         The report from request_submitter.ensure_request_columns.
@@ -1858,7 +1857,7 @@ async def admin_export_carryover_payout():
 async def admin_request_storage():
     """Where the request lists live, and how many items each side holds.
 
-    Unauthenticated like every other /admin/* route. Read only.
+    Behind the admin password like every other /admin/* route (#228). Read only.
 
     Returns:
         The report from request_copy.request_storage_report.
