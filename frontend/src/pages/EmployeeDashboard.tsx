@@ -15,7 +15,8 @@ import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
 import { greeting } from '../utils/greeting';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
-import { CountUp, EASE, Enter, KF, Loading, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
+import { CountUp, EASE, Enter, KF, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
+import { EmployeeSkeleton } from '../components/Skeletons';
 
 /** The tabs, keyed by url segment (#/my/<key>). */
 const TABS = ['overview', 'year', 'history'] as const;
@@ -197,7 +198,7 @@ export default function EmployeeDashboard() {
   /** Open a new request; the request page uses the same sign-in. */
   const makeRequest = () => navigate('/my/request');
 
-  if (loading) return <Loading />;
+  if (loading) return <EmployeeSkeleton tab={tab} />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
   }

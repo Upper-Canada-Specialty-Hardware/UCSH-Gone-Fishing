@@ -7,6 +7,9 @@ export interface HeldRow {
   id: number;
   email: string;
   name: string;
+  /** Picked by the new starter (#226); empty on rows held before. */
+  department: string;
+  /** Rows held before #226 picked a location instead; empty since. */
   location: string;
   supervisor_name: string;
   request_type: string;

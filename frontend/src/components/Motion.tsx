@@ -1,5 +1,5 @@
 import { ReactNode, forwardRef, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Box, CircularProgress, Slide } from '@mui/material';
+import { Box, Slide } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { TransitionProps } from '@mui/material/transitions';
 import { keyframes } from '@emotion/react';
@@ -385,20 +385,6 @@ export function Seen({ children, sx }: { children: ReactNode; sx?: SxProps<Theme
   return (
     <Box ref={ref} sx={[{ '& *': { animationPlayState: seen ? 'running' : 'paused' } }, ...(Array.isArray(sx) ? sx : [sx])]}>
       {children}
-    </Box>
-  );
-}
-
-/**
- * The spinner while a dashboard loads. It fades in after a beat, so a quick
- * load never flashes it.
- *
- * @returns The spinner.
- */
-export function Loading() {
-  return (
-    <Box sx={{ display: 'flex', justifyContent: 'center', py: 8, animation: `${KF.fade} .3s ease-out .2s both` }}>
-      <CircularProgress />
     </Box>
   );
 }

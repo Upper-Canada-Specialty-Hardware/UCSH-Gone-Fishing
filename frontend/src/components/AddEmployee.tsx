@@ -49,7 +49,7 @@ interface Props {
    * a held request on the request page (the supervisor's email link, or the
    * admin Held Requests list).
    */
-  prefill?: { title?: string; email_address?: string; location?: string } | null;
+  prefill?: { title?: string; email_address?: string; department?: string; location?: string } | null;
 }
 
 /** What the server reports back after a create, beyond the record itself. */

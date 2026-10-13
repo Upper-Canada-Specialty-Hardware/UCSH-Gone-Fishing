@@ -22,10 +22,12 @@ from app.services import email_codes, held_requests, leave_requests
 
 _counter = itertools.count()
 
-SUPERVISOR = {"id": "3", "fields": {"Title": "Sam Boss", "EmailAddress": "sam@ucsh.com", "Location": "Barrie"}}
-WORKER = {"id": "4", "fields": {"Title": "Kim Worker", "EmailAddress": "kim@ucsh.com",
+SUPERVISOR = {"id": "3", "fields": {"Title": "Sam Boss", "EmailAddress": "sam@ucsh.com",
+                                    "Location": "Barrie", "Department": "Installation"}}
+# Supervises nobody yet, so only a department search can find a new supervisor like Kim.
+WORKER = {"id": "4", "fields": {"Title": "Kim Worker", "EmailAddress": "kim@ucsh.com", "Department": " installation ",
                                 "AllManagers": [{"LookupId": 20, "LookupValue": "Sam Boss"}]}}
-ADMIN = {"id": "5", "fields": {"Title": "Jay Puzon", "EmailAddress": "jay@ucsh.com"}}
+ADMIN = {"id": "5", "fields": {"Title": "Jay Puzon", "EmailAddress": "jay@ucsh.com", "Department": "Office"}}
 VACATION = {"leave_type": "Vacation", "start_date": "2026-11-02", "end_date": "2026-11-03"}
 
 
@@ -86,7 +88,7 @@ def world(monkeypatch):
 
 def _hold(email, **overrides):
     """Hold a vacation request for ``email`` with Sam as supervisor."""
-    args = dict(name="Lee New", location="Barrie", supervisor_id="3", request_type="leave", form=VACATION)
+    args = dict(name="Lee New", department="installation", supervisor_id="3", request_type="leave", form=VACATION)
     args.update(overrides)
     return asyncio.run(held_requests.hold_request(email, **args))
 
@@ -101,15 +103,21 @@ def test_business_days_skip_the_weekend():
 
 
 def test_the_add_employee_link_is_a_signed_manager_link_with_the_prefill():
-    url = held_requests.add_employee_url("3", "Lee New", "lee@gmail.com", "British Columbia")
+    url = held_requests.add_employee_url("3", "Lee New", "lee@gmail.com", "Site Services")
     assert "role=manager" in url and "uid=3" in url
     assert "add_email=lee%40gmail.com" in url and "add_name=Lee+New" in url
-    assert "add_location=British+Columbia" in url
+    assert "add_department=Site+Services" in url
 
 
-def test_supervisors_are_the_people_named_in_all_managers(world):
-    supervisors = asyncio.run(held_requests.list_supervisors())
-    assert supervisors == [{"id": "3", "name": "Sam Boss", "location": "Barrie"}]
+def test_departments_are_the_staff_directory_values_once_each(world):
+    assert asyncio.run(held_requests.list_departments()) == ["Installation", "Office"]
+
+
+def test_the_search_finds_anyone_in_the_department(world):
+    found = asyncio.run(held_requests.search_department("Installation", "kim"))
+    assert found == [{"id": "4", "name": "Kim Worker"}]                 # supervises nobody yet
+    assert asyncio.run(held_requests.search_department("Installation", "o")) == []   # one letter: nothing
+    assert asyncio.run(held_requests.search_department("Office", "kim")) == []       # other department
 
 
 # ----- holding -----
@@ -119,16 +127,31 @@ def test_a_held_request_is_stored_and_the_supervisor_emailed(world):
     row = _hold(email)
 
     assert row.status == "held" and row.supervisor_email == "sam@ucsh.com"
+    assert row.department == "Installation" and row.location is None    # the directory's spelling
     assert row.form_data["end_date"] == "2026-11-03"
     [mail] = world.sent
     assert mail["to"] == ["sam@ucsh.com"] and "Lee New" in mail["subject"]
     assert "add_email=" in mail["html"] and "Vacation, 2026-11-02 to 2026-11-03" in mail["html"]
+    assert "add_department=Installation" in mail["html"] and "Installation)" in mail["html"]
+
+
+def test_a_new_supervisor_with_nobody_under_them_can_be_picked(world):
+    row = _hold(_email(), supervisor_id="4")
+    assert row.supervisor_name == "Kim Worker" and row.supervisor_email == "kim@ucsh.com"
+
+
+def test_the_supervisor_can_be_named_by_work_email_instead(world):
+    world.staff_by_email["jay@ucsh.com"] = ADMIN                        # any department
+    row = _hold(_email(), supervisor_id=None, supervisor_email=" Jay@UCSH.com ")
+    assert row.supervisor_id == "5" and row.supervisor_email == "jay@ucsh.com"
 
 
 @pytest.mark.parametrize("overrides, message", [
     ({"name": "Lee"}, "first and last name"),
-    ({"location": "Mars"}, "location"),
-    ({"supervisor_id": "4"}, "supervisor"),                    # Kim supervises nobody
+    ({"department": "Mars"}, "department"),
+    ({"supervisor_id": "5"}, "Pick your supervisor from the search"),   # Jay is in Office
+    ({"supervisor_id": None}, "Pick your supervisor, or type"),          # neither given
+    ({"supervisor_id": None, "supervisor_email": "nobody@ucsh.com"}, "Nobody on staff"),
     ({"form": {**VACATION, "leave_type": "Nap"}}, "leave types"),
 ])
 def test_a_bad_hold_is_refused_with_a_reason(world, overrides, message):
@@ -154,16 +177,19 @@ def client(world):
     return TestClient(app)
 
 
-def test_the_supervisor_list_needs_a_verified_email(client):
-    assert client.get("/api/intake/supervisors", params={"email": "x@y.com", "exp": "1", "token": "no"}).status_code == 401
+def test_departments_and_the_search_need_a_verified_email(client):
+    bad = {"email": "x@y.com", "exp": "1", "token": "no"}
+    assert client.get("/api/intake/departments", params=bad).status_code == 401
+    assert client.get("/api/intake/supervisor-search", params={**bad, "department": "Office", "q": "ja"}).status_code == 401
     good = email_codes.sign_verified_email("x@y.com")
-    body = client.get("/api/intake/supervisors", params=good).json()
-    assert body["supervisors"][0]["name"] == "Sam Boss" and "Barrie" in body["locations"]
+    assert client.get("/api/intake/departments", params=good).json() == {"departments": ["Installation", "Office"]}
+    found = client.get("/api/intake/supervisor-search", params={**good, "department": "Installation", "q": "sam"}).json()
+    assert found == {"people": [{"id": "3", "name": "Sam Boss"}]}
 
 
 def test_holding_through_the_endpoint(client, world):
     email = _email()
-    body = {"verified": email_codes.sign_verified_email(email), "name": "Lee New", "location": "Barrie",
+    body = {"verified": email_codes.sign_verified_email(email), "first_name": "Lee", "last_name": "New", "department": "Installation",
             "supervisor_id": "3", "request_type": "leave", "form": VACATION}
     response = client.post("/api/intake/held", json=body)
     assert response.status_code == 200 and response.json()["supervisor_name"] == "Sam Boss"
@@ -172,7 +198,7 @@ def test_holding_through_the_endpoint(client, world):
 def test_someone_added_since_they_verified_is_sent_back_to_sign_in(client, world):
     email = _email()
     world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
-    body = {"verified": email_codes.sign_verified_email(email), "name": "Lee New", "location": "Barrie",
+    body = {"verified": email_codes.sign_verified_email(email), "first_name": "Lee", "last_name": "New", "department": "Installation",
             "supervisor_id": "3", "request_type": "leave", "form": VACATION}
     assert client.post("/api/intake/held", json=body).status_code == 409
 
