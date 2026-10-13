@@ -200,3 +200,16 @@ export const addRequestColumns = () => api.post('/admin/request-columns');
 // Admin - where the request lists live, and the copy from SharePoint before the move
 export const getRequestStorage = () => api.get('/admin/request-storage');
 export const copyRequestsToPostgres = () => api.post('/admin/request-storage/copy');
+/** The dates carry-over and payout requests are accepted between (Toronto dates, both ends included). */
+export interface CarryoverWindow {
+  start: string | null;   // YYYY-MM-DD, or null when no dates are set
+  end: string | null;
+  open: boolean;          // whether today is inside the dates
+  today: string;          // the Toronto date the server checked
+}
+// Admin - the carry-over and payout dates (none set means closed), and the Excel export
+export const getCarryoverPayoutWindow = () => api.get<CarryoverWindow>('/admin/carryover-payout');
+export const setCarryoverPayoutWindow = (start: string | null, end: string | null) =>
+  api.put<CarryoverWindow>('/admin/carryover-payout', { start, end });
+export const exportCarryoverPayout = () =>
+  api.get<Blob>('/admin/carryover-payout/export', { responseType: 'blob' });

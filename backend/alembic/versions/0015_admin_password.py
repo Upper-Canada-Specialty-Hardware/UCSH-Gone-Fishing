@@ -1,16 +1,13 @@
 """Add the admin dashboard password
 
 Revision ID: 0015
-Revises: 0013
+Revises: 0014
 Create Date: 2026-10-13
 
 One row holding the password that opens the admin dashboard, seeded once
 with 123 for HR to change. A developer may overwrite ``password`` with any
 plain value; it is hashed at the next sign-in. Deleting the row locks the
 dashboard until a row is added again: nothing re-seeds it.
-
-Numbered 0015 because 0014 (app_settings) is on an open branch. Whichever
-of the two reaches master second points its down_revision at the other.
 """
 from typing import Sequence, Union
 
@@ -18,7 +15,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "0015"
-down_revision: Union[str, None] = "0013"
+down_revision: Union[str, None] = "0014"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -124,27 +124,36 @@ const TYPE_ICONS: Record<RequestType, ReactNode> = {
  *
  * @param props.value - The chosen form.
  * @param props.onPick - Called with the form picked.
+ * @param props.closed - Forms not taken right now, each with the reason shown
+ *   on its greyed card (carry-over and payout outside HR's dates).
  * @returns The group of cards.
  */
-export function TypeCards({ value, onPick }: { value: RequestType; onPick: (t: RequestType) => void }) {
+export function TypeCards({ value, onPick, closed = {} }: {
+  value: RequestType; onPick: (t: RequestType) => void; closed?: Partial<Record<RequestType, string>>;
+}) {
   const theme = useTheme();
   return (
     <Box role="group" aria-label="What is the request for?"
-      sx={{ display: 'grid', gap: 1.25, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(3, minmax(0, 1fr))' } }}>
+      sx={{ display: 'grid', gap: 1.25, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: `repeat(${REQUEST_TYPES.length}, minmax(0, 1fr))` } }}>
       {REQUEST_TYPES.map((t) => {
-        const on = value === t.value;
+        const reason = closed[t.value];                          // set only while the form is closed
+        const on = value === t.value && !reason;
         return (
           <ButtonBase
             key={t.value}
             aria-pressed={on}
+            disabled={!!reason}                                  // greyed, cannot be picked
+            aria-disabled={!!reason}
             onClick={() => onPick(t.value)}
             sx={{
               textAlign: 'left', justifyContent: 'flex-start', alignItems: 'stretch', alignContent: 'start', justifyItems: 'start',
               display: 'grid', gap: 0.5, p: 1.5, borderRadius: '12px', transition: `${FADE}, transform .12s ease`,
               border: `1.5px solid ${on ? 'transparent' : theme.tokens.line2}`,
-              bgcolor: 'background.paper',
+              bgcolor: reason ? theme.tokens.chip : 'background.paper',   // a closed card sits back
+              opacity: reason ? 0.6 : 1,
               '& > :not(.type-card-hl)': { position: 'relative', zIndex: 1 },
-              '&:active': { transform: 'scale(.98)' },
+              '&:active': reason ? {} : { transform: 'scale(.98)' },      // no press feedback when closed
+              '&.Mui-disabled': { pointerEvents: 'auto', cursor: 'not-allowed' },   // keeps the not-allowed cursor
             }}
           >
             {/* One highlight that glides to the card picked. */}
@@ -168,7 +177,8 @@ export function TypeCards({ value, onPick }: { value: RequestType; onPick: (t: R
               {TYPE_ICONS[t.value]}
             </Box>
             <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{t.label}</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35 }}>{t.hint}</Typography>
+            {/* The reason replaces the hint on a closed card. */}
+            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35 }}>{reason || t.hint}</Typography>
           </ButtonBase>
         );
       })}
