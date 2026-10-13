@@ -200,9 +200,6 @@ export function TeamSkeleton({ tab }: { tab: string }) {
   );
 }
 
-/** The admin screens that are views of the one requests table. */
-const ADMIN_TABLE_SCREENS = ['pending', 'held', 'stuck', 'requests'];
-
 /** A table's rows: a header line, then rows of cells. @param props.rows - How many rows. */
 function TableRows({ rows }: { rows: number }) {
   return (
@@ -228,10 +225,11 @@ function TableRows({ rows }: { rows: number }) {
  * table with its toolbar; or a panel. The screen's real title shows at once.
  *
  * @param props.screen - The screen that will open.
+ * @param props.table - Whether it is a view of the requests table.
  * @param props.title - Its title, shown above every screen but home.
  * @returns The skeleton.
  */
-export function AdminSkeleton({ screen, title }: { screen: string; title?: string }) {
+export function AdminSkeleton({ screen, table, title }: { screen: string; table: boolean; title?: string }) {
   return (
     <Frame label="Loading the admin dashboard…">
       {title && <Typography variant="h5">{title}</Typography>}
@@ -261,7 +259,7 @@ export function AdminSkeleton({ screen, title }: { screen: string; title?: strin
             ))}
           </Paper>
         </Box>
-      ) : ADMIN_TABLE_SCREENS.includes(screen) ? (
+      ) : table ? (
         <>
         {/* Each view has a line above its table saying what it holds. */}
         <Box sx={{ mt: -1.5 }}><Line lh={24} w="min(420px, 80%)" h={14} /></Box>

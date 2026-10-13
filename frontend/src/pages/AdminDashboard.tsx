@@ -422,7 +422,7 @@ export default function AdminDashboard() {
           sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
         >
           {loading ? (
-            <AdminSkeleton screen={tab} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
+            <AdminSkeleton screen={tab} table={!!REQUEST_VIEWS[tab]} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
           ) : (
             <>
               {!processingEnabled && (
