@@ -127,8 +127,7 @@ async def admin_email_log(
 ):
     """Every SMTP2GO call that named one person, newest first.
 
-    Unauthenticated by design, like every other ``/admin/*`` endpoint: the
-    admin link is distributed by management and must work with no token.
+    Behind the admin password like every other ``/admin/*`` endpoint (#228).
 
     Resolution: an explicit ``address`` wins; otherwise the employee's address
     is read from the Staff Directory. Only an address can be matched, because
@@ -186,7 +185,7 @@ async def admin_email_log_test(body: TestEmailRequest):
     ``email_api_log`` row, and that row is returned so the answer SMTP2GO gave
     is visible at once. Nothing in SharePoint is touched and no SMS is sent.
 
-    Unauthenticated like every other ``/admin/*`` endpoint.
+    Behind the admin password like every other ``/admin/*`` endpoint (#228).
 
     Args:
         body: ``employee_id`` (resolved through the Staff Directory) or an
