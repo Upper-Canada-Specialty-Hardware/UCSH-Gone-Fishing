@@ -357,3 +357,23 @@ def render_carryover_reset_admin_summary(
         "carryover_reset_admin_summary.html",
         year=year, succeeded=succeeded, failed=failed,
     )
+
+
+# --- Add Employee ---
+
+def render_welcome_employee(first_name: str, email: str, site_url: str, tutorial_url: str) -> str:
+    """Render the welcome email a person gets once Add Employee creates them.
+
+    Args:
+        first_name: Their first name, for the greeting.
+        email: The address they sign in with, shown so they type the right one.
+        site_url: The public site (the request page and sign-in).
+        tutorial_url: The hosted staff tutorial.
+
+    Returns:
+        The rendered HTML body; the dashboard footer is appended by the sender.
+    """
+    return _render(
+        "welcome_employee.html",
+        first_name=first_name, email=email, site_url=site_url, tutorial_url=tutorial_url,
+    )

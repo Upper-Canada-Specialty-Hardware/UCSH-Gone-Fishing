@@ -1,0 +1,27 @@
+{# Sent to someone right after Add Employee creates their Staff Directory
+   record, from the manager or the admin dashboard. It tells them how to sign
+   in and points them at the staff tutorial. Goes out through
+   send_email_with_dashboard, which appends their own dashboard link. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Welcome to UCSH Out of Office</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Hi {{ first_name }},</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">
+  You have been added to UCSH Out of Office, where you book time off, log
+  overtime, and carry over or cash out vacation. Your requests go straight to
+  your manager, and you get an email when each one is decided.
+</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">
+  To sign in, open the site, type this email address ({{ email }}), and enter
+  the 6-digit code we email you. There is no password. Bookmark the site so it
+  is one click away.
+</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0 8px;">
+  <tr>
+    <td style="padding:0 12px 8px 0;">{{ ui.button(site_url, "Open UCSH Out of Office", "#2f5d50", 240) }}</td>
+    <td style="padding:0 0 8px 0;">{{ ui.button(tutorial_url, "Take the tutorial", "#e07a5f", 200) }}</td>
+  </tr>
+</table>
+<p style="color:#6b6257;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;line-height:1.5;margin:0 0 12px;">
+  The tutorial is a practice copy of the site with example data. Nothing you
+  do there is sent or saved.
+</p>
