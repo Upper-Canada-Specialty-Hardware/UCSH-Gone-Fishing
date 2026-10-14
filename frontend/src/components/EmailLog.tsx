@@ -60,6 +60,7 @@ interface RecentResponse {
 }
 
 type ChipColor = 'success' | 'warning' | 'error' | 'default';
+type Mode = 'recent' | 'person';
 
 // How each service names itself in prose, so one wording covers both paths.
 const SERVICE_NAME: Record<string, string> = {
@@ -88,6 +89,10 @@ const RECENT_WINDOWS = [
 ];
 const PERSON_WINDOWS = [7, 30, 90];
 
+// How many rows to render before a "show more" step, so a very busy window
+// paints quickly without hiding that more rows exist.
+const PAGE_SIZE = 100;
+
 /**
  * The outcome chip's label and colour for a row.
  * @param outcome - The backend outcome value.
@@ -95,6 +100,27 @@ const PERSON_WINDOWS = [7, 30, 90];
  */
 function outcomeChip(outcome: string): { label: string; color: ChipColor } {
   return OUTCOME_SPEC[outcome] ?? { label: outcome, color: 'default' };
+}
+
+/**
+ * The service chip's label and colour for a row.
+ * @param service - Which service produced the row.
+ * @returns Label and MUI colour.
+ */
+function serviceChip(service: string): { label: string; color: ChipColor } {
+  if (service === 'smtp2go') return { label: 'SMTP2GO', color: 'default' };
+  if (service === 'ucsh_mailer') return { label: 'UCSH mailer', color: 'success' };
+  return { label: 'Unknown', color: 'warning' };
+}
+
+/**
+ * The queued/refused counts as one short string, when the service reported them.
+ * @param entry - The row.
+ * @returns "N ok / M failed", or '' when neither count is known.
+ */
+function resultText(entry: EmailLogEntry): string {
+  if (entry.succeeded === null && entry.failed === null) return '';
+  return `${entry.succeeded ?? 0} ok / ${entry.failed ?? 0} failed`;
 }
 
 /**
@@ -139,17 +165,6 @@ function outcomeMeaning(outcome: string, service: string): string {
 }
 
 /**
- * The service chip's label and colour for a row.
- * @param service - Which service produced the row.
- * @returns Label and MUI colour.
- */
-function serviceChip(service: string): { label: string; color: ChipColor } {
-  if (service === 'smtp2go') return { label: 'SMTP2GO', color: 'default' };
-  if (service === 'ucsh_mailer') return { label: 'UCSH mailer', color: 'success' };
-  return { label: 'Unknown', color: 'warning' };
-}
-
-/**
  * Render an ISO instant in Toronto time, the timezone HR works in.
  * @param iso - ISO-8601 instant from the backend, or null.
  * @returns A short local date-time, or '' for null.
@@ -178,11 +193,74 @@ function pretty(value: unknown): string {
   }
 }
 
+/**
+ * Build a CSV of the given rows and prompt the browser to download it. Local
+ * only: the rows are already on screen, so nothing is re-fetched.
+ * @param rows - The rows to export.
+ * @param mode - Which view produced them, used only in the file name.
+ */
+function downloadCsv(rows: EmailLogEntry[], mode: Mode): void {
+  const header = [
+    'attempted_toronto', 'service', 'outcome', 'to', 'cc', 'subject',
+    'http_status', 'succeeded', 'failed', 'message_id', 'likely_duplicate',
+  ];
+  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;  // quote every field, double inner quotes
+  const lines = [header.join(',')];
+  for (const e of rows) {
+    lines.push([
+      formatToronto(e.attempted_at), e.service, e.outcome, e.to.join('; '), e.cc.join('; '),
+      e.subject, e.http_status ?? '', e.succeeded ?? '', e.failed ?? '', e.message_id ?? '',
+      e.likely_duplicate,
+    ].map(esc).join(','));
+  }
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `email-log-${mode}-${new Date().toISOString().slice(0, 10)}.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);                                       // free the blob once the click is queued
+}
+
+/**
+ * One labelled field inside a mobile card. Module-level so it is not rebuilt on
+ * every render.
+ * @param props.label - The field name.
+ * @param props.children - The field value.
+ * @returns A label/value row.
+ */
+function CardField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Box sx={{ display: 'flex', gap: 1, alignItems: 'baseline' }}>
+      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 76, flexShrink: 0 }}>
+        {label}
+      </Typography>
+      <Box sx={{ minWidth: 0, wordBreak: 'break-word' }}>{children}</Box>
+    </Box>
+  );
+}
+
+/**
+ * A small chip saying a row is a likely duplicate send.
+ * @param entry - The row to test.
+ * @returns The chip, or null when the row is not flagged.
+ */
+function dupChip(entry: EmailLogEntry) {
+  if (!entry.likely_duplicate) return null;
+  return (
+    <Chip
+      size="small"
+      color="warning"
+      variant="outlined"
+      label="Possible duplicate"
+      sx={{ ml: { sm: 1 }, mt: { xs: 0.5, sm: 0 } }}
+    />
+  );
+}
+
 interface Props {
   employees: any[];
 }
-
-type Mode = 'recent' | 'person';
 
 /**
  * Admin tab: the email-send log, for both SMTP2GO and the UCSH mailer.
@@ -190,10 +268,11 @@ type Mode = 'recent' | 'person';
  * Two modes share one table and one detail dialog. "All recent" needs no person
  * and lists every email in a window, newest first, flagging a subject that
  * reached the same recipient twice within five minutes (a likely double-send).
- * "By employee" is the original per-person lookup with its test-send button. No
- * table scrolls sideways: cells wrap, lower-priority columns drop with the
- * footer naming them (every value is still in the row's detail), and below about
- * 560px each row becomes a labelled card.
+ * "By employee" is the original per-person lookup with its test-send button.
+ * Both modes have a text filter and a CSV download. No table scrolls sideways:
+ * cells wrap, lower-priority columns drop with the footer naming them (every
+ * value is still in the row's detail), and below about 560px each row becomes a
+ * labelled, keyboard-openable card.
  *
  * @param employees - Staff Directory rows (id, name, department, email) for the
  *   person picker in "By employee" mode.
@@ -201,11 +280,11 @@ type Mode = 'recent' | 'person';
  */
 export default function EmailLog({ employees }: Props) {
   const theme = useTheme();
-  // Layout tiers. Below 560px the table becomes cards; the two optional columns
+  // Layout tiers. Below 560px the table becomes cards; the optional columns
   // appear only when there is room, and the footer names any that are hidden.
   const asCards = !useMediaQuery('(min-width:560px)');
-  const showService = useMediaQuery(theme.breakpoints.up('md'));   // Service column from ~900px
-  const showStatus = useMediaQuery(theme.breakpoints.up('lg'));    // HTTP column from ~1200px
+  const showWide = useMediaQuery(theme.breakpoints.up('md'));      // Service + Result from ~900px
+  const showStatus = useMediaQuery(theme.breakpoints.up('lg'));    // HTTP from ~1200px
 
   const [mode, setMode] = useState<Mode>('recent');
 
@@ -218,46 +297,70 @@ export default function EmailLog({ employees }: Props) {
   // Recent mode state.
   const [hours, setHours] = useState<number>(24);
   const [recentData, setRecentData] = useState<RecentResponse | null>(null);
-  const [filter, setFilter] = useState('');                        // recipient/subject text, client-side
 
   // Shared state.
+  const [filter, setFilter] = useState('');                        // recipient/subject text, both modes
+  const [debouncedText, setDebouncedText] = useState('');          // settled filter, sent to the recent query
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);     // client paging for a busy window
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<EmailLogEntry | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);               // bumped after a test send
 
+  // Debounce the filter box so recent mode queries the server at most every
+  // 300ms, not on every keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedText(filter.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [filter]);
+
+  // Reset paging whenever the result set could change.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [mode, hours, days, selected, debouncedText, refreshTick]);
+
   // Per-person fetch: whenever the person or the window changes, or a test lands.
   useEffect(() => {
     if (mode !== 'person') return;
-    if (!selected) { setPersonData(null); return; }
+    if (!selected) {
+      setPersonData(null);
+      setLoading(false);                                           // clear any spinner carried in from recent mode
+      return;
+    }
     let cancelled = false;                                         // ignore a stale answer after a re-pick
     setLoading(true);
     setError(null);
     getAdminEmailLog({ employee_id: String(selected.id), days })
       .then((res) => { if (!cancelled) setPersonData(res.data); })
       .catch((e) => {
-        if (!cancelled) setError(e?.response?.data?.detail || e?.message || 'Lookup failed');
+        if (!cancelled) {
+          setPersonData(null);                                     // do not leave stale rows under an error
+          setError(e?.response?.data?.detail || e?.message || 'Lookup failed');
+        }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [mode, selected, days, refreshTick]);
 
-  // Recent fetch: whenever the window changes, the mode is entered, or a test
-  // lands. The text filter is applied client-side over the returned window, so
-  // typing does not re-query.
+  // Recent fetch: whenever the window, the settled filter text, the mode or a
+  // test send changes. The server filters over the whole window, so a capped
+  // page can never hide a match the way a client-only filter would.
   useEffect(() => {
     if (mode !== 'recent') return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getAdminEmailLogRecent({ hours })
+    getAdminEmailLogRecent({ hours, text: debouncedText || undefined })
       .then((res) => { if (!cancelled) setRecentData(res.data); })
       .catch((e) => {
-        if (!cancelled) setError(e?.response?.data?.detail || e?.message || 'Lookup failed');
+        if (!cancelled) {
+          setRecentData(null);                                     // an error must not read as "nothing sent"
+          setError(e?.response?.data?.detail || e?.message || 'Lookup failed');
+        }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [mode, hours, refreshTick]);
+  }, [mode, hours, debouncedText, refreshTick]);
 
   /**
    * Send the labelled test email to the selected person, then show its row.
@@ -279,12 +382,12 @@ export default function EmailLog({ employees }: Props) {
     }
   };
 
-  // The rows on screen: the active mode's rows, filtered client-side in recent
-  // mode. The duplicate flag is set by the backend over the whole window, so a
-  // client-side filter never changes it.
+  // The rows for the active mode. Recent rows are already filtered by the server
+  // (over the whole window); person rows are filtered client-side here, since
+  // the per-person endpoint is not window-capped the same way.
   const rows = useMemo<EmailLogEntry[]>(() => {
-    const all = mode === 'recent' ? recentData?.emails ?? [] : personData?.emails ?? [];
-    if (mode !== 'recent') return all;
+    if (mode === 'recent') return recentData?.emails ?? [];
+    const all = personData?.emails ?? [];
     const q = filter.trim().toLowerCase();
     if (!q) return all;
     return all.filter((e) => {
@@ -293,49 +396,16 @@ export default function EmailLog({ employees }: Props) {
     });
   }, [mode, recentData, personData, filter]);
 
+  const visibleRows = useMemo(() => rows.slice(0, visibleCount), [rows, visibleCount]);
+  const dupCount = useMemo(() => rows.filter((e) => e.likely_duplicate).length, [rows]);
+
   // Which optional columns are hidden right now, for the footer note.
   const hiddenColumns = useMemo(() => {
     const names: string[] = [];
-    if (!showService) names.push('Service');
+    if (!showWide) names.push('Service', 'Result');
     if (!showStatus) names.push('HTTP status');
     return names;
-  }, [showService, showStatus]);
-
-  const dupCount = useMemo(() => rows.filter((e) => e.likely_duplicate).length, [rows]);
-
-  /**
-   * One small chip saying a row is a likely duplicate send.
-   * @returns The chip, or null when the row is not flagged.
-   */
-  function dupChip(entry: EmailLogEntry) {
-    if (!entry.likely_duplicate) return null;
-    return (
-      <Chip
-        size="small"
-        color="warning"
-        variant="outlined"
-        label="Possible duplicate"
-        sx={{ ml: { sm: 1 }, mt: { xs: 0.5, sm: 0 } }}
-      />
-    );
-  }
-
-  /**
-   * One labelled field inside a mobile card.
-   * @param label - The field name.
-   * @param children - The field value.
-   * @returns A label/value row.
-   */
-  function CardField({ label, children }: { label: string; children: ReactNode }) {
-    return (
-      <Box sx={{ display: 'flex', gap: 1, alignItems: 'baseline' }}>
-        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 76, flexShrink: 0 }}>
-          {label}
-        </Typography>
-        <Box sx={{ minWidth: 0, wordBreak: 'break-word' }}>{children}</Box>
-      </Box>
-    );
-  }
+  }, [showWide, showStatus]);
 
   /**
    * The rows as a wide table (>=560px). Lower-priority columns drop by
@@ -350,13 +420,14 @@ export default function EmailLog({ employees }: Props) {
             <TableCell>Attempted (Toronto)</TableCell>
             <TableCell>Recipient</TableCell>
             <TableCell>Subject</TableCell>
-            {showService && <TableCell>Service</TableCell>}
+            {showWide && <TableCell>Service</TableCell>}
             <TableCell>Outcome</TableCell>
+            {showWide && <TableCell>Result</TableCell>}
             {showStatus && <TableCell>HTTP</TableCell>}
           </TableRow>
         </TableHead>
         <TableBody>
-          {rows.map((e) => {
+          {visibleRows.map((e) => {
             const oc = outcomeChip(e.outcome);
             const sc = serviceChip(e.service);
             return (
@@ -381,10 +452,13 @@ export default function EmailLog({ employees }: Props) {
                   {e.subject}
                   {dupChip(e)}
                 </TableCell>
-                {showService && (
+                {showWide && (
                   <TableCell><Chip size="small" label={sc.label} color={sc.color} /></TableCell>
                 )}
                 <TableCell><Chip size="small" label={oc.label} color={oc.color} /></TableCell>
+                {showWide && (
+                  <TableCell sx={{ whiteSpace: { lg: 'nowrap' } }}>{resultText(e)}</TableCell>
+                )}
                 {showStatus && <TableCell>{e.http_status ?? ''}</TableCell>}
               </TableRow>
             );
@@ -395,20 +469,27 @@ export default function EmailLog({ employees }: Props) {
   }
 
   /**
-   * The rows as labelled cards (below 560px), so nothing scrolls sideways.
+   * The rows as labelled, keyboard-openable cards (below 560px), so nothing
+   * scrolls sideways.
    * @returns A stack of cards.
    */
   function renderCards() {
     return (
       <Stack spacing={1.5}>
-        {rows.map((e) => {
+        {visibleRows.map((e) => {
           const oc = outcomeChip(e.outcome);
           const sc = serviceChip(e.service);
+          const result = resultText(e);
           return (
             <Paper
               key={e.id}
               variant="outlined"
+              role="button"
+              tabIndex={0}
               onClick={() => setDetail(e)}
+              onKeyDown={(ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setDetail(e); }
+              }}
               sx={{ p: 1.5, cursor: 'pointer' }}
             >
               <Stack spacing={0.5}>
@@ -421,6 +502,9 @@ export default function EmailLog({ employees }: Props) {
                 <CardField label="To"><Typography variant="body2">{e.to.join(', ')}</Typography></CardField>
                 {e.cc.length > 0 && (
                   <CardField label="CC"><Typography variant="body2">{e.cc.join(', ')}</Typography></CardField>
+                )}
+                {result && (
+                  <CardField label="Result"><Typography variant="body2">{result}</Typography></CardField>
                 )}
                 <CardField label="When">
                   <Typography variant="body2">{formatToronto(e.attempted_at)}</Typography>
@@ -479,13 +563,24 @@ export default function EmailLog({ employees }: Props) {
         </Alert>
       );
     }
+    // The person has rows, but the filter may hide them all.
+    if (rows.length === 0 && filter.trim()) {
+      return (
+        <Alert severity="info">
+          None of the {data.count} email{data.count === 1 ? '' : 's'} for {data.address} match
+          "{filter.trim()}". Clear the filter to see them all.
+        </Alert>
+      );
+    }
     return (
-      <Alert severity="success">
-        {data.count} email{data.count === 1 ? '' : 's'} named {data.address} in the last {data.days}{' '}
-        days. Open a row to see the request and the service's answer.
-        {logYoungerThanWindow && (
-          <> The log covers sends since {formatToronto(data.log_since)}.</>
-        )}
+      <Alert severity={dupCount > 0 ? 'warning' : 'success'}>
+        {rows.length} of {data.count} email{data.count === 1 ? '' : 's'} for {data.address} shown
+        {filter.trim() ? ` (filtered by "${filter.trim()}")` : ''} from the last {data.days} days.
+        {dupCount > 0
+          ? ` ${dupCount} of the shown row${dupCount === 1 ? '' : 's'} look like a duplicate `
+            + '(same subject within five minutes).'
+          : ''}
+        {logYoungerThanWindow && <> The log covers sends since {formatToronto(data.log_since)}.</>}
       </Alert>
     );
   }
@@ -497,36 +592,43 @@ export default function EmailLog({ employees }: Props) {
   function renderRecentVerdict() {
     const data = recentData;
     if (!data) return null;
+    const term = debouncedText;                                   // the text the server actually searched for
     if (data.count === 0) {
       return (
         <Alert severity="info">
-          No email was sent through any service in this window.
+          {term
+            ? `No email matches "${term}" anywhere in this window.`
+            : 'No email was sent through any service in this window.'}
           {data.log_since && <> The log covers sends since {formatToronto(data.log_since)} (Toronto time).</>}
         </Alert>
       );
     }
+    // count, dupCount and the shown rows all describe the same server result set.
     return (
       <Alert severity={dupCount > 0 ? 'warning' : 'success'}>
-        {data.count} email{data.count === 1 ? '' : 's'} in this window
+        {data.count} email{data.count === 1 ? '' : 's'}
+        {term ? ` match "${term}"` : ''} in this window
         {data.truncated && ` (capped at ${data.limit}; older ones in the window are not shown)`}.
         {dupCount > 0
-          ? ` ${dupCount} row${dupCount === 1 ? '' : 's'} look like a duplicate (same subject to the `
-            + 'same recipient within five minutes).'
-          : ' No duplicate sends detected.'}
+          ? ` ${dupCount} of them look like a duplicate (same subject to the same recipient within `
+            + 'five minutes).'
+          : ' No duplicate sends among them.'}
       </Alert>
     );
   }
 
   const detailService = detail ? SERVICE_NAME[detail.service] ?? SERVICE_NAME.unknown : '';
   const detailOutcome = detail ? outcomeChip(detail.outcome) : null;
+  const detailResult = detail ? resultText(detail) : '';
 
   return (
     <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Every email the backend sends is recorded here with the service's answer. Internal
-        (@ucsh.com) recipients go through the UCSH mailer; everyone else goes through SMTP2GO. An
-        Accepted row that never reached the inbox is a delivery or mailbox problem, not a code
-        problem. A missing row means the backend never made the request.
+        Every email the backend sends is recorded here with the service's answer. When the UCSH
+        mailer is switched on, internal (@ucsh.com) recipients go through it (Microsoft HVE) and
+        everyone else goes through SMTP2GO; with the mailer off, every recipient goes through
+        SMTP2GO. An Accepted row that never reached the inbox is a delivery or mailbox problem, not a
+        code problem. A missing row means the backend never made the request.
       </Typography>
 
       <ToggleButtonGroup
@@ -534,19 +636,26 @@ export default function EmailLog({ employees }: Props) {
         size="small"
         value={mode}
         onChange={(_, v) => { if (v) { setMode(v); setError(null); } }}
-        sx={{ mb: 2 }}
+        sx={{ mb: 2, flexWrap: 'wrap' }}
       >
         <ToggleButton value="recent">All recent</ToggleButton>
         <ToggleButton value="person">By employee</ToggleButton>
       </ToggleButtonGroup>
 
       {mode === 'recent' && (
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems={{ md: 'center' }}>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={2}
+          sx={{ mb: 2, flexWrap: 'wrap' }}
+          alignItems={{ md: 'center' }}
+          useFlexGap
+        >
           <ToggleButtonGroup
             exclusive
             size="small"
             value={hours}
             onChange={(_, v) => { if (v) setHours(v); }}
+            sx={{ flexWrap: 'wrap' }}
           >
             {RECENT_WINDOWS.map((w) => (
               <ToggleButton key={w.hours} value={w.hours}>{w.label}</ToggleButton>
@@ -557,17 +666,30 @@ export default function EmailLog({ employees }: Props) {
             label="Filter by recipient or subject"
             value={filter}
             onChange={(ev) => setFilter(ev.target.value)}
-            sx={{ flex: 1, minWidth: 240 }}
+            sx={{ flex: 1, minWidth: { xs: 0, sm: 220 }, width: '100%' }}
           />
+          <Button
+            variant="outlined"
+            disabled={rows.length === 0}
+            onClick={() => downloadCsv(rows, mode)}
+          >
+            Download CSV
+          </Button>
           {loading && <CircularProgress size={24} />}
         </Stack>
       )}
 
       {mode === 'person' && (
         <>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems={{ md: 'center' }}>
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={2}
+            sx={{ mb: 2, flexWrap: 'wrap' }}
+            alignItems={{ md: 'center' }}
+            useFlexGap
+          >
             <Autocomplete
-              sx={{ flex: 1, minWidth: 300 }}
+              sx={{ flex: 1, minWidth: { xs: 0, md: 280 }, width: '100%' }}
               options={employees}
               getOptionLabel={(opt: any) => `${opt.name} (${opt.department})`}
               value={selected}
@@ -579,17 +701,32 @@ export default function EmailLog({ employees }: Props) {
               size="small"
               value={days}
               onChange={(_, v) => { if (v) setDays(v); }}
+              sx={{ flexWrap: 'wrap' }}
             >
               {PERSON_WINDOWS.map((d) => (
                 <ToggleButton key={d} value={d}>Last {d} days</ToggleButton>
               ))}
             </ToggleButtonGroup>
+            <TextField
+              size="small"
+              label="Filter by recipient or subject"
+              value={filter}
+              onChange={(ev) => setFilter(ev.target.value)}
+              sx={{ flex: 1, minWidth: { xs: 0, sm: 220 }, width: '100%' }}
+            />
             <Button
               variant="outlined"
               disabled={!personData?.address || loading || sending}
               onClick={handleSendTest}
             >
               {sending ? 'Sending...' : 'Send test email'}
+            </Button>
+            <Button
+              variant="outlined"
+              disabled={rows.length === 0}
+              onClick={() => downloadCsv(rows, mode)}
+            >
+              Download CSV
             </Button>
             {loading && <CircularProgress size={24} />}
           </Stack>
@@ -602,9 +739,11 @@ export default function EmailLog({ employees }: Props) {
       )}
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-      <Box sx={{ mb: 2 }}>{mode === 'recent' ? renderRecentVerdict() : renderPersonVerdict()}</Box>
+      {!error && (
+        <Box sx={{ mb: 2 }}>{mode === 'recent' ? renderRecentVerdict() : renderPersonVerdict()}</Box>
+      )}
 
-      {rows.length > 0 && (
+      {!error && rows.length > 0 && (
         <Box>
           {asCards ? renderCards() : renderTable()}
           {!asCards && hiddenColumns.length > 0 && (
@@ -612,13 +751,12 @@ export default function EmailLog({ employees }: Props) {
               Hidden on this screen: {hiddenColumns.join(', ')}. Open a row for every value.
             </Typography>
           )}
+          {rows.length > visibleRows.length && (
+            <Button sx={{ mt: 1 }} onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}>
+              Show more ({rows.length - visibleRows.length} more)
+            </Button>
+          )}
         </Box>
-      )}
-      {mode === 'recent' && filter.trim() && rows.length === 0 && recentData && recentData.count > 0 && (
-        <Typography color="text.secondary" sx={{ p: 2 }}>
-          Nothing in this window matches "{filter.trim()}". Clear the filter to see all{' '}
-          {recentData.count} rows.
-        </Typography>
       )}
 
       <Dialog open={detail !== null} onClose={() => setDetail(null)} maxWidth="md" fullWidth>
@@ -645,6 +783,7 @@ export default function EmailLog({ employees }: Props) {
                 {' '}Attempted {formatToronto(detail.attempted_at)}
                 {detail.duration_ms !== null && ` (answered in ${detail.duration_ms} ms)`}
                 {detail.http_status !== null && `, HTTP ${detail.http_status}`}
+                {detailResult && `, ${detailResult}`}
                 {detail.message_id && `, message id ${detail.message_id}`}
                 {detail.smtp2go_request_id && `, request id ${detail.smtp2go_request_id}`}
               </Typography>

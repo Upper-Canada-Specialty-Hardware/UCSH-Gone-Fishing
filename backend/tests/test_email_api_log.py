@@ -690,3 +690,79 @@ def test_duplicate_mark_ignores_the_same_send_spaced_out(client):
         "/api/dashboard/admin/email-log/recent", params={"hours": 1}
     ).json()["emails"]
     assert all(e["likely_duplicate"] is False for e in emails)
+
+
+def test_duplicate_mark_ignores_the_refusal_fallback_and_retries(client):
+    async def flow():
+        await _reset()
+        base = utcnow()
+        # The mailer refusal fallback (graph/email.py): the first mailer call is
+        # refused (http_error) carrying every address, then the kept address is
+        # resent (accepted) and the refused one goes to SMTP2GO (accepted). Same
+        # subject within seconds, overlapping recipients, but no double-delivery.
+        await _seed(
+            to=["staff@ucsh.com"], cc=["temp@ucaccess.com"], subject="Approval",
+            outcome="http_error", attempted_at=base, request_url=_MAILER_URL,
+        )
+        await _seed(
+            to=["staff@ucsh.com"], subject="Approval",
+            attempted_at=base - timedelta(seconds=1), request_url=_MAILER_URL,
+        )
+        await _seed(
+            to=["temp@ucaccess.com"], subject="Approval",
+            attempted_at=base - timedelta(seconds=1),
+        )
+
+    asyncio.run(flow())
+    emails = client.get(
+        "/api/dashboard/admin/email-log/recent", params={"hours": 1}
+    ).json()["emails"]
+    # The http_error row is not bucketed, so the two accepted rows (one address
+    # each) have nothing to pair with: nothing is flagged.
+    assert all(e["likely_duplicate"] is False for e in emails)
+
+
+def test_per_person_endpoint_marks_duplicates(client, monkeypatch):
+    async def _employee(item_id):
+        return {"id": "7", "fields": {"Title": "Mgr", "EmailAddress": "mgr@ucsh.com"}}
+
+    monkeypatch.setattr(email_log_route, "get_employee_by_id", _employee)
+
+    async def flow():
+        await _reset()
+        base = utcnow()
+        await _seed(to=["mgr@ucsh.com"], subject="Approve #7", attempted_at=base)
+        await _seed(to=["mgr@ucsh.com"], subject="Approve #7", attempted_at=base - timedelta(minutes=1))
+
+    asyncio.run(flow())
+    body = client.get("/api/dashboard/admin/email-log", params={"employee_id": "7"}).json()
+    assert body["count"] == 2
+    assert all(e["likely_duplicate"] for e in body["emails"])      # per-person mode flags them too
+
+
+# ----- the recent list: limit edge and failure surfacing -----
+
+def test_recent_exactly_at_the_limit_is_not_truncated(client):
+    async def flow():
+        await _reset()
+        now = utcnow()
+        for i in range(3):                                         # exactly `limit` rows, no more
+            await _seed(to=["a@ucsh.com"], subject=f"s{i}", attempted_at=now - timedelta(minutes=i))
+
+    asyncio.run(flow())
+    r = client.get("/api/dashboard/admin/email-log/recent", params={"limit": 3}).json()
+    assert r["count"] == 3
+    assert r["truncated"] is False                                 # exactly the cap is not a truncation
+
+
+def test_recent_surfaces_a_query_failure_instead_of_claiming_nothing_sent(client, monkeypatch):
+    asyncio.run(_reset())
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    # find_recent no longer swallows a query error; the route lets it 500 so the
+    # page can say the lookup failed rather than "nothing was sent".
+    monkeypatch.setattr(log_service, "async_session", _boom)
+    r = client.get("/api/dashboard/admin/email-log/recent")
+    assert r.status_code == 500

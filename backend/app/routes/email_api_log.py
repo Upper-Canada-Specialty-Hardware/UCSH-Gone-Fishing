@@ -1,9 +1,11 @@
-"""Admin lookup of the SMTP2GO request/response log.
+"""Admin lookup of the outbound email request/response log.
 
-Answers the support question "did the backend ask SMTP2GO to email this
-person, and what did SMTP2GO say back" from ``email_api_log``. The Email Log
-tab of the admin dashboard is the intended reader; the endpoint URL also
-works directly in a browser.
+Answers the support questions "did the backend ask a service to email this
+person, and what did it say back" (per person) and "what has gone out lately
+across every service" (the recent view) from ``email_api_log``. Rows come from
+both SMTP2GO and the UCSH mailer (Microsoft HVE); each row names its service.
+The Email Log tab of the admin dashboard is the intended reader; the endpoint
+URLs also work directly in a browser.
 """
 
 import json
@@ -134,13 +136,13 @@ async def admin_email_log(
     ),
     limit: int = Query(100, ge=1, le=1000, description="Maximum rows to return"),
 ):
-    """Every SMTP2GO call that named one person, newest first.
+    """Every call (either service) that named one person, newest first.
 
     Behind the admin password like every other ``/admin/*`` endpoint (#228).
 
     Resolution: an explicit ``address`` wins; otherwise the employee's address
     is read from the Staff Directory. Only an address can be matched, because
-    the log records what SMTP2GO was asked to send and SMTP2GO only knows
+    the log records what each service was asked to send and a service only knows
     addresses. So an employee with no directory address, or an id the
     directory cannot find, gets an empty list and a ``directory_lookup``
     value saying why. That empty answer is itself a finding: no address
@@ -218,7 +220,12 @@ async def admin_email_log_recent(
         more may exist earlier in the window), and ``emails`` newest first.
     """
     since = utcnow() - timedelta(hours=hours)
-    rows = await find_recent(since=since, limit=limit, text=text)
+    # Ask for one more than the cap: if that extra row comes back the window
+    # really does hold more than `limit`, so exactly `limit` rows is not
+    # mistaken for a truncated result.
+    fetched = await find_recent(since=since, limit=limit + 1, text=text)
+    truncated = len(fetched) > limit
+    rows = fetched[:limit]                                          # trim the probe row before serialising
     coverage = await log_coverage_start()
     duplicate_ids = find_duplicate_ids(rows)                       # mark bursts within the returned window
     return {
@@ -227,7 +234,7 @@ async def admin_email_log_recent(
         "log_since": coverage.isoformat() if coverage else None,
         "limit": limit,
         "count": len(rows),
-        "truncated": len(rows) == limit,                           # the cap was hit; older rows may exist
+        "truncated": truncated,                                     # a row beyond the cap exists
         "emails": [_serialize(r, duplicate_ids) for r in rows],
     }
 
