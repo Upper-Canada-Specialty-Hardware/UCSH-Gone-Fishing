@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Box, Button, Chip, Drawer, IconButton, MenuItem, Paper, Stack, Tab, Table, TableBody, TableCell,
-  TableHead, TableRow, Tabs, TextField, Typography,
+  Box, Button, Chip, Collapse, IconButton, Paper, Stack, Table, TableBody, TableCell,
+  TableHead, TableRow, TextField, Typography, useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
-import KindPill from '../KindPill';
-import { STATUS_COLOR } from '../dataGridDefaults';
+import FilterListIcon from '@mui/icons-material/FilterList';
+import DownloadIcon from '@mui/icons-material/Download';
 import { EmployeeSetupSummary } from '../EmployeeSetupList';
-import { getManagerAssignments } from '../../api/client';
-import { requestKind, requestWhat, requestWhen } from '../../utils/requestText';
-import { Enter, Swap } from '../Motion';
+import { ManagerOption } from '../AddEmployee';
+import { getManagerAssignments, getSpUsers } from '../../api/client';
+import { getStaffRecord, StaffRecord } from '../../api/staff';
+import { Enter } from '../Motion';
+import PersonProfile from './PersonProfile';
+import StaffExportDialog, { ExportPerson } from './StaffExportDialog';
 
 /** One person as /admin/balances returns them, plus their managers once loaded. */
 interface Person {
@@ -18,26 +22,53 @@ interface Person {
   email: string;
   department: string;
   location: string;
+  employment_type: string;
+  system_check: string;
   is_manager: boolean;
   balances: Record<string, number>;
   /** Manager names, or null until /admin/manager-assignments has answered. */
   managers: string[] | null;
 }
 
-/** The quick filters and what each keeps. */
-const FILTERS: Record<string, (p: Person) => boolean> = {
-  All: () => true,
-  'Below zero': (p) => (p.balances?.vacation_balance ?? 0) < 0 || (p.balances?.sick_balance ?? 0) < 0,
-  'No manager': (p) => p.managers !== null && p.managers.length === 0,
-  Managers: (p) => p.is_manager,
-};
+/** A balance group has one person below zero in any pot. */
+const isBelowZero = (p: Person) =>
+  ['vacation_balance', 'sick_balance', 'overtime', 'carryover'].some((k) => (p.balances?.[k] ?? 0) < 0);
 
-/** Grouping options and the field each groups by. */
-const GROUPS: Record<string, keyof Person | null> = {
-  'No grouping': null,
-  'By department': 'department',
-  'By location': 'location',
-};
+/** One filter group: its key, label, the values on offer, and its test. */
+interface FilterGroup {
+  key: string;
+  label: string;
+  opts: (people: Person[]) => string[];
+  test: (p: Person, value: string, problems: Record<string, string[]>) => boolean;
+  /** "Needs attention" must match every chosen value, not any. */
+  all?: boolean;
+}
+
+/** Unique, sorted, non-blank values from a list. */
+const uniq = (xs: (string | null | undefined)[]) =>
+  Array.from(new Set(xs.filter((x): x is string => !!x))).sort();
+
+/** The six filter groups, mirroring the mockup's drawer. */
+const FILTERS: FilterGroup[] = [
+  { key: 'location', label: 'Location', opts: (ps) => uniq(ps.map((p) => p.location)), test: (p, v) => p.location === v },
+  { key: 'department', label: 'Department', opts: (ps) => uniq(ps.map((p) => p.department)), test: (p, v) => p.department === v },
+  { key: 'employment_type', label: 'Salary or hourly', opts: (ps) => uniq(ps.map((p) => p.employment_type)), test: (p, v) => p.employment_type === v },
+  { key: 'manager', label: 'Manager', opts: (ps) => uniq(ps.flatMap((p) => p.managers || [])), test: (p, v) => (p.managers || []).includes(v) },
+  { key: 'system_check', label: 'System check', opts: (ps) => uniq(ps.map((p) => p.system_check)), test: (p, v) => p.system_check === v },
+  {
+    key: 'flag', label: 'Needs attention', all: true,
+    opts: () => ['Below zero', 'No manager', 'Setup problem'],
+    test: (p, v, problems) =>
+      v === 'Below zero' ? isBelowZero(p)
+        : v === 'No manager' ? p.managers !== null && p.managers.length === 0
+          : !!problems[p.id],
+  },
+];
+
+/** The quick chips above the table: each toggles one "Needs attention" value. */
+const QUICK: [string, string | null][] = [
+  ['All', null], ['Below zero', 'Below zero'], ['No manager', 'No manager'], ['Setup problem', 'Setup problem'],
+];
 
 interface Props {
   /** Everyone, from /admin/balances. */
@@ -46,70 +77,36 @@ interface Props {
   requests: any[];
   /** The setup check, so a person with a problem is flagged. */
   setup: EmployeeSetupSummary | null;
-  /** Open someone's dashboard in a new tab. */
-  onOpenDashboard: (id: string, role: 'employee' | 'manager') => void;
-  /** Copy someone's employee dashboard link; resolves true once it is on the clipboard. */
-  onCopyLink: (id: string) => Promise<boolean>;
-  /** Email a manager their dashboard link. */
-  onSendLink: (id: string) => void;
+  /** Whether writes are enabled (the profile's Save is off when they are not). */
+  processingEnabled: boolean;
   /** Open the manager assignments screen. */
   onManageAssignments: () => void;
+  /** Surface a message to the dashboard snackbar. */
+  onNotify: (message: string, severity: 'success' | 'error') => void;
 }
 
 /**
- * A balance cell: two decimals at most, below zero in the error colour.
- *
- * @param props.v - The balance in days.
- * @param props.narrowHide - Hide it on phones.
- * @returns The table cell.
- */
-function Num({ v, narrowHide }: { v: number | undefined; narrowHide?: boolean }) {
-  const n = v ?? 0;
-  return (
-    <TableCell
-      align="right"
-      sx={{
-        fontVariantNumeric: 'tabular-nums',                    // digits line up down the column
-        color: n < 0 ? 'error.main' : undefined, fontWeight: n < 0 ? 700 : undefined,
-        display: narrowHide ? { xs: 'none', sm: 'table-cell' } : undefined,
-      }}
-    >
-      {Math.round(n * 100) / 100}
-    </TableCell>
-  );
-}
-
-/**
- * Staff: everyone with their balances and managers in one table, replacing
- * All balances, Department summary, View employee and View team. Search,
- * quick filters and grouping (by department or location, with averages) sit
- * above it; clicking a person opens a panel with their requests, managers and
- * dashboard links.
+ * Staff: the simple table of everyone with their balances and managers, with a
+ * quick-filter row, a filter drawer and an Export button. Clicking a person
+ * grows the table into their profile in place (balances, every Staff Directory
+ * detail, managers and change history, saved with a required reason).
  *
  * @param props - See {@link Props}.
  * @returns The staff screen body.
  */
-export default function StaffScreen({ employees, requests, setup, onOpenDashboard, onCopyLink, onSendLink, onManageAssignments }: Props) {
+export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onNotify }: Props) {
+  const theme = useTheme();
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('All');
-  const [group, setGroup] = useState('No grouping');
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [panelTab, setPanelTab] = useState(0);
-  const [copiedId, setCopiedId] = useState<string | null>(null);   // whose link shows "Copied" for a moment
-  const copiedTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
+  const [picked, setPicked] = useState<Record<string, string[]>>({});   // filter key -> chosen values
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);            // the person whose profile is open
+  const [record, setRecord] = useState<StaffRecord | null>(null);       // their fetched record
+  const [recordLoading, setRecordLoading] = useState(false);
+  const [spUsers, setSpUsers] = useState<ManagerOption[]>([]);          // people for the pickers
 
-  /** Copy the link and confirm on the button itself. @param id - The person. */
-  const copyLink = async (id: string) => {
-    if (await onCopyLink(id)) {
-      setCopiedId(id);
-      window.clearTimeout(copiedTimer.current);
-      copiedTimer.current = window.setTimeout(() => setCopiedId(null), 1600);
-    }
-  };
   // Manager names by employee id; /admin/balances does not carry them.
   const [managersById, setManagersById] = useState<Record<string, string[]> | null>(null);
-
   useEffect(() => {
     getManagerAssignments()
       .then((r) => setManagersById(Object.fromEntries(
@@ -118,211 +115,298 @@ export default function StaffScreen({ employees, requests, setup, onOpenDashboar
       .catch(() => setManagersById(null));                  // the column just shows nothing
   }, []);
 
-  // Setup problems by employee id, for the flag on each row.
+  // People for the profile's person/manager pickers; fetched once when the screen opens.
+  useEffect(() => {
+    getSpUsers()
+      .then((r) => setSpUsers((r.data.users || []).map((u: any) => ({ sp_user_id: u.sp_user_id, name: u.name }))))
+      .catch(() => { /* the pickers are just empty */ });
+  }, []);
+
+  // Setup problems by employee id, for the flag on each row and the profile.
   const problemsById = useMemo(() => Object.fromEntries(
     (setup?.flagged || []).map((f) => [String(f.employee_id), f.fails.map((p) => p.detail || p.code)]),
-  ), [setup]);
+  ) as Record<string, string[]>, [setup]);
 
   const people = useMemo<Person[]>(() => employees.map((e) => ({
     ...e,
     id: String(e.id),
+    employment_type: e.employment_type || '',
+    system_check: e.system_check || '',
     managers: managersById ? managersById[String(e.id)] ?? [] : null,
   })).sort((a, b) => a.name.localeCompare(b.name)), [employees, managersById]);
 
-  // Filtered by the chip and the search box.
-  const rows = useMemo(() => {
+  /** Whether a person passes the search box and every active filter. */
+  const passes = (p: Person): boolean => {
     const q = query.trim().toLowerCase();
-    return people.filter((p) => FILTERS[filter](p) && (!q || `${p.name} ${p.email} ${(p.managers || []).join(' ')}`.toLowerCase().includes(q)));
-  }, [people, filter, query]);
+    if (q && !`${p.name} ${p.email} ${(p.managers || []).join(' ')} ${p.department} ${p.location}`.toLowerCase().includes(q)) return false;
+    return FILTERS.every((f) => {
+      const vals = picked[f.key] || [];
+      if (!vals.length) return true;                       // no values chosen -> no constraint
+      return f.all ? vals.every((v) => f.test(p, v, problemsById)) : vals.some((v) => f.test(p, v, problemsById));
+    });
+  };
+  const rows = useMemo(() => people.filter(passes), [people, query, picked, problemsById]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Grouped rows with each group's averages, or one unnamed group.
-  const groups = useMemo(() => {
-    const key = GROUPS[group];
-    if (!key) return [{ name: '', rows }];
-    const by: Record<string, Person[]> = {};
-    rows.forEach((p) => { const g = String(p[key] || 'Not set'); (by[g] = by[g] || []).push(p); });
-    return Object.keys(by).sort().map((name) => ({ name, rows: by[name] }));
-  }, [rows, group]);
+  /** Toggle one value within a filter group. */
+  const toggleFilter = (key: string, value: string) => {
+    setPicked((prev) => {
+      const vals = prev[key] || [];
+      const next = vals.includes(value) ? vals.filter((v) => v !== value) : [...vals, value];
+      return { ...prev, [key]: next };
+    });
+  };
 
-  const person = people.find((p) => p.id === openId) || null;
-  const theirs = person ? requests.filter((r) => r.employee_name === person.name) : [];
+  const activeChips = FILTERS.flatMap((f) => (picked[f.key] || []).map((v) => ({ key: f.key, label: f.label, value: v })));
+  const filterCount = activeChips.length;
 
-  /** Average of one balance over a group. @param ps - The group. @param k - Balance key. @returns One decimal. */
-  const avg = (ps: Person[], k: string) => (ps.reduce((s, p) => s + (p.balances?.[k] ?? 0), 0) / ps.length).toFixed(1);
+  /** Open a person: fetch their record, then show the profile in place. */
+  const openPerson = async (id: string) => {
+    setOpenId(id);
+    setRecord(null);
+    setRecordLoading(true);
+    try {
+      const res = await getStaffRecord(id);
+      setRecord(res.data);
+    } catch {
+      onNotify('That person could not be loaded.', 'error');
+      setOpenId(null);
+    } finally {
+      setRecordLoading(false);
+    }
+  };
+
+  /** Reload the open record after a save, so the profile and the row follow it. */
+  const reloadRecord = async () => {
+    if (!openId) return;
+    try {
+      const res = await getStaffRecord(openId);
+      setRecord(res.data);
+    } catch {
+      /* the save already succeeded; the view just keeps the pre-save figures */
+    }
+  };
+
+  const openPersonSummary = people.find((p) => p.id === openId) || null;
+  const theirRequests = openPersonSummary ? requests.filter((r) => r.employee_name === openPersonSummary.name) : [];
+
+  // The person's record follows the live-balance row while the full record loads.
+  if (openId && record) {
+    return (
+      <Enter>
+        <PersonProfile
+          record={record}
+          requests={theirRequests}
+          users={spUsers}
+          setupProblems={problemsById[openId] || []}
+          processingEnabled={processingEnabled}
+          onBack={() => { setOpenId(null); setRecord(null); }}
+          onSaved={reloadRecord}
+          onNotify={onNotify}
+        />
+      </Enter>
+    );
+  }
+  if (openId && recordLoading) {
+    return <Paper sx={{ p: 4 }}><Typography color="text.secondary">Loading the person...</Typography></Paper>;
+  }
 
   return (
     <>
       <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap', mt: -1.5 }}>
         <Typography color="text.secondary" sx={{ flex: 1, minWidth: 240 }}>
-          Everyone with their balances and managers. Click a person for their requests, managers and dashboard links.
+          Everyone with their balances and managers. Click a person to see and edit their whole record.
         </Typography>
         <Button variant="outlined" onClick={onManageAssignments}>Manage assignments</Button>
       </Box>
 
       <Paper sx={{ overflow: 'hidden' }}>
+        {/* Toolbar: search, quick chips, filters toggle, export. */}
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: 1.5, borderBottom: 1, borderColor: 'divider' }}>
           <TextField
-            size="small" value={query} placeholder="Search name, email or manager"
-            onChange={(e) => setQuery(e.target.value)}
-            inputProps={{ 'aria-label': 'Search staff' }}
-            sx={{ flex: { xs: '1 1 100%', sm: '0 1 260px' } }}
+            size="small" value={query} placeholder="Search name, email, manager, department or location"
+            onChange={(e) => setQuery(e.target.value)} inputProps={{ 'aria-label': 'Search staff' }}
+            sx={{ flex: { xs: '1 1 100%', sm: '1 1 240px' }, minWidth: 0 }}
           />
-          {Object.keys(FILTERS).map((f) => (
-            <Chip
-              key={f}
-              label={`${f} ${people.filter(FILTERS[f]).length}`}
-              onClick={() => setFilter(f)}
-              aria-pressed={f === filter}
-              color={f === filter ? 'primary' : 'default'}
-              variant={f === filter ? 'filled' : 'outlined'}
-            />
-          ))}
-          <TextField select size="small" label="Group" value={group} onChange={(e) => setGroup(e.target.value)} sx={{ minWidth: 160, ml: { md: 'auto' } }}>
-            {Object.keys(GROUPS).map((g) => <MenuItem key={g} value={g}>{g}</MenuItem>)}
-          </TextField>
+          {QUICK.map(([label, value]) => {
+            const flags = picked.flag || [];
+            const none = !Object.values(picked).some((v) => v.length);
+            const on = value ? flags.includes(value) : none;
+            const count = value ? people.filter((p) => FILTERS[5].test(p, value, problemsById)).length : people.length;
+            return (
+              <Chip
+                key={label} label={`${label} ${count}`} aria-pressed={on}
+                color={on ? 'primary' : 'default'} variant={on ? 'filled' : 'outlined'}
+                onClick={() => { if (!value) setPicked({}); else toggleFilter('flag', value); }}
+              />
+            );
+          })}
+          <Button
+            variant={filtersOpen ? 'contained' : 'outlined'} startIcon={<FilterListIcon />}
+            onClick={() => setFiltersOpen((o) => !o)} aria-expanded={filtersOpen}
+          >
+            Filters{filterCount ? ` (${filterCount})` : ''}
+          </Button>
+          <Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => setExportOpen(true)}>Export to Excel</Button>
         </Box>
 
-        {rows.length === 0 ? (
-          <Typography color="text.secondary" sx={{ p: 3 }}>Nobody matches. Clear the search or pick All.</Typography>
-        ) : (
-          <Box sx={{ overflowX: 'auto' }}>
-            <Table size="small" sx={{ '& td, & th': { borderColor: 'divider' } }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Employee</TableCell>
-                  <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>Managers</TableCell>
-                  <TableCell align="right">Vacation</TableCell>
-                  <TableCell align="right">Sick</TableCell>
-                  <TableCell align="right" sx={{ display: { xs: 'none', sm: 'table-cell' } }}>Make-Up</TableCell>
-                  <TableCell align="right" sx={{ display: { xs: 'none', sm: 'table-cell' } }}>Carry Over</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {groups.map((g) => [
-                  // A group heading row with its size and averages (what Department summary showed).
-                  g.name && (
-                    <TableRow key={`g-${g.name}`}>
-                      <TableCell colSpan={6} sx={{ bgcolor: 'action.hover' }}>
-                        <b>{g.name}</b>{' '}
-                        <Typography component="span" variant="body2" color="text.secondary">
-                          {g.rows.length} people · avg vacation {avg(g.rows, 'vacation_balance')} · avg sick {avg(g.rows, 'sick_balance')}
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ),
-                  ...g.rows.map((p) => (
-                    <TableRow
-                      key={p.id} hover tabIndex={0} sx={{ cursor: 'pointer' }}
-                      onClick={() => { setOpenId(p.id); setPanelTab(0); }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { setOpenId(p.id); setPanelTab(0); } }}
-                    >
-                      <TableCell>
-                        <Typography sx={{ fontWeight: 600 }}>
-                          {p.name}
-                          {/* A setup problem would stall their requests: flag it on the row. */}
-                          {problemsById[p.id] && <Chip size="small" color="error" variant="outlined" label="Setup problem" sx={{ ml: 1 }} />}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {p.department || 'No department'} · {p.location || 'No location'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>
-                        {p.managers === null ? '' : p.managers.length ? p.managers.join(', ') : <Chip size="small" color="error" variant="outlined" label="None" />}
-                      </TableCell>
-                      <Num v={p.balances?.vacation_balance} />
-                      <Num v={p.balances?.sick_balance} />
-                      <Num v={p.balances?.overtime} narrowHide />
-                      <Num v={p.balances?.carryover} narrowHide />
-                    </TableRow>
-                  )),
-                ])}
-              </TableBody>
-            </Table>
+        {/* Filter drawer: one group per filter, a value toggles on click. */}
+        <Collapse in={filtersOpen}>
+          <Box sx={{ p: 2, display: 'grid', gap: 1.5, bgcolor: 'action.hover', borderBottom: 1, borderColor: 'divider' }}>
+            {FILTERS.map((f) => (
+              <Box key={f.key} sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '140px minmax(0, 1fr)' }, gap: 1, alignItems: 'start' }}>
+                <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', pt: 0.75 }}>{f.label}</Typography>
+                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                  {f.opts(people).map((v) => {
+                    const on = (picked[f.key] || []).includes(v);
+                    return <Chip key={v} size="small" label={v} color={on ? 'primary' : 'default'} variant={on ? 'filled' : 'outlined'} onClick={() => toggleFilter(f.key, v)} aria-pressed={on} />;
+                  })}
+                </Stack>
+              </Box>
+            ))}
+          </Box>
+        </Collapse>
+
+        {/* Active filter chips, removable. */}
+        {filterCount > 0 && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center', p: 1.5, borderBottom: 1, borderColor: 'divider' }}>
+            {activeChips.map((c) => (
+              <Chip key={`${c.key}-${c.value}`} size="small" color="primary" variant="outlined" label={`${c.label}: ${c.value}`} onDelete={() => toggleFilter(c.key, c.value)} deleteIcon={<CloseIcon />} />
+            ))}
+            <Button size="small" onClick={() => setPicked({})}>Clear all</Button>
           </Box>
         )}
+
+        <StaffTable people={people} rows={rows} problemsById={problemsById} onOpen={openPerson} theme={theme} />
+
+        <Box sx={{ p: 1.5, borderTop: 1, borderColor: 'divider' }}>
+          <Typography variant="body2" color="text.secondary">Showing {rows.length} of {people.length} people</Typography>
+        </Box>
       </Paper>
 
-      {/* The person panel: who they are, then their requests, managers and links. */}
-      <Drawer anchor="right" open={!!person} onClose={() => setOpenId(null)} PaperProps={{ sx: { width: { xs: '100%', sm: 420 } } }}>
-        {person && (
-          <Box>
-            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', p: 2, borderBottom: 1, borderColor: 'divider' }}>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 700, fontSize: 17 }}>{person.name}</Typography>
-                <Typography variant="body2" color="text.secondary">{person.email || 'No email'}</Typography>
-                <Typography variant="body2" color="text.secondary">{person.department || 'No department'} · {person.location || 'No location'}</Typography>
-                {problemsById[person.id] && (
-                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
-                    {problemsById[person.id].map((d) => <Chip key={d} size="small" color="error" variant="outlined" label={d} />)}
-                  </Stack>
-                )}
-              </Box>
-              <IconButton aria-label="Close" size="small" onClick={() => setOpenId(null)}><CloseIcon /></IconButton>
+      <StaffExportDialog
+        open={exportOpen}
+        shownPeople={rows as unknown as ExportPerson[]}
+        allPeople={people as unknown as ExportPerson[]}
+        onClose={() => setExportOpen(false)}
+        onNotify={onNotify}
+      />
+    </>
+  );
+}
+
+/** A balance figure: two decimals, below zero in the error colour. */
+function balance(v: number | undefined) {
+  const n = v ?? 0;
+  return { text: String(Math.round(n * 100) / 100), negative: n < 0 };
+}
+
+/**
+ * The staff table that never scrolls sideways: cells wrap, the least important
+ * columns drop by width (Managers first, then Carry-over, then Make-up), a
+ * footer names the hidden columns, and below ~560px rows become cards. Every
+ * hidden value stays reachable by opening the person.
+ *
+ * @param props.people - Everyone (for the empty-state copy).
+ * @param props.rows - The filtered rows to show.
+ * @param props.problemsById - Setup problems per id, for the row flag.
+ * @param props.onOpen - Open a person's profile.
+ * @param props.theme - The MUI theme (for tokens).
+ * @returns The table or cards.
+ */
+function StaffTable({ people, rows, problemsById, onOpen, theme }: {
+  people: Person[]; rows: Person[]; problemsById: Record<string, string[]>; onOpen: (id: string) => void; theme: ReturnType<typeof useTheme>;
+}) {
+  const wide = useMediaQuery('(min-width:900px)');          // Managers column fits
+  const mid = useMediaQuery('(min-width:720px)');           // Make-up and Carry-over fit
+  const cards = useMediaQuery('(max-width:560px)');         // below this, rows become cards
+
+  // Which balance columns are visible, in priority order (actions-last is moot here).
+  const showManagers = wide;
+  const showMakeUp = mid;
+  const showCarryOver = mid;
+  const hidden = [
+    !showManagers && 'Managers', !showMakeUp && 'Make-up', !showCarryOver && 'Carry-over',
+  ].filter(Boolean) as string[];
+
+  if (rows.length === 0) {
+    return <Typography color="text.secondary" sx={{ p: 3 }}>{people.length ? 'Nobody matches these filters.' : 'No staff to show.'}</Typography>;
+  }
+
+  // Below ~560px: labelled cards, so nothing has to scroll sideways.
+  if (cards) {
+    return (
+      <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
+        {rows.map((p) => (
+          <Box key={p.id} role="button" tabIndex={0} onClick={() => onOpen(p.id)} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(p.id); }} sx={{ p: 2, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}>
+            <Typography sx={{ fontWeight: 700 }}>
+              {p.name}
+              {problemsById[p.id] && <Chip size="small" color="error" variant="outlined" label="Setup problem" sx={{ ml: 1 }} />}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">{p.department || 'No department'} · {p.location || 'No location'}</Typography>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5, mt: 1 }}>
+              {([['Vacation', 'vacation_balance'], ['Sick', 'sick_balance'], ['Make-up', 'overtime'], ['Carry-over', 'carryover']] as [string, string][]).map(([label, k]) => {
+                const b = balance(p.balances?.[k]);
+                return (
+                  <Typography key={k} variant="body2" sx={{ color: b.negative ? 'error.main' : undefined }}>
+                    <Box component="span" color="text.secondary">{label}: </Box><b style={{ fontVariantNumeric: 'tabular-nums' }}>{b.text}</b>
+                  </Typography>
+                );
+              })}
+              <Typography variant="body2" sx={{ gridColumn: '1 / -1' }}>
+                <Box component="span" color="text.secondary">Managers: </Box>
+                {p.managers === null ? '' : p.managers.length ? p.managers.join(', ') : 'None'}
+              </Typography>
             </Box>
-            <Tabs value={panelTab} onChange={(_, v) => setPanelTab(v)} sx={{ px: 1, borderBottom: 1, borderColor: 'divider' }}>
-              <Tab label="Requests" />
-              <Tab label="Managers" />
-              <Tab label="Links" />
-            </Tabs>
-
-            {/* Each tab's body fades in as it opens. */}
-            <Enter key={panelTab} sx={{ p: 2 }}>
-              {panelTab === 0 && (theirs.length === 0 ? (
-                <Typography color="text.secondary">No requests yet.</Typography>
-              ) : (
-                <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
-                  {theirs.map((r) => (
-                    <Box key={`${r.request_type}-${r.id}`} sx={{ display: 'flex', gap: 1, alignItems: 'center', py: 1 }}>
-                      <KindPill kind={requestKind(r)} label={requestWhat(r)} />
-                      <Typography variant="body2" sx={{ flex: 1 }}>{requestWhen(r)}</Typography>
-                      <Chip size="small" color={STATUS_COLOR[r.Status] || 'default'} label={r.Status || 'Pending'} />
-                    </Box>
-                  ))}
-                </Stack>
-              ))}
-
-              {panelTab === 1 && (
-                <Stack spacing={1.5}>
-                  {person.managers === null ? (
-                    <Typography color="text.secondary">Managers could not be loaded.</Typography>
-                  ) : person.managers.length ? (
-                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                      {person.managers.map((m) => <Chip key={m} label={m} />)}
-                    </Stack>
-                  ) : (
-                    <Typography variant="body2" color="error">No supervisor assigned. Their requests cannot reach anyone until one is set.</Typography>
-                  )}
-                  <Box><Button variant="outlined" onClick={onManageAssignments}>Change managers</Button></Box>
-                </Stack>
-              )}
-
-              {panelTab === 2 && (
-                <Stack spacing={2}>
-                  <Box>
-                    <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>Their own dashboard</Typography>
-                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                      <Button variant="contained" onClick={() => onOpenDashboard(person.id, 'employee')}>Open employee dashboard</Button>
-                      <Button variant="outlined" color={copiedId === person.id ? 'success' : 'primary'} onClick={() => copyLink(person.id)}>
-                        <Swap k={copiedId === person.id ? 'done' : 'copy'}>{copiedId === person.id ? '✓ Copied' : 'Copy link'}</Swap>
-                      </Button>
-                    </Stack>
-                  </Box>
-                  {/* Only someone who manages people has a team dashboard. */}
-                  {person.is_manager && (
-                    <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>Their team dashboard</Typography>
-                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                        <Button variant="contained" onClick={() => onOpenDashboard(person.id, 'manager')}>Open team dashboard</Button>
-                        <Button variant="outlined" onClick={() => onSendLink(person.id)}>Send dashboard link</Button>
-                      </Stack>
-                    </Box>
-                  )}
-                </Stack>
-              )}
-            </Enter>
           </Box>
-        )}
-      </Drawer>
+        ))}
+      </Stack>
+    );
+  }
+
+  return (
+    <>
+      <Table size="small" sx={{ tableLayout: 'fixed', '& td, & th': { borderColor: 'divider', overflowWrap: 'anywhere', whiteSpace: 'normal' } }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>Employee</TableCell>
+            {showManagers && <TableCell>Managers</TableCell>}
+            <TableCell align="right">Vacation</TableCell>
+            <TableCell align="right">Sick</TableCell>
+            {showMakeUp && <TableCell align="right">Make-up</TableCell>}
+            {showCarryOver && <TableCell align="right">Carry-over</TableCell>}
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((p) => (
+            <TableRow key={p.id} hover tabIndex={0} sx={{ cursor: 'pointer' }} onClick={() => onOpen(p.id)} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(p.id); }}>
+              <TableCell>
+                <Typography sx={{ fontWeight: 600 }}>
+                  {p.name}
+                  {problemsById[p.id] && <Chip size="small" color="error" variant="outlined" label="Setup problem" sx={{ ml: 1 }} />}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">{p.department || 'No department'} · {p.location || 'No location'}</Typography>
+              </TableCell>
+              {showManagers && (
+                <TableCell>
+                  {p.managers === null ? '' : p.managers.length ? p.managers.join(', ') : <Chip size="small" color="error" variant="outlined" label="None" />}
+                </TableCell>
+              )}
+              {([['vacation_balance', true], ['sick_balance', true], ['overtime', showMakeUp], ['carryover', showCarryOver]] as [string, boolean][]).map(([k, show]) => {
+                if (!show) return null;
+                const b = balance(p.balances?.[k]);
+                return (
+                  <TableCell key={k} align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: b.negative ? 'error.main' : undefined, fontWeight: b.negative ? 700 : undefined }}>{b.text}</TableCell>
+                );
+              })}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      {hidden.length > 0 && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 2, pt: 1 }}>
+          Hidden at this width: {hidden.join(', ')}. Open a person to see every value.
+        </Typography>
+      )}
     </>
   );
 }

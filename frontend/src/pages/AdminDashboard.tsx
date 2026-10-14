@@ -481,10 +481,9 @@ export default function AdminDashboard() {
                   employees={employees}
                   requests={requests}
                   setup={employeeSetup}
-                  onOpenDashboard={handleOpenDashboard}
-                  onCopyLink={handleCopyEmployeeLink}
-                  onSendLink={handleSendDashboardLink}
+                  processingEnabled={processingEnabled}
                   onManageAssignments={() => setTab('assignments')}
+                  onNotify={(message, severity) => setSnack({ open: true, message, severity })}
                 />
               )}
 
