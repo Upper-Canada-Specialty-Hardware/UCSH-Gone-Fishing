@@ -77,15 +77,44 @@ def _columns_for(request_type: str, rows: list[dict]) -> list[tuple[str, str]]:
     return columns + [(key, key) for key in extras]            # extra header = its raw field name
 
 
+# Characters that make Excel/Sheets read a cell as a live formula if they lead
+# it. openpyxl writes a string starting with "=" as a real formula, so a field
+# typed on a form (e.g. "=HYPERLINK(...)") would run when the export is opened.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_cell_text(text: str) -> str:
+    """Make a leading-formula string safe by keeping it as text (#294 S1).
+
+    Args:
+        text: A cell's string value.
+
+    Returns:
+        The text with a single quote in front when it starts with a formula
+        trigger, which Excel treats as plain text; the text unchanged otherwise.
+    """
+    if text.startswith(_FORMULA_TRIGGERS):                     # would otherwise be read as a formula
+        return "'" + text                                      # quote prefix: Excel keeps it as text
+    return text
+
+
 def _cell(value):
-    """A request field as a spreadsheet cell: a list of names joined, else as is."""
+    """A request field as a spreadsheet cell: a list of names joined, else as is.
+
+    Any string value is run through _sanitize_cell_text so a field cannot smuggle
+    a formula into the workbook (#294 S1).
+    """
     if isinstance(value, list):                                # e.g. AllManagers lookup entries
-        return ", ".join(
+        result = ", ".join(
             str(v.get("LookupValue", v)) if isinstance(v, dict) else str(v) for v in value
         )
-    if isinstance(value, dict):                                # a lone lookup object
-        return value.get("LookupValue", str(value))
-    return value
+    elif isinstance(value, dict):                              # a lone lookup object
+        result = value.get("LookupValue", str(value))
+    else:
+        result = value
+    if isinstance(result, str):                                # sanitize only text cells
+        return _sanitize_cell_text(result)
+    return result                                              # numbers, dates, None pass through
 
 
 def _autosize(sheet) -> None:

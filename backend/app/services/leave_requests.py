@@ -42,7 +42,7 @@ from app.services.overlap_detection import (
 )
 from app.services.request_descriptions import compose_leave_title
 from app.services.approval_links import generate_approval_url
-from app.services.approval_versions import bump_and_snapshot, MATERIAL_FIELDS_LEAVE
+from app.services.approval_versions import bump_and_snapshot, get_current_version, MATERIAL_FIELDS_LEAVE
 from app.services.sms import send_sms
 from app.services.audit_trail import (
     AuditTrailBuilder,
@@ -286,6 +286,62 @@ async def auto_assign_manager(leave_request_id: str | int, notify: bool = True):
     # Now trigger approval pipeline, unless an admin is approving it themselves.
     if notify:
         await send_approval_email(leave_request_id)
+    else:
+        # Admin create-and-approve: no manager email now, and none later either.
+        # Durably claim this version so the dispatcher's change-notice call to
+        # send_approval_email (seconds later, while the approval is still being
+        # written) finds the version already sent and stops (#294 B1).
+        await _suppress_approval_notification(leave_request_id, fields)
+
+
+async def _suppress_approval_notification(leave_request_id: str | int, fields: dict) -> None:
+    """Claim the approval email without sending it, so no later call sends one.
+
+    send_approval_email sends once per approval version: it bumps the snapshot,
+    claims ``approval_email_v<version>``, then sends. This takes the same version
+    and the same claim without sending, so when the dispatcher runs
+    send_approval_email for this item it computes the same version, finds the
+    claim taken, and sends nothing. Undone by notify_manager_after_failed_admin_approval
+    if the admin's own approval then fails.
+
+    Args:
+        leave_request_id: The leave item.
+        fields: Its fields, already read, holding the material columns the
+            version snapshot is taken from (Days, LeaveType, StartDate, EndDate).
+    """
+    version = await bump_and_snapshot(
+        settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, fields, MATERIAL_FIELDS_LEAVE,
+    )                                                           # same version send_approval_email would use
+    await claim_action(
+        settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, approval_email_action(version),
+    )                                                           # mark it sent, so no real send follows
+
+
+async def notify_manager_after_failed_admin_approval(leave_request_id: str | int) -> bool:
+    """Undo the suppressed approval email and ask the manager, after an admin's
+    create-and-approve did not approve the request (#294 S3).
+
+    Turns an admin-created request the admin could not approve into an ordinary
+    Pending one the manager is emailed about, so it is not left silently
+    suppressed and unseen. Does nothing when the request is no longer Pending
+    (deleted, or already rejected), so a terminal decision is not reopened.
+
+    Args:
+        leave_request_id: The leave item.
+
+    Returns:
+        True when the manager was asked (it is now a normal Pending request);
+        False when the request was not in a state to ask about.
+    """
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+    if item is None or item["fields"].get("Status") != "Pending":
+        return False                                            # gone or already decided: leave it
+    version = await get_current_version(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
+    await release_claim(
+        settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, approval_email_action(version),
+    )                                                           # give the claim back so the send can run
+    await send_approval_email(leave_request_id)                 # ask the manager the normal way
+    return True
 
 
 async def send_bereavement_alert(leave_request_id: str | int):
@@ -485,6 +541,14 @@ ALLOWED_LEAVE_TYPES = {
     "Half Day or Partial Day Off",
     "Bereavement",
     "Jury Duty",
+}
+
+# Leave types that spend a balance, so their Days must be worked out before the
+# request can be approved. Bereavement and jury duty cost nothing (#294 S4).
+DAY_COSTING_LEAVE_TYPES = {
+    "Vacation",
+    "Sick or Personal Day",
+    "Half Day or Partial Day Off",
 }
 
 
@@ -758,7 +822,11 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 
-    item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    # Read without raising: an old email or dashboard link may reject a request
+    # that has since been deleted, which must read as a clean message, not a 500 (#294 S6).
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_LEAVE_REQUESTS, request_id)
+    if item is None:
+        return {"error": "This request no longer exists."}
     fields = item["fields"]
 
     if fields.get("ApproveProcessedFlag") == "Processed":

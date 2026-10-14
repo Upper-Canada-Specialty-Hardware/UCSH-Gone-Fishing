@@ -1,4 +1,4 @@
-import { RefObject, useEffect, useState } from 'react';
+import { RefObject, useEffect, useLayoutEffect, useState } from 'react';
 
 /**
  * No admin table scrolls sideways (the owner's rule). When a table is wider
@@ -17,6 +17,12 @@ export const CARD_WIDTH = 560;
 export type ColumnWidths = Record<string, number>;
 
 const DEFAULT_WIDTH = 120;
+
+/** The checkbox and chevron gutters, in pixels, that every row always spends. */
+const GUTTERS = 82;
+
+/** The actions column is never dropped, so a row's buttons are always reachable. */
+const PROTECTED = 'quick';
 
 export interface FitResult {
   /** Column keys to show, in the caller's order. */
@@ -42,7 +48,7 @@ export interface FitResult {
  * @param gutters - Fixed pixels for the checkbox and chevron columns.
  * @returns Which columns are visible or hidden, and whether to use cards.
  */
-export function fitColumns(width: number, columns: string[], widths: ColumnWidths, gutters = 72): FitResult {
+export function fitColumns(width: number, columns: string[], widths: ColumnWidths, gutters = GUTTERS): FitResult {
   if (width <= 0) return { visible: columns, hidden: [], cards: false };   // before first measure: show all
   if (width < CARD_WIDTH) return { visible: [], hidden: columns, cards: true };
 
@@ -78,6 +84,9 @@ export function useFitColumns(
   widths: ColumnWidths,
 ): FitResult {
   const [width, setWidth] = useState(0);
+  // Columns dropped beyond the width budget because the real table, once laid
+  // out, still overflowed (the assumed widths under-counted a long value).
+  const [extraDrop, setExtraDrop] = useState(0);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -98,6 +107,35 @@ export function useFitColumns(
     return () => ro.disconnect();
   }, [containerRef]);
 
-  // Recompute only when the inputs change; the key string keeps it stable.
-  return fitColumns(width, columns, widths);
+  // A width change starts the fit over, so post-layout drops do not accumulate.
+  useEffect(() => { setExtraDrop(0); }, [width]);
+
+  const base = fitColumns(width, columns, widths);
+
+  // After the table is on screen, if it still overflows its container (clipped,
+  // never scrolled), drop one more of the lowest-priority columns and let it
+  // settle. Capped so it cannot loop, and the actions column is never dropped.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el || base.cards) return;
+    const overflowing = el.scrollWidth > el.clientWidth + 1;
+    const droppable = base.visible.filter((k) => k !== PROTECTED).length;
+    if (overflowing && extraDrop < droppable - 2) setExtraDrop((n) => n + 1);
+  });
+
+  if (base.cards || extraDrop === 0) return base;
+
+  // Move the lowest-priority visible columns (from the end of the importance
+  // order) into hidden, skipping the actions column.
+  const visible = [...base.visible];
+  const hidden = [...base.hidden];
+  let dropped = 0;
+  for (let i = visible.length - 1; i >= 0 && dropped < extraDrop; i--) {
+    if (visible[i] === PROTECTED) continue;                // keep the actions column
+    hidden.push(visible[i]);
+    visible.splice(i, 1);
+    dropped++;
+  }
+  if (visible.length <= 2) return { visible: [], hidden: columns, cards: true };   // nothing useful left: cards
+  return { visible, hidden, cards: false };
 }

@@ -22,6 +22,7 @@ table calls them unchanged. Only the genuinely new behaviour lives here:
 import logging
 from datetime import date
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -33,11 +34,29 @@ from app.models.request_deletion import RequestDeletion
 from app.repositories.request_store import request_store
 # The same creation, validation, preview and approval pieces every other way
 # of making a request uses, so an admin-made request is identical to a normal one.
+# _format_balances and _resolve_managers are the dashboard router's own helpers;
+# imported by name here so the preview and options endpoints shape data exactly
+# as the dashboard does (they are internal to that module, hence the leading _).
 from app.routes.dashboard import _format_balances, _resolve_managers
-from app.services.carryover_payout import approve_carryover_payout, refund_carryover_payout
+from app.services.carryover_payout import (
+    approve_carryover_payout,
+    notify_manager_after_failed_admin_approval as recover_carryover_payout,
+    refund_carryover_payout,
+)
 from app.services.employee import get_employee_by_id
-from app.services.leave_requests import ALLOWED_LEAVE_TYPES, approve_leave_request, refund_leave_request
-from app.services.overtime_requests import approve_overtime_request, refund_overtime_request
+from app.services.idempotency import claim_action
+from app.services.leave_requests import (
+    ALLOWED_LEAVE_TYPES,
+    DAY_COSTING_LEAVE_TYPES,
+    approve_leave_request,
+    notify_manager_after_failed_admin_approval as recover_leave,
+    refund_leave_request,
+)
+from app.services.overtime_requests import (
+    approve_overtime_request,
+    notify_manager_after_failed_admin_approval as recover_overtime,
+    refund_overtime_request,
+)
 from app.services.request_intake import RequestFormError, parse_request_form, submit_request
 from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_ADMIN
@@ -66,6 +85,13 @@ REFUND_HANDLERS = {
     "leave": refund_leave_request,
     "overtime": refund_overtime_request,
     "carryover-payout": refund_carryover_payout,
+}
+# When an admin's create-and-approve cannot approve, these turn the request back
+# into an ordinary Pending one the manager is asked about (#294 S3).
+RECOVER_HANDLERS = {
+    "leave": recover_leave,
+    "overtime": recover_overtime,
+    "carryover-payout": recover_carryover_payout,
 }
 
 # The leave types the new-request dialog offers, in a stable, sensible order;
@@ -129,12 +155,16 @@ async def admin_new_request(body: NewRequestBody):
             form, snake_case (see services/request_intake.py).
 
     Returns:
-        {"status": "submitted"|"approved", "request_type", "item_id"}.
+        {"status", "request_type", "item_id"} and, when an automatic approval
+        did not go through, a "message" for the admin. status is "submitted" for
+        a Pending request, "approved" when the admin's approval succeeded, or
+        "pending" when approval failed and the request was handed to the manager
+        instead (#294 S3).
 
     Raises:
-        HTTPException: 503 while processing is off; 400 for a bad form, an
-            unknown status, or a refused approval; 404 when the employee is not
-            in the Staff Directory; 502 when SharePoint refused the write.
+        HTTPException: 503 while processing is off; 400 for a bad form or an
+            unknown status; 404 when the employee is not in the Staff Directory;
+            502 when SharePoint refused the write.
     """
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
@@ -166,13 +196,59 @@ async def admin_new_request(body: NewRequestBody):
         return {"status": "submitted", "request_type": body.request_type, "item_id": item.get("id")}
 
     # Approved: run the request through the real approval handler as the admin.
-    approve = APPROVE_HANDLERS[body.request_type]
-    result = await approve(item["id"], ADMIN_ID)
-    if "error" in result:
-        # The item exists but could not be approved (e.g. a clash with approved
-        # leave); surface the reason rather than leave it silently Pending.
-        raise HTTPException(status_code=400, detail=result["error"])
-    return {"status": "approved", "request_type": body.request_type, "item_id": item.get("id")}
+    item_id = item.get("id")
+    result = await _approve_admin_request(body.request_type, item_id)
+
+    # Only a genuine "approved" result counts: approve_carryover_payout can also
+    # return {"status": "system_override_rejected"}, which must not read as a
+    # success (#294 S2). Anything else is a failure handled below.
+    if result.get("status") == "approved":
+        return {"status": "approved", "request_type": body.request_type, "item_id": item_id}
+
+    # The approval did not go through (a clash, a system override, or days that
+    # could not be worked out). Rather than leave the request silently Pending
+    # with its manager email suppressed, hand it to the manager the normal way
+    # and tell the admin, so nothing is orphaned and Create is not pressed twice (#294 S3).
+    asked = await RECOVER_HANDLERS[body.request_type](item_id)
+    if asked:
+        message = (
+            "This could not be approved automatically, so it was saved as pending "
+            "and sent to the manager to approve."
+        )
+    else:
+        # Terminal: the system rejected it, or it is gone. Report the reason; the
+        # request (now rejected) still shows on reload.
+        message = result.get("error") or "This could not be approved."
+    return {
+        "status": "pending",
+        "request_type": body.request_type,
+        "item_id": item_id,
+        "message": message,
+    }
+
+
+async def _approve_admin_request(request_type: str, item_id) -> dict:
+    """Approve an admin-created request as the admin, with one extra guard.
+
+    process_new_leave_request logs and swallows a day-calculation failure, so a
+    day-costing leave (vacation, sick, half day) could reach approval with no
+    days worked out and be approved costing nothing. Re-read the item and refuse
+    that, so it falls into the S3 fallback and the manager is asked instead (#294 S4).
+
+    Args:
+        request_type: "leave", "overtime" or "carryover-payout".
+        item_id: The created item's id.
+
+    Returns:
+        The approval handler's result, or an {"error": ...} refusal that the
+        caller turns into the S3 fallback.
+    """
+    if request_type == "leave":
+        fresh = await request_store.get_list_item_or_none(LIST_ID_FOR_TYPE["leave"], item_id)
+        ff = fresh["fields"] if fresh else {}                  # the item as created, with its days
+        if ff.get("LeaveType") in DAY_COSTING_LEAVE_TYPES and float(ff.get("Days", 0) or 0) <= 0:
+            return {"error": "The number of days could not be worked out, so this was not approved."}
+    return await APPROVE_HANDLERS[request_type](item_id, ADMIN_ID)
 
 
 @router.post("/admin/requests/preview")
@@ -235,7 +311,8 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
     Raises:
         HTTPException: 400 for an unknown type or a blank reason; 503 while
             processing is off; 404 when the request no longer exists; 400 when
-            a requested refund was refused.
+            a requested refund was refused; 502 when the delete itself failed
+            (a refund, if any, has already run).
     """
     list_id = LIST_ID_FOR_TYPE.get(request_type)
     if not list_id:
@@ -251,7 +328,15 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
         raise HTTPException(status_code=404, detail="This request no longer exists.")
     fields = dict(item.get("fields", {}))                      # the state at deletion, kept in the record
 
-    # Refund first, only for an approved item the admin chose to refund.
+    # Block an in-flight approval of a still-pending item: an approval claims
+    # "approve" before it writes, so taking that claim here first stops a
+    # manager's approve from running against an item we are about to delete.
+    # Harmless on an item that is not pending (#294 S5).
+    if fields.get("Status") == "Pending":
+        await claim_action(list_id, request_id, "approve")
+
+    # Refund first, only for an approved item the admin chose to refund. A refused
+    # refund stops here, so nothing is deleted and no record is kept.
     refunded = False
     if body.refund and fields.get("Status") == "Approved":
         result = await REFUND_HANDLERS[request_type](request_id, ADMIN_ID)
@@ -259,7 +344,19 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
             raise HTTPException(status_code=400, detail=result["error"])
         refunded = True
 
-    # Keep the record before the item is gone.
+    # Delete the item first, then keep the record, so a deletion record never
+    # outlives an item that is still there. A 404 means it is already gone, which
+    # is success (#294 S5).
+    try:
+        await request_store.delete_list_item(list_id, request_id)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            logger.exception("Admin delete: could not remove %s request #%s", request_type, request_id)
+            raise HTTPException(
+                status_code=502, detail="The request could not be deleted. Try again shortly.",
+            ) from e
+
+    # Keep the record now the item is gone.
     async with async_session() as session:
         session.add(RequestDeletion(
             request_type=request_type,
@@ -270,7 +367,6 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
         ))
         await session.commit()
 
-    await request_store.delete_list_item(list_id, request_id)
     logger.info("Admin deleted %s request #%s (refunded=%s)", request_type, request_id, refunded)
     return {"status": "deleted", "request_type": request_type, "request_id": str(request_id), "refunded": refunded}
 

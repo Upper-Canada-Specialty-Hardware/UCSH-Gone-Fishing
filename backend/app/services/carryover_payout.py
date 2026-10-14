@@ -17,6 +17,7 @@ from app.services.idempotency import approval_email_action, claim_action, releas
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import (
     bump_and_snapshot,
+    get_current_version,
     get_previous_snapshot,
     MATERIAL_FIELDS_CARRYOVER_PAYOUT,
 )
@@ -117,6 +118,74 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str, notif
     # Trigger approval pipeline, unless an admin is approving it themselves.
     if notify:
         await run_approval_pipeline(request_id)
+    else:
+        # Admin create-and-approve: suppress the whole pipeline now and durably,
+        # so the dispatcher's later change-notice call sends nothing (#294 B1).
+        await _suppress_approval_notification(request_id)
+
+
+async def _suppress_approval_notification(request_id: str | int) -> None:
+    """Mark the approval pipeline handled without sending any of its emails.
+
+    run_approval_pipeline sends the employee a "Request Received" email (guarded
+    by RECEIVED_EMAIL_ACTION) and then the manager approval email (guarded by
+    the per-version claim). This claims both without sending, and moves
+    SystemState off "Not Processed", so when the dispatcher runs the pipeline for
+    this item it has nothing left to send. Undone by
+    notify_manager_after_failed_admin_approval if the admin's approval fails.
+
+    Args:
+        request_id: The carry-over/payout item.
+    """
+    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    fields = item["fields"]                                     # TypeofRequest, Days: the version snapshot
+    version = await bump_and_snapshot(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, fields, MATERIAL_FIELDS_CARRYOVER_PAYOUT,
+    )                                                           # same version send_approval_email would use
+    await claim_action(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, approval_email_action(version),
+    )                                                           # the manager approval email
+    await claim_action(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, RECEIVED_EMAIL_ACTION,
+    )                                                           # the employee "Request Received" email
+    await request_store.update_list_item_fields(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, {"SystemState": "Processing"},
+    )                                                           # off "Not Processed": the pipeline won't restart
+
+
+async def notify_manager_after_failed_admin_approval(request_id: str | int) -> bool:
+    """Undo the suppressed pipeline and ask the manager, after an admin's
+    create-and-approve did not approve the request (#294 S3).
+
+    Turns an admin-created carry-over/payout the admin could not approve into an
+    ordinary Pending one that runs the normal pipeline (received email, then the
+    manager approval email). Does nothing when the request is no longer Pending
+    or has been processed, so a terminal decision is not reopened.
+
+    Args:
+        request_id: The carry-over/payout item.
+
+    Returns:
+        True when the pipeline was run; False when it was not in a state to run.
+    """
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    if item is None:
+        return False
+    fields = item["fields"]
+    if fields.get("Status") != "Pending" or fields.get("SystemState") == "Processed":
+        return False                                            # gone or already decided: leave it
+    version = await get_current_version(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    await release_claim(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, approval_email_action(version),
+    )                                                           # give back the manager-email claim
+    await release_claim(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, RECEIVED_EMAIL_ACTION,
+    )                                                           # give back the received-email claim
+    await request_store.update_list_item_fields(
+        settings.SP_LIST_CARRYOVER_PAYOUT, request_id, {"SystemState": "Not Processed"},
+    )                                                           # back to where the pipeline starts
+    await run_approval_pipeline(request_id)                     # ask the manager the normal way
+    return True
 
 
 async def run_approval_pipeline(request_id: str | int):
@@ -438,7 +507,11 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "approve"):
         return {"error": "Already processed"}
 
-    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    # Read without raising: a link may approve a request that was since deleted,
+    # which must read as a clean message rather than a 500 (#294 S6).
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    if item is None:
+        return {"error": "This request no longer exists."}
     fields = item["fields"]
 
     if fields.get("SystemState") == "Processed":
@@ -661,7 +734,11 @@ async def reject_carryover_payout(request_id: str | int, manager_id: str | int) 
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "reject"):
         return {"error": "Already processed"}
 
-    item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    # Read without raising: a link may reject a request that was since deleted,
+    # which must read as a clean message rather than a 500 (#294 S6).
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
+    if item is None:
+        return {"error": "This request no longer exists."}
     fields = item["fields"]
 
     if fields.get("SystemState") == "Processed":

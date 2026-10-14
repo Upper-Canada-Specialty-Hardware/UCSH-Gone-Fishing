@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import { Box, Button, ButtonBase, Tooltip, Typography } from '@mui/material';
+import { Box, Button, ButtonBase, Dialog, DialogContent, DialogTitle, Tooltip, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { kindColor } from '../../constants/leaveColors';
+import KindPill from '../KindPill';
 import PillToggle from '../PillToggle';
 import { Row } from './requestTable';
 
@@ -70,9 +71,18 @@ export default function RequestsCalendar({ rows, holidays = {}, onOpenRequest }:
   const [view, setView] = useState<'month' | 'year'>('month');
   const [picking, setPicking] = useState(false);
   const [pickYear, setPickYear] = useState(today.getFullYear());
+  // The day whose full list of requests is open (from a "+N more" click).
+  const [dayOpen, setDayOpen] = useState<Date | null>(null);
 
   // Only dated leave sits on the calendar; make-up and carry-over have no span.
   const leave = useMemo(() => rows.filter((r) => r.src === 'leave' && r.start), [rows]);
+
+  // The distinct leave kinds on screen, for the colour key.
+  const kinds = useMemo(() => {
+    const seen = new Map<string, { kind: Row['kind']; label: string }>();
+    leave.forEach((r) => { if (!seen.has(r.kindLabel)) seen.set(r.kindLabel, { kind: r.kind, label: r.kindLabel }); });
+    return Array.from(seen.values());
+  }, [leave]);
 
   /** The leave rows covering one day (weekday only). @param d - The day. @returns Rows off that day. */
   const offOn = (d: Date): Row[] => {
@@ -150,11 +160,19 @@ export default function RequestsCalendar({ rows, holidays = {}, onOpenRequest }:
         </Box>
       )}
 
-      {/* The colour key and a note on what the marks mean. */}
+      {/* The colour key (one swatch per leave kind on screen) and a note on the marks. */}
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', alignItems: 'center', fontSize: 12.5, color: 'text.secondary' }}>
-        {view === 'month'
-          ? 'Dashed outline: pending. Struck through: rejected or refunded. Click a request to open it.'
-          : 'Darker days have more people off. Click a day or a month to open it.'}
+        {view === 'month' && kinds.map(({ kind, label }) => (
+          <Box key={label} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+            <Box component="span" sx={{ width: 12, height: 12, borderRadius: 0.75, bgcolor: alpha(kindColor(kind, mode), mode === 'dark' ? 0.4 : 0.3), border: `1.5px solid ${kindColor(kind, mode)}` }} />
+            {label}
+          </Box>
+        ))}
+        <Box component="span">
+          {view === 'month'
+            ? 'Dashed outline: pending. Struck through: rejected or refunded. Click a request to open it.'
+            : 'Darker days have more people off. Click a day or a month to open it.'}
+        </Box>
       </Box>
 
       {view === 'month' ? (
@@ -184,7 +202,14 @@ export default function RequestsCalendar({ rows, holidays = {}, onOpenRequest }:
                     </Tooltip>
                   );
                 })}
-                {on.length > 3 && <Box sx={{ fontSize: 11, color: 'text.secondary', px: 0.75 }}>+{on.length - 3} more</Box>}
+                {on.length > 3 && (
+                  <ButtonBase
+                    onClick={() => setDayOpen(d)}
+                    sx={{ fontSize: 11, color: 'text.secondary', px: 0.75, justifyContent: 'flex-start', borderRadius: 1, fontWeight: 600, '&:hover': { color: 'text.primary' } }}
+                  >
+                    +{on.length - 3} more
+                  </ButtonBase>
+                )}
               </Box>
             );
           })}
@@ -233,6 +258,24 @@ export default function RequestsCalendar({ rows, holidays = {}, onOpenRequest }:
       )}
 
       {leave.length === 0 && <Typography color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>No dated leave to show for these filters.</Typography>}
+
+      {/* The full list for a day, opened from a "+N more" click; each row opens in the table. */}
+      <Dialog open={dayOpen !== null} onClose={() => setDayOpen(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>{dayOpen ? nice(iso(dayOpen), true) : ''}</DialogTitle>
+        <DialogContent dividers>
+          <Box sx={{ display: 'grid', gap: 0.75 }}>
+            {(dayOpen ? offOn(dayOpen) : []).map((r) => (
+              <ButtonBase key={r.key} onClick={() => { onOpenRequest(r); setDayOpen(null); }} sx={{ display: 'flex', gap: 1, alignItems: 'center', justifyContent: 'flex-start', p: '8px 10px', borderRadius: 2, border: `1px solid ${theme.tokens.line}`, textAlign: 'left', '&:hover': { bgcolor: theme.tokens.hover } }}>
+                <KindPill kind={r.kind} label={r.kindLabel} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Box sx={{ fontWeight: 700 }}>{r.person}</Box>
+                  <Box sx={{ fontSize: 12, color: 'text.secondary' }}>{nice(r.start)}{r.end && r.end !== r.start ? ` to ${nice(r.end)}` : ''} · {r.status}</Box>
+                </Box>
+              </ButtonBase>
+            ))}
+          </Box>
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }

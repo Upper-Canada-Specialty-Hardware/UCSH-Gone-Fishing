@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box, Button, Collapse, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel,
   MenuItem, Paper, Snackbar, Switch, TextField, Typography,
@@ -14,12 +14,19 @@ import {
 } from './requestTable';
 import RequestsTable, { TableActions } from './RequestsTable';
 import RequestsCalendar from './RequestsCalendar';
+import { useFitColumns } from './useFitColumns';
 import DeleteRequestDialog from './DeleteRequestDialog';
 import NewRequestDialog from './NewRequestDialog';
 import { StaffOption, deleteAdminRequest, exportAdminRequests, flushDeleteBeacon, getNewRequestOptions } from '../../api/requestsAdmin';
+import { getAdminHolidays } from '../../api/client';
 
 /** How long a deleted request can be brought back before the server call lands. */
 const UNDO_MS = 8000;
+
+/** A request's identity across views: its list and item id, never the view it was read in. */
+function delKey(r: Row): string {
+  return `${r.request_type}-${r.id}`;                    // so deleting in Pending also hides it in All (#294 S10)
+}
 
 /** The view pills, left to right, with the label each shows. */
 const VIEWS: { key: RequestView; label: string }[] = [
@@ -129,6 +136,8 @@ export default function RequestsScreen(props: Props) {
 
   // New-request dialog options, loaded once the dialog is first opened.
   const [options, setOptions] = useState<{ staff: StaffOption[]; leave_types: string[] }>({ staff: [], leave_types: [] });
+  // Company holidays for the calendar, loaded the first time it is shown.
+  const [holidays, setHolidays] = useState<Record<string, string>>({});
 
   // A view change closes the open row, clears selection, and resets the list page.
   useEffect(() => { setOpenKey(null); setSelected(new Set()); }, [view]);
@@ -144,17 +153,36 @@ export default function RequestsScreen(props: Props) {
       p.rows.forEach((r) => flushDeleteBeacon(r.request_type, r.id, body));   // keepalive: survives the page unload
       return;
     }
-    Promise.all(p.rows.map((r) => deleteAdminRequest(r.request_type, r.id, body).catch(() => { /* a failed delete leaves the item; reload shows the truth */ })))
-      .then(() => onReload())
-      .then(() => setDeletedKeys((prev) => { const n = new Set(prev); p.rows.forEach((r) => n.delete(r.key)); return n; }));
+    // Delete each on the server, keeping which succeeded. A failed delete means
+    // the item is still there, so it must come back into view with a clear
+    // reason, not disappear silently (#294 S10).
+    Promise.all(p.rows.map((r) =>
+      deleteAdminRequest(r.request_type, r.id, body)
+        .then(() => ({ r, ok: true, detail: '' }))
+        .catch((e) => ({ r, ok: false, detail: typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : '' })),
+    )).then((results) => {
+      const failed = results.filter((x) => !x.ok);
+      // Bring the failed rows back now (the succeeded ones stay hidden until reload).
+      setDeletedKeys((prev) => { const n = new Set(prev); failed.forEach((x) => n.delete(delKey(x.r))); return n; });
+      if (failed.length) {
+        const ids = failed.map((x) => x.r.id).join(', ');
+        const detail = failed.find((x) => x.detail)?.detail || '';
+        setSnack({ open: true, message: `Could not delete request${failed.length > 1 ? 's' : ''} ${ids}.${detail ? ` ${detail}` : ''}` });
+      }
+      Promise.resolve(onReload()).then(() => {
+        // After the reload, the succeeded rows are gone from the data; drop their hidden keys.
+        setDeletedKeys((prev) => { const n = new Set(prev); results.forEach((x) => { if (x.ok) n.delete(delKey(x.r)); }); return n; });
+      });
+    });
   }, [onReload]);
 
-  // If the admin leaves during the Undo window, send the delete before the page goes.
+  // If the admin truly leaves during the Undo window, send the delete before the
+  // page goes. Only pagehide, not visibilitychange: switching tabs is not leaving,
+  // and firing the beacon then would commit a delete the admin could still undo.
   useEffect(() => {
     const onHide = () => { if (pendingDelete.current) flushDelete(true); };
     window.addEventListener('pagehide', onHide);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') onHide(); });
-    return () => { window.removeEventListener('pagehide', onHide); };
+    return () => window.removeEventListener('pagehide', onHide);
   }, [flushDelete]);
 
   // All rows for the current view, flattened to the one row shape.
@@ -165,7 +193,7 @@ export default function RequestsScreen(props: Props) {
   }, [view, props.pending, props.stuck, props.requests]);
 
   // Rows left after the list switch and the optimistic deletes (the filter options read these).
-  const scoped = useMemo(() => allRows.filter((r) => !deletedKeys.has(r.key) && (srcSel === 'all' || r.src === srcSel)), [allRows, deletedKeys, srcSel]);
+  const scoped = useMemo(() => allRows.filter((r) => !deletedKeys.has(delKey(r)) && (srcSel === 'all' || r.src === srcSel)), [allRows, deletedKeys, srcSel]);
   const defs = useMemo<FilterDef[]>(() => filterDefs(scoped), [scoped]);
 
   /** Whether a row is inside the chosen date range. */
@@ -236,21 +264,25 @@ export default function RequestsScreen(props: Props) {
     setSelected((prev) => { const n = new Set(prev); keys.forEach((k) => (on ? n.add(k) : n.delete(k))); return n; });
   }, []);
 
-  const picked = useMemo(() => allRows.filter((r) => selected.has(r.key) && !deletedKeys.has(r.key)), [allRows, selected, deletedKeys]);
+  const picked = useMemo(() => allRows.filter((r) => selected.has(r.key) && !deletedKeys.has(delKey(r))), [allRows, selected, deletedKeys]);
 
   // Del deletes the ticked rows, Esc clears them (not while typing or in a dialog).
   const anyDialogOpen = deleteRows !== null || newOpen || refundRows !== null || reprocessRow !== null || auditLog !== null;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!selected.size || anyDialogOpen) return;
-      const tag = (document.activeElement?.tagName || '');
-      if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-      if (e.key === 'Delete') { e.preventDefault(); if (picked.length) setDeleteRows(picked); }
+      const el = document.activeElement as HTMLInputElement | null;
+      const tag = el?.tagName || '';
+      // A checkbox or radio keeps focus after a row is ticked, so the shortcut
+      // must still work there; only a text field, select or textarea swallows it (#294 S8).
+      const typing = (tag === 'INPUT' && el?.type !== 'checkbox' && el?.type !== 'radio') || tag === 'SELECT' || tag === 'TEXTAREA';
+      if (typing) return;
+      if (e.key === 'Delete') { e.preventDefault(); if (picked.length && processingEnabled) setDeleteRows(picked); }
       else if (e.key === 'Escape') setSelected(new Set());
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [selected, anyDialogOpen, picked]);
+  }, [selected, anyDialogOpen, picked, processingEnabled]);
 
   /** Download an .xlsx of the given request items. */
   const doExport = useCallback(async (items: any[]) => {
@@ -290,8 +322,29 @@ export default function RequestsScreen(props: Props) {
     setSnack({ open: false, message: '' });
   }, []);
 
-  /** Open a request in the table (from the calendar or the command bar). */
-  const openInTable = useCallback((r: Row) => { setMode('table'); setOpenKey(r.key); }, []);
+  /** Open a request in the table (from the calendar or the command bar), and
+   * scroll its row into view once the table has rendered. */
+  const openInTable = useCallback((r: Row) => {
+    setMode('table');
+    setOpenKey(r.key);
+    requestAnimationFrame(() => requestAnimationFrame(() => {   // wait for the table to lay out
+      document.getElementById(`req-row-${r.key}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }));
+  }, []);
+
+  // Load the company holidays the first time the calendar is shown, so they mark
+  // the grid; the calendar still works without them.
+  useEffect(() => {
+    if (mode !== 'cal' || Object.keys(holidays).length) return;
+    getAdminHolidays().then((r) => {
+      const map: Record<string, string> = {};
+      (r.data.holidays || []).forEach((h: any) => {
+        const d = (h.fields?.Date || '').slice(0, 10);         // the item's date, YYYY-MM-DD
+        if (d) map[d] = h.fields?.Title || 'Holiday';
+      });
+      setHolidays(map);
+    }).catch(() => { /* no marks is fine */ });
+  }, [mode, holidays]);
 
   // Lazily load the new-request options the first time the dialog opens.
   const openNew = useCallback(() => {
@@ -305,7 +358,7 @@ export default function RequestsScreen(props: Props) {
   if (view === 'held') {
     return (
       <>
-        <Paper sx={{ overflow: 'hidden' }}>
+        <Paper sx={{ overflow: 'clip' }}>  {/* clip, not hidden, so the toolbar and table header can stick (#294 S9) */}
           <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, held: props.held.filter((h) => OPEN_HELD.includes(h.status)).length, stuck: props.stuck.length }} />
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: 1.5, borderBottom: `1px solid ${theme.tokens.line}` }}>
             <Typography color="text.secondary" sx={{ fontSize: 13, flex: 1 }}>Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on.</Typography>
@@ -319,7 +372,7 @@ export default function RequestsScreen(props: Props) {
 
   return (
     <>
-      <Paper sx={{ overflow: 'hidden' }}>
+      <Paper sx={{ overflow: 'clip' }}>  {/* clip, not hidden, so the toolbar and table header can stick (#294 S9) */}
         <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, held: props.held.filter((h) => OPEN_HELD.includes(h.status)).length, stuck: props.stuck.length }} />
 
         {/* The list switch and a line naming that SharePoint list. */}
@@ -415,7 +468,7 @@ export default function RequestsScreen(props: Props) {
 
         {/* Table or calendar. */}
         {mode === 'cal' ? (
-          <RequestsCalendar rows={shown} onOpenRequest={openInTable} />
+          <RequestsCalendar rows={shown} holidays={holidays} onOpenRequest={openInTable} />
         ) : (
           <RequestsTable
             rows={shown}
@@ -453,7 +506,15 @@ export default function RequestsScreen(props: Props) {
         defaultSrc={srcSel === 'all' ? 'leave' : srcSel}
         options={options}
         processingEnabled={processingEnabled}
-        onDone={(res) => { setNewOpen(false); onReload(); setSnack({ open: true, message: res.status === 'approved' ? `Request ${res.item_id} added and approved.` : `Request ${res.item_id} added.` }); }}
+        onDone={(res) => {
+          setNewOpen(false);
+          onReload();
+          // A fallback-to-pending approval carries its own message to show (#294 S3).
+          const message = res.message
+            ? res.message
+            : res.status === 'approved' ? `Request ${res.item_id} added and approved.` : `Request ${res.item_id} added.`;
+          setSnack({ open: true, message });
+        }}
         onError={(message) => setSnack({ open: true, message })}
       />
 
@@ -536,7 +597,7 @@ function footNote(view: RequestView, stats: any): string {
 function ViewTabs({ view, onView, counts }: { view: RequestView; onView: (v: RequestView) => void; counts: Record<string, number> }) {
   const theme = useTheme();
   return (
-    <Box sx={{ display: 'flex', gap: 0.25, px: 1.5, borderBottom: `1px solid ${theme.tokens.line}`, overflowX: 'auto' }}>
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.25, px: 1.5, borderBottom: `1px solid ${theme.tokens.line}` }}>
       {VIEWS.map((v) => {
         const on = v.key === view;
         return (
@@ -551,7 +612,15 @@ function ViewTabs({ view, onView, counts }: { view: RequestView; onView: (v: Req
   );
 }
 
-/** The stat strip; each tile reads the shown rows and can filter or switch lists on a click. */
+/**
+ * The stat strip; each tile reads the shown rows and can filter or switch lists on a click.
+ *
+ * @param props.rows - The rows currently on screen (the tile's value).
+ * @param props.scoped - All rows of the chosen list (the bar's full-height scale).
+ * @param props.srcSel - The chosen list, so list-only tiles hide when one list is picked.
+ * @param props.onStat - Called with what a tile does: clear filters, filter by status, or switch list.
+ * @returns The stat strip.
+ */
 function StatStrip({ rows, scoped, srcSel, onStat }: { rows: Row[]; scoped: Row[]; srcSel: Src | 'all'; onStat: (s: 'clear' | { status: string } | Src) => void }) {
   const theme = useTheme();
   const notRej = (r: Row) => r.status !== 'Rejected' && r.status !== 'Refunded';
@@ -581,7 +650,20 @@ function StatStrip({ rows, scoped, srcSel, onStat }: { rows: Row[]; scoped: Row[
   );
 }
 
-/** The selection command bar: it replaces the toolbar when rows are ticked. */
+/**
+ * The selection command bar: it replaces the toolbar when rows are ticked.
+ *
+ * @param props.picked - The ticked rows (Approve/Reject show only when all are pending; Refund when all are approved).
+ * @param props.processingEnabled - Whether writes are allowed; the write actions are disabled when off.
+ * @param props.onClear - Clear the selection.
+ * @param props.onOpen - Open the one ticked row.
+ * @param props.onApprove - Approve all ticked rows.
+ * @param props.onReject - Reject all ticked rows.
+ * @param props.onRefund - Refund all ticked rows.
+ * @param props.onExport - Export the ticked rows to Excel.
+ * @param props.onDelete - Delete the ticked rows.
+ * @returns The command bar.
+ */
 function CommandBar({ picked, processingEnabled, onClear, onOpen, onApprove, onReject, onRefund, onExport, onDelete }: {
   picked: Row[]; processingEnabled: boolean; onClear: () => void; onOpen: () => void; onApprove: () => void; onReject: () => void; onRefund: () => void; onExport: () => void; onDelete: () => void;
 }) {
@@ -599,45 +681,101 @@ function CommandBar({ picked, processingEnabled, onClear, onOpen, onApprove, onR
       </>}
       {allApproved && <Button size="small" color="inherit" disabled={!processingEnabled} onClick={onRefund}>Refund</Button>}
       <Button size="small" color="inherit" onClick={onExport}>Export</Button>
-      <Button size="small" color="error" onClick={onDelete}>Delete</Button>
+      <Button size="small" color="error" disabled={!processingEnabled} onClick={onDelete}>Delete</Button>
       <Box sx={{ flex: '1 1 auto' }} />
       <Box sx={{ fontSize: 12, color: 'text.secondary', display: { xs: 'none', sm: 'block' } }}>Del to delete, Esc to clear</Box>
     </Box>
   );
 }
 
-/** The held-for-new-hires table: a different shape and its own add/retry/cancel actions. */
+/** The held table's columns and the assumed width each spends in the fit. */
+const HELD_COLUMNS: { key: string; label: string; width: number }[] = [
+  { key: 'person', label: 'Person', width: 200 },
+  { key: 'department', label: 'Department', width: 130 },
+  { key: 'supervisor', label: 'Supervisor', width: 150 },
+  { key: 'request', label: 'Request', width: 220 },
+  { key: 'status', label: 'Status', width: 170 },
+  { key: 'actions', label: 'Actions', width: 170 },
+];
+/** Most important first: person, status and the actions are kept longest. */
+const HELD_PRIORITY = ['person', 'status', 'actions', 'request', 'supervisor', 'department'];
+const HELD_WIDTHS: Record<string, number> = Object.fromEntries(HELD_COLUMNS.map((c) => [c.key, c.width]));
+
+/**
+ * The held-for-new-hires table: a different shape and its own add/retry/cancel
+ * actions. Like the main table it never scrolls sideways - it drops the
+ * lowest-priority columns as it narrows (the actions are kept) and becomes
+ * labelled cards on a phone (#294 S11).
+ *
+ * @param props.held - The held requests.
+ * @param props.actionLoading - The key of the row an action is running on, or null.
+ * @param props.onAdd - Add the new hire to the Staff Directory, releasing their requests.
+ * @param props.onRetry - Retry a failed send.
+ * @param props.onCancel - Cancel a held request.
+ * @returns The held table.
+ */
 function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel }: {
   held: HeldRow[]; actionLoading: string | null; onAdd: (h: HeldRow) => void; onRetry: (id: number) => Promise<void>; onCancel: (id: number) => Promise<void>;
 }) {
   const theme = useTheme();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const fit = useFitColumns(wrapRef, HELD_PRIORITY, HELD_WIDTHS);
+  const hidden = new Set(fit.hidden);
   const headSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', fontSize: 12.5, fontWeight: 700, color: 'text.secondary', bgcolor: theme.tokens.hover } as const;
   const cellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', verticalAlign: 'top' } as const;
+
+  /** One held row's cell content for a column key. */
+  const cell = (h: HeldRow, key: string): ReactNode => {
+    const busy = actionLoading === `held-${h.id}`;
+    switch (key) {
+      case 'person': return <><Box sx={{ fontWeight: 700 }}>{h.name}</Box><Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.email}</Box></>;
+      case 'department': return h.department || '-';
+      case 'supervisor': return h.supervisor_name || '-';
+      case 'request': return h.summary;
+      case 'status': return <>{HELD_STATUS_LABEL[h.status] ?? h.status}{h.last_error ? <Box sx={{ fontSize: 12, color: 'error.main' }}>{h.last_error}</Box> : null}</>;
+      case 'actions': return (
+        <Box sx={{ display: 'inline-flex', gap: 0.5, flexWrap: 'wrap' }}>
+          {h.status === 'held' && <Button size="small" variant="contained" disabled={busy} onClick={() => onAdd(h)}>Add employee</Button>}
+          {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="inherit" disabled={busy} onClick={() => onRetry(h.id)}>Retry</Button>}
+          {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => onCancel(h.id)}>Cancel</Button>}
+        </Box>
+      );
+      default: return null;
+    }
+  };
+
   if (!held.length) return <Typography color="text.secondary" sx={{ p: 3 }}>Nothing is waiting.</Typography>;
-  return (
-    <Box sx={{ overflowX: 'auto' }}>
-      <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
-        <Box component="thead"><Box component="tr">{['Person', 'Department', 'Supervisor', 'Request', 'Status', 'Actions'].map((h) => <Box key={h} component="th" sx={headSx}>{h}</Box>)}</Box></Box>
-        <Box component="tbody">
-          {held.map((h) => {
-            const busy = actionLoading === `held-${h.id}`;
-            return (
-              <Box component="tr" key={h.id}>
-                <Box component="td" sx={cellSx}><Box sx={{ fontWeight: 700 }}>{h.name}</Box><Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.email}</Box></Box>
-                <Box component="td" sx={cellSx}>{h.department || '-'}</Box>
-                <Box component="td" sx={cellSx}>{h.supervisor_name || '-'}</Box>
-                <Box component="td" sx={cellSx}>{h.summary}</Box>
-                <Box component="td" sx={cellSx}>{HELD_STATUS_LABEL[h.status] ?? h.status}{h.last_error ? <Box sx={{ fontSize: 12, color: 'error.main' }}>{h.last_error}</Box> : null}</Box>
-                <Box component="td" sx={cellSx}>
-                  <Box sx={{ display: 'inline-flex', gap: 0.5, flexWrap: 'wrap' }}>
-                    {h.status === 'held' && <Button size="small" variant="contained" disabled={busy} onClick={() => onAdd(h)}>Add employee</Button>}
-                    {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="inherit" disabled={busy} onClick={() => onRetry(h.id)}>Retry</Button>}
-                    {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => onCancel(h.id)}>Cancel</Button>}
-                  </Box>
-                </Box>
+
+  // Cards on a phone: each held request a labelled block, person and actions full width.
+  if (fit.cards) {
+    return (
+      <Box ref={wrapRef} sx={{ overflow: 'clip' }}>
+        {held.map((h) => (
+          <Box key={h.id} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, p: '12px 14px', display: 'grid', gap: '6px 12px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+            <Box sx={{ gridColumn: '1 / -1' }}>{cell(h, 'person')}</Box>
+            {['department', 'supervisor', 'request', 'status'].map((k) => (
+              <Box key={k} sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                <Box sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '.04em' }}>{HELD_COLUMNS.find((c) => c.key === k)!.label}</Box>
+                {cell(h, k)}
               </Box>
-            );
-          })}
+            ))}
+            <Box sx={{ gridColumn: '1 / -1' }}>{cell(h, 'actions')}</Box>
+          </Box>
+        ))}
+      </Box>
+    );
+  }
+
+  return (
+    <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not scroll: the table never goes sideways (#294 S11) */}
+      <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
+        <Box component="thead"><Box component="tr">{HELD_COLUMNS.map((c) => <Box key={c.key} component="th" sx={{ ...headSx, display: hidden.has(c.key) ? 'none' : 'table-cell' }}>{c.label}</Box>)}</Box></Box>
+        <Box component="tbody">
+          {held.map((h) => (
+            <Box component="tr" key={h.id}>
+              {HELD_COLUMNS.map((c) => <Box key={c.key} component="td" sx={{ ...cellSx, display: hidden.has(c.key) ? 'none' : 'table-cell' }}>{cell(h, c.key)}</Box>)}
+            </Box>
+          ))}
         </Box>
       </Box>
     </Box>

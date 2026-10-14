@@ -34,13 +34,16 @@ interface Props {
   options: { staff: StaffOption[]; leave_types: string[] };
   processingEnabled: boolean;
   /** Told the new request's summary once it is saved; the screen reloads and toasts. */
-  onDone: (result: { status: string; item_id: string; request_type: string }) => void;
+  onDone: (result: { status: string; item_id: string; request_type: string; message?: string }) => void;
   onError: (message: string) => void;
 }
 
-/** Today's date as YYYY-MM-DD, for the date fields' defaults. */
+/** Today's date as YYYY-MM-DD in the browser's own time zone (not UTC). */
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();                                  // local now, so late-evening Toronto is not tomorrow
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
 }
 
 /**

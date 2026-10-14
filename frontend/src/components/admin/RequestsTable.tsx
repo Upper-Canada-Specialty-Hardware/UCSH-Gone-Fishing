@@ -181,7 +181,7 @@ export default function RequestsTable(props: Props) {
   // ---- Cards layout: each request a labelled block (phones, or still too wide). ----
   if (cards) {
     return (
-      <Box ref={wrapRef} sx={{ overflow: 'hidden' }}>
+      <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky toolbar above it working (#294 S9) */}
         {rows.length === 0 && <Box sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>{empty}</Box>}
         {groups.map(([gk, gr]) => (
           <Box key={gk || 'all'}>
@@ -189,7 +189,7 @@ export default function RequestsTable(props: Props) {
             {gr.map((r) => {
               const open = openKey === r.key;
               return (
-                <Box key={r.key} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, opacity: isLeaving(r) ? 0 : 1, transition: 'opacity .25s' }}>
+                <Box key={r.key} id={`req-row-${r.key}`} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, opacity: isLeaving(r) ? 0 : 1, transition: 'opacity .25s' }}>
                   <Box
                     role="button" tabIndex={0}
                     onClick={() => onToggleOpen(r.key)}
@@ -223,7 +223,7 @@ export default function RequestsTable(props: Props) {
   // ---- Table layout ----
   const colSpan = cols.filter((k) => !hidden.has(k)).length + 2;   // + selection + chevron
   return (
-    <Box ref={wrapRef} sx={{ overflow: 'hidden' }}>
+    <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky header and toolbar working (#294 S9) */}
       <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
         <Box component="thead">
           <Box component="tr">
@@ -266,6 +266,7 @@ export default function RequestsTable(props: Props) {
                   <Fragment key={r.key}>
                     <Box
                       component="tr" role="button" tabIndex={0}
+                      id={`req-row-${r.key}`}
                       aria-expanded={open}
                       onClick={() => onToggleOpen(r.key)}
                       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleOpen(r.key); } }}
@@ -385,7 +386,7 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           <Field label="ID" value={r.id} />
           {r.src === 'leave' && <><Field label="Leave type" value={r.kindLabel} /><Field label="Start date" value={niceDate(r.start, true)} /><Field label="End date" value={niceDate(r.end, true)} /><Field label="Days" value={r.days == null ? '' : num(r.days, 2)} /></>}
           {r.src === 'mu' && <><Field label="Date" value={niceDate(r.date, true)} /><Field label="Hours" value={r.hours == null ? '' : num(r.hours, 1)} /><Field label="As days" value={`${num((r.hours || 0) / 8, 3)} (hours ÷ 8)`} /></>}
-          {r.src === 'co' && <><Field label="Type of request" value={r.kindLabel} /><Field label="Days" value={r.days == null ? '' : num(r.days, 3)} /></>}
+          {r.src === 'co' && <><Field label="Type of request" value={r.kindLabel} /><Field label="Days" value={r.days == null ? '' : num(r.days, 3)} /><Field label="New balance after this request" value={r.newBalance} wide /></>}
           <Field label="Status" value={r.status} />
           <Field label="System state" value={r.sysState} />
           <Field label="Employee" value={r.person} />
@@ -433,7 +434,7 @@ function DetailActions({ r, stuck, processingEnabled, busy, actions }: { r: Row;
       ) : r.status === 'Refunded' && hasAuditLog(r.raw) ? (
         <Button size="small" variant="outlined" color="inherit" onClick={() => actions.audit(r)}>Audit trail</Button>
       ) : null}
-      <Button size="small" color="error" onClick={() => actions.delete([r])} sx={{ ml: 'auto' }}>Delete</Button>
+      <Button size="small" color="error" disabled={writeOff} onClick={() => actions.delete([r])} sx={{ ml: 'auto' }}>Delete</Button>
     </Box>
   );
 }

@@ -2,6 +2,7 @@ import logging
 from datetime import date as dt_date
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -1474,7 +1475,6 @@ async def _run_request_action(handler, *args) -> dict:
         HTTPException: 404 when the request no longer exists; 400 for the
             handler's own error; 502 for any other SharePoint failure.
     """
-    import httpx
     try:
         result = await handler(*args)
     except httpx.HTTPStatusError as e:
