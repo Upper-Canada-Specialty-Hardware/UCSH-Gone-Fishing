@@ -8,15 +8,17 @@ from app.models.mixins import utcnow
 
 
 class EmailApiLog(Base):
-    """One row per HTTP call the backend makes to SMTP2GO's send endpoint.
+    """One row per HTTP call the backend makes to an email service's send endpoint.
 
-    This is the record of the exchange itself: what the backend asked SMTP2GO
-    to send, and exactly what SMTP2GO answered, kept verbatim. It settles one
-    question when someone reports "I never got the email":
+    The service is either SMTP2GO or the UCSH mailer (Microsoft HVE); which one
+    is derived from ``request_url`` (see ``service_for_url``). This is the record
+    of the exchange itself: what the backend asked the service to send, and
+    exactly what it answered, kept verbatim. It settles one question when someone
+    reports "I never got the email":
 
     * a row with HTTP 200 whose body says the recipient was accepted, and no
-      email in the inbox, means the problem is past our code (SMTP2GO or the
-      mailbox side);
+      email in the inbox, means the problem is past our code (the service's
+      delivery or the mailbox side);
     * a row whose body reports the recipient as failed means our request or
       our data was wrong;
     * no row at all means the code never attempted the send.
@@ -40,7 +42,7 @@ class EmailApiLog(Base):
     attempted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, index=True
     )
-    # Round trip in milliseconds; null when SMTP2GO was never called.
+    # Round trip in milliseconds; null when the service was never called.
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # --- the request we made ---
@@ -52,13 +54,13 @@ class EmailApiLog(Base):
     request_json: Mapped[str] = mapped_column(Text, nullable=False)
 
     # --- the answer we got ---
-    # HTTP status; null when SMTP2GO never answered (timeout, DNS, refused)
+    # HTTP status; null when the service never answered (timeout, DNS, refused)
     # or was never called (no usable recipient).
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Response body exactly as received, capped at RESPONSE_MAX_CHARS.
     response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Why there is no HTTP answer: the exception text, or the reason the call
-    # was never made. Null whenever SMTP2GO answered.
+    # was never made. Null whenever the service answered.
     no_response_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- derived from the answer, for filtering and display ---
@@ -67,8 +69,10 @@ class EmailApiLog(Base):
     # data.succeeded / data.failed from the response body, when readable.
     succeeded_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     failed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # SMTP2GO's identifiers: what their activity dashboard and their support
-    # search by once the question moves to "did they deliver it".
+    # The service's identifiers, kept under the original column names for
+    # compatibility: for SMTP2GO its email_id / request_id (what its activity
+    # dashboard and support search by); for the UCSH mailer its message id(s) in
+    # smtp2go_email_id. The API exposes smtp2go_email_id as the neutral message_id.
     smtp2go_email_id: Mapped[str | None] = mapped_column(String, nullable=True)
     smtp2go_request_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -79,7 +83,7 @@ class EmailApiLog(Base):
 
 
 class EmailApiLogRecipient(Base):
-    """One address on one SMTP2GO call, so a person's emails are an exact join.
+    """One address on one send call, so a person's emails are an exact join.
 
     Addresses are stored lower-cased and stripped. The Staff Directory holds
     real values with trailing whitespace and mixed case, and the lookup must

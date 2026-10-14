@@ -245,9 +245,11 @@ async def admin_email_log_test(body: TestEmailRequest):
 
     This is how an admin checks the email path for a specific person without
     creating a request or involving a manager: the message goes through the
-    same ``send_email`` call every system email uses, so it leaves the same
-    ``email_api_log`` row, and that row is returned so the answer SMTP2GO gave
-    is visible at once. Nothing in SharePoint is touched and no SMS is sent.
+    same ``send_email`` call every system email uses, so it is routed to the
+    right service (the UCSH mailer for an internal recipient when it is on,
+    otherwise SMTP2GO) and leaves the same ``email_api_log`` row, and that row
+    is returned so the service's answer is visible at once. Nothing in
+    SharePoint is touched and no SMS is sent.
 
     Behind the admin password like every other ``/admin/*`` endpoint (#228).
 
@@ -257,8 +259,8 @@ async def admin_email_log_test(body: TestEmailRequest):
 
     Returns:
         ``employee_id``, ``employee_name``, ``address``, ``directory_lookup``
-        and ``email``: the serialised log row for this send, whatever SMTP2GO
-        answered. A send that never reached SMTP2GO still has a row.
+        and ``email``: the serialised log row for this send, whatever the
+        service answered. A send that never reached the service still has a row.
 
     Raises:
         HTTPException: 400 when neither field is given, or when no address

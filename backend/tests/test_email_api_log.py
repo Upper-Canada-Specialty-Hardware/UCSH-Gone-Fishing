@@ -652,6 +652,22 @@ def test_recent_text_filter_matches_recipient_or_subject(client):
     assert {e["subject"] for e in by_subject["emails"]} == {"Payout approved", "Leave approved"}
 
 
+def test_recent_text_filter_treats_percent_and_underscore_as_literal(client):
+    async def flow():
+        await _reset()
+        # "%" and "_" are SQL LIKE wildcards; autoescape must make them literal.
+        await _seed(to=["a@ucsh.com"], subject="50% bonus")
+        await _seed(to=["b@ucsh.com"], subject="500 bonus")          # would match "50%" if % were a wildcard
+        await _seed(to=["c@ucsh.com"], subject="a_b note")
+        await _seed(to=["d@ucsh.com"], subject="axb note")           # would match "a_b" if _ were any-char
+
+    asyncio.run(flow())
+    pct = client.get("/api/dashboard/admin/email-log/recent", params={"text": "50%"}).json()
+    assert {e["subject"] for e in pct["emails"]} == {"50% bonus"}     # % stays literal
+    us = client.get("/api/dashboard/admin/email-log/recent", params={"text": "a_b"}).json()
+    assert {e["subject"] for e in us["emails"]} == {"a_b note"}       # _ stays literal
+
+
 # ----- the duplicate mark -----
 
 def test_duplicate_mark_flags_a_repeat_send_within_five_minutes(client):

@@ -1,11 +1,10 @@
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Autocomplete, Box, Button, Chip, CircularProgress,
   Dialog, DialogActions, DialogContent, DialogTitle, Paper,
   Stack, Table, TableBody, TableCell, TableHead, TableRow,
-  TextField, ToggleButton, ToggleButtonGroup, Typography, useMediaQuery,
+  TextField, ToggleButton, ToggleButtonGroup, Typography,
 } from '@mui/material';
-import { useTheme } from '@mui/material/styles';
 import { getAdminEmailLog, getAdminEmailLogRecent, sendAdminTestEmail } from '../api/client';
 
 /**
@@ -89,9 +88,53 @@ const RECENT_WINDOWS = [
 ];
 const PERSON_WINDOWS = [7, 30, 90];
 
+// The per-person endpoint caps its result at this many rows (its server default).
+// A full page means older rows in the window are not shown, so the UI says so.
+const PERSON_LIMIT = 100;
+
 // How many rows to render before a "show more" step, so a very busy window
 // paints quickly without hiding that more rows exist.
 const PAGE_SIZE = 100;
+
+// Container-width thresholds (px of the Paper's own content box, NOT the
+// viewport). The admin sidebar permanently eats ~248px plus main and Paper
+// padding from md up, so a 900px viewport leaves this screen only ~556px; a
+// viewport media query would show columns that do not fit. Below CARD_MAX the
+// rows become cards; the two optional tiers add columns only when measured room
+// allows, and wrapping (below) is the hard guarantee against a sideways scroll.
+const CARD_MAX = 560;          // under this the table becomes cards
+const WIDE_MIN = 820;          // Service + Result columns fit from here
+const STATUS_MIN = 1040;       // HTTP column fits from here
+
+// Let a chip's text wrap instead of forcing the column wider, so even a long
+// label ("Unreadable response", "Possible duplicate") can shrink to fit.
+const CHIP_WRAP = {
+  height: 'auto',
+  py: 0.25,
+  '& .MuiChip-label': { whiteSpace: 'normal', wordBreak: 'break-word' },
+} as const;
+
+/**
+ * Track an element's own content width with a ResizeObserver, so layout can key
+ * off the space the component actually has rather than the viewport.
+ * @returns A ref to attach to the element, and its last measured width in px
+ *   (0 until the first measurement, treated by callers as "not yet known").
+ */
+function useElementWidth<T extends HTMLElement>(): [RefObject<T | null>, number] {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width);                  // first measure, before any resize
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width];
+}
 
 /**
  * The outcome chip's label and colour for a row.
@@ -253,7 +296,7 @@ function dupChip(entry: EmailLogEntry) {
       color="warning"
       variant="outlined"
       label="Possible duplicate"
-      sx={{ ml: { sm: 1 }, mt: { xs: 0.5, sm: 0 } }}
+      sx={{ mt: 0.5, display: 'flex', width: 'fit-content', ...CHIP_WRAP }}
     />
   );
 }
@@ -270,21 +313,25 @@ interface Props {
  * reached the same recipient twice within five minutes (a likely double-send).
  * "By employee" is the original per-person lookup with its test-send button.
  * Both modes have a text filter and a CSV download. No table scrolls sideways:
- * cells wrap, lower-priority columns drop with the footer naming them (every
- * value is still in the row's detail), and below about 560px each row becomes a
- * labelled, keyboard-openable card.
+ * the layout keys off the component's own measured width (not the viewport, so
+ * the admin sidebar is accounted for), cells and chips wrap, lower-priority
+ * columns drop with the footer naming them (every value is still in the row's
+ * detail), and when the container is narrow each row becomes a labelled,
+ * keyboard-openable card.
  *
  * @param employees - Staff Directory rows (id, name, department, email) for the
  *   person picker in "By employee" mode.
  * @returns The Email log admin tab.
  */
 export default function EmailLog({ employees }: Props) {
-  const theme = useTheme();
-  // Layout tiers. Below 560px the table becomes cards; the optional columns
-  // appear only when there is room, and the footer names any that are hidden.
-  const asCards = !useMediaQuery('(min-width:560px)');
-  const showWide = useMediaQuery(theme.breakpoints.up('md'));      // Service + Result from ~900px
-  const showStatus = useMediaQuery(theme.breakpoints.up('lg'));    // HTTP from ~1200px
+  // Layout tiers keyed off the component's own measured width, not the viewport,
+  // because the admin sidebar leaves this screen far narrower than the window.
+  // Width 0 means "not measured yet": default to the lean table (not cards) to
+  // avoid a card flash on a wide desktop before the first measurement lands.
+  const [rootRef, width] = useElementWidth<HTMLDivElement>();
+  const asCards = width > 0 && width < CARD_MAX;                   // narrow container: cards, never a sideways scroll
+  const showWide = width >= WIDE_MIN;                              // room for Service + Result
+  const showStatus = width >= STATUS_MIN;                          // room for HTTP too
 
   const [mode, setMode] = useState<Mode>('recent');
 
@@ -439,8 +486,8 @@ export default function EmailLog({ employees }: Props) {
                 onKeyDown={(ev) => { if (ev.key === 'Enter') setDetail(e); }}
                 sx={{ cursor: 'pointer' }}
               >
-                <TableCell sx={{ whiteSpace: { md: 'nowrap' } }}>{formatToronto(e.attempted_at)}</TableCell>
-                <TableCell sx={{ wordBreak: 'break-word', maxWidth: 260 }}>
+                <TableCell sx={{ overflowWrap: 'anywhere' }}>{formatToronto(e.attempted_at)}</TableCell>
+                <TableCell sx={{ overflowWrap: 'anywhere', maxWidth: 260 }}>
                   {e.to.join(', ')}
                   {e.cc.length > 0 && (
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -448,16 +495,16 @@ export default function EmailLog({ employees }: Props) {
                     </Typography>
                   )}
                 </TableCell>
-                <TableCell sx={{ wordBreak: 'break-word', maxWidth: 320 }}>
+                <TableCell sx={{ overflowWrap: 'anywhere', maxWidth: 320 }}>
                   {e.subject}
                   {dupChip(e)}
                 </TableCell>
                 {showWide && (
-                  <TableCell><Chip size="small" label={sc.label} color={sc.color} /></TableCell>
+                  <TableCell><Chip size="small" label={sc.label} color={sc.color} sx={CHIP_WRAP} /></TableCell>
                 )}
-                <TableCell><Chip size="small" label={oc.label} color={oc.color} /></TableCell>
+                <TableCell><Chip size="small" label={oc.label} color={oc.color} sx={CHIP_WRAP} /></TableCell>
                 {showWide && (
-                  <TableCell sx={{ whiteSpace: { lg: 'nowrap' } }}>{resultText(e)}</TableCell>
+                  <TableCell sx={{ overflowWrap: 'anywhere' }}>{resultText(e)}</TableCell>
                 )}
                 {showStatus && <TableCell>{e.http_status ?? ''}</TableCell>}
               </TableRow>
@@ -494,8 +541,8 @@ export default function EmailLog({ employees }: Props) {
             >
               <Stack spacing={0.5}>
                 <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <Chip size="small" label={oc.label} color={oc.color} />
-                  <Chip size="small" label={sc.label} color={sc.color} />
+                  <Chip size="small" label={oc.label} color={oc.color} sx={CHIP_WRAP} />
+                  <Chip size="small" label={sc.label} color={sc.color} sx={CHIP_WRAP} />
                   {dupChip(e)}
                 </Box>
                 <CardField label="Subject"><Typography variant="body2">{e.subject}</Typography></CardField>
@@ -580,6 +627,7 @@ export default function EmailLog({ employees }: Props) {
           ? ` ${dupCount} of the shown row${dupCount === 1 ? '' : 's'} look like a duplicate `
             + '(same subject within five minutes).'
           : ''}
+        {data.count === PERSON_LIMIT && ' Showing the newest 100; older ones in the window are not shown.'}
         {logYoungerThanWindow && <> The log covers sends since {formatToronto(data.log_since)}.</>}
       </Alert>
     );
@@ -622,7 +670,7 @@ export default function EmailLog({ employees }: Props) {
   const detailResult = detail ? resultText(detail) : '';
 
   return (
-    <Box>
+    <Box ref={rootRef}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Every email the backend sends is recorded here with the service's answer. When the UCSH
         mailer is switched on, internal (@ucsh.com) recipients go through it (Microsoft HVE) and

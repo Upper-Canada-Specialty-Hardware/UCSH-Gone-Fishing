@@ -925,15 +925,18 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       var note = mode === 'recent'
         ? 'Every email in the last 24 hours across both services, newest first.' + (dupN ? ' ' + dupN + ' look like a duplicate: the same subject reached the same recipient within five minutes.' : '')
         : (who === 'Everyone' ? 'Pick a person to see only the emails that named them.' : 'Every email that named ' + esc(who) + '.');
-      // No sideways scrolling: a plain block, not the overflow-x "scroll" wrapper, and the cells wrap.
+      // No sideways scrolling: auto layout so columns size to content (no overlap),
+      // cells wrap, and under 560px the lower-priority columns (marked "opt") drop,
+      // like the live screen. The style is scoped to .mailrows so only this table changes.
+      var mailStyle = '<style>.mailrows table{table-layout:auto;width:100%;border-collapse:collapse}.mailrows th,.mailrows td{word-break:break-word;vertical-align:top}@media (max-width:560px){.mailrows .opt{display:none}}</style>';
       return head('Email log', 'Every email the app tried to send, with the service\'s answer. When the UCSH mailer is switched on, internal (ucsh.com) staff go through it as notifications@ucsh.com and everyone else goes through SMTP2GO. An accepted email that never arrived is a delivery or mailbox problem, not a problem in the app; a missing row means the app never tried to send it.') +
-        '<div class="paper"><div class="toolbar">' + modeTabs + picker + search + '</div>' +
+        '<div class="paper">' + mailStyle + '<div class="toolbar">' + modeTabs + picker + search + '</div>' +
         '<div class="small muted" style="padding:0 16px 10px">' + note + '</div>' +
-        (rows.length ? '<div class="mailrows"><table style="table-layout:fixed;width:100%"><thead><tr><th>Attempted (Toronto)</th><th>Recipient</th><th>Subject</th><th>Service</th><th class="num">HTTP</th><th>Result</th><th>Outcome</th><th></th></tr></thead><tbody>' +
+        (rows.length ? '<div class="mailrows"><table><thead><tr><th>Attempted (Toronto)</th><th>Recipient</th><th>Subject</th><th class="opt">Service</th><th class="num opt">HTTP</th><th class="opt">Result</th><th>Outcome</th><th></th></tr></thead><tbody>' +
         rows.map(function (e) {
           var okfail = (e[5] === null && e[6] === null) ? '–' : ((e[5] || 0) + ' ok / ' + (e[6] || 0) + ' failed');
-          var dup = e[10] ? ' ' + chip('Possible duplicate', 'warn') : '';
-          return '<tr><td class="muted">' + e[0] + '</td><td style="word-break:break-word">' + esc(e[2]) + (e[3] ? '<div class="small muted">cc: ' + esc(e[3]) + '</div>' : '') + '</td><td style="word-break:break-word">' + esc(e[1]) + dup + '</td><td style="white-space:nowrap">' + esc(e[9] || 'SMTP2GO') + '</td><td class="num">' + e[4] + '</td><td style="white-space:nowrap">' + okfail + '</td><td>' + chip(e[7], e[7] === 'Accepted' ? 'ok' : 'err') + '</td><td><div class="acts"><button class="btn ghost" type="button" data-act="maildetail" data-i="' + EMAILS.indexOf(e) + '">Details</button></div></td></tr>';
+          var dup = e[10] ? '<div>' + chip('Possible duplicate', 'warn') + '</div>' : '';
+          return '<tr><td class="muted">' + e[0] + '</td><td>' + esc(e[2]) + (e[3] ? '<div class="small muted">cc: ' + esc(e[3]) + '</div>' : '') + '</td><td>' + esc(e[1]) + dup + '</td><td class="opt" style="white-space:nowrap">' + esc(e[9] || 'SMTP2GO') + '</td><td class="num opt">' + e[4] + '</td><td class="opt">' + okfail + '</td><td>' + chip(e[7], e[7] === 'Accepted' ? 'ok' : 'err') + '</td><td><div class="acts"><button class="btn ghost" type="button" data-act="maildetail" data-i="' + EMAILS.indexOf(e) + '">Details</button></div></td></tr>';
         }).join('') + '</tbody></table></div>' : '<div class="empty">' + (mode === 'person' && who === 'Everyone' ? 'Pick a person above.' : 'No emails match.') + '</div>') + '</div>';
     },
     checks: function () {
