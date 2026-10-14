@@ -72,6 +72,19 @@ def _text(value) -> str:
     return "" if value is None else str(value)
 
 
+def _day(value) -> str:
+    """A date/dateTime column as its YYYY-MM-DD day, dropping any stored time.
+
+    Args:
+        value: A date column value (e.g. "1990-03-03T00:00:00Z") or None.
+
+    Returns:
+        The calendar day ("1990-03-03"), or "" when blank.
+    """
+    text = _text(value).strip()                           # the stored value as text
+    return text[:10] if text else ""                     # keep the day, drop the time
+
+
 def _managers_text(row: dict) -> str:
     """The row's manager names joined for a single cell."""
     return ", ".join(row.get("managers") or [])
@@ -109,7 +122,7 @@ COLUMNS: dict[str, dict] = {
     "extension": {"header": "Extension", "group": "Contact",
                   "get": lambda r: _text(r["fields"].get("Extension"))},
     "birthday": {"header": "Birthday", "group": "Contact",
-                 "get": lambda r: _text(r["fields"].get("Birthday"))},
+                 "get": lambda r: _day(r["fields"].get("Birthday"))},
     "location": {"header": "Location", "group": "Placement",
                  "get": lambda r: _text(r["fields"].get("Location"))},
     "department": {"header": "Department", "group": "Placement",
@@ -138,7 +151,7 @@ COLUMNS: dict[str, dict] = {
     "system_check": {"header": "System check", "group": "Status",
                      "get": lambda r: _text(r["fields"].get("SystemCheck"))},
     "request_allow_date": {"header": "Can book vacation until", "group": "Status",
-                          "get": lambda r: _text(r["fields"].get("RequestAllowDate"))},
+                          "get": lambda r: _day(r["fields"].get("RequestAllowDate"))},
     "comments": {"header": "Comments", "group": "Record",
                  "get": lambda r: _text(r["fields"].get("Comments"))},
     "modified": {"header": "Last modified", "group": "Record",

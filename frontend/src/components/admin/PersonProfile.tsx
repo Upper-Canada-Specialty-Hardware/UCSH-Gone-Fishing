@@ -604,7 +604,7 @@ function FieldEditor({ field, value, people, nameToId, onCommit, onCancel }: {
     return (
       <Autocomplete
         openOnFocus disableClearable size="small" sx={{ mt: 0.5 }} options={people}
-        value={current || undefined}
+        value={(current || null) as string}
         onChange={(_, picked) => { if (picked) onCommit({ sp_user_id: nameToId.get(picked) ?? null, name: picked }); }}
         renderInput={(params) => <TextField {...params} autoFocus placeholder="Search Microsoft 365 people" aria-label={field.label} onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }} />}
       />

@@ -109,6 +109,17 @@ def test_header_is_frozen_and_filtered():
     assert ws.auto_filter.ref is not None                  # Excel filters enabled
 
 
+def test_date_columns_are_written_as_the_day_only():
+    """Birthday and the can-book date drop any stored time, keeping the day."""
+    rows = _rows()
+    rows[0]["fields"]["Birthday"] = "1990-03-03T00:00:00Z"
+    rows[0]["fields"]["RequestAllowDate"] = "2026-12-31T05:00:00Z"
+    data = sx.build_workbook(rows, ["name", "birthday", "request_allow_date"], False, [])
+    ws = _open(data)[sx.STAFF_SHEET]
+    assert ws["B2"].value == "1990-03-03"                  # day only, no timestamp
+    assert ws["C2"].value == "2026-12-31"
+
+
 def test_formula_like_text_is_stored_as_plain_text():
     """A comment that looks like a formula is stored as text, so Excel never runs it."""
     rows = _rows()

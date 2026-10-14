@@ -124,6 +124,11 @@ body.readonly .needs-processing { opacity: .45; pointer-events: none; }
 select.input { flex: 0 1 auto; }
 .scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
+/* The staff table drops columns by width so it never scrolls sideways (matches StaffScreen): Managers below 900px, then Make-up and Carry-over below 720px, and a note says so. */
+.stafftbl th, .stafftbl td { white-space: normal; overflow-wrap: anywhere; }
+.staffnote { display: none; }
+@media (max-width: 899px) { .stafftbl .col-mgrs { display: none; } .staffnote { display: block; } }
+@media (max-width: 719px) { .stafftbl .col-mu, .stafftbl .col-co { display: none; } }
 th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 tr:last-child td { border-bottom: 0; }
@@ -713,7 +718,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       }, 320);
     } else { done(); }
   }
-  function numCell(v) { return '<td class="num' + (v < 0 ? ' neg' : '') + '">' + v + '</td>'; }
+  function numCell(v, cls) { return '<td class="num' + (v < 0 ? ' neg' : '') + (cls ? ' ' + cls : '') + '">' + v + '</td>'; }
   function person(name) { return STAFF.filter(function (p) { return p.name === name; })[0]; }
   function initials(n) { return n.split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2); }
   function colorOf(n) { var h = 0; for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0; return COLORS[h % COLORS.length]; }
@@ -873,13 +878,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       // Quick chips now match the app: All, Below zero, No manager, Setup problem.
       var F = { 'All': function () { return true; }, 'Below zero': function (p) { return p.vac < 0 || p.sick < 0 || p.mu < 0 || p.co < 0; }, 'No manager': function (p) { return !p.mgrs.length; }, 'Setup problem': function (p) { return SETUP.some(function (s) { return s.who === p.name; }); } };
       var rows = STAFF.filter(function (p) { return F[f](p) && (!q || (p.name + ' ' + p.email + ' ' + p.mgrs.join(' ') + ' ' + (p.dept || '') + ' ' + p.loc).toLowerCase().indexOf(q) >= 0); });
-      var rowHtml = function (x) { return '<tr class="click' + (x.id === state.sel ? ' sel' : '') + '" tabindex="0" data-sel="' + x.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(x.name) + '<div><b>' + esc(x.name) + '</b><span class="sub">' + esc(x.dept || 'No department') + ' · ' + esc(x.loc) + '</span></div></div></td><td>' + (x.mgrs.length ? esc(x.mgrs.join(', ')) : chip('None', 'err')) + '</td>' + numCell(x.vac) + numCell(x.sick) + numCell(x.mu) + numCell(x.co) + '</tr>'; };
+      var rowHtml = function (x) { return '<tr class="click' + (x.id === state.sel ? ' sel' : '') + '" tabindex="0" data-sel="' + x.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(x.name) + '<div><b>' + esc(x.name) + '</b><span class="sub">' + esc(x.dept || 'No department') + ' · ' + esc(x.loc) + '</span></div></div></td><td class="col-mgrs">' + (x.mgrs.length ? esc(x.mgrs.join(', ')) : chip('None', 'err')) + '</td>' + numCell(x.vac) + numCell(x.sick) + numCell(x.mu, 'col-mu') + numCell(x.co, 'col-co') + '</tr>'; };
       return head('Staff', 'Everyone with their balances and managers. Click a person to see and edit their whole record.', '<button class="btn out" type="button" data-go="assignments">Manage assignments</button>') +
         '<div class="paper"><div class="toolbar"><input class="input" data-search="staffq" placeholder="Search name, email, manager, department or location" value="' + esc(state.filter.staffq || '') + '" aria-label="Search staff">' +
         Object.keys(F).map(function (k) { return '<button class="fchip" type="button" data-filter="staff|' + k + '" aria-pressed="' + (k === f) + '">' + k + ' <span class="c">' + STAFF.filter(F[k]).length + '</span></button>'; }).join('') +
         '<button class="btn out" type="button" data-act="stafffilters">Filters</button><button class="btn out" type="button" data-act="exportstaff">Export to Excel</button></div>' +
         '<div class="small muted" style="padding:0 16px 10px">Filters narrow by location, department, salary or hourly, manager and system check; each active filter shows as a chip you can remove. Export opens a preview first, then downloads the .xlsx.</div>' +
-        (rows.length ? '<div class="scroll"><table><thead><tr><th>Employee</th><th>Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th class="num">Carry Over</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
+        (rows.length ? '<div class="scroll"><table class="stafftbl"><thead><tr><th>Employee</th><th class="col-mgrs">Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num col-mu">Make-Up</th><th class="num col-co">Carry Over</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div><div class="staffnote small muted" style="padding:0 16px 10px">Some columns are hidden at this width. Open a person to see every value.</div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
     },
     add: function () { return addEmployee(true); },
     // Reached from Staff, not the sidebar; the directory-wide view of who reports to whom.
