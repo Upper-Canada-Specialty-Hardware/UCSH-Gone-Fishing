@@ -13,7 +13,7 @@ from app.services.employee import (
 )
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
-from app.services.idempotency import claim_action
+from app.services.idempotency import approval_email_action, claim_action, release_claim
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import (
     bump_and_snapshot,
@@ -281,41 +281,55 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
 
     from app.templates_render import render_carryover_payout_approval_email
 
-    for mgr in all_managers:
-        mgr_id = mgr["id"]
-        mgr_email = mgr["fields"].get("EmailAddress", "")
+    # One approval email per version. The request page sends it as it creates
+    # the request; SharePoint's change notice for that same new item then reaches
+    # the dispatcher seconds later and asks again. Whoever claims the version first
+    # sends; a later call for the same version stops here. A real change or a
+    # reminder makes a new version, so those still send.
+    sent_key = approval_email_action(version)
+    if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, sent_key):
+        logger.info("Approval email for carry-over/payout request #%s version %s already sent; not sending again", request_id, version)
+        return
+    try:
+        for mgr in all_managers:
+            mgr_id = mgr["id"]
+            mgr_email = mgr["fields"].get("EmailAddress", "")
 
-        approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
-        reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
+            approve_url = generate_approval_url("carryover-payout", request_id, "approve", mgr_id, approval_version=version)
+            reject_url = generate_approval_url("carryover-payout", request_id, "reject", mgr_id, approval_version=version)
 
-        html = render_carryover_payout_approval_email(
-            request_id, request_type, employee_name, days,
-            current_vacation, current_carryover, current_payout,
-            new_vacation, new_carryover, new_payout,
-            approve_url, reject_url,
-            previous_snapshot=previous_snapshot,
-        )
-        subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
-        await send_email_with_dashboard(
-            to=[mgr_email, "mandyl@ucsh.com"],
-            subject=subject,
-            html_body=html,
-            primary_employee_id=mgr_id,
-            reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
-        )
-
-        cell = mgr["fields"].get("CellNumber", "")
-        if cell and not is_reminder:
-            await send_sms(
-                to=cell,
-                body=(
-                    f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
-                    f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
-                    f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
-                ),
+            html = render_carryover_payout_approval_email(
+                request_id, request_type, employee_name, days,
+                current_vacation, current_carryover, current_payout,
+                new_vacation, new_carryover, new_payout,
+                approve_url, reject_url,
+                previous_snapshot=previous_snapshot,
+            )
+            subject = ("Reminder: " if is_reminder else "") + f"{request_type} Request #{request_id} Submitted by {employee_name}"
+            await send_email_with_dashboard(
+                to=[mgr_email, "mandyl@ucsh.com"],
+                subject=subject,
+                html_body=html,
+                primary_employee_id=mgr_id,
+                reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
             )
 
-    logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
+            cell = mgr["fields"].get("CellNumber", "")
+            if cell and not is_reminder:
+                await send_sms(
+                    to=cell,
+                    body=(
+                        f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
+                        f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
+                        f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
+                    ),
+                )
+
+        logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
+    except Exception:
+        # The send failed: drop the claim so the next change notice or reminder can retry.
+        await release_claim(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, sent_key)
+        raise
 
 
 ALLOWED_CARRYOVER_TYPES = {"Carry Over", "Payout"}
