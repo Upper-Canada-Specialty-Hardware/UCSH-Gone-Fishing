@@ -1557,7 +1557,7 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
         else:
             await dispatch_change(settings.SP_LIST_LEAVE_REQUESTS, item)
     except Exception:
-        logger.exception("Reprocess: dispatch_change failed for leave #%s", request_id)
+        logger.exception("Reprocess: failed for leave #%s", request_id)
         raise HTTPException(status_code=500, detail="Reprocessing failed — check server logs")
 
     # Re-fetch and diagnose remaining issues
