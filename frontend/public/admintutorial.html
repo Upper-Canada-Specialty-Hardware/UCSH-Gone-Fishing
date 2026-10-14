@@ -677,10 +677,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
 
   var FLOWS = {
     newhire: { role: 'admin', screen: 'held', hint: 'Riley asked for time off on the request page before being on staff. Click <b>Add employee</b>: the form opens filled in, and adding them sends the request to their supervisor.' },
-    approve: { role: 'admin', screen: 'pending', hint: 'Click a row to see the balances before and after, edit it, or send a reminder. <b>Approve</b> is one click; <b>Reject</b> asks first.' },
+    approve: { role: 'admin', screen: 'pending', hint: '<b>Approve</b> or <b>Reject</b> right on the row, or click the row to open it in place: every column, what it will do to each balance, Edit and a reminder. Tick a few rows and the toolbar becomes a command bar to approve, reject, export or delete them together.' },
     setup: { role: 'admin', screen: 'setup', hint: 'Same list as today\'s Employee Setup tab. <b>Open</b> a person to fix their supervisor, then <b>Check</b> the row, or check anyone with the picker below.' },
     stuck: { role: 'admin', screen: 'stuck', hint: 'Stuck requests sit in the quieter block at the bottom of the sidebar. Casey has no manager: set one from Staff, then <b>Reprocess</b> with a reason.' },
-    refund: { role: 'admin', screen: 'requests', view: 'all', hint: 'Find an approved request and click <b>Refund</b>. It shows what goes back before it happens.' },
+    refund: { role: 'admin', screen: 'requests', view: 'all', hint: 'Find an approved request and click <b>Refund</b>; it shows what goes back before it happens. <b>+ New request</b> adds one for someone (pending, or approved on the spot), and <b>Delete</b> removes one with a reason and a few seconds to undo.' },
     bulk: { role: 'admin', screen: 'staff', hint: 'Click <b>Manage assignments</b> (today\'s wizard): add, remove or replace a manager across a whole team, with a preview first.' },
     manager: { role: 'manager', mtab: 'today', hint: 'Each request shows the dates, what it does to each balance, and who else on the team is off. Decide, and the list moves on.' },
     employee: { role: 'employee', hint: 'Their record and every manager up top, all five balances, then requests by what they are waiting on. <b>This year</b> has their numbers and <b>History</b> every request.' }
@@ -799,7 +799,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var cur = VIEWS.filter(function (v) { return v[0] === view; })[0];
     var rows = REQS.filter(function (r) { return (!cur[2] || r.status === cur[2]) && match(r); }).sort(function (a, b) { return b.age - a.age; });
     var titles = { pending: 'Pending approvals', held: 'Held for new hires', stuck: 'Stuck requests', all: 'All requests' };
-    var desc = { pending: 'Waiting on a manager, oldest first. Click a request for its balances, edit and reminders.', held: 'Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on. Their supervisor is reminded after 2 business days; admins are emailed after 5.', stuck: 'Requests the system could not finish on its own. Fix the cause, then reprocess.', all: STATS.leave.toLocaleString() + ' leave, ' + STATS.overtime + ' overtime and ' + STATS.co + ' carry over or payout requests in total.' };
+    var desc = { pending: 'Waiting on a manager, oldest first. Approve or reject right on the row, or open a request in place for its balances, edit and a reminder.', held: 'Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on. Their supervisor is reminded after 2 business days; admins are emailed after 5.', stuck: 'Requests the system could not finish on its own. Fix the cause, then reprocess.', all: 'The three lists in one table: switch lists to see each list\'s own columns, open a request in place, or show them on a calendar. ' + STATS.leave.toLocaleString() + ' leave, ' + STATS.overtime + ' overtime and ' + STATS.co + ' carry over or payout requests in total.' };
     var empties = { pending: 'No pending requests.', held: 'Nothing is waiting.', stuck: 'No stuck requests found.', all: 'No requests match.' };
     return head(titles[view], desc[view]) +
       '<div class="paper"><div class="toolbar">' + VIEWS.map(function (v) {

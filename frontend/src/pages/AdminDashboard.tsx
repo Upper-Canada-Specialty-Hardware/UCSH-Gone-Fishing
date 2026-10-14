@@ -371,6 +371,25 @@ export default function AdminDashboard() {
     }
   }, [loadHeld, heldIncludeClosed]);
 
+  // Refetch the request lists and their totals after a new request or a delete,
+  // so the rebuilt requests table shows the real state once an action lands.
+  const reloadRequests = useCallback(async () => {
+    try {
+      const [pendRes, reqRes, stuckRes, statsRes] = await Promise.all([
+        getAdminPending(),
+        getAdminRequests(),
+        getAdminStuckRequests(),
+        getAdminStats(),
+      ]);
+      setPending(pendRes.data.pending || []);
+      setRequests(reqRes.data.requests || []);
+      setStuckRequests(stuckRes.data.stuck || []);
+      setStats(statsRes.data);
+    } catch {
+      setSnack({ open: true, message: 'Could not refresh the requests', severity: 'error' });
+    }
+  }, []);
+
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
     try {
@@ -485,6 +504,7 @@ export default function AdminDashboard() {
                   onAddHeld={handleAddFromHeld}
                   onRetryHeld={(id) => heldAction(id, () => releaseHeldRequest(id), 'Sent on.')}
                   onCancelHeld={(id) => heldAction(id, () => cancelHeldRequest(id), 'Cancelled.')}
+                  onReload={reloadRequests}
                 />
               )}
 

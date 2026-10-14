@@ -36,6 +36,7 @@ RECEIVED_EMAIL_ACTION = "request_received_email"
 
 async def process_new_carryover_payout(
     form_data: dict, submitter_email: str, source: str | None = None,
+    notify: bool = True,
 ) -> dict:
     """Create the SharePoint carryover/payout item, assign its manager, validate.
 
@@ -44,6 +45,9 @@ async def process_new_carryover_payout(
         submitter_email: Who the request is for.
         source: Where it came from (a request_submitter.SOURCE_* value),
             written to RequestSource when those columns are enabled.
+        notify: True runs the approval pipeline (asks the manager), as a normal
+            submission does. False assigns the manager and its ids but skips
+            that pipeline, so an admin can create and approve it at once (#283).
 
     Returns:
         The created SharePoint item.
@@ -67,12 +71,19 @@ async def process_new_carryover_payout(
     item_id = item["id"]
     logger.info("Created carryover/payout request #%s", item_id)
 
-    await auto_assign_manager(item_id, submitter_email)
+    await auto_assign_manager(item_id, submitter_email, notify=notify)   # notify=False skips the approval pipeline
     return item
 
 
-async def auto_assign_manager(request_id: str | int, submitter_email: str):
-    """Look up employee by email → supervisor → assign manager + IDs."""
+async def auto_assign_manager(request_id: str | int, submitter_email: str, notify: bool = True):
+    """Look up employee by email → supervisor → assign manager + IDs.
+
+    Args:
+        request_id: The carry-over/payout item.
+        submitter_email: Who the request is for.
+        notify: True runs the approval pipeline at the end; False stops after
+            the manager and ids are set, for an admin-created-and-approved one.
+    """
     employee = await get_employee_by_email(submitter_email)
     if not employee:
         logger.warning("Cannot assign manager — employee not found for CO/PO #%s", request_id)
@@ -103,8 +114,9 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str):
     await request_store.update_list_item_fields(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, update)
     logger.info("Assigned manager %s to CO/PO request #%s", mgr_fields.get("Title"), request_id)
 
-    # Trigger approval pipeline
-    await run_approval_pipeline(request_id)
+    # Trigger approval pipeline, unless an admin is approving it themselves.
+    if notify:
+        await run_approval_pipeline(request_id)
 
 
 async def run_approval_pipeline(request_id: str | int):

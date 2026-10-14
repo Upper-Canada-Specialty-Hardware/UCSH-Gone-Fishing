@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 async def process_new_overtime_request(
     form_data: dict, submitter_email: str, source: str | None = None,
+    notify: bool = True,
 ) -> dict:
     """Create the SharePoint overtime item, assign its manager, ask for approval.
 
@@ -61,6 +62,9 @@ async def process_new_overtime_request(
         submitter_email: Who the request is for.
         source: Where it came from (a request_submitter.SOURCE_* value),
             written to RequestSource when those columns are enabled.
+        notify: True asks the manager for approval, as a normal submission
+            does. False assigns the manager but skips that email, so an admin
+            can create and approve the request in one step (#283).
 
     Returns:
         The created SharePoint item.
@@ -88,12 +92,19 @@ async def process_new_overtime_request(
     logger.info("Created overtime request #%s", item_id)
 
     # Auto-assign manager
-    await auto_assign_manager(item_id, submitter_email)
+    await auto_assign_manager(item_id, submitter_email, notify=notify)   # notify=False skips the approval email
     return item
 
 
-async def auto_assign_manager(request_id: str | int, submitter_email: str | None = None):
-    """Look up submitter → supervisor → assign manager → trigger approval."""
+async def auto_assign_manager(request_id: str | int, submitter_email: str | None = None, notify: bool = True):
+    """Look up submitter → supervisor → assign manager → trigger approval.
+
+    Args:
+        request_id: The overtime item.
+        submitter_email: Fallback when the person column misses the submitter.
+        notify: True sends the approval email at the end; False stops after the
+            manager is assigned, for an admin-created-and-approved request.
+    """
     item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -123,8 +134,9 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     await request_store.update_list_item_fields(settings.SP_LIST_OVERTIME_REQUESTS, request_id, update)
     logger.info("Assigned manager %s to overtime request #%s", mgr_fields.get("Title"), request_id)
 
-    # Trigger approval pipeline with all managers
-    await send_approval_email(request_id, employee, managers)
+    # Trigger approval pipeline with all managers, unless an admin approves it.
+    if notify:
+        await send_approval_email(request_id, employee, managers)
 
 
 async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict], is_reminder: bool = False):

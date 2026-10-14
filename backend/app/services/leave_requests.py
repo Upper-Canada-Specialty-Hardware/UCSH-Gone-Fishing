@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 async def process_new_leave_request(
     form_data: dict, submitter_email: str, source: str | None = None,
+    notify: bool = True,
 ) -> dict:
     """Create the SharePoint leave item, then work out its days and manager.
 
@@ -66,6 +67,10 @@ async def process_new_leave_request(
         submitter_email: Who the request is for.
         source: Where it came from (a request_submitter.SOURCE_* value),
             written to RequestSource when those columns are enabled.
+        notify: True sends the manager the approval request, as every normal
+            submission does. False assigns the manager and counts the days but
+            skips that email, so an admin can create a request and approve it
+            at once without the manager ever being asked (#283).
 
     Returns:
         The created SharePoint item.
@@ -119,7 +124,7 @@ async def process_new_leave_request(
     except Exception:  # noqa: BLE001 - as before: a failure here must not stop the rest
         logger.exception("Could not work out the days for leave request #%s", item_id)
     await asyncio.gather(
-        auto_assign_manager(item_id),
+        auto_assign_manager(item_id, notify=notify),            # notify=False skips the manager's approval email
         send_bereavement_alert(item_id),
         return_exceptions=True,
     )
@@ -226,8 +231,14 @@ async def _check_partial_day(
     logger.info("Partial day leave request #%s passed auto-rejection checks", request_id)
 
 
-async def auto_assign_manager(leave_request_id: str | int):
-    """Look up submitter → supervisor → patch SP item."""
+async def auto_assign_manager(leave_request_id: str | int, notify: bool = True):
+    """Look up submitter → supervisor → patch SP item.
+
+    Args:
+        leave_request_id: The leave item.
+        notify: True triggers the approval email at the end; False stops after
+            the manager is assigned, for an admin-created-and-approved request.
+    """
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
@@ -272,8 +283,9 @@ async def auto_assign_manager(leave_request_id: str | int):
     )
     logger.info("Assigned manager %s to leave request #%s", mgr_fields.get("Title"), leave_request_id)
 
-    # Now trigger approval pipeline
-    await send_approval_email(leave_request_id)
+    # Now trigger approval pipeline, unless an admin is approving it themselves.
+    if notify:
+        await send_approval_email(leave_request_id)
 
 
 async def send_bereavement_alert(leave_request_id: str | int):

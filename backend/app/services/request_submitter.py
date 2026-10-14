@@ -38,6 +38,7 @@ REQUEST_SOURCE_COLUMN = "RequestSource"     # plain text: where the request came
 
 SOURCE_REQUEST_PAGE = "Request page"        # the public request page (#131)
 SOURCE_API = "API"                          # the /api/forms endpoints
+SOURCE_ADMIN = "Admin dashboard"            # an admin made it on the requests screen (#283)
 
 # The person columns that name a request's submitter, per list.
 SUBMITTER_PERSON_COLUMNS = ("SubmittedTest", "SubmittedBy")
