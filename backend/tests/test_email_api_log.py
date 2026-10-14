@@ -95,8 +95,14 @@ def client():
     return TestClient(app, raise_server_exceptions=False)
 
 
-async def _seed(*, to, subject, cc=None, outcome=None, attempted_at=None, email_id="em-x"):
-    """Write one exchange directly, the way an accepted send would."""
+async def _seed(
+    *, to, subject, cc=None, outcome=None, attempted_at=None, email_id="em-x", request_url=None,
+):
+    """Write one exchange directly, the way an accepted send would.
+
+    ``request_url`` defaults to SMTP2GO; pass the mailer send url to seed a row
+    that the service derivation reads as a UCSH mailer row.
+    """
     body = json.dumps({
         "request_id": "req-x",
         "data": {"succeeded": len(to), "failed": 0, "failures": [], "email_id": email_id},
@@ -109,11 +115,15 @@ async def _seed(*, to, subject, cc=None, outcome=None, attempted_at=None, email_
         payload["cc"] = cc
     await log_service.record_exchange(
         summary,
-        request_url=email_module.SMTP2GO_URL,
+        request_url=request_url or email_module.SMTP2GO_URL,
         payload=payload,
         attempted_at=attempted_at or utcnow(),
         duration_ms=12,
     )
+
+
+# A url that service_for_url reads as the UCSH mailer (ends in /v1/send).
+_MAILER_URL = "https://mailer.internal/v1/send"
 
 
 # ----- what one send stores -----
@@ -547,3 +557,136 @@ def test_test_send_refuses_when_there_is_no_address(client, smtp, monkeypatch):
     assert smtp.calls == []                                   # nothing was attempted
 
     assert client.post("/api/dashboard/admin/email-log/test", json={}).status_code == 400
+
+
+# ----- the serialised row names its service and message id -----
+
+def test_serialized_row_names_the_service_and_message_id_for_both_services(client):
+    async def flow():
+        await _reset()
+        # One row per service, both to the same person.
+        await _seed(to=["w@ucsh.com"], subject="S1", email_id="em-smtp")
+        await _seed(
+            to=["w@ucsh.com"], subject="S2", email_id="<abc@ucsh.com>", request_url=_MAILER_URL,
+        )
+
+    asyncio.run(flow())
+    r = client.get("/api/dashboard/admin/email-log", params={"address": "w@ucsh.com"})
+    assert r.status_code == 200
+    by_subject = {e["subject"]: e for e in r.json()["emails"]}
+
+    smtp_row = by_subject["S1"]
+    assert smtp_row["service"] == "smtp2go"
+    # message_id is the service-neutral name; the old field stays for compatibility.
+    assert smtp_row["message_id"] == "em-smtp" == smtp_row["smtp2go_email_id"]
+
+    mailer_row = by_subject["S2"]
+    assert mailer_row["service"] == "ucsh_mailer"
+    # The mailer's id (an "<...@ucsh.com>" value) is exposed under message_id too.
+    assert mailer_row["message_id"] == "<abc@ucsh.com>"
+    assert mailer_row["sender"] == "hr@x.com"                 # the sender address travels with the row
+
+
+# ----- the recent list: window, order, limit, text filter -----
+
+def test_recent_lists_every_service_newest_first_within_the_window(client):
+    async def flow():
+        await _reset()
+        now = utcnow()
+        await _seed(to=["a@ucsh.com"], subject="old", attempted_at=now - timedelta(hours=40))
+        await _seed(to=["b@ucsh.com"], subject="mid", attempted_at=now - timedelta(hours=5))
+        await _seed(
+            to=["c@ucsh.com"], subject="new", attempted_at=now - timedelta(hours=1),
+            request_url=_MAILER_URL,
+        )
+
+    asyncio.run(flow())
+    # Default 24-hour window drops the 40-hour-old row; newest first otherwise.
+    r = client.get("/api/dashboard/admin/email-log/recent")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hours"] == 24
+    assert [e["subject"] for e in body["emails"]] == ["new", "mid"]
+    assert body["count"] == 2
+    assert body["truncated"] is False
+    assert body["since"] is not None and body["log_since"] is not None
+
+    # A wider window reaches the old row.
+    wide = client.get("/api/dashboard/admin/email-log/recent", params={"hours": 72}).json()
+    assert [e["subject"] for e in wide["emails"]] == ["new", "mid", "old"]
+
+
+def test_recent_respects_the_limit_and_reports_truncation(client):
+    async def flow():
+        await _reset()
+        now = utcnow()
+        for i in range(5):                                    # five rows, one minute apart
+            await _seed(to=["a@ucsh.com"], subject=f"s{i}", attempted_at=now - timedelta(minutes=i))
+
+    asyncio.run(flow())
+    r = client.get("/api/dashboard/admin/email-log/recent", params={"limit": 2}).json()
+    assert r["count"] == 2
+    assert r["limit"] == 2
+    assert r["truncated"] is True                             # the cap was hit, older rows exist
+    assert [e["subject"] for e in r["emails"]] == ["s0", "s1"]  # newest two
+
+
+def test_recent_text_filter_matches_recipient_or_subject(client):
+    async def flow():
+        await _reset()
+        await _seed(to=["ana@ucsh.com"], subject="Payout approved")
+        await _seed(to=["bob@ucsh.com"], subject="Leave approved")
+        await _seed(to=["cat@ucsh.com"], subject="Overtime logged", cc=["ana@ucsh.com"])
+
+    asyncio.run(flow())
+    # Matches a recipient address (To of row 1, CC of row 3).
+    by_addr = client.get(
+        "/api/dashboard/admin/email-log/recent", params={"text": "ANA@"}
+    ).json()
+    assert {e["subject"] for e in by_addr["emails"]} == {"Payout approved", "Overtime logged"}
+
+    # Matches the subject, case-insensitively.
+    by_subject = client.get(
+        "/api/dashboard/admin/email-log/recent", params={"text": "approved"}
+    ).json()
+    assert {e["subject"] for e in by_subject["emails"]} == {"Payout approved", "Leave approved"}
+
+
+# ----- the duplicate mark -----
+
+def test_duplicate_mark_flags_a_repeat_send_within_five_minutes(client):
+    async def flow():
+        await _reset()
+        base = utcnow()
+        # Same subject to the same manager twice, two minutes apart: both flagged.
+        await _seed(to=["mgr@ucsh.com"], subject="Approve request #7", attempted_at=base)
+        await _seed(
+            to=["mgr@ucsh.com"], subject="Approve request #7",
+            attempted_at=base - timedelta(minutes=2),
+        )
+        # A different subject to the same manager is not a duplicate.
+        await _seed(to=["mgr@ucsh.com"], subject="Approve request #9", attempted_at=base)
+
+    asyncio.run(flow())
+    emails = client.get(
+        "/api/dashboard/admin/email-log/recent", params={"hours": 1}
+    ).json()["emails"]
+    dup = [e["subject"] for e in emails if e["likely_duplicate"]]
+    not_dup = [e["subject"] for e in emails if not e["likely_duplicate"]]
+    assert dup == ["Approve request #7", "Approve request #7"]    # both ends of the pair
+    assert not_dup == ["Approve request #9"]
+
+
+def test_duplicate_mark_ignores_the_same_send_spaced_out(client):
+    async def flow():
+        await _reset()
+        base = utcnow()
+        # Same subject and recipient but ten minutes apart: a genuine resend, not a burst.
+        await _seed(to=["mgr@ucsh.com"], subject="Reminder", attempted_at=base)
+        await _seed(to=["mgr@ucsh.com"], subject="Reminder", attempted_at=base - timedelta(minutes=10))
+
+    asyncio.run(flow())
+    emails = client.get(
+        "/api/dashboard/admin/email-log/recent", params={"hours": 1}
+    ).json()["emails"]
+    assert all(e["likely_duplicate"] is False for e in emails)
