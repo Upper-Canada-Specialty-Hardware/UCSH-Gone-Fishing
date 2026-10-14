@@ -30,6 +30,9 @@ from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
 
+# processing_log action marking the employee's "Request Received" email as sent.
+RECEIVED_EMAIL_ACTION = "request_received_email"
+
 
 async def process_new_carryover_payout(
     form_data: dict, submitter_email: str, source: str | None = None,
@@ -197,26 +200,35 @@ async def run_approval_pipeline(request_id: str | int):
         logger.info("Auto-rejected CO/PO #%s — vacation would go negative", request_id)
         return
 
-    # Send confirmation to employee
-    from app.templates_render import render_carryover_confirmation, render_payout_confirmation
-    if request_type == "Carry Over":
-        html = render_carryover_confirmation(
-            request_id, emp_fields, days, new_vacation, new_carryover, current_payout
-        )
-        await send_email(
-            to=[emp_fields.get("EmailAddress", "")],
-            subject="Request Received for Carry Over",
-            html_body=html,
-        )
-    else:
-        html = render_payout_confirmation(
-            request_id, emp_fields, days, new_vacation, current_carryover, new_payout
-        )
-        await send_email(
-            to=[emp_fields.get("EmailAddress", "")],
-            subject="Request Received for Payout",
-            html_body=html,
-        )
+    # Send confirmation to employee, once per request: the request page runs this
+    # pipeline, then SharePoint's change notice for the same new item runs it again.
+    if await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, RECEIVED_EMAIL_ACTION):
+        try:
+            from app.templates_render import render_carryover_confirmation, render_payout_confirmation
+            if request_type == "Carry Over":
+                html = render_carryover_confirmation(
+                    request_id, emp_fields, days, new_vacation, new_carryover, current_payout
+                )
+                await send_email(
+                    to=[emp_fields.get("EmailAddress", "")],
+                    subject="Request Received for Carry Over",
+                    html_body=html,
+                )
+            else:
+                html = render_payout_confirmation(
+                    request_id, emp_fields, days, new_vacation, current_carryover, new_payout
+                )
+                await send_email(
+                    to=[emp_fields.get("EmailAddress", "")],
+                    subject="Request Received for Payout",
+                    html_body=html,
+                )
+        except BaseException:                                   # not sent: let a later run retry
+            try:
+                await release_claim(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, RECEIVED_EMAIL_ACTION)
+            except Exception:  # noqa: BLE001 - keep the send error
+                logger.exception("Could not release the confirmation claim for CO/PO #%s", request_id)
+            raise
 
     await send_approval_email(request_id)
 
@@ -316,19 +328,27 @@ async def send_approval_email(request_id: str | int, is_reminder: bool = False):
 
             cell = mgr["fields"].get("CellNumber", "")
             if cell and not is_reminder:
-                await send_sms(
-                    to=cell,
-                    body=(
-                        f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
-                        f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
-                        f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
-                    ),
-                )
+                # A failed text must not undo the emails: raising here would release
+                # the claim and let the next caller email this manager again.
+                try:
+                    await send_sms(
+                        to=cell,
+                        body=(
+                            f"{request_type} Request #{request_id} for {employee_name} ({days} days).\n"
+                            f"If approved: Vac: {new_vacation}, CO: {new_carryover}, PO: {new_payout}.\n"
+                            f"Reply \"CO Approve {request_id}\" or \"CO Reject {request_id}\""
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - logged; the email already went out
+                    logger.exception("Could not text the manager about carry-over/payout request #%s", request_id)
 
         logger.info("Sent approval email for CO/PO #%s to %d manager(s)", request_id, len(all_managers))
-    except Exception:
+    except BaseException:                                       # cancellation too (a redeploy mid-send)
         # The send failed: drop the claim so the next change notice or reminder can retry.
-        await release_claim(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, sent_key)
+        try:
+            await release_claim(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, sent_key)
+        except Exception:  # noqa: BLE001 - keep the send error, which is the one that matters
+            logger.exception("Could not release the approval email claim for #%s", request_id)
         raise
 
 

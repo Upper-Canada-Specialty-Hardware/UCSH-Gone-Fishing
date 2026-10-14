@@ -256,15 +256,20 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
                     bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
                 else:
                     bal_line = ""
-                await send_sms(
-                    to=cell,
-                    body=(
-                        f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
-                        f"{ot_date}\n"
-                        f"{bal_line}"
-                        f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
-                    ),
-                )
+                # A failed text must not undo the emails: raising here would release
+                # the claim and let the next caller email this manager again.
+                try:
+                    await send_sms(
+                        to=cell,
+                        body=(
+                            f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
+                            f"{ot_date}\n"
+                            f"{bal_line}"
+                            f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - logged; the email already went out
+                    logger.exception("Could not text the manager about overtime request #%s", request_id)
 
         logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
 
@@ -280,9 +285,12 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
                 html_body=html,
                 primary_employee_id=employee["id"],
             )
-    except Exception:
+    except BaseException:                                       # cancellation too (a redeploy mid-send)
         # The send failed: drop the claim so the next change notice or reminder can retry.
-        await release_claim(settings.SP_LIST_OVERTIME_REQUESTS, request_id, sent_key)
+        try:
+            await release_claim(settings.SP_LIST_OVERTIME_REQUESTS, request_id, sent_key)
+        except Exception:  # noqa: BLE001 - keep the send error, which is the one that matters
+            logger.exception("Could not release the approval email claim for #%s", request_id)
         raise
 
 

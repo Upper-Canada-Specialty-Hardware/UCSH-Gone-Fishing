@@ -180,3 +180,87 @@ def test_carryover_approval_email_is_sent_once_when_asked_twice(monkeypatch, out
     run(carryover_payout.send_approval_email(request_id))
     assert len(outbox.emails) == 1
     assert outbox.texts == ["+15555550101"]
+
+
+def test_a_failed_text_keeps_the_claim(monkeypatch, outbox):
+    stub_leave(monkeypatch)
+
+    async def twilio_down(to, body):
+        raise RuntimeError("twilio 401")
+    monkeypatch.setattr(leave_requests, "send_sms", twilio_down)
+    request_id = new_id()
+    run(leave_requests.send_approval_email(request_id))         # email goes, text fails quietly
+    run(leave_requests.send_approval_email(request_id))         # the dispatcher's call
+    subjects = [subject for _, subject in outbox.emails]
+    assert subjects.count("Leave Request - Casey Demo") == 1     # still one email
+    assert subjects.count("Leave Request Received - Casey Demo") == 1
+
+
+def test_reprocess_can_ask_for_a_fresh_email(monkeypatch, outbox):
+    stub_leave(monkeypatch)
+    request_id = new_id()
+    run(leave_requests.send_approval_email(request_id))
+    run(leave_requests.send_approval_email(request_id, new_version=True))   # an admin reprocess
+    subjects = [subject for _, subject in outbox.emails]
+    assert subjects.count("Leave Request - Casey Demo") == 2
+
+
+def test_days_are_worked_out_before_the_manager_is_emailed(monkeypatch):
+    order: list[str] = []
+
+    async def create(list_id, fields):
+        return {"id": "501", "fields": fields}
+
+    async def calc(item_id):
+        order.append("days")
+
+    async def assign(item_id):
+        order.append("manager")                                  # this step sends the email
+
+    async def alert(item_id):
+        order.append("alert")
+    monkeypatch.setattr(leave_requests.request_store, "create_list_item", create)
+    monkeypatch.setattr(leave_requests, "auto_calculate_days", calc)
+    monkeypatch.setattr(leave_requests, "auto_assign_manager", assign)
+    monkeypatch.setattr(leave_requests, "send_bereavement_alert", alert)
+
+    async def no_lookup(*a, **k):
+        return None
+    monkeypatch.setattr(leave_requests, "_resolve_user_lookup_id", no_lookup, raising=False)
+    run(leave_requests.process_new_leave_request(
+        {"leave_type": "Vacation", "start_date": "2026-11-02", "end_date": "2026-11-03"}, "casey@ucsh.com",
+    ))
+    assert order.index("days") < order.index("manager")
+
+
+def test_carryover_received_email_is_sent_once(monkeypatch, outbox):
+    sent: list[str] = []
+
+    async def email(to, subject, html_body, **kwargs):
+        sent.append(subject)
+    monkeypatch.setattr(carryover_payout, "send_email", email)
+    for name in ("render_carryover_confirmation", "render_payout_confirmation"):
+        monkeypatch.setattr(f"app.templates_render.{name}", lambda *a, **k: "<p>body</p>")
+    # Both runs read "Not Processed": the case where the second starts before the
+    # first has marked the item "Processing" (the stubbed write keeps nothing).
+    stub_item(monkeypatch, carryover_payout, {
+        "Status": "Pending", "EmployeeID": "12", "ManagerID": "77", "ManagerLookupId": "5",
+        "SystemState": "Not Processed", "TypeofRequest": "Carry Over", "Days": 1,
+    })
+
+    async def no_write(list_id, item_id, fields):
+        return fields
+
+    async def employee(employee_id):
+        return MANAGER if employee_id == "77" else EMPLOYEE
+
+    async def managers(emp):
+        return [MANAGER]
+    monkeypatch.setattr(carryover_payout.request_store, "update_list_item_fields", no_write)
+    monkeypatch.setattr(carryover_payout, "get_employee_by_id", employee)
+    monkeypatch.setattr(carryover_payout, "get_all_managers_for_employee", managers)
+    request_id = new_id()
+    run(carryover_payout.run_approval_pipeline(request_id))      # the request page's run
+    run(carryover_payout.run_approval_pipeline(request_id))      # the dispatcher's run
+    assert sent.count("Request Received for Carry Over") == 1
+    assert len(outbox.emails) == 1                               # and one manager email
