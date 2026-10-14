@@ -7,8 +7,12 @@ back with openpyxl and asserts the sheets, headers, values and styling.
 from datetime import date
 from io import BytesIO
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
+from app.routes.dashboard import router as dashboard_router
 from app.services import staff_export as sx
 
 
@@ -105,6 +109,102 @@ def test_header_is_frozen_and_filtered():
     assert ws.auto_filter.ref is not None                  # Excel filters enabled
 
 
+def test_formula_like_text_is_stored_as_plain_text():
+    """A comment that looks like a formula is stored as text, so Excel never runs it."""
+    rows = _rows()
+    rows[0]["fields"]["Comments"] = "=1+1"                  # a formula-injection attempt
+    data = sx.build_workbook(rows, ["name", "comments"], False, [])
+    ws = _open(data)[sx.STAFF_SHEET]
+    assert ws["B2"].value == "=1+1"                        # the text is kept verbatim
+    assert ws["B2"].data_type == "s"                       # as a string, not a formula
+
+
+def test_totals_row_is_outside_the_filter_range():
+    """The totals row sits below the auto-filter so a sort never reorders it."""
+    data = sx.build_workbook(_rows(), ["name", "vacation"], False, [])
+    ws = _open(data)[sx.STAFF_SHEET]
+    # Rows: header(1), Avery(2), Jamie(3), Total(4); the filter covers 1..3 only.
+    assert ws.auto_filter.ref == "A1:B3"
+
+
+def test_wrap_columns_wrap_their_text():
+    """The long free-text columns wrap so the sheet never has to scroll sideways."""
+    data = sx.build_workbook(_rows(), ["name", "comments"], False, [])
+    ws = _open(data)[sx.STAFF_SHEET]
+    assert ws["B2"].alignment.wrap_text is True            # comments column wraps
+
+
 def test_filename_is_dated():
     """The download name carries the date so repeated exports do not collide."""
     assert sx.export_filename(date(2026, 10, 14)) == "staff-directory-2026-10-14.xlsx"
+
+
+# ---------------------------------------------------------------------------
+# The export route: real route, the three reads it makes stubbed
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def export_client(monkeypatch):
+    """The dashboard router with the export route's SharePoint reads stubbed.
+
+    Returns:
+        A TestClient whose ``/admin/staff/export`` reads two fixed people, an
+        empty name map and no history, so only the route's ordering/selection
+        logic is under test.
+    """
+    import app.routes.dashboard as dash
+    from app.services import employee as emp_mod
+    from app.services import staff_changes as sc_mod
+
+    items = [
+        {"id": "601", "fields": {"Title": "Avery Example", "Department": "PM"}},
+        {"id": "602", "fields": {"Title": "Jamie Sample", "Department": "Warehouse"}},
+    ]
+
+    async def fake_items(list_id, *a, **k):
+        return items
+
+    async def fake_map():
+        return {}
+
+    async def fake_history(ids, limit=5000):
+        return []
+
+    monkeypatch.setattr(dash.sp_client, "get_list_items", fake_items)
+    monkeypatch.setattr(emp_mod, "_get_sp_user_name_map", fake_map)
+    monkeypatch.setattr(sc_mod, "list_changes_for", fake_history)
+    app = FastAPI()
+    app.include_router(dashboard_router)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _staff_names(resp) -> list:
+    """The Staff sheet's name column (data rows only) out of a response."""
+    ws = load_workbook(BytesIO(resp.content))[sx.STAFF_SHEET]
+    return [ws.cell(row=r, column=1).value for r in range(2, ws.max_row + 1)]
+
+
+def test_export_route_null_ids_is_everyone_in_name_order(export_client):
+    """Omitting employee_ids exports everyone, sorted by name."""
+    resp = export_client.post("/admin/staff/export", json={"columns": ["name"]})
+    assert resp.status_code == 200
+    assert _staff_names(resp) == ["Avery Example", "Jamie Sample"]
+
+
+def test_export_route_empty_ids_is_an_empty_sheet(export_client):
+    """An explicit empty list means nobody, so only the header is written."""
+    resp = export_client.post(
+        "/admin/staff/export", json={"columns": ["name"], "employee_ids": []}
+    )
+    assert resp.status_code == 200
+    assert _staff_names(resp) == []                         # header only, nobody listed
+
+
+def test_export_route_keeps_order_and_drops_unknown_ids(export_client):
+    """The sheet keeps the table's order and silently drops ids that do not exist."""
+    resp = export_client.post(
+        "/admin/staff/export",
+        json={"columns": ["name"], "employee_ids": ["602", "999", "601"]},
+    )
+    assert resp.status_code == 200
+    assert _staff_names(resp) == ["Jamie Sample", "Avery Example"]  # 999 dropped, order kept

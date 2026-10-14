@@ -16,10 +16,15 @@ from io import BytesIO
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 TORONTO = ZoneInfo("America/Toronto")
+
+# Leading characters that make Excel treat a text cell as a formula on open; a
+# Staff Directory value that begins with one of these is stored as literal text
+# so a value like "=cmd" is shown verbatim and never run (formula injection).
+_DANGEROUS_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
 
 # Sheet names, used by both the builder and the route/preview so they agree.
 STAFF_SHEET = "Staff"
@@ -70,6 +75,22 @@ def _text(value) -> str:
 def _managers_text(row: dict) -> str:
     """The row's manager names joined for a single cell."""
     return ", ".join(row.get("managers") or [])
+
+
+def _harden_against_formulas(cells) -> None:
+    """Force any text cell that looks like a formula to be stored as plain text.
+
+    ``append`` classifies a string beginning with ``=`` as a formula, so Excel
+    would evaluate a comment such as ``=cmd`` on open. Reclassifying the cell as
+    a string makes Excel show the text verbatim and never run it.
+
+    Args:
+        cells: The cells of one just-appended row.
+    """
+    for cell in cells:
+        value = cell.value                               # the value append stored
+        if isinstance(value, str) and value[:1] in _DANGEROUS_PREFIXES:
+            cell.data_type = "s"                         # store/display as literal text
 
 
 # One column definition per export column key. ``get`` takes a row
@@ -212,13 +233,15 @@ def build_workbook(
         values = [d["get"](row) for d in defs]
         sheet.append(values)
         written = sheet[sheet.max_row]                   # style the row just added
+        _harden_against_formulas(written)                # neutralise formula-like text
         for i in number_at:
             cell = written[i]
             if isinstance(cell.value, (int, float)) and cell.value < 0:
                 cell.font = Font(color="C2410C")         # below zero in the error colour
     # A totals row under the balance columns (never the ID column).
     totals_cols = [i for i in number_at if cols[i] != "id"]
-    if totals_cols and staff:
+    staff_has_totals = bool(totals_cols and staff)       # remembered for the filter range
+    if staff_has_totals:
         total_row: list = [""] * len(defs)
         total_row[0] = "Total"
         for i in totals_cols:
@@ -255,6 +278,7 @@ def build_workbook(
                 dept, len(people), vac, round(vac / len(people), 2),
                 sick, make_up, carry, below,
             ])
+            _harden_against_formulas(summary[summary.max_row])  # dept names are user data
 
     # ---- Change history sheet ----
     if history:
@@ -269,16 +293,32 @@ def build_workbook(
                 _history_value(row.get("new_value")),
                 _text(row.get("reason")),
             ])
+            _harden_against_formulas(hist[hist.max_row])  # name/value/reason are user data
 
     # ---- Shared styling: bold frozen header, wrapped free-text, sized columns ----
     wrap_names = {"comments", "managers", "supervisor_text"}      # long free-text columns wrap
-    staff_wrap = {i + 1 for i, k in enumerate(cols) if k in wrap_names}
+    staff_wrap = {i + 1 for i, k in enumerate(cols) if k in wrap_names}  # 1-based column indexes
+    wrap_align = Alignment(wrap_text=True, vertical="top")       # the wrap style, shared
     for ws in book.worksheets:
         for cell in ws[1]:
             cell.font = Font(bold=True)                  # header row
         ws.freeze_panes = "A2"                           # header stays put when scrolling
-        ws.auto_filter.ref = ws.dimensions               # Excel filters on every column
-        _autosize(ws, staff_wrap if ws.title == STAFF_SHEET else None)
+        if ws.title == STAFF_SHEET:
+            # Filter the header and the people only; the totals row stays out so a
+            # sort or filter never reorders or hides it.
+            last_col = get_column_letter(max(len(defs), 1))
+            last_row = ws.max_row - (1 if staff_has_totals else 0)
+            ws.auto_filter.ref = f"A1:{last_col}{max(last_row, 1)}"
+            for col_index in staff_wrap:                 # wrap the long free-text columns
+                for cell in ws.iter_rows(min_col=col_index, max_col=col_index):
+                    cell[0].alignment = wrap_align
+            _autosize(ws, staff_wrap)
+        else:
+            ws.auto_filter.ref = ws.dimensions           # Excel filters on every column
+            if ws.title == HISTORY_SHEET:                # the Reason column (6th) wraps
+                for cell in ws.iter_rows(min_col=6, max_col=6, min_row=2):
+                    cell[0].alignment = wrap_align
+            _autosize(ws)
 
     out = BytesIO()
     book.save(out)

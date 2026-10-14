@@ -1,6 +1,6 @@
 import logging
 from datetime import date as dt_date
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -2033,8 +2033,11 @@ class EntitlementChanges(BaseModel):
             ``PERSON_FIELDS`` and the managers key). Empty when only pots change.
         reason: Why HR made the change; required and stored with the history.
     """
-    changes: dict[str, float] = {}
-    fields: dict[str, object] = {}
+    # ``Any`` not ``float``: Pydantic v2 would coerce a stray bool or digit
+    # string into a float, hiding a bad value. The service's ``_as_number``
+    # does the real type-checking and rejects non-numbers with a clear message.
+    changes: dict[str, Any] = {}
+    fields: dict[str, Any] = {}
     reason: str
 
 
@@ -2080,12 +2083,16 @@ async def admin_update_entitlements(employee_id: str, body: EntitlementChanges):
 
     Raises:
         HTTPException: 503 when processing is disabled, 400 on an invalid reason
-            or value, 404 when the employee does not exist.
+            or value, 404 when the employee does not exist, 502 when the write to
+            SharePoint failed.
     """
     if not settings.PROCESSING_ENABLED:               # same gate as set-balances
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
 
-    from app.services.staff_entitlements import apply_entitlement_changes
+    from app.services.staff_entitlements import (
+        StaffWriteError,
+        apply_entitlement_changes,
+    )
 
     try:
         return await apply_entitlement_changes(
@@ -2095,6 +2102,8 @@ async def admin_update_entitlements(employee_id: str, body: EntitlementChanges):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:                            # bad reason or value
         raise HTTPException(status_code=400, detail=str(e))
+    except StaffWriteError as e:                       # SharePoint write failed upstream
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 class StaffExportRequest(BaseModel):
@@ -2103,13 +2112,14 @@ class StaffExportRequest(BaseModel):
     Attributes:
         employee_ids: Staff Directory item ids to list, in the order the table
             showed them (filters and sort already applied on the frontend).
-            Empty means everyone, in name order.
+            Omitted/null means everyone in name order; an empty list means no
+            one (a filter matched nothing), so the sheet comes out empty.
         columns: The column keys HR chose (see ``staff_export.COLUMNS``); the
             name column is always included.
         include_summary: Add the per-department summary sheet.
         include_history: Add the change-history sheet.
     """
-    employee_ids: list[str] = []
+    employee_ids: list[str] | None = None
     columns: list[str] = []
     include_summary: bool = False
     include_history: bool = False
@@ -2140,11 +2150,13 @@ async def admin_export_staff(body: StaffExportRequest):
     items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # every employee
     by_id = {str(item.get("id")): item for item in items}
 
-    # Keep the order the table sent; fall back to name order over everyone.
-    if body.employee_ids:
-        ordered = [by_id[i] for i in body.employee_ids if i in by_id]
-    else:
+    # Keep the order the table sent. None means "everyone" (in name order); an
+    # explicit list, even an empty one, means exactly those ids (a filter that
+    # matched nobody exports an empty sheet rather than the whole directory).
+    if body.employee_ids is None:
         ordered = sorted(items, key=lambda it: (it.get("fields", {}).get("Title") or "").lower())
+    else:
+        ordered = [by_id[i] for i in body.employee_ids if i in by_id]
 
     # Resolve each row's manager names once, so the Managers column reads as names.
     id_to_name = await _get_sp_user_name_map()

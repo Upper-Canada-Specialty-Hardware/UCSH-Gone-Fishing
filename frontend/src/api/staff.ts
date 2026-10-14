@@ -22,14 +22,20 @@ export interface StaffChange {
   changed_at: string;
 }
 
+/** One manager on a record: their SharePoint user id and display name. */
+export interface StaffManager {
+  sp_user_id: number;
+  name: string;
+}
+
 /** The full person record the panel shows, as GET /admin/employees/{id} returns. */
 export interface StaffRecord {
   /** Staff Directory item id. */
   employee_id: string;
   /** The panel's Staff Directory columns (only those present on the record). */
   fields: Record<string, string | number>;
-  /** Resolved people fields: the two links by name, and the managers by name. */
-  people: { title_link: string; supervisor_link: string; managers: string[] };
+  /** Resolved people fields: the two links by name, and the managers as objects. */
+  people: { title_link: string; supervisor_link: string; managers: StaffManager[] };
   /** The change history, newest first. */
   history: StaffChange[];
 }
@@ -79,8 +85,9 @@ export const saveStaffRecord = (id: string, payload: SaveStaffPayload) =>
 
 /** What the export dialog sends: the people, columns and extra sheets. */
 export interface StaffExportPayload {
-  /** The shown people's ids, in the table's order; empty means everyone. */
-  employee_ids: string[];
+  /** The shown people's ids, in the table's order. An empty list means nobody;
+   *  null (omitted) means everyone, in name order. */
+  employee_ids: string[] | null;
   /** The chosen column keys (name is always included server-side). */
   columns: string[];
   /** Add the per-department summary sheet. */

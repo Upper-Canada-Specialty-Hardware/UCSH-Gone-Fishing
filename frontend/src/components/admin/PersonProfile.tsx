@@ -72,8 +72,6 @@ interface FieldDef {
   col?: string;
   /** The choices for a choice/seg field. */
   opts?: string[];
-  /** Allow a typed "other" value (location). */
-  other?: boolean;
   /** Span the whole row (comments). */
   wide?: boolean;
 }
@@ -83,9 +81,9 @@ const FIELDS: Record<string, FieldDef> = {
   name: { label: 'Name', type: 'text', col: 'Title' },
   email: { label: 'Email', type: 'email', col: 'EmailAddress' },
   cell: { label: 'Cell', type: 'tel', col: 'CellNumber' },
-  extension: { label: 'Extension', type: 'text', col: 'Extension' },
-  birthday: { label: 'Birthday', type: 'text', col: 'Birthday' },
-  location: { label: 'Location', type: 'choice', col: 'Location', opts: LOCATIONS, other: true },
+  extension: { label: 'Extension', type: 'tel', col: 'Extension' },
+  birthday: { label: 'Birthday', type: 'date', col: 'Birthday' },
+  location: { label: 'Location', type: 'choice', col: 'Location', opts: LOCATIONS },
   department: { label: 'Department', type: 'choice', col: 'Department', opts: DEPARTMENTS },
   salary_hourly: { label: 'Salary or hourly', type: 'seg', col: 'SalaryHourly', opts: SALARY_OPTS },
   supervisor_text: { label: 'Supervisor (text)', type: 'text', col: 'Supervisor' },
@@ -177,8 +175,20 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   const [reqFilter, setReqFilter] = useState('all');
   const [editingKey, setEditingKey] = useState<string | null>(null);  // which field is open in its inline editor
 
-  // name -> SharePoint user id, so a picked person resolves to a lookup id on save.
-  const nameToId = useMemo(() => new Map(users.map((u) => [u.name, u.sp_user_id])), [users]);
+  // The saved managers are {sp_user_id, name}; the editor works in names, so keep
+  // a names list and fold their ids into the name -> id map used on save.
+  const savedManagers = useMemo(() => record.people.managers || [], [record.people.managers]);
+  const savedManagerNames = useMemo(() => savedManagers.map((m) => m.name), [savedManagers]);
+
+  // name -> SharePoint user id, so a picked person resolves to a lookup id on
+  // save; includes the saved managers so an existing one always resolves.
+  const nameToId = useMemo(
+    () => new Map<string, number>([
+      ...users.map((u) => [u.name, u.sp_user_id] as [string, number]),
+      ...savedManagers.map((m) => [m.name, m.sp_user_id] as [string, number]),
+    ]),
+    [users, savedManagers],
+  );
   const peopleNames = useMemo(() => users.map((u) => u.name), [users]);
 
   /** The saved value of a pot (its SharePoint column as a number). @param p - The pot. */
@@ -188,7 +198,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
 
   /** The saved value of a field. @param key - Wire key. @returns Name string, name list, or text. */
   const fieldOriginal = (key: string): any => {
-    if (key === 'managers') return record.people.managers || [];
+    if (key === 'managers') return savedManagerNames;              // names for the editor
     if (FIELDS[key].type === 'person') return (record.people as any)[key] || '';
     return String(record.fields[FIELDS[key].col as string] ?? '');
   };
@@ -200,6 +210,8 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
     if (POT_BY_KEY[key]) return Number(value) === potOriginal(POT_BY_KEY[key]);
     if (key === 'managers') return sameNames(value as string[], fieldOriginal(key) as string[]);
     if (FIELDS[key].type === 'person') return ((value as PersonEdit)?.name || '') === fieldOriginal(key);
+    // A dateTime column is compared on the day, so re-picking the same day is a no-op.
+    if (FIELDS[key].type === 'date') return String(value).slice(0, 10) === String(fieldOriginal(key)).slice(0, 10);
     return String(value) === fieldOriginal(key);
   };
 
@@ -285,7 +297,12 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
 
   return (
     <>
-      <Box sx={{ bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 3, overflow: 'hidden' }}>
+      <Box sx={{
+        bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 3, overflow: 'hidden',
+        // Leave room under the profile for the fixed save bar, so its last fields
+        // are never hidden behind it while there are unsaved changes.
+        mb: changedKeys.length > 0 ? { xs: 34, sm: 26 } : 0,
+      }}>
         {/* Header: back, avatar, name (editable), email, placement, badges. */}
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', p: 2.25, borderBottom: 1, borderColor: 'divider', flexWrap: 'wrap' }}>
           <IconButton aria-label="Back to staff" onClick={onBack} sx={{ border: 1, borderColor: t.line2, borderRadius: 2 }}>
@@ -466,7 +483,11 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
     const open = editingKey === key;
     const value = fieldValue(key);
     const dirty = edits[key] !== undefined;
-    const display = f.type === 'person' ? ((value as PersonEdit)?.name || (typeof value === 'string' ? value : '')) : String(value);
+    const display = f.type === 'person'
+      ? ((value as PersonEdit)?.name || (typeof value === 'string' ? value : ''))
+      : f.type === 'date'
+        ? String(value).slice(0, 10)                              // day only, no stored time
+        : String(value);
 
     return (
       <Box
@@ -479,7 +500,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
         <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, display: 'block' }}>{f.label}</Typography>
         {open ? (
           <FieldEditor
-            field={f} value={value} people={peopleNames}
+            field={f} value={value} people={peopleNames} nameToId={nameToId}
             onCommit={(v) => { setEdit(key, v); setEditingKey(null); }}
             onCancel={() => setEditingKey(null)}
           />
@@ -544,12 +565,14 @@ function Fact({ label, value, system }: { label: string; value: string; system?:
  * @param props.field - The field definition.
  * @param props.value - The current value (text, name, or PersonEdit).
  * @param props.people - Names for the person picker.
+ * @param props.nameToId - Resolves a picked name to its SharePoint user id.
  * @param props.onCommit - Called with the new value.
  * @param props.onCancel - Called to drop the edit.
  * @returns The editor control.
  */
-function FieldEditor({ field, value, people, onCommit, onCancel }: {
-  field: FieldDef; value: any; people: string[]; onCommit: (v: any) => void; onCancel: () => void;
+function FieldEditor({ field, value, people, nameToId, onCommit, onCancel }: {
+  field: FieldDef; value: any; people: string[]; nameToId: Map<string, number>;
+  onCommit: (v: any) => void; onCancel: () => void;
 }) {
   if (field.type === 'seg') {
     return (
@@ -576,21 +599,27 @@ function FieldEditor({ field, value, people, onCommit, onCancel }: {
   }
   if (field.type === 'person') {
     const current = (value as PersonEdit)?.name || (typeof value === 'string' ? value : '');
+    // disableClearable: a single person link cannot be cleared (set/change only),
+    // so the clear "X" is not offered; a pick resolves its id from the name map.
     return (
       <Autocomplete
-        openOnFocus size="small" sx={{ mt: 0.5 }} options={people} value={current || null}
-        onChange={(_, picked) => onCommit({ sp_user_id: null, name: picked || '' })}
+        openOnFocus disableClearable size="small" sx={{ mt: 0.5 }} options={people}
+        value={current || undefined}
+        onChange={(_, picked) => { if (picked) onCommit({ sp_user_id: nameToId.get(picked) ?? null, name: picked }); }}
         renderInput={(params) => <TextField {...params} autoFocus placeholder="Search Microsoft 365 people" aria-label={field.label} onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }} />}
       />
     );
   }
   // text, email, tel, date, area
   const isArea = field.type === 'area';
+  // A date input needs a bare YYYY-MM-DD, so a stored timestamp is sliced to its day.
+  const initial = field.type === 'date' ? String(value).slice(0, 10) : String(value);
   return (
     <TextField
       autoFocus fullWidth size="small" multiline={isArea} minRows={isArea ? 3 : undefined}
-      type={field.type === 'area' ? undefined : field.type} defaultValue={String(value)} sx={{ mt: 0.5 }}
+      type={field.type === 'area' ? undefined : field.type} defaultValue={initial} sx={{ mt: 0.5 }}
       inputProps={{ 'aria-label': field.label }}
+      InputLabelProps={field.type === 'date' ? { shrink: true } : undefined}
       onBlur={(e) => onCommit(e.target.value.trim())}
       onKeyDown={(e) => {
         if (e.key === 'Escape') { e.preventDefault(); onCancel(); }

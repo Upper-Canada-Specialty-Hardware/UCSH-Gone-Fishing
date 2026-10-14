@@ -864,6 +864,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         (c ? (c.problems.length ? '<div class="note" style="background:var(--err-soft);color:var(--err)"><b>' + esc(c.who) + '</b>: ' + esc(c.problems.join(', ')) + '. Fix: ' + esc(c.fix) + '</div>' : '<div class="okbox"><b>' + esc(c.who) + '</b> is fully set up. Every check on their record and their existing requests is in range.</div>') : '') + '</div>';
     },
     staff: function () {
+      // A selected person grows the table into their profile in place (no drawer).
+      if (state.sel && STAFF.some(function (x) { return x.id === state.sel; })) {
+        return head('Staff', 'Everyone with their balances and managers. Click a person to see and edit their whole record.', '<button class="btn out" type="button" data-go="assignments">Manage assignments</button>') + personPanel();
+      }
       var f = state.filter.staff || 'All';
       var q = (state.filter.staffq || '').toLowerCase();
       // Quick chips now match the app: All, Below zero, No manager, Setup problem.
@@ -974,8 +978,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div><button class="btn out' + P + '" type="button" data-act="mgrs" data-who="' + esc(p.name) + '">Change managers</button></div>',
       History: '<ul class="list" style="margin:0 -16px">' + [['Vacation entitlement', '10 → 15', 'Apr 2, 2026 · Five years of service'], ['Carry-over', '2 → 0', 'Sep 30, 2026 · Paid out with the September run']].map(function (h) { return '<li><div><b>' + h[0] + '</b> <span style="font-variant-numeric:tabular-nums">' + h[1] + '</span><div class="small muted">' + h[2] + '</div></div></li>'; }).join('') + '</ul>'
     };
-    return '<aside class="drawer" aria-label="' + esc(p.name) + '"><div class="dh">' + av(p.name, true) + '<div><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div><button class="x" type="button" data-act="closepanel" aria-label="Close">×</button></div>' +
-      '<div class="ptabs" role="tablist">' + tabs.map(function (tt) { return '<button type="button" role="tab" data-ptab="' + tt + '" aria-selected="' + (tt === tab) + '">' + tt + '</button>'; }).join('') + '</div><div class="pbody">' + body[tab] + '</div></aside>';
+    // In place of the staff table (not a side drawer), the row grows into this
+    // profile, matching the app: a back button returns to the table.
+    return '<div class="paper" aria-label="' + esc(p.name) + '" style="overflow:hidden">' +
+      '<div style="padding:16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center">' +
+      '<button class="btn out" type="button" data-act="closepanel" aria-label="Back to staff">← Back</button>' + av(p.name, true) +
+      '<div style="flex:1;min-width:0"><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div></div>' +
+      '<div class="ptabs" role="tablist">' + tabs.map(function (tt) { return '<button type="button" role="tab" data-ptab="' + tt + '" aria-selected="' + (tt === tab) + '">' + tt + '</button>'; }).join('') + '</div><div class="pbody">' + body[tab] + '</div></div>';
   }
 
   // ---------- manager ----------
@@ -2090,7 +2099,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     mainEl.innerHTML = flow + ro + html;                      // content sits straight in the #main grid (gap:18px)
     if (fresh) { void mainEl.offsetWidth; mainEl.classList.add('anim', 'enter-on'); }   // force reflow, then replay
     state.lastAnim = key;
-    $('overlay').innerHTML = (state.role === 'admin' ? personPanel() + requestPanel() : '') + renderModal();
+    $('overlay').innerHTML = (state.role === 'admin' ? requestPanel() : '') + renderModal();
     var hash = hashNow();
     if (location.hash !== hash) { try { history.replaceState(null, '', hash); } catch (e) {} }
     var ri = $('reasonIn'); if (ri) ri.focus();

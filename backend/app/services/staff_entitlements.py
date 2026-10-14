@@ -26,12 +26,19 @@ from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
 from app.services.employee import (
     _get_sp_user_name_map,
-    get_all_managers_for_employee,
     get_employee_by_id,
-    resolve_person_field_name,
 )
+from app.services.manager_assignments import _extract_all_managers
 
 logger = logging.getLogger(__name__)
+
+
+class StaffWriteError(Exception):
+    """A Staff Directory write to SharePoint failed.
+
+    Raised so the route can answer 502 (an upstream dependency, not the
+    caller's request, is at fault) rather than a generic 500.
+    """
 
 # snake_case wire key -> Staff Directory (SharePoint) column name. These are the
 # only figures HR may change from the person panel; anything else is read-only.
@@ -76,28 +83,40 @@ PANEL_COLUMNS = [
 # saved in the same request as the numeric pots (#276).
 # ---------------------------------------------------------------------------
 
-# snake_case wire key -> Staff Directory column, for plain text/choice/date
-# columns written as a string value. Name must stay non-blank; the rest may be
-# emptied. "name" is the person's display name (the Title column).
+# snake_case wire key -> Staff Directory column, for plain text/choice columns
+# written as a string value. Verified column internal names and types.
 TEXT_FIELDS = {
-    "name": "Title",                      # display name / Staff Directory Title
-    "email": "EmailAddress",              # work email
-    "cell": "CellNumber",                 # mobile number
-    "extension": "Extension",             # desk extension
-    "birthday": "Birthday",               # free-text birthday (e.g. "Mar 3")
-    "location": "Location",               # office / province choice
+    "name": "Title",                      # display name / Staff Directory Title (text)
+    "email": "EmailAddress",              # work email (text)
+    "cell": "CellNumber",                 # mobile number (text)
+    "location": "Location",               # office choice, required, closed list
     "department": "Department",           # department choice
-    "salary_hourly": "SalaryHourly",      # Salary / Hourly / Hourly BC
-    "supervisor_text": "Supervisor",      # typed supervisor name (not a link)
-    "system_check": "SystemCheck",        # Ready / Editing gate
-    "request_allow_date": "RequestAllowDate",  # can-book-vacation-until date
-    "comments": "Comments",               # free-text notes
+    "salary_hourly": "SalaryHourly",      # choice, required: Salary / Hourly / Hourly BC
+    "supervisor_text": "Supervisor",      # typed supervisor name (text, not a link)
+    "system_check": "SystemCheck",        # choice: Ready / Editing
+    "comments": "Comments",               # free-text notes (text)
 }
+
+# Number columns: the stored value is a number, so a digit string is coerced to
+# an int and a blank clears the cell.
+NUMBER_FIELDS = {
+    "extension": "Extension",             # desk extension (number column)
+}
+
+# dateTime columns: compared and written on the date part only (YYYY-MM-DD), so
+# a stored timestamp never reads as a change against a date the editor shows.
+DATE_FIELDS = {
+    "birthday": "Birthday",               # dateTime column
+    "request_allow_date": "RequestAllowDate",  # can-book-vacation-until (dateTime)
+}
+
+# Fields that may never be blanked (closed/required columns the record needs).
+REQUIRED_FIELDS = {"name", "location", "salary_hourly"}
 
 # snake_case wire key -> Staff Directory person column base. A person column is
 # written through its ``<base>LookupId`` companion with a SharePoint user id.
-# The wire value is ``{"sp_user_id": int|None, "name": str}``; a blank id clears
-# the link. The display name is used for the change history only.
+# The wire value is ``{"sp_user_id": int, "name": str}``; the link cannot be
+# cleared (Graph accepting a null single-lookup is unverified), only set/changed.
 PERSON_FIELDS = {
     "title_link": "TitleLink",            # the person's own Microsoft 365 link
     "supervisor_link": "SupervisorLink",  # their supervisor's Microsoft 365 link
@@ -224,6 +243,53 @@ def _clean_text(value) -> str:
     return str(value).strip()                        # numbers/dates coerce to text
 
 
+def _lookup_id_of(value):
+    """The SharePoint user id out of a person column, in either Graph shape.
+
+    Args:
+        value: A ``*LookupId`` column value, either the raw id or the complex
+            ``{"LookupId": ...}`` object Graph sometimes returns.
+
+    Returns:
+        The raw id (int/str) or None when absent.
+    """
+    if isinstance(value, dict):                      # complex object form
+        return value.get("LookupId")
+    return value                                     # already the bare id (or None)
+
+
+def _name_from_lookup(lookup_id, id_to_name: dict[int, str]) -> str:
+    """A display name for a person-column id, using an already-read name map.
+
+    Args:
+        lookup_id: The SharePoint user id (raw int/str) or None.
+        id_to_name: The ``{sp_user_id: display_name}`` map, read once per request.
+
+    Returns:
+        The display name, or ``""`` when the id is absent or unknown.
+    """
+    if not lookup_id:                                # nothing linked
+        return ""
+    try:
+        return id_to_name.get(int(lookup_id), "")    # map hit, or blank when unknown
+    except (TypeError, ValueError):                  # a non-numeric id is just unknown
+        return ""
+
+
+def _date_part(value) -> str:
+    """The ``YYYY-MM-DD`` day out of a stored value, blank counting as blank.
+
+    Args:
+        value: A date/dateTime column value (ISO string) or None.
+
+    Returns:
+        The first ten characters (the calendar day), or ``""`` when blank.
+    """
+    if value in (None, ""):                          # missing or blank column
+        return ""
+    return str(value).strip()[:10]                   # drop any time part after the day
+
+
 def plan_field_changes(
     current_fields: dict, before_people: dict, requested: dict
 ) -> list[dict]:
@@ -238,7 +304,8 @@ def plan_field_changes(
     Args:
         current_fields: The record's current ``fields`` dict (SharePoint columns).
         before_people: Current display values for the people fields, as
-            ``{"title_link", "supervisor_link", "managers"}`` (names / name list).
+            ``{"title_link", "supervisor_link", "managers"}``. Links hold the
+            resolved name; managers hold ``{"ids": [int], "names": [str]}``.
         requested: snake_case wire key -> new value, as sent by the panel. Text
             values are strings; a person link is ``{"sp_user_id", "name"}``; the
             managers key is ``{"ids": [int], "names": [str]}``.
@@ -250,129 +317,195 @@ def plan_field_changes(
         to merge into the single update call.
 
     Raises:
-        ValueError: On an unknown key, or a blank name (the Title is required).
+        ValueError: On an unknown key; a blank required field; a non-numeric
+            number field; a person link with no valid id or one asked to clear;
+            or a managers value whose ids and names do not line up.
     """
     changes: list[dict] = []                         # only genuine diffs end up here
     for key, raw in requested.items():               # one pass over the request
-        if key in TEXT_FIELDS:                        # plain text / choice / date column
+        if key in TEXT_FIELDS:                        # plain text / choice column
             column = TEXT_FIELDS[key]                 # its SharePoint column name
+            label = COLUMN_LABELS.get(column, column)  # friendly name for messages
             after = _clean_text(raw)                  # trim the new value
             before = _clean_text(current_fields.get(column))  # trim the stored value
-            if key == "name" and not after:           # the display name is mandatory
-                raise ValueError("Name cannot be blank.")
+            if key in REQUIRED_FIELDS and not after:   # closed/required column
+                raise ValueError(f"{label} cannot be blank.")
             if before != after:                        # skip no-op values
                 changes.append({
                     "field": key, "column": column,
                     "before": before, "after": after,
                     "sp": {column: after},             # write the string straight across
                 })
-        elif key in PERSON_FIELDS:                     # single-value person link column
-            column = PERSON_FIELDS[key]                # e.g. "TitleLink"
-            raw = raw or {}                            # tolerate a bare null
-            sp_user_id = raw.get("sp_user_id")         # SharePoint user id, or None to clear
-            after_name = _clean_text(raw.get("name"))  # display name for the history
-            before_name = _clean_text(before_people.get(key))  # resolved current name
-            if before_name != after_name:              # the link actually moved
-                # A person column is set through its LookupId companion; None
-                # clears it. @odata.type is not needed for a single lookup.
-                patch = {f"{column}LookupId": int(sp_user_id) if sp_user_id else None}
+        elif key in NUMBER_FIELDS:                     # numeric column (e.g. Extension)
+            column = NUMBER_FIELDS[key]
+            label = COLUMN_LABELS.get(column, column)
+            after_text = _clean_text(raw)              # digits as typed, or blank to clear
+            if after_text and not after_text.isdigit():  # a number column takes digits only
+                raise ValueError(f"{label} must be a whole number.")
+            after_val = int(after_text) if after_text else None  # None clears the cell
+            before_raw = current_fields.get(column)    # stored number (may be float/text)
+            before_val = None                          # normalised to an int for comparison
+            if before_raw not in (None, ""):
+                try:
+                    before_val = int(float(before_raw))  # "123.0"/"123" -> 123
+                except (TypeError, ValueError):
+                    before_val = None
+            if before_val != after_val:                # skip no-op values
                 changes.append({
                     "field": key, "column": column,
-                    "before": before_name, "after": after_name, "sp": patch,
+                    "before": "" if before_val is None else str(before_val),
+                    "after": after_text,
+                    "sp": {column: after_val},          # int or None straight across
                 })
-        elif key == MANAGERS_KEY:                      # the multi-value AllManagers column
-            raw = raw or {}
-            ids = [int(i) for i in (raw.get("ids") or [])]     # SharePoint user ids to set
-            after_names = [_clean_text(n) for n in (raw.get("names") or []) if _clean_text(n)]
-            before_names = [_clean_text(n) for n in (before_people.get("managers") or []) if _clean_text(n)]
-            if set(before_names) != set(after_names):  # order does not matter for managers
+        elif key in DATE_FIELDS:                        # dateTime column, compared by day
+            column = DATE_FIELDS[key]
+            after_day = _date_part(raw)                 # YYYY-MM-DD, or blank to clear
+            before_day = _date_part(current_fields.get(column))  # stored day only
+            if before_day != after_day:                 # skip when the day did not move
+                changes.append({
+                    "field": key, "column": column,
+                    "before": before_day, "after": after_day,
+                    "sp": {column: (after_day or None)},  # write the day, None clears it
+                })
+        elif key in PERSON_FIELDS:                      # single-value person link column
+            column = PERSON_FIELDS[key]                 # e.g. "TitleLink"
+            label = COLUMN_LABELS.get(column, column)
+            if raw is None:                             # missing object -> nothing to do
+                continue
+            if not isinstance(raw, dict):               # must be the {sp_user_id, name} shape
+                raise ValueError(f"{label} must be a selected person.")
+            after_name = _clean_text(raw.get("name"))   # display name for the history
+            before_name = _clean_text(before_people.get(key))  # resolved current name
+            if not after_name:                          # a blank name means "clear it"
+                if not before_name:                     # nothing there to begin with
+                    continue                            # no change at all
+                # Graph accepting a null single lookup is unverified, so clearing
+                # a person link is not offered; refuse it with a readable message.
+                raise ValueError(f"{label} cannot be cleared, only changed.")
+            uid = _as_sp_user_id(raw.get("sp_user_id"))  # validated id, or 0 when bad
+            if uid <= 0:                                # a name with no backing id
+                raise ValueError(
+                    f"Pick {label.lower()} from the list so it can be saved."
+                )
+            if before_name != after_name:               # the link actually moved
+                # A person column is set through its LookupId companion; no
+                # @odata.type is needed for a single lookup.
+                changes.append({
+                    "field": key, "column": column,
+                    "before": before_name, "after": after_name,
+                    "sp": {f"{column}LookupId": uid},
+                })
+        elif key == MANAGERS_KEY:                       # the multi-value AllManagers column
+            if raw is None:                             # missing object -> nothing to do
+                continue
+            if not isinstance(raw, dict):               # must be the {ids, names} shape
+                raise ValueError("Managers must be a list of selected people.")
+            raw_ids = raw.get("ids")
+            raw_names = raw.get("names")
+            if not isinstance(raw_ids, list) or not isinstance(raw_names, list):
+                raise ValueError("Managers must be a list of selected people.")
+            if len(raw_ids) != len(raw_names):          # every name must carry its id
+                raise ValueError("Each manager must be picked from the list.")
+            after_ids: list[int] = []                   # validated SharePoint user ids
+            for i in raw_ids:
+                uid = _as_sp_user_id(i)
+                if uid <= 0:                            # a manager with no backing id
+                    raise ValueError("Each manager must be picked from the list.")
+                after_ids.append(uid)
+            after_names = [_clean_text(n) for n in raw_names]
+            before = before_people.get("managers") or {}  # {"ids", "names"}
+            before_ids = [int(i) for i in (before.get("ids") or [])]
+            before_names = [_clean_text(n) for n in (before.get("names") or [])]
+            if set(before_ids) != set(after_ids):       # order does not matter for managers
                 # A multi-value lookup needs the Collection odata type plus the id list.
-                patch = {
-                    f"{MANAGERS_COLUMN}LookupId@odata.type": "Collection(Edm.Int32)",
-                    f"{MANAGERS_COLUMN}LookupId": ids,
-                }
                 changes.append({
                     "field": MANAGERS_KEY, "column": MANAGERS_COLUMN,
-                    "before": ", ".join(before_names) or "None",
-                    "after": ", ".join(after_names) or "None",
-                    "sp": patch,
+                    "before": ", ".join(n for n in before_names if n) or "None",
+                    "after": ", ".join(n for n in after_names if n) or "None",
+                    "sp": {
+                        f"{MANAGERS_COLUMN}LookupId@odata.type": "Collection(Edm.Int32)",
+                        f"{MANAGERS_COLUMN}LookupId": after_ids,
+                    },
                 })
-        else:                                          # anything else is not editable
+        else:                                           # anything else is not editable
             raise ValueError(f"'{key}' is not a field that can be changed.")
-    return changes                                     # possibly empty (nothing moved)
+    return changes                                      # possibly empty (nothing moved)
 
 
-async def _resolve_before_people(current_fields: dict, requested_fields: dict) -> dict:
+def _as_sp_user_id(value) -> int:
+    """One SharePoint user id as a positive int, 0 when missing or invalid.
+
+    Args:
+        value: The submitted ``sp_user_id`` for a person pick.
+
+    Returns:
+        The id as a positive int, or 0 when it is absent, non-numeric, or <= 0.
+    """
+    if isinstance(value, bool):                      # bool is an int subclass; reject it
+        return 0
+    try:
+        uid = int(value)                             # tolerate "12" and 12 alike
+    except (TypeError, ValueError):                  # None, "", non-numeric text
+        return 0
+    return uid if uid > 0 else 0                      # a real id is always positive
+
+
+def _resolve_before_people(
+    current_fields: dict, requested_fields: dict, id_to_name: dict[int, str]
+) -> dict:
     """Resolve the current display values for the people fields being changed.
 
-    Only the people fields present in the request are resolved, so an edit that
-    touches no person column makes no extra Graph calls. Each lookup is
-    best-effort: a failure yields an empty value for that field rather than
-    failing the whole save.
+    Pure (no I/O): the ``{sp_user_id: name}`` map is read once by the caller and
+    passed in, so this adds no Graph call and stays cheap inside the lock. Only
+    the people fields present in the request are resolved.
 
     Args:
         current_fields: The record's current ``fields`` dict.
         requested_fields: The directory-field part of the request (wire keys).
+        id_to_name: The ``{sp_user_id: display_name}`` map, read once per request.
 
     Returns:
-        ``{"title_link", "supervisor_link", "managers"}`` with the resolved
-        current name / name list, for keys that were requested.
+        ``{"title_link", "supervisor_link", "managers"}`` for keys that were
+        requested; links hold the resolved name, managers hold
+        ``{"ids": [int], "names": [str]}``.
     """
     before: dict = {}
     if "title_link" in requested_fields:               # resolve only when it is being edited
-        try:
-            before["title_link"] = await resolve_person_field_name(
-                current_fields.get("TitleLinkLookupId")
-            )
-        except Exception:
-            logger.exception("Failed to resolve current TitleLink name")
-            before["title_link"] = ""                  # unknown -> treat as blank
+        before["title_link"] = _name_from_lookup(
+            _lookup_id_of(current_fields.get("TitleLinkLookupId")), id_to_name
+        )
     if "supervisor_link" in requested_fields:
-        try:
-            before["supervisor_link"] = await resolve_person_field_name(
-                current_fields.get("SupervisorLinkLookupId")
-            )
-        except Exception:
-            logger.exception("Failed to resolve current SupervisorLink name")
-            before["supervisor_link"] = ""
-    if MANAGERS_KEY in requested_fields:               # resolve the current manager names
-        before["managers"] = await _current_manager_names(current_fields)
+        before["supervisor_link"] = _name_from_lookup(
+            _lookup_id_of(current_fields.get("SupervisorLinkLookupId")), id_to_name
+        )
+    if MANAGERS_KEY in requested_fields:               # resolve the current managers
+        before["managers"] = _current_managers(current_fields, id_to_name)
     return before
 
 
-async def _current_manager_names(current_fields: dict) -> list[str]:
-    """The current manager display names from the AllManagers column.
+def _current_managers(current_fields: dict, id_to_name: dict[int, str]) -> dict:
+    """The current managers from AllManagers, as aligned id and name lists.
 
-    Uses each entry's LookupValue when present and resolves the rest through the
-    user-id -> name map, so the history "before" reads as names even when Graph
-    returned only ids.
+    Each entry's name comes from its LookupValue when present, else from the
+    ``{sp_user_id: name}`` map, so the history "before" reads as names even when
+    Graph returned only ids. The ids and names stay index-aligned.
 
     Args:
         current_fields: The record's current ``fields`` dict.
+        id_to_name: The ``{sp_user_id: display_name}`` map, read once per request.
 
     Returns:
-        The manager names (possibly empty); never raises.
+        ``{"ids": [int], "names": [str]}``; both empty when there are none.
     """
-    entries = current_fields.get(MANAGERS_COLUMN)      # the raw AllManagers value
-    if not entries or not isinstance(entries, list):   # no managers / unexpected shape
-        return []
+    entries = _extract_all_managers(current_fields)    # [{sp_user_id, name}]
+    ids: list[int] = []
     names: list[str] = []
-    unresolved: list[int] = []                         # ids whose LookupValue was blank
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        name = (entry.get("LookupValue") or "").strip()
-        if name:
-            names.append(name)                         # name already present on the entry
-        elif entry.get("LookupId"):
-            unresolved.append(int(entry["LookupId"]))  # fill it in from the map below
-    if unresolved:
-        try:
-            id_to_name = await _get_sp_user_name_map()  # one User Information List read
-            names.extend(id_to_name.get(uid, "") for uid in unresolved)
-        except Exception:
-            logger.exception("Failed to resolve current manager names")
-    return [n for n in names if n]                     # drop any that stayed blank
+        uid = entry["sp_user_id"]
+        ids.append(uid)
+        # Prefer the name on the entry; fall back to the map; blank when unknown.
+        names.append((entry.get("name") or "").strip() or id_to_name.get(uid, ""))
+    return {"ids": ids, "names": names}
 
 
 async def apply_entitlement_changes(
@@ -404,6 +537,7 @@ async def apply_entitlement_changes(
     Raises:
         ValueError: Blank reason, empty request, or an invalid requested value.
         LookupError: The employee does not exist.
+        StaffWriteError: The SharePoint write failed (upstream fault).
     """
     reason = (reason or "").strip()                  # trim surrounding whitespace
     if not reason:                                   # a reason is mandatory
@@ -413,6 +547,19 @@ async def apply_entitlement_changes(
     if not requested and not fields_in:              # nothing asked to change at all
         raise ValueError("No changes were provided.")
 
+    # The people "before" names need the User Information List; read it once,
+    # outside the lock, and only when a person/manager field is actually edited.
+    needs_people = any(
+        k in PERSON_FIELDS or k == MANAGERS_KEY for k in fields_in
+    )
+    id_to_name: dict[int, str] = {}
+    if needs_people:
+        try:
+            id_to_name = await _get_sp_user_name_map()  # one read for all people fields
+        except Exception:
+            logger.exception("Failed to read user name map for %s", employee_id)
+            id_to_name = {}                          # degrade: before-names may be blank
+
     async with lock_manager.lock(employee_id):       # serialise per-employee writes
         emp = await get_employee_by_id(employee_id)  # re-read inside the lock
         if not emp:                                  # gone or never existed
@@ -421,8 +568,8 @@ async def apply_entitlement_changes(
         name = current.get("Title", "")              # person's display name
 
         pot_changes = plan_changes(current, requested)  # numeric diff (may raise)
-        # The people "before" names need Graph; resolve only the ones being edited.
-        before_people = await _resolve_before_people(current, fields_in)
+        # Resolve the "before" people from the pre-read map (no Graph call here).
+        before_people = _resolve_before_people(current, fields_in, id_to_name)
         field_changes = plan_field_changes(current, before_people, fields_in)  # may raise
         changes = pot_changes + field_changes        # one merged list of real diffs
         if not changes:                              # every value already matched
@@ -439,27 +586,16 @@ async def apply_entitlement_changes(
         sp_updates: dict = {c["column"]: c["after"] for c in pot_changes}
         for c in field_changes:
             sp_updates.update(c["sp"])
-        await sp_client.update_list_item_fields(
-            settings.SP_LIST_STAFF_DIRECTORY, employee_id, sp_updates,
-        )
-
-        # The request-allow date depends on vacation and carry-over, so recompute
-        # it only when one of those two pots moved; the unchanged figure comes
-        # from the record so the recalculation sees the full, current pair.
-        changed_columns = {c["column"] for c in pot_changes}
-        if "CurrentVacationBalance" in changed_columns or "CarryOver" in changed_columns:
-            vacation = sp_updates.get(                # new value if changed...
-                "CurrentVacationBalance",
-                _current_number(current.get("CurrentVacationBalance")),  # ...else current
+        try:
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id, sp_updates,
             )
-            carry_over = sp_updates.get(
-                "CarryOver",
-                _current_number(current.get("CarryOver")),
-            )
-            await recalculate_request_allow_date(employee_id, vacation, carry_over)
+        except Exception as exc:                      # upstream write failed
+            logger.exception("Failed to write Staff Directory record for %s", employee_id)
+            raise StaffWriteError("The record could not be saved.") from exc
 
-        # Record the history last; the SharePoint write already succeeded. Pots
-        # record numeric before/after, directory fields record display strings.
+        # Record the history right after the write succeeds, before the derived
+        # recalculation (which can fail on its own and must not skip the log).
         history_recorded = True                      # assume success until it throws
         notice = None                                # extra message only on failure
         try:
@@ -476,13 +612,58 @@ async def apply_entitlement_changes(
             history_recorded = False                 # tell the caller it is missing
             notice = "The change was saved, but its history could not be recorded."
 
+        # The request-allow date depends on vacation and carry-over, so recompute
+        # it only when one of those two pots moved; but never when HR typed the
+        # date itself in this save (their value wins over the derived one).
+        changed_columns = {c["column"] for c in pot_changes}
+        rad_moved = None                             # (before_day, after_day) when it changed
+        if (("CurrentVacationBalance" in changed_columns
+                or "CarryOver" in changed_columns)
+                and "request_allow_date" not in fields_in):
+            vacation = sp_updates.get(                # new value if changed...
+                "CurrentVacationBalance",
+                _current_number(current.get("CurrentVacationBalance")),  # ...else current
+            )
+            carry_over = sp_updates.get(
+                "CarryOver",
+                _current_number(current.get("CarryOver")),
+            )
+            before_rad = _date_part(current.get("RequestAllowDate"))  # for the history row
+            try:
+                new_rad = await recalculate_request_allow_date(
+                    employee_id, vacation, carry_over
+                )
+                if new_rad and new_rad != before_rad:  # the derived date actually moved
+                    rad_moved = (before_rad, new_rad)
+            except Exception:                         # a stale derived date is not fatal
+                logger.exception(
+                    "Failed to recalculate request-allow date for %s", employee_id
+                )
+                extra = "The can-book-vacation date may be out of date."
+                notice = f"{notice} {extra}" if notice else extra
+
+        # When the derived date moved, record it as its own history row so the
+        # log shows the automatic change next to the balance edit that caused it.
+        if rad_moved and history_recorded:
+            try:
+                await staff_changes.record_changes(
+                    str(employee_id),
+                    name,
+                    [("RequestAllowDate", rad_moved[0], rad_moved[1])],
+                    "Recomputed automatically after a balance change.",
+                )
+            except Exception:                         # best-effort, like the main log
+                logger.exception(
+                    "Failed to record request-allow-date history for %s", employee_id
+                )
+
         result = {                                   # the saved outcome
             "employee_id": str(employee_id),
             "name": name,
             "changed": changes,
             "history_recorded": history_recorded,
         }
-        if notice:                                   # only present when history failed
+        if notice:                                   # only present when something degraded
             result["notice"] = notice
         return result
 
@@ -501,8 +682,9 @@ async def get_staff_record(employee_id: str) -> dict | None:
     Returns:
         ``{"employee_id", "fields", "people", "history"}`` where ``fields`` holds
         only the panel columns present on the record, ``people`` holds the
-        resolved ``title_link`` / ``supervisor_link`` names and ``managers`` list,
-        and ``history`` is the change log. ``None`` when the record does not exist.
+        resolved ``title_link`` / ``supervisor_link`` names and a ``managers``
+        list of ``{"sp_user_id", "name"}``, and ``history`` is the change log.
+        ``None`` when the record does not exist.
     """
     emp = await get_employee_by_id(employee_id)      # the raw record (or None)
     if not emp:                                      # unknown id
@@ -515,27 +697,32 @@ async def get_staff_record(employee_id: str) -> dict | None:
     # People fields start empty and are filled in best-effort below.
     people = {"title_link": "", "supervisor_link": "", "managers": []}
 
-    try:                                             # resolve the person's own link
-        people["title_link"] = await resolve_person_field_name(
-            fields.get("TitleLinkLookupId")          # Graph returns the *LookupId
-        )
+    # One User Information List read covers both person links and the managers;
+    # a failure degrades to blank names rather than failing the whole panel.
+    try:
+        id_to_name = await _get_sp_user_name_map()
     except Exception:
-        logger.exception("Failed to resolve TitleLink for %s", employee_id)
+        logger.exception("Failed to read user name map for %s", employee_id)
+        id_to_name = {}
 
-    try:                                             # resolve the supervisor link
-        people["supervisor_link"] = await resolve_person_field_name(
-            fields.get("SupervisorLinkLookupId")
-        )
-    except Exception:
-        logger.exception("Failed to resolve SupervisorLink for %s", employee_id)
+    # Resolve the person's own link and their supervisor link from the map.
+    people["title_link"] = _name_from_lookup(
+        _lookup_id_of(fields.get("TitleLinkLookupId")), id_to_name
+    )
+    people["supervisor_link"] = _name_from_lookup(
+        _lookup_id_of(fields.get("SupervisorLinkLookupId")), id_to_name
+    )
 
-    try:                                             # all managers, by display name
-        managers = await get_all_managers_for_employee(emp)
-        people["managers"] = [
-            m.get("fields", {}).get("Title", "") for m in managers
-        ]
-    except Exception:
-        logger.exception("Failed to resolve managers for %s", employee_id)
+    # Managers as {sp_user_id, name} so the editor can show the picks and send
+    # their ids straight back; a blank entry name is filled from the map.
+    managers = _extract_all_managers(fields)         # [{sp_user_id, name}]
+    people["managers"] = [
+        {
+            "sp_user_id": m["sp_user_id"],
+            "name": (m.get("name") or "").strip() or id_to_name.get(m["sp_user_id"], ""),
+        }
+        for m in managers
+    ]
 
     try:                                             # the recorded change history
         history = await staff_changes.list_changes(str(employee_id))

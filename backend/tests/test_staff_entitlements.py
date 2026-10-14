@@ -42,7 +42,11 @@ def _record() -> dict:
             "Payout": 0,                             # banked for payout
             "DefaultYearlyVacationDays": 15,         # vacation entitlement
             "SickDayEntitlement": 5,                 # sick entitlement
-            "AllManagers": [{"LookupValue": "Boss One"}],  # NOT a panel column
+            "TitleLinkLookupId": 55,                 # the person's own link (id only)
+            "SupervisorLinkLookupId": 66,            # their supervisor link (id only)
+            "AllManagers": [                         # NOT a panel column
+                {"LookupId": 7, "LookupValue": "Boss One"},
+            ],
         },
     }
 
@@ -291,22 +295,32 @@ def test_patch_route_unknown_employee_is_404(client, wired):
     assert resp.status_code == 404
 
 
+def test_patch_route_sp_write_failure_is_502(client, wired, monkeypatch):
+    """A SharePoint write failure surfaces as a 502 (upstream fault), not a 500."""
+    async def boom(list_id, item_id, fields):
+        raise RuntimeError("sharepoint down")
+
+    monkeypatch.setattr(se.sp_client, "update_list_item_fields", boom)
+    resp = client.patch(
+        "/admin/employees/480/entitlements",
+        json={"changes": {"vacation": 12}, "reason": "x"},
+    )
+    assert resp.status_code == 502
+
+
 def test_get_route_returns_panel_people_and_history(client, wired, monkeypatch):
-    """GET returns only the panel columns, the resolved people, and history."""
+    """GET returns the panel columns, the resolved people, and history."""
     async def fake_list(emp_id, limit=100):
         return [{"field": "CurrentVacationBalance", "old_value": 10,
                  "new_value": 12, "reason": "x", "source": "admin_dashboard",
                  "changed_at": "2026-10-14T00:00:00"}]
 
-    async def fake_name(value):
-        return "Someone" if value else ""            # blank id -> empty name
-
-    async def fake_managers(emp):
-        return [{"fields": {"Title": "Boss One"}}, {"fields": {"Title": "Boss Two"}}]
+    async def fake_map():
+        # One User Information List read covers both links and the managers.
+        return {55: "Dana Self", 66: "Sup Er", 7: "Boss One"}
 
     monkeypatch.setattr(se.staff_changes, "list_changes", fake_list)
-    monkeypatch.setattr(se, "resolve_person_field_name", fake_name)
-    monkeypatch.setattr(se, "get_all_managers_for_employee", fake_managers)
+    monkeypatch.setattr(se, "_get_sp_user_name_map", fake_map)
 
     resp = client.get("/admin/employees/480")
     assert resp.status_code == 200
@@ -314,7 +328,10 @@ def test_get_route_returns_panel_people_and_history(client, wired, monkeypatch):
     assert set(body["fields"]) <= set(se.PANEL_COLUMNS)   # only panel columns
     assert "AllManagers" not in body["fields"]            # non-panel column dropped
     assert body["fields"]["Title"] == "Dana Lee"
-    assert body["people"]["managers"] == ["Boss One", "Boss Two"]
+    assert body["people"]["title_link"] == "Dana Self"    # resolved from the map
+    assert body["people"]["supervisor_link"] == "Sup Er"
+    # Managers come back as {sp_user_id, name} so the editor can send the ids back.
+    assert body["people"]["managers"] == [{"sp_user_id": 7, "name": "Boss One"}]
     assert body["history"][0]["new_value"] == 12
 
 
@@ -323,19 +340,21 @@ def test_get_route_unknown_employee_is_404(client, wired):
     assert client.get("/admin/employees/999").status_code == 404
 
 
-def test_get_route_degrades_when_person_lookups_fail(client, wired, monkeypatch):
-    """A failing person/history lookup leaves that part empty, not the whole read."""
+def test_get_route_degrades_when_lookups_fail(client, wired, monkeypatch):
+    """A failing name-map/history read leaves that part empty, not the whole read."""
     async def boom(*a, **k):
         raise RuntimeError("graph down")
 
-    monkeypatch.setattr(se, "resolve_person_field_name", boom)
-    monkeypatch.setattr(se, "get_all_managers_for_employee", boom)
+    monkeypatch.setattr(se, "_get_sp_user_name_map", boom)
     monkeypatch.setattr(se.staff_changes, "list_changes", boom)
 
     resp = client.get("/admin/employees/480")
     assert resp.status_code == 200                        # whole read still succeeds
     body = resp.json()
-    assert body["people"] == {"title_link": "", "supervisor_link": "", "managers": []}
+    assert body["people"]["title_link"] == ""            # map failed -> blank name
+    assert body["people"]["supervisor_link"] == ""
+    # Manager names still come from each entry's LookupValue, so they survive.
+    assert body["people"]["managers"] == [{"sp_user_id": 7, "name": "Boss One"}]
     assert body["history"] == []
     assert body["fields"]["Title"] == "Dana Lee"         # panel data still present
 
@@ -385,21 +404,36 @@ def test_field_plan_person_link_uses_lookup_id_and_name_history():
     assert c["before"] == "Old Person" and c["after"] == "New Person"
 
 
-def test_field_plan_person_link_clear_sets_none():
-    """Clearing a person link sends None to the LookupId companion."""
-    changes = se.plan_field_changes(
-        {}, {"supervisor_link": "Someone"},
-        {"supervisor_link": {"sp_user_id": None, "name": ""}},
-    )
-    assert changes[0]["sp"] == {"SupervisorLinkLookupId": None}
-    assert changes[0]["after"] == ""
+def test_field_plan_person_link_without_id_is_refused():
+    """A picked name with no backing id is refused, so a null is never written."""
+    with pytest.raises(ValueError):
+        se.plan_field_changes(
+            {}, {"title_link": ""},
+            {"title_link": {"sp_user_id": None, "name": "New Person"}},
+        )
+
+
+def test_field_plan_person_link_clear_is_refused():
+    """Clearing an existing person link is refused (set/change only)."""
+    with pytest.raises(ValueError):
+        se.plan_field_changes(
+            {}, {"supervisor_link": "Someone"},
+            {"supervisor_link": {"sp_user_id": None, "name": ""}},
+        )
+
+
+def test_field_plan_person_link_blank_over_blank_is_noop():
+    """A blank link where there was none is simply no change, not a clear."""
+    assert se.plan_field_changes(
+        {}, {"title_link": ""}, {"title_link": {"sp_user_id": None, "name": ""}}
+    ) == []
 
 
 def test_field_plan_managers_compare_as_a_set():
     """Managers diff ignores order and writes the collection id list."""
-    before = {"managers": ["Boss One"]}
+    before = {"managers": {"ids": [7], "names": ["Boss One"]}}
     same = se.plan_field_changes({}, before, {"managers": {"ids": [7], "names": ["Boss One"]}})
-    assert same == []                                     # same set -> no change
+    assert same == []                                     # same id set -> no change
     changed = se.plan_field_changes(
         {}, before, {"managers": {"ids": [7, 8], "names": ["Boss One", "Boss Two"]}}
     )
@@ -409,6 +443,52 @@ def test_field_plan_managers_compare_as_a_set():
     assert c["sp"]["AllManagersLookupId"] == [7, 8]
     assert c["sp"]["AllManagersLookupId@odata.type"] == "Collection(Edm.Int32)"
     assert c["before"] == "Boss One" and c["after"] == "Boss One, Boss Two"
+
+
+def test_field_plan_managers_id_name_mismatch_is_refused():
+    """A managers payload whose ids and names differ in length is refused."""
+    with pytest.raises(ValueError):
+        se.plan_field_changes(
+            {}, {"managers": {"ids": [], "names": []}},
+            {"managers": {"ids": [7], "names": ["Boss One", "Boss Two"]}},
+        )
+
+
+def test_field_plan_managers_non_dict_is_refused():
+    """A managers value that is not the {ids, names} object is refused."""
+    with pytest.raises(ValueError):
+        se.plan_field_changes({}, {}, {"managers": ["Boss One"]})
+
+
+def test_field_plan_number_field_validates_digits_and_coerces():
+    """Extension takes digits only; a good value writes an int, a blank clears it."""
+    with pytest.raises(ValueError):
+        se.plan_field_changes({}, {}, {"extension": "12a"})
+    changed = se.plan_field_changes({"Extension": 100}, {}, {"extension": "250"})
+    assert changed[0]["sp"] == {"Extension": 250}         # written as a real int
+    cleared = se.plan_field_changes({"Extension": 100}, {}, {"extension": ""})
+    assert cleared[0]["sp"] == {"Extension": None}        # blank clears the cell
+
+
+def test_field_plan_number_field_noop_across_float_text():
+    """A stored 100.0 and a typed "100" are the same number, so nothing moves."""
+    assert se.plan_field_changes({"Extension": 100.0}, {}, {"extension": "100"}) == []
+
+
+def test_field_plan_date_field_compares_day_only():
+    """A dateTime column is compared on the day, so a stored time is not a change."""
+    current = {"Birthday": "1990-03-03T00:00:00Z"}
+    assert se.plan_field_changes(current, {}, {"birthday": "1990-03-03"}) == []
+    changed = se.plan_field_changes(current, {}, {"birthday": "1990-03-04"})
+    assert changed[0]["sp"] == {"Birthday": "1990-03-04"}  # the day is written across
+
+
+def test_field_plan_required_fields_cannot_be_blanked():
+    """Location and salary-or-hourly are required, so a blank value is refused."""
+    with pytest.raises(ValueError):
+        se.plan_field_changes({"Location": "Toronto"}, {}, {"location": "  "})
+    with pytest.raises(ValueError):
+        se.plan_field_changes({"SalaryHourly": "Salary"}, {}, {"salary_hourly": ""})
 
 
 # ---------------------------------------------------------------------------
@@ -443,16 +523,51 @@ def test_fields_only_save_needs_no_changes_key(wired):
 
 
 def test_a_person_link_save_resolves_the_before_name(wired, monkeypatch):
-    """A person-link save resolves the current name for the history before value."""
-    async def fake_name(value):
-        return "Old Link"                                 # the resolver found the current link
+    """A person-link save resolves the current name (from the map) for the history."""
+    async def fake_map():
+        return {55: "Old Link"}                            # id 55 is the record's TitleLink
 
-    monkeypatch.setattr(se, "resolve_person_field_name", fake_name)
+    monkeypatch.setattr(se, "_get_sp_user_name_map", fake_map)
     run(se.apply_entitlement_changes(
         "480", {}, "fixed link", {"title_link": {"sp_user_id": 9, "name": "New Link"}}
     ))
     assert wired["updates"][0][2] == {"TitleLinkLookupId": 9}
     assert ("TitleLink", "Old Link", "New Link") in wired["history"][0]["changes"]
+
+
+def test_a_recalc_that_moves_the_date_is_its_own_history_row(wired, monkeypatch):
+    """When the derived can-book date moves, it is recorded as its own history row."""
+    async def fake_recalc(emp_id, vacation, carryover):
+        wired["recalc"].append((str(emp_id), vacation, carryover))
+        return "2026-12-31"                                # the recomputed date
+
+    monkeypatch.setattr(se, "recalculate_request_allow_date", fake_recalc)
+    run(se.apply_entitlement_changes("480", {"vacation": 0}, "zeroed"))
+    # Two history calls: the balance change, then the derived date change.
+    assert len(wired["history"]) == 2
+    assert ("RequestAllowDate", "", "2026-12-31") in wired["history"][1]["changes"]
+
+
+def test_a_recalc_failure_keeps_the_write_and_the_main_history(wired, monkeypatch):
+    """A recalc failure keeps the write and the history, and reports a notice."""
+    async def boom(emp_id, vacation, carryover):
+        raise RuntimeError("recalc down")
+
+    monkeypatch.setattr(se, "recalculate_request_allow_date", boom)
+    result = run(se.apply_entitlement_changes("480", {"vacation": 0}, "x"))
+    assert len(wired["updates"]) == 1                      # the write still happened
+    assert result["history_recorded"] is True             # the main history was recorded
+    assert "notice" in result                              # the stale date is reported
+
+
+def test_recalc_is_skipped_when_the_date_is_edited_directly(wired):
+    """HR typing the can-book date wins, so the balance move does not recompute it."""
+    run(se.apply_entitlement_changes(
+        "480", {"vacation": 0}, "set date", {"request_allow_date": "2027-01-15"}
+    ))
+    assert wired["recalc"] == []                           # no recompute over HR's value
+    _, _, fields = wired["updates"][0]
+    assert fields["RequestAllowDate"] == "2027-01-15"      # HR's date is what is written
 
 
 def test_route_accepts_a_fields_only_body(client, wired):

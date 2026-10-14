@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Box, Button, Chip, Collapse, IconButton, Paper, Stack, Table, TableBody, TableCell,
   TableHead, TableRow, TextField, Typography, useMediaQuery,
@@ -81,6 +81,9 @@ interface Props {
   processingEnabled: boolean;
   /** Open the manager assignments screen. */
   onManageAssignments: () => void;
+  /** Re-fetch the dashboard's balances and requests after a save, so the table
+   *  row follows the change (the profile reloads its own record separately). */
+  onReload?: () => void;
   /** Surface a message to the dashboard snackbar. */
   onNotify: (message: string, severity: 'success' | 'error') => void;
 }
@@ -94,7 +97,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The staff screen body.
  */
-export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onNotify }: Props) {
+export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onReload, onNotify }: Props) {
   const theme = useTheme();
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Record<string, string[]>>({});   // filter key -> chosen values
@@ -107,13 +110,14 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
 
   // Manager names by employee id; /admin/balances does not carry them.
   const [managersById, setManagersById] = useState<Record<string, string[]> | null>(null);
-  useEffect(() => {
+  const loadManagers = useCallback(() => {
     getManagerAssignments()
       .then((r) => setManagersById(Object.fromEntries(
         (r.data.assignments || []).map((a: any) => [String(a.id), (a.managers || []).map((m: any) => m.name).filter(Boolean)]),
       )))
       .catch(() => setManagersById(null));                  // the column just shows nothing
   }, []);
+  useEffect(() => { loadManagers(); }, [loadManagers]);
 
   // People for the profile's person/manager pickers; fetched once when the screen opens.
   useEffect(() => {
@@ -175,11 +179,14 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
     }
   };
 
-  /** Reload the open record after a save, so the profile and the row follow it. */
+  /** Reload everything a save can touch: the dashboard balances/requests, the
+   *  manager assignments (for the row), and the open person's full record. */
   const reloadRecord = async () => {
+    onReload?.();                                           // dashboard balances + requests
+    loadManagers();                                        // the row's managers column
     if (!openId) return;
     try {
-      const res = await getStaffRecord(openId);
+      const res = await getStaffRecord(openId);            // the profile's own record
       setRecord(res.data);
     } catch {
       /* the save already succeeded; the view just keeps the pre-save figures */

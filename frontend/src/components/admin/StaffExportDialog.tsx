@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Accordion, AccordionDetails, AccordionSummary, Box, Button, Checkbox, Dialog, DialogActions,
   DialogContent, DialogTitle, Divider, FormControlLabel, MenuItem, Stack, TextField, ToggleButton,
@@ -132,6 +132,12 @@ export default function StaffExportDialog({ open, shownPeople, allPeople, onClos
   const sheets = ['Staff', ...(includeSummary ? ['Summary by department'] : []), ...(includeHistory ? ['Change history'] : [])];
   const previewCols = chosen.slice(0, PREVIEW_COLS);
   const hiddenCount = chosen.length - previewCols.length;
+
+  // When a sheet is unticked while its tab is open, fall back to the Staff tab so
+  // the preview never points at a sheet that is no longer in the file.
+  useEffect(() => {
+    if (!sheets.includes(tab)) setTab('Staff');
+  }, [includeSummary, includeHistory]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Build and download the workbook from the backend. */
   const download = async () => {
@@ -295,7 +301,9 @@ export default function StaffExportDialog({ open, shownPeople, allPeople, onClos
       <Divider />
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={download} disabled={downloading}>{downloading ? 'Building...' : 'Download .xlsx'}</Button>
+        <Button variant="contained" onClick={download} disabled={downloading || people.length === 0}>
+          {downloading ? 'Building...' : 'Download .xlsx'}
+        </Button>
       </DialogActions>
     </Dialog>
   );
