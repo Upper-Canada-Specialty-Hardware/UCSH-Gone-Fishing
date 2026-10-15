@@ -54,12 +54,19 @@ async def send_email_with_dashboard(
     primary_employee_id: str | int | None = None,
     **kwargs,
 ):
-    """Send email and automatically append dashboard footer for the primary recipient."""
+    """Send email and append the site-link footer for a per-person notification.
+
+    The footer is the same for everyone now (one button to the public site, built
+    by build_dashboard_footer_html); staff sign in there themselves. It is still
+    gated on primary_employee_id so it lands only on emails aimed at a specific
+    person, which is the set that carried the footer before. The signature is
+    unchanged, so callers do not change.
+    """
     footer = ""
     if primary_employee_id and settings.DASHBOARD_FRONTEND_URL:
         try:
             from app.services.dashboard_tokens import build_dashboard_footer_html
-            footer = await build_dashboard_footer_html(primary_employee_id)
+            footer = build_dashboard_footer_html()        # same site link for all recipients
         except Exception as e:
             logger.debug("Could not build dashboard footer: %s", e)
     await send_email(
@@ -69,16 +76,6 @@ async def send_email_with_dashboard(
         dashboard_footer=footer,
         **kwargs,
     )
-
-    # Only now is it true that this person holds a working link. Recording any
-    # earlier would cover people who received nothing: the footer is skipped
-    # when the employee lookup fails, swallowed on exception above, and
-    # send_email raises on an HTTP or network failure before reaching this
-    # line. A 200 whose body rejects the recipient still lands here today;
-    # the email_api_log row for that send shows the rejection.
-    if footer:
-        from app.services.dashboard_link_tracking import record_link_sent
-        await record_link_sent(primary_employee_id)
 
 
 def _build_payload(

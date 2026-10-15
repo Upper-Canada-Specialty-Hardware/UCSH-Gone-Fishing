@@ -15,7 +15,6 @@ from app.graph.sharepoint import sp_client
 from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
-from app.tasks.dashboard_links import start_dashboard_link_task
 from app.tasks.setup_nudges import start_setup_nudge_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
 
@@ -51,7 +50,6 @@ async def lifespan(app: FastAPI):
     renewal_task = None
     carryover_reset_task = None
     reminder_task = None
-    dashboard_link_task = None
     setup_nudge_task = None
     held_request_task = None
     try:
@@ -72,7 +70,6 @@ async def lifespan(app: FastAPI):
         renewal_task = start_subscription_renewal_task()
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
-        dashboard_link_task = start_dashboard_link_task()
         setup_nudge_task = start_setup_nudge_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
 
@@ -112,8 +109,6 @@ async def lifespan(app: FastAPI):
         carryover_reset_task.cancel()
     if reminder_task:
         reminder_task.cancel()
-    if dashboard_link_task:
-        dashboard_link_task.cancel()
     if setup_nudge_task:
         setup_nudge_task.cancel()
     if held_request_task:
