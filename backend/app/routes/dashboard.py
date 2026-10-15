@@ -24,6 +24,7 @@ from app.services.employee_validation import (
     validate_employee_setup,
 )
 from app.services.overlap_detection import find_conflict_for_row
+from app.services.sick_day_on_behalf import manager_may_log_sick_days
 from app.services.taken_from import attach_taken_from, taken_from_for
 from app.services.employment import (
     NO_COST_LEAVE,
@@ -563,10 +564,15 @@ async def team_members(user: AuthUser):
         if _is_in_all_managers(i.get("fields", {}), manager_name)
     ]
     taken = await _bc_vacation_taken(items)                    # reads only when the team has BC hourly
-    return {"members": [
-        {**_format_employee(item["fields"], item["id"]), "balances": _balances_for(item, taken)}
-        for item in items
-    ]}
+    return {
+        "members": [
+            {**_format_employee(item["fields"], item["id"]), "balances": _balances_for(item, taken)}
+            for item in items
+        ],
+        # Province gate for the "Log sick day" action (#130), decided on the
+        # manager's own Location so the dashboard only offers it where enabled.
+        "can_log_sick_days": manager_may_log_sick_days(manager["fields"]),
+    }
 
 
 @router.get("/team/balances")
@@ -888,6 +894,48 @@ async def team_create_employee(user: AuthUser, body: dict):
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
+
+
+@router.post("/team/sick-days")
+async def team_log_sick_day(user: AuthUser, body: dict):
+    """Record a sick day for one of the manager's employees and approve it.
+
+    The manager-side answer to staff calling in sick without logging it: the
+    manager enters the dates, the system creates the "Sick or Personal Day"
+    leave request in the employee's name and approves it on the spot through
+    the same handler the email link and the Approve button use, so the sick
+    balance (whole sick days for BC hourly), any cascade and the audit log are
+    handled exactly as for any other approval. Only offered where the manager's Location is in an enabled
+    province (SICK_DAY_ON_BEHALF_PROVINCES) and only for their own team.
+
+    Args:
+        user: The signed-in manager or admin, from the dashboard link.
+        body: ``{"employee_id", "start_date", "end_date"?, "notes"?}``.
+
+    Returns:
+        ``{"status": "approved", "request_id", "employee_name", "days",
+        "balances"}``.
+
+    Raises:
+        HTTPException: 503 when processing is off, 403 when the manager's
+            location is not enabled, 400 with a readable reason otherwise.
+    """
+    _require_role(user, "manager", "admin")
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    # Imported here, not at module load, so tests can swap the service out.
+    from app.services.sick_day_on_behalf import (
+        SickDayNotPermitted,
+        SickDayOnBehalfError,
+        log_sick_day_on_behalf,
+    )
+    try:
+        return await log_sick_day_on_behalf(user.user_id, body)
+    except SickDayNotPermitted as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except SickDayOnBehalfError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============================

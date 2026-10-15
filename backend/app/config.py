@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
 
+    # Manager-logged sick days (#130): comma-separated province codes (see
+    # LOCATION_PROVINCE_MAP in services/employee.py) whose managers may record
+    # a sick day for an employee on their team from the Team dashboard, approved
+    # on the spot. British Columbia only to start; add "ON" once HR agrees.
+    SICK_DAY_ON_BEHALF_PROVINCES: str = "BC"
+
     # Public request page (#131)
     # Write SubmitterEmail and RequestSource on new request items. Off until
     # those columns exist on the three request lists: writing a column that is
