@@ -4,6 +4,7 @@ import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
 import RequestHistory from '../components/RequestHistory';
+import TakenFrom from '../components/TakenFrom';
 import { Kpi, Panel } from '../components/Panels';
 import { MonthlyBars } from '../components/manager/Charts';
 import { approveSummary, daysOffByMonth } from '../components/manager/teamStats';
@@ -100,6 +101,8 @@ function Section({ title, rows, empty }: { title: string; rows: any[]; empty: st
             {/* The one thing still open breathes twice, then rests. */}
             <Chip size="small" label={label} color={STATUS_COLOR[r.Status] || 'default'}
               sx={{ animation: r.Status === 'Pending' ? `${KF.pulse} 1.4s ease-in-out .7s 2` : 'none' }} />
+            {/* Which balances this request's days came from, on its own line under the request. */}
+            {r.taken_from && <Box sx={{ flexBasis: '100%' }}><TakenFrom value={r.taken_from} compact /></Box>}
           </Box>
         );
       })}

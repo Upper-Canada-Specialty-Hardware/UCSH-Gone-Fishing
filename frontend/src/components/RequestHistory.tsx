@@ -5,6 +5,7 @@ import { DataGrid, GridColDef, GridActionsCellItem, GridActionsCellItemProps, Gr
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import UndoIcon from '@mui/icons-material/Undo';
 import AuditTrailDialog from './AuditTrailDialog';
+import TakenFrom from './TakenFrom';
 import {
   SHARED_DATA_GRID_PROPS,
   STATUS_COLOR,
@@ -28,7 +29,8 @@ interface Props {
 
 /** Columns worth hiding on a phone, where the full set would force a wide scroll. */
 const HIDDEN_ON_NARROW: GridColumnVisibilityModel = {
-  managers: false, LeaveType: false, description: false, EndDate: false, Hours: false, Created: false, ApprovedDate: false,
+  // Taken from wraps its chips but is still secondary, so it steps aside on a phone with the other low-value columns.
+  managers: false, LeaveType: false, description: false, taken_from: false, EndDate: false, Hours: false, Created: false, ApprovedDate: false,
 };
 
 export default function RequestHistory({ requests, loading, showEmployee, onRefund, processingEnabled, actionLoading }: Props) {
@@ -102,6 +104,16 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
       { field: 'managers', headerName: 'Manager(s)', width: 200 },
       { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
       { field: 'description', headerName: 'Description', width: 200 },
+      // Which balances the request's days came from (approved) or would (pending). Reads
+      // the whole taken_from object off the raw row, so it is not sortable or filterable.
+      {
+        field: 'taken_from',
+        headerName: 'Taken from',
+        width: 220,
+        sortable: false,
+        filterable: false,
+        renderCell: (params) => <TakenFrom value={params.row._raw?.taken_from} compact />,
+      },
       // Start/End are calendar dates: read the date part as written, no shift.
       { field: 'StartDate', headerName: 'Start', width: 130, valueFormatter: (value) => formatDay(value as string) },
       { field: 'EndDate', headerName: 'End', width: 130, valueFormatter: (value) => formatDay(value as string) },

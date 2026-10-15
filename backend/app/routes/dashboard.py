@@ -24,6 +24,7 @@ from app.services.employee_validation import (
     validate_employee_setup,
 )
 from app.services.overlap_detection import find_conflict_for_row
+from app.services.taken_from import attach_taken_from, taken_from_for
 from app.routes.approval import HANDLERS
 from app.repositories.request_store import request_store
 
@@ -447,6 +448,9 @@ async def my_requests(
                 r["managers"] = managers
                 results.append(r)
 
+    # Every row is this one employee, so pass their fields straight through: no
+    # Staff Directory lookup is needed to project the pending ones.
+    await attach_taken_from(results, employee_fields=emp["fields"])
     return {"requests": results}
 
 
@@ -575,6 +579,8 @@ async def team_pending(user: AuthUser):
         _enrich_pending_item(item_data, "carryover-payout", staff_by_name, staff_by_id, sp_user_to_name)
         pending.append(item_data)
 
+    # Reuse the staff map already built above to project each pending row.
+    await attach_taken_from(pending, staff_by_name=staff_by_name)
     return {"pending": pending}
 
 
@@ -668,6 +674,8 @@ async def team_requests(
                 r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
                 results.append(r)
 
+    # Reuse the staff map already built above to compute each row's pots.
+    await attach_taken_from(results, staff_by_name=staff_by_name)
     return {"requests": results}
 
 
@@ -1081,6 +1089,9 @@ async def admin_requests(
             item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
             results.append(item)
 
+    # Reuse the staff map already built above; this list also feeds the staff
+    # profile's request history (filtered by employee on the frontend).
+    await attach_taken_from(results, staff_by_name=staff_by_name)
     return {"requests": results}
 
 
@@ -1108,6 +1119,8 @@ async def admin_pending():
         except Exception:
             logger.exception("Failed to fetch pending %s items", req_type)
 
+    # Reuse the staff map already built above to project each pending row.
+    await attach_taken_from(pending, staff_by_name=staff_by_name)
     return {"pending": pending}
 
 
@@ -1209,7 +1222,10 @@ def _diagnose_stuck_leave(
 
 @router.get("/admin/stuck-requests")
 async def admin_stuck_requests():
+    from app.services.app_settings import toronto_today
+
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
+    today = toronto_today()                                    # for the pending projection year
     stuck = []
 
     try:
@@ -1261,6 +1277,12 @@ async def admin_stuck_requests():
             f, staff_by_name, sp_user_to_name, blocked_by=blocked_by, notified=notified,
         )
 
+        # Which pots this would take from if approved. Computed from the full SP
+        # fields (f), not the trimmed row below, and from the resolved employee so
+        # a stuck row still carries the same key as every other request row.
+        staff = staff_by_name.get(emp_name.strip().lower()) if emp_name else None
+        taken_from = taken_from_for(f, "leave", staff["fields"] if staff else None, today)
+
         stuck.append({
             "id": item.get("id"),
             "employee_name": emp_name,
@@ -1274,6 +1296,7 @@ async def admin_stuck_requests():
             "Created": f.get("Created"),
             "diagnostics": diagnostics,
             "diagnostic_detail": diagnostic_detail,
+            "taken_from": taken_from,
         })
 
     return {"stuck": stuck}

@@ -199,6 +199,10 @@ pre.resp { background: var(--chip); border-radius: 8px; padding: 10px; font-size
 .pill.ot { background: #fcefe2; color: #b0570d; } .pill.co { background: #ebebf8; color: #4c4f9e; } .pill.sick { background: #e8ecf0; color: #4b5d6e; } .pill.vac { background: #e2f2f4; color: #1f6c7c; } .pill.half { background: #e6f1ea; color: #3f7558; } .pill.pay { background: #e3f3e8; color: #2e7d4f; }
 :root[data-theme="dark"] .pill.ot, :root[data-theme="dark"] .pill.co, :root[data-theme="dark"] .pill.sick, :root[data-theme="dark"] .pill.vac, :root[data-theme="dark"] .pill.half, :root[data-theme="dark"] .pill.pay { filter: invert(.88) hue-rotate(180deg); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.ot, :root:not([data-theme="light"]) .pill.co, :root:not([data-theme="light"]) .pill.sick, :root:not([data-theme="light"]) .pill.vac, :root:not([data-theme="light"]) .pill.half, :root:not([data-theme="light"]) .pill.pay { filter: invert(.88) hue-rotate(180deg); } }
+/* "Taken from" (#296, #307): one soft pill per balance a request's days came from; chips wrap so they never scroll sideways. */
+.tf { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.tf .pill { font-size: 11.5px; padding: 2px 8px; }
+.tf .pill b { font-variant-numeric: tabular-nums; font-weight: 700; }
 .when { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .datebox { border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; text-align: center; min-width: 64px; }
 .datebox small { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
@@ -686,6 +690,26 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function $(id) { return document.getElementById(id); }
   function count(st) { return REQS.filter(function (r) { return r.status === st; }).length; }
   function what(r) { return esc(r.kind) + ' · ' + esc(r.when) + (r.hours ? ' · ' + r.hours + ' h' : r.days ? ' · ' + r.days + (r.days === 1 ? ' day' : ' days') : ''); }
+  // ---- "Taken from" chips (#296, #307): which balances a request's days came from, worded exactly like TakenFrom.tsx. ----
+  var TF_YEAR = 2026;                                           // the sample's earned year for carry-over / payout
+  function tfNum(v) { return String(+(+v).toFixed(3)); }        // trim to 3 decimals, like fmtDays
+  // Render chip segments ({cls, amt, label}), or a muted line when nothing moved.
+  function tfPills(segs) {
+    if (!segs || !segs.length) return '<span class="small muted">No balance used</span>';
+    return '<span class="tf">' + segs.map(function (s) {
+      return '<span class="pill ' + s.cls + '">' + (s.amt ? '<b>' + esc(s.amt) + '</b> ' : '') + esc(s.label) + '</span>';
+    }).join('') + '</span>';
+  }
+  // A history row's chips, by kind. Rejected takes nothing; carry-over/payout move vacation into the pot.
+  function histSegs(r) {
+    if (r.status === 'Rejected') return [];                     // rejected: nothing taken
+    if (r.kind === 'Overtime') return [{ cls: 'ot', amt: '+' + tfNum((r.hours || 0) / 8), label: 'added to Make-Up' }];
+    if (r.kind === 'Payout') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'pay', amt: '', label: '→ ' + TF_YEAR + ' payout' }];
+    if (r.kind === 'Carry Over') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'co', amt: '', label: '→ ' + TF_YEAR + ' carry-over' }];
+    if (r.kind === 'Bereavement' || r.kind === 'Jury Duty' || r.kind === 'Jury duty') return [];   // cost nothing
+    if (r.kind === 'Sick') return r.days ? [{ cls: 'sick', amt: tfNum(r.days), label: 'sick' }] : [];
+    return r.days ? [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }] : [];   // vacation / part day
+  }
   function age(n) { return n ? '<span class="age' + (n > 7 ? ' old' : '') + '">' + n + ' d</span>' : ''; }
   function chip(t, c) { return '<span class="chip ' + (c || '') + '">' + esc(t) + '</span>'; }
   function toast(msg) { var t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(function () { t.hidden = true; }, 3400); }
@@ -1103,7 +1127,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (!partial && wd.skipped.length) notes.push(wd.skipped.join(', ') + ' is a company holiday and is not counted.');
         if (nextYear && order.length) notes.push('Next year: uses Make-Up, then Carry Over. Next year\'s vacation is not touched.');
         var warn = partial && wd.skipped.length ? 'This date is the company holiday ' + wd.skipped[0] + '. A part day on a holiday is rejected automatically.' : partial && (+s.hours || 0) >= 8 ? 'A partial day is less than 8 hours; choose a full-day leave type instead.' : '';
-        f += preview(me, [[partial ? 'Days (8 hours = 1 day)' : 'Working days', n]], order.length ? spend(me, n, order) : [], notes.join(' '), warn);
+        var potRows = order.length ? spend(me, n, order) : [];   // each pot [label, before, after], cascade order
+        // Taken from: one chip per pot that dropped, worded like TakenFrom.tsx (carry-over names last year).
+        var POT_TF = { Vacation: ['vac', 'vacation'], Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'], 'Carry Over': ['co', (TF_YEAR - 1) + ' carry-over'] };
+        var leaveSegs = potRows.filter(function (x) { return x[2] < x[1]; }).map(function (x) { var m = POT_TF[x[0]] || ['', x[0]]; return { cls: m[0], amt: tfNum(x[1] - x[2]), label: m[1] }; });
+        f += preview(me, [[partial ? 'Days (8 hours = 1 day)' : 'Working days', n]], potRows, notes.join(' '), warn, leaveSegs);
       }
     } else if (s.type === 'overtime') {
       f = '<label class="field">What was the overtime for?<input class="input big" data-rp="notes" value="' + esc(s.notes) + '"></label><div class="row2"><label class="field">Date worked<input class="input big" type="date" data-rp="start" value="' + s.start + '"></label><label class="field">Hours<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-hour steps.</span></label></div>';
@@ -1112,14 +1140,18 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         var me2 = person(s.session), d2 = (+s.hours || 0) / 8, mu2 = me2.mu + d2, vac2 = me2.vac;
         if (vac2 < 0 && mu2 > 0) { vac2 += mu2; mu2 = 0; if (vac2 > 0) { mu2 = vac2; vac2 = 0; } }
         var hol2 = holidaysFor(me2.loc)[s.start];
-        f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '');
+        var otSegs = [{ cls: 'ot', amt: '+' + tfNum(d2), label: 'added to Make-Up' }];   // hours / 8 banked to Make-Up
+        f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', otSegs);
       }
     } else {
       f = '<div class="row2"><label class="field">Request<select class="input big" data-rpsel="co">' + ['Carry over to next year', 'Pay out'].map(function (o) { return '<option' + (s.co === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></label><label class="field">Days<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-day steps.</span></label></div>';
       if (employee) {
         // simulate_carryover_payout_impact: days leave Vacation; more than the balance is rejected automatically.
         var me3 = person(s.session), d3 = +s.hours || 0, pay = s.co === 'Pay out';
-        f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', me3.vac - d3 < 0 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '');
+        var refused3 = me3.vac - d3 < 0;                          // more than the vacation balance is auto-refused
+        // Taken from: vacation moves into carry-over or payout (this year's), or a refusal note when there is not enough.
+        var coSegs = refused3 ? [] : [{ cls: 'vac', amt: tfNum(d3), label: 'vacation' }, { cls: pay ? 'pay' : 'co', amt: '', label: '→ ' + TF_YEAR + (pay ? ' payout' : ' carry-over') }];
+        f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', refused3 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '', coSegs, refused3);
       }
     }
     // Carry-over and payout are closed by default: HR opens them for a window from the admin dashboard.
@@ -1139,9 +1171,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     return out;
   }
   function num(v) { return +(+v).toFixed(2); }
-  function preview(me, facts, pots, note, warn) {
+  // ``segs`` adds a "Taken from" line of chips (the split, same wording as the real request page); ``refused`` shows the auto-refusal note.
+  function preview(me, facts, pots, note, warn, segs, refused) {
+    var takenRow = segs
+      ? '<div class="row" style="align-items:baseline"><span class="muted">Taken from</span>' +
+        (segs.length ? tfPills(segs) : '<span class="small muted">' + (refused ? 'Would be refused: not enough vacation' : 'No balance used') + '</span>') + '</div>'
+      : '';
     return (warn ? '<div class="note" style="background:var(--warn-soft);color:var(--warn)">' + esc(warn) + '</div>' : '') + '<div class="preview">' + facts.map(function (x) { return '<div class="row"><span class="muted">' + x[0] + '</span><b>' + num(x[1]) + '</b></div>'; }).join('') +
       pots.map(function (x) { return '<div class="row"><span class="muted">' + x[0] + ' after this</span><b' + (x[2] < 0 ? ' style="color:var(--err)"' : '') + '>' + num(x[1]) + ' → ' + num(x[2]) + '</b></div>'; }).join('') +
+      takenRow +
       (note ? '<div class="small muted">' + note + '</div>' : '') +
       '<div class="row"><span class="muted">Goes to</span><b>' + esc((me && me.mgrs[0]) || 'your manager') + '</b></div></div>';
   }
@@ -1877,8 +1915,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div class="paper"><div class="sect">By kind</div><div class="pad" style="display:grid;gap:12px;padding-top:4px">' + kinds.map(function (k) { return '<div class="kbar"><span>' + k[0] + '</span><span class="meter"><span class="keep" style="width:' + (k[1] / top * 100) + '%;background:' + k[2] + '"></span></span><b>' + k[1] + '</b></div>'; }).join('') + '</div></div></div>';
     }
     if (tab === 'history') {
-      return html + '<div class="paper"><div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th class="num">Amount</th><th class="num">Request</th></tr></thead><tbody>' +
-        all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
+      return html + '<div class="paper"><div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th>Taken from</th><th class="num">Amount</th><th class="num">Request</th></tr></thead><tbody>' +
+        all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td>' + tfPills(histSegs(r)) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
     }
     var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + (of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : '') + '<div class="chg">' + note + '</div></div>'; };
     return html + '<div class="pots5">' + pot('Vacation', p.vac, 'left of ' + p.vacY + ' days this year', p.vacY) + pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') + pot('Carry Over', p.co, 'used before vacation, cleared April 1 (in 174 days)') + pot('Payout', p.po || 0, 'days set aside to be paid out') + '</div>' +
