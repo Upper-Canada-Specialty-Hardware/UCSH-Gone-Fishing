@@ -25,6 +25,14 @@ from app.services.employee_validation import (
 )
 from app.services.overlap_detection import find_conflict_for_row
 from app.services.taken_from import attach_taken_from, taken_from_for
+from app.services.employment import (
+    NO_COST_LEAVE,
+    floor_warning,
+    is_hourly_bc,
+    leave_costs_balance,
+    overtime_costs_balance,
+    vacation_days_counted,
+)
 from app.routes.approval import HANDLERS
 from app.repositories.request_store import request_store
 
@@ -114,8 +122,21 @@ def _is_fully_processed(fields: dict, request_type: str) -> bool:
     return True
 
 
-def _format_balances(fields: dict) -> dict:
+def _format_balances(fields: dict, vacation_taken: float | None = None) -> dict:
+    """One person's balances in the dashboard wire shape.
+
+    Args:
+        fields: Staff Directory fields (or those merged with a projection).
+        vacation_taken: BC hourly only (#300): vacation days taken this year,
+            from ``_bc_vacation_taken``; None when not worked out here.
+
+    Returns:
+        The balances dict. ``hourly_bc`` tells the screens to show sick as the
+        only balance and vacation as the ``vacation_taken`` counter.
+    """
     return {
+        "hourly_bc": is_hourly_bc(fields),                     # sick only, vacation counted
+        "vacation_taken": vacation_taken,                      # the counter, or None
         "vacation_balance": float(fields.get("CurrentVacationBalance", 0) or 0),
         "vacation_entitlement": float(fields.get("DefaultYearlyVacationDays", 0) or 0),
         "sick_balance": float(fields.get("CurrentSickDayBalance", 0) or 0),
@@ -133,8 +154,8 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
         "email": fields.get("EmailAddress", ""),
         "department": fields.get("Department", ""),
         "location": fields.get("Location", ""),
-        # "Salary" or "Hourly", the type Add Employee sets and the balance
-        # engine acts on. The Staff Directory has no EmployeeType column (#205).
+        # "Salary", "Hourly" or "Hourly BC", the type the balance engine acts
+        # on (services/employment.py). No EmployeeType column exists (#205).
         "employment_type": fields.get("SalaryHourly", ""),
         # Ready / Editing gate, so the staff table can filter by it (#273).
         "system_check": fields.get("SystemCheck", ""),
@@ -271,6 +292,60 @@ def _resolve_employee_name(
     return ""
 
 
+async def _bc_vacation_taken(staff_items: list[dict]) -> dict[str, float]:
+    """Vacation days each BC hourly person has taken this calendar year (#300).
+
+    Their vacation is a counter, not a balance, so it is rebuilt from the
+    approved requests every time (nothing stored, resets each January). Costs
+    one leave list read plus the name lookups, and only when at least one of
+    ``staff_items`` is BC hourly; a failed read leaves the counters out rather
+    than failing the page.
+
+    Args:
+        staff_items: Staff Directory items (``{"id", "fields"}``) on the page.
+
+    Returns:
+        ``{lowercased name: days}`` for the BC hourly people among them.
+    """
+    bc_names = {
+        (i.get("fields", {}).get("Title") or "").strip().lower()
+        for i in staff_items if is_hourly_bc(i.get("fields"))
+    }
+    bc_names.discard("")
+    if not bc_names:                                           # nobody to count: no reads
+        return {}
+    try:
+        _, _, sp_user_to_name, _ = await _build_staff_lookups()
+        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    except Exception:  # noqa: BLE001 - a missing counter must not break the dashboard
+        logger.exception("Could not count BC hourly vacation")
+        return {}
+    rows_by_name: dict[str, list[dict]] = {name: [] for name in bc_names}
+    for item in items:
+        f = item.get("fields", {})
+        name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name).strip().lower()
+        if name in rows_by_name:                               # only the BC people asked about
+            rows_by_name[name].append(f)
+    from app.services.app_settings import toronto_today       # local, like the other callers here
+    year = toronto_today().year                                # the counter's calendar year
+    return {name: vacation_days_counted(rows, year) for name, rows in rows_by_name.items()}
+
+
+def _balances_for(item: dict, taken: dict[str, float]) -> dict:
+    """``_format_balances`` for one staff item, with its counter when it has one.
+
+    Args:
+        item: A Staff Directory item.
+        taken: The ``_bc_vacation_taken`` result for the page.
+
+    Returns:
+        The balances dict.
+    """
+    f = item.get("fields", {})
+    name = (f.get("Title") or "").strip().lower()
+    return _format_balances(f, taken.get(name) if is_hourly_bc(f) else None)
+
+
 def _enrich_pending_item(
     item_data: dict, request_type: str,
     staff_by_name: dict, staff_by_id: dict, sp_user_to_name: dict,
@@ -299,13 +374,21 @@ def _enrich_pending_item(
 
     sf = staff["fields"]
     item_data["current_balances"] = _format_balances(sf)
+    item_data["below_zero"] = None                             # set below when approving digs under zero
 
-    # Hourly staff — no balance adjustment (except sick leave)
-    if sf.get("SalaryHourly") == "Hourly":
-        if request_type != "leave" or item_data.get("LeaveType") != "Sick or Personal Day":
-            item_data["projected_balances"] = None
-            item_data["balance_unchanged"] = "Hourly staff — no balance adjustment"
-            return item_data
+    # Kinds that move nothing for this person (#300): BC hourly vacation is
+    # counted, hourly leave other than sick and hourly overtime change nothing.
+    leave_type = item_data.get("LeaveType", "")
+    if request_type == "leave" and is_hourly_bc(sf) and leave_type == "Vacation":
+        item_data["projected_balances"] = None
+        item_data["balance_unchanged"] = "BC hourly: counted as vacation taken, no balance used"
+        return item_data
+    if (request_type == "leave" and leave_type not in NO_COST_LEAVE and not leave_costs_balance(sf, leave_type)) or (
+        request_type == "overtime" and not overtime_costs_balance(sf)
+    ):
+        item_data["projected_balances"] = None
+        item_data["balance_unchanged"] = "Hourly staff, no balance adjustment"
+        return item_data
 
     projected_sp = None
     balance_unchanged = False
@@ -335,6 +418,8 @@ def _enrich_pending_item(
 
     if projected_sp:
         item_data["projected_balances"] = _format_balances({**sf, **projected_sp})
+        # Red on the card when approving takes the floor below zero (#300).
+        item_data["below_zero"] = floor_warning(sf, projected_sp)
     else:
         item_data["projected_balances"] = None
     item_data["balance_unchanged"] = balance_unchanged
@@ -364,10 +449,11 @@ async def my_balances(user: AuthUser):
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     fields = emp["fields"]
+    taken = await _bc_vacation_taken([emp])                    # reads only for BC hourly
     return {
         # Managers come from the same AllManagers column the request rows use.
         "employee": {**_format_employee(fields, user.user_id), "managers": _resolve_managers(emp)},
-        "balances": _format_balances(fields),
+        "balances": _balances_for(emp, taken),
     }
 
 
@@ -476,8 +562,9 @@ async def team_members(user: AuthUser):
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
     ]
+    taken = await _bc_vacation_taken(items)                    # reads only when the team has BC hourly
     return {"members": [
-        {**_format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
+        {**_format_employee(item["fields"], item["id"]), "balances": _balances_for(item, taken)}
         for item in items
     ]}
 
@@ -495,8 +582,9 @@ async def team_balances(user: AuthUser):
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
     ]
+    taken = await _bc_vacation_taken(items)                    # reads only when the team has BC hourly
     return {"balances": [
-        {"employee": _format_employee(item["fields"], item["id"]), "balances": _format_balances(item["fields"])}
+        {"employee": _format_employee(item["fields"], item["id"]), "balances": _balances_for(item, taken)}
         for item in items
     ]}
 
@@ -1027,12 +1115,13 @@ async def admin_balances(group_by: str | None = Query(None)):
                 if name:
                     manager_names.add(name.strip())
 
+    taken = await _bc_vacation_taken(items)                    # BC hourly vacation counters
     employees = []
     for item in items:
         f = item.get("fields", {})
         employees.append({
             **_format_employee(f, item["id"]),
-            "balances": _format_balances(f),
+            "balances": _balances_for(item, taken),
             "is_manager": f.get("Title", "").strip() in manager_names,
         })
 

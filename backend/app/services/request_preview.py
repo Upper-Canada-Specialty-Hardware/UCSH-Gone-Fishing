@@ -23,6 +23,14 @@ from app.services.balance import (
 )
 from app.services.business_days import calculate_business_days
 from app.services.employee import map_location_to_province
+from app.services.employment import (
+    PARTIAL_DAY as PART_DAY_LEAVE,
+    VACATION,
+    floor_warning,
+    is_hourly_bc,
+    leave_costs_balance,
+    overtime_costs_balance,
+)
 from app.services.holidays import (
     get_half_friday_season,
     get_holidays_for_province,
@@ -34,7 +42,6 @@ from app.services.request_intake import HOURS_PER_DAY, PARTIAL_DAY
 logger = logging.getLogger(__name__)
 
 NO_COST_LEAVE = ("Bereavement", "Jury Duty")   # simulate_leave_impact returns None for these
-SICK = "Sick or Personal Day"                  # the one kind hourly staff still spend a balance on
 
 
 def _holidays_in(start: date, end: date, holidays: list[dict]) -> list[str]:
@@ -74,7 +81,9 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
         {"days": float, "projected": SharePoint-style balances or None,
         "unchanged": a sentence when no balance changes, else "",
         "notes": [sentences worth knowing], "warning": a sentence when the
-        request would be rejected automatically, else "", "next_year": bool}.
+        request would be rejected automatically, else "", "next_year": bool,
+        "below_zero": ``employment.floor_warning`` when approving would take the
+        floor below zero (shown in red; the manager may still approve), else None}.
     """
     season = get_half_friday_season(holidays)              # (start, end) or (None, None)
     notes: list[str] = []
@@ -100,8 +109,11 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
                 warning = "These dates have no working days."
         next_year = is_next_year_request(form.start_date, form.end_date)
         projected = simulate_leave_impact(emp_fields, leave_type, days, next_year)
-        if next_year and projected is not None:
+        bc = is_hourly_bc(emp_fields)                      # BC hourly: sick only, no cascade
+        if next_year and projected is not None and not bc:
             notes.append("Next year's time off uses Make-Up, then Carry Over. Next year's vacation is not touched.")
+        if bc and leave_type == PART_DAY_LEAVE:
+            notes.append("A part day uses one whole sick day.")
     elif request_type == "overtime":
         days = form.hours / HOURS_PER_DAY                  # Make-Up is kept in days
         hit, name = is_company_holiday(form.date, holidays)
@@ -113,18 +125,26 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
     else:
         days = form.days
         projected = simulate_carryover_payout_impact(emp_fields, days, form.type_of_request)
-        if projected is None:                              # vacation would go below zero
+        if is_hourly_bc(emp_fields):                       # no vacation balance to move
+            projected = None
+            warning = "BC hourly staff have no vacation balance to carry over or pay out."
+        elif projected is None:                            # vacation would go below zero
             have = float(emp_fields.get("CurrentVacationBalance", 0) or 0)
             warning = f"You have {have:g} vacation days, fewer than {days:g}. This request would be rejected."
 
     unchanged = ""
-    # Hourly staff keep their balances, except for sick days (same rule as the manager's view).
-    hourly_kept = emp_fields.get("SalaryHourly") == "Hourly" and not (request_type == "leave" and form.leave_type == SICK)
-    if hourly_kept:
+    # Which kinds move a balance for this person (salaried, Ontario hourly, BC
+    # hourly) is decided in services/employment.py, same as the manager's view.
+    if request_type == "leave" and form.leave_type in NO_COST_LEAVE:
+        unchanged = "Bereavement and jury duty do not use any balance."
+    elif request_type == "leave" and is_hourly_bc(emp_fields) and form.leave_type == VACATION:
+        projected = None                                   # counted, not spent
+        unchanged = "Vacation is counted as days taken this year. No balance is used."
+    elif (request_type == "leave" and not leave_costs_balance(emp_fields, form.leave_type)) or (
+        request_type == "overtime" and not overtime_costs_balance(emp_fields)
+    ):
         projected = None
         unchanged = "You are paid hourly, so this does not change a balance."
-    elif request_type == "leave" and form.leave_type in NO_COST_LEAVE:
-        unchanged = "Bereavement and jury duty do not use any balance."
 
     return {
         "days": days,
@@ -133,6 +153,7 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
         "notes": notes,
         "warning": warning,
         "next_year": next_year,
+        "below_zero": floor_warning(emp_fields, projected),   # red, never a block
     }
 
 

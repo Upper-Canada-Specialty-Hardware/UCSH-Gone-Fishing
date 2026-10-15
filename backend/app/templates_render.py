@@ -63,7 +63,26 @@ def render_leave_approval_email(
     submitter_name: str = "", projected: dict | None = None,
     previous_snapshot: dict | None = None,
     conflict_warning: dict | None = None,
+    floor_warning: dict | None = None,
 ) -> str:
+    """The manager's approval email for one leave request.
+
+    Args:
+        fields: The request's SharePoint fields.
+        emp_fields: The employee's Staff Directory fields (current balances).
+        approve_url: Signed Approve link.
+        reject_url: Signed Reject link.
+        submitter_name: The employee's name.
+        projected: Balances after approval, or None when nothing moves.
+        previous_snapshot: The prior version's fields after an admin edit.
+        conflict_warning: The overlap notice, or None.
+        floor_warning: ``employment.floor_warning`` when approving takes the
+            floor below zero (shown in red), or None.
+
+    Returns:
+        The email body HTML.
+    """
+    from app.services.employment import floor_warning_text, is_hourly_bc
     return _render(
         "leave_approval_email.html",
         fields=fields, emp_fields=emp_fields,
@@ -71,6 +90,9 @@ def render_leave_approval_email(
         submitter_name=submitter_name, projected=projected,
         previous_snapshot=previous_snapshot,
         conflict_warning=conflict_warning,
+        floor_warning=floor_warning,
+        floor_warning_text=floor_warning_text(floor_warning),   # same sentence as the text message
+        hourly_bc=is_hourly_bc(emp_fields),                     # sick-only balance table
     )
 
 
@@ -82,9 +104,23 @@ def render_leave_rejected(fields: dict, manager_name: str) -> str:
     return _render("leave_rejected.html", fields=fields, manager_name=manager_name)
 
 
-def render_leave_balance_update(employee_name: str, balances: dict, is_next_year: bool) -> str:
-    template = "leave_balance_update_next_year.html" if is_next_year else "leave_balance_update.html"
-    return _render(template, employee_name=employee_name, balances=balances)
+def render_leave_balance_update(
+    employee_name: str, balances: dict, is_next_year: bool, hourly_bc: bool = False,
+) -> str:
+    """The updated-balance email sent after a leave approval.
+
+    Args:
+        employee_name: The employee's name.
+        balances: Balances after approval.
+        is_next_year: Whether the request was dated next year (own wording).
+        hourly_bc: BC hourly (#300): show sick only, the one balance they have.
+
+    Returns:
+        The email body HTML.
+    """
+    # BC hourly never use the next-year cascade, so their note would be wrong.
+    template = "leave_balance_update_next_year.html" if is_next_year and not hourly_bc else "leave_balance_update.html"
+    return _render(template, employee_name=employee_name, balances=balances, hourly_bc=hourly_bc)
 
 
 def render_leave_hourly_approved(fields: dict, manager_name: str) -> str:

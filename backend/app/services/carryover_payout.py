@@ -12,6 +12,7 @@ from app.services.employee import (
     get_all_managers_for_employee,
 )
 from app.services.balance import recalculate_request_allow_date
+from app.services.employment import is_hourly_bc
 from app.services.concurrency import lock_manager
 from app.services.idempotency import approval_email_action, claim_action, release_claim
 from app.services.approval_links import generate_approval_url
@@ -252,10 +253,14 @@ async def run_approval_pipeline(request_id: str | int):
         new_carryover = current_carryover + days
         new_payout = current_payout
 
-    # Vacation cannot go negative
-    if new_vacation < 0:
+    # Vacation cannot go negative. BC hourly have no vacation balance at all
+    # (theirs is only a counter of days taken, #300), so theirs is refused too.
+    hourly_bc = is_hourly_bc(emp_fields)
+    if hourly_bc or new_vacation < 0:
         from app.services.auto_reject_titles import append_auto_reject_tag
         reason = (
+            "BC hourly staff have no vacation balance to carry over or pay out."
+            if hourly_bc else
             f"Vacation balance would go to {new_vacation} days "
             f"({current_vacation} - {days})."
         )
@@ -278,7 +283,7 @@ async def run_approval_pipeline(request_id: str | int):
             subject="Carry Over / Payout Request - Auto Rejected",
             html_body=html,
         )
-        logger.info("Auto-rejected CO/PO #%s — vacation would go negative", request_id)
+        logger.info("Auto-rejected CO/PO #%s - %s", request_id, "BC hourly" if hourly_bc else "vacation would go negative")
         return
 
     # Send confirmation to employee, once per request: the request page runs this

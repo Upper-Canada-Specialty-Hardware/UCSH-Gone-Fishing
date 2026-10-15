@@ -4,6 +4,7 @@ from datetime import date
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.employee import get_employee_by_id
+from app.services.employment import is_hourly_bc, leave_costs_balance, whole_sick_days
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,19 @@ def simulate_leave_impact(
     """
     if leave_type in ("Bereavement", "Jury Duty"):
         return None
+
+    # BC hourly (#300): sick is their only balance. A sick or part day takes
+    # whole sick days and stops there (no cascade, so sick may go below zero);
+    # vacation is only counted, so it moves nothing.
+    if is_hourly_bc(sp_fields):
+        if not leave_costs_balance(sp_fields, leave_type):    # vacation etc.: counted only
+            return None
+        return {
+            "CurrentVacationBalance": float(sp_fields.get("CurrentVacationBalance", 0) or 0),  # untouched
+            "CurrentSickDayBalance": float(sp_fields.get("CurrentSickDayBalance", 0) or 0) - whole_sick_days(days),
+            "CurrentOvertimeBalance": float(sp_fields.get("CurrentOvertimeBalance", 0) or 0),  # untouched
+            "CarryOver": float(sp_fields.get("CarryOver", 0) or 0),                            # untouched
+        }
 
     sick = float(sp_fields.get("CurrentSickDayBalance", 0) or 0)
     overtime = float(sp_fields.get("CurrentOvertimeBalance", 0) or 0)
