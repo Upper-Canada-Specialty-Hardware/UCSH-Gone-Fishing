@@ -634,21 +634,21 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   var MANAGERS = ['Sam Supervisor', 'Lee Lead', 'Pat Manager'];
   var LOCATIONS = ['Toronto Victoria Park', 'Toronto Warden', 'Ottawa', 'Leaside', 'Barrie', 'British Columbia', 'Newfound Land'];
   var REQS = [
-    { id: 1432, who: 'Avery Example', type: 'Leave', kind: 'Vacation', from: ['Nov', 2], to: ['Nov', 4], when: 'Nov 2 to Nov 4', days: 3, desc: 'Family visit', mgr: 'Sam Supervisor', status: 'Pending', age: 12, cur: { 'Make-Up': 1, Vacation: 4.5 }, next: { 'Make-Up': 0, Vacation: 2.5 }, overlap: 'Taylor Mock is also off Nov 3' },
-    { id: 1440, who: 'Jamie Sample', type: 'Overtime', kind: 'Overtime', from: ['Oct', 3], when: 'Oct 3', hours: 3, desc: 'Inventory count', mgr: 'Lee Lead', status: 'Pending', age: 4, clash: 'Same date as #1398', cur: { 'Make-Up': 0.5, Vacation: -1.5 }, next: { 'Make-Up': 0, Vacation: -0.63 } },
-    { id: 1441, who: 'Taylor Mock', type: 'Leave', kind: 'Half day', from: ['Nov', 3], when: 'Nov 3 (PM)', days: 0.5, desc: 'Appointment', mgr: 'Sam Supervisor', status: 'Pending', age: 2, cur: { 'Carry Over': 1 }, next: { 'Carry Over': 0.5 }, overlap: 'Avery Example is off Nov 2 to 4' },
+    { id: 1432, who: 'Avery Example', type: 'Leave', kind: 'Vacation', from: ['Nov', 2], to: ['Nov', 4], when: 'Nov 2 to Nov 4, 2026', days: 3, desc: 'Family visit', mgr: 'Sam Supervisor', status: 'Pending', age: 12, cur: { 'Make-Up': 1, Vacation: 4.5 }, next: { 'Make-Up': 0, Vacation: 2.5 }, overlap: 'Taylor Mock is also off Nov 3' },
+    { id: 1440, who: 'Jamie Sample', type: 'Overtime', kind: 'Overtime', from: ['Oct', 3], when: 'Oct 3, 2026', hours: 3, desc: 'Inventory count', mgr: 'Lee Lead', status: 'Pending', age: 4, clash: 'Same date as #1398', cur: { 'Make-Up': 0.5, Vacation: -1.5 }, next: { 'Make-Up': 0, Vacation: -0.63 } },
+    { id: 1441, who: 'Taylor Mock', type: 'Leave', kind: 'Half day', from: ['Nov', 3], when: 'Nov 3, 2026 (PM)', days: 0.5, desc: 'Appointment', mgr: 'Sam Supervisor', status: 'Pending', age: 2, cur: { 'Carry Over': 1 }, next: { 'Carry Over': 0.5 }, overlap: 'Avery Example is off Nov 2 to 4' },
     { id: 1444, who: 'Morgan Placeholder', type: 'Carry Over', kind: 'Carry Over', when: '3 days into next year', days: 3, desc: '', mgr: 'Pat Manager', status: 'Pending', age: 9, cur: { Vacation: 12, 'Carry Over': 3 }, next: { Vacation: 9, 'Carry Over': 6 } },
-    { id: 1436, who: 'Casey Demo', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1', days: 1, desc: '', mgr: '', status: 'Stuck', age: 6, issues: ['No Managers (Staff Dir)'] },
-    { id: 1437, who: 'Drew Stub', type: 'Leave', kind: 'Vacation', from: ['Oct', 20], when: 'Oct 20', days: 0, desc: '', mgr: 'Lee Lead', status: 'Stuck', age: 5, issues: ['Days Not Calculated', 'Approval Email Never Sent'] },
-    { id: 0, who: 'Riley Newhire', email: 'riley.newhire@gmail.com', loc: 'British Columbia', type: 'Leave', kind: 'Vacation', when: 'Dec 22 to Dec 24', days: 3, desc: 'Holidays', mgr: 'Sam Supervisor', status: 'Held', age: 3, why: 'Not on staff yet' },
-    { id: 1388, who: 'Avery Example', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
-    { id: 1395, who: 'Taylor Mock', type: 'Leave', kind: 'Vacation', from: ['Nov', 16], to: ['Nov', 20], when: 'Nov 16 to Nov 20', days: 5, desc: 'Trip', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '5 days go back to Vacation' },
-    { id: 1429, who: 'Robin Sample', type: 'Leave', kind: 'Sick', from: ['Oct', 27], when: 'Oct 27', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
-    { id: 1410, who: 'Jesse Placeholder', type: 'Leave', kind: 'Vacation', from: ['Nov', 9], to: ['Nov', 13], when: 'Nov 9 to Nov 13', days: 4, desc: 'Family', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '4 days go back to Vacation' },
-    { id: 1402, who: 'Jesse Placeholder', type: 'Overtime', kind: 'Overtime', from: ['Oct', 24], when: 'Oct 24', hours: 4, desc: 'Weekend delivery', mgr: 'Sam Supervisor', status: 'Approved', age: 0 },
+    { id: 1436, who: 'Casey Demo', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1, 2026', days: 1, desc: '', mgr: '', status: 'Stuck', age: 6, issues: ['No Managers (Staff Dir)'] },
+    { id: 1437, who: 'Drew Stub', type: 'Leave', kind: 'Vacation', from: ['Oct', 20], when: 'Oct 20, 2026', days: 0, desc: '', mgr: 'Lee Lead', status: 'Stuck', age: 5, issues: ['Days Not Calculated', 'Approval Email Never Sent'] },
+    { id: 0, who: 'Riley Newhire', email: 'riley.newhire@gmail.com', loc: 'British Columbia', type: 'Leave', kind: 'Vacation', when: 'Dec 22 to Dec 24, 2026', days: 3, desc: 'Holidays', mgr: 'Sam Supervisor', status: 'Held', age: 3, why: 'Not on staff yet' },
+    { id: 1388, who: 'Avery Example', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1, 2026', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
+    { id: 1395, who: 'Taylor Mock', type: 'Leave', kind: 'Vacation', from: ['Nov', 16], to: ['Nov', 20], when: 'Nov 16 to Nov 20, 2026', days: 5, desc: 'Trip', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '5 days go back to Vacation' },
+    { id: 1429, who: 'Robin Sample', type: 'Leave', kind: 'Sick', from: ['Oct', 27], when: 'Oct 27, 2026', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
+    { id: 1410, who: 'Jesse Placeholder', type: 'Leave', kind: 'Vacation', from: ['Nov', 9], to: ['Nov', 13], when: 'Nov 9 to Nov 13, 2026', days: 4, desc: 'Family', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '4 days go back to Vacation' },
+    { id: 1402, who: 'Jesse Placeholder', type: 'Overtime', kind: 'Overtime', from: ['Oct', 24], when: 'Oct 24, 2026', hours: 4, desc: 'Weekend delivery', mgr: 'Sam Supervisor', status: 'Approved', age: 0 },
     { id: 1301, who: 'Morgan Placeholder', type: 'Carry Over', kind: 'Payout', when: '2 days paid out', days: 2, desc: '', mgr: 'Pat Manager', status: 'Approved', age: 0, back: '2 days go back to Vacation' },
-    { id: 1290, who: 'Jamie Sample', type: 'Leave', kind: 'Vacation', from: ['Aug', 4], when: 'Aug 4', days: 1, desc: '', mgr: 'Lee Lead', status: 'Rejected', age: 0 },
-    { id: 1250, who: 'Quinn Fixture', type: 'Leave', kind: 'Vacation', from: ['Jul', 14], to: ['Jul', 18], when: 'Jul 14 to Jul 18', days: 5, desc: 'Cottage', mgr: 'Pat Manager', status: 'Refunded', age: 0 }
+    { id: 1290, who: 'Jamie Sample', type: 'Leave', kind: 'Vacation', from: ['Aug', 4], when: 'Aug 4, 2026', days: 1, desc: '', mgr: 'Lee Lead', status: 'Rejected', age: 0 },
+    { id: 1250, who: 'Quinn Fixture', type: 'Leave', kind: 'Vacation', from: ['Jul', 14], to: ['Jul', 18], when: 'Jul 14 to Jul 18, 2026', days: 5, desc: 'Cottage', mgr: 'Pat Manager', status: 'Refunded', age: 0 }
   ];
   // Employee setup problems use the real titles from employeeSetupProblems.ts.
   var SETUP = [
@@ -818,7 +818,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       return head('Good morning', total ? total + ' things are waiting on someone.' : 'Nothing is waiting.') +
         '<div class="queues">' + q('pending', 'warm', 'Pending approvals', p, old + ' waiting over a week', 'Review') + q('held', 'cool', 'Held for new hires', h, 'add them to send their requests on', 'Add them') + q('setup', 'warm', 'Employee setup', SETUP.length, 'a request from them would stall', 'Fix') + '</div>' +
         '<div class="two"><div class="paper"><div class="sect">Out soon</div><ul class="list">' +
-        [['Avery Example', 'Sick, Oct 1', 'Approved'], ['Taylor Mock', 'Vacation, Nov 16 to 20', 'Approved'], ['Avery Example', 'Vacation, Nov 2 to 4', 'Pending']].map(function (x) { return '<li>' + av(x[0]) + '<b>' + x[0] + '</b><span class="muted">' + x[1] + '</span><span class="r">' + chip(x[2], CHIP[x[2]]) + '</span></li>'; }).join('') + '</ul></div>' +
+        [['Avery Example', 'Sick, Oct 1, 2026', 'Approved'], ['Taylor Mock', 'Vacation, Nov 16 to 20, 2026', 'Approved'], ['Avery Example', 'Vacation, Nov 2 to 4, 2026', 'Pending']].map(function (x) { return '<li>' + av(x[0]) + '<b>' + x[0] + '</b><span class="muted">' + x[1] + '</span><span class="r">' + chip(x[2], CHIP[x[2]]) + '</span></li>'; }).join('') + '</ul></div>' +
         '<div class="paper"><div class="sect">Pending by type</div><ul class="list">' + [['Leave', 'leave'], ['Overtime', 'overtime'], ['Carry Over', 'co']].map(function (t) { return '<li>' + t[0] + '<span class="muted small">' + STATS[t[1]].toLocaleString() + ' all time</span><span class="r"><b>' + REQS.filter(function (r) { return r.status === 'Pending' && r.type === t[0]; }).length + '</b> pending</span></li>'; }).join('') + '</ul></div></div>' +
         (s ? '<p class="quietline">' + s + ' request' + (s > 1 ? 's' : '') + ' could not be processed automatically. <button class="linkbtn" type="button" data-go="stuck">Look</button></p>' : '');
     },
@@ -1434,7 +1434,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         { title: 'They add you', target: '.dialog [data-act="create"]',
           todo: 'Your supervisor checks your details and selects <b>Add Employee</b>.',
           know: 'This is the supervisor screen. Your held request is sent to them straight after you are added.',
-          enter: function () { tAs('Sam Supervisor', 'manager'); state.prefill = { name: 'Jordan Sample', email: 'jordan.sample@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'], held: { who: 'Jordan Sample', kind: 'Vacation', when: 'Oct 26', status: 'Held' } }; state.modal = { kind: 'mgradd' }; },
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.prefill = { name: 'Jordan Sample', email: 'jordan.sample@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'], held: { who: 'Jordan Sample', kind: 'Vacation', when: 'Oct 26, 2026', status: 'Held' } }; state.modal = { kind: 'mgradd' }; },
           signal: function () { return !state.modal; },
           act: function () { var b = document.querySelector('.dialog [data-act="create"]'); if (b) b.click(); } },
         { title: 'You are in',
@@ -1450,7 +1450,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
             if (!p) { p = { id: 8, name: 'Jordan Sample', email: 'jordan.sample@gmail.com', dept: 'Installation', loc: '', mgrs: ['Sam Supervisor'] }; STAFF.push(p); }
             p.etype = 'Full Time'; p.vac = 15; p.sick = 7; p.mu = 0; p.co = 0; p.vacY = 15; p.sickY = 7;
             if (!REQS.some(function (r) { return r.who === 'Jordan Sample' && r.status === 'Pending'; })) {
-              REQS.unshift({ id: 1451, who: 'Jordan Sample', type: 'Leave', kind: 'Vacation', from: ['Oct', 26], when: 'Oct 26', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Pending', age: 0 });
+              REQS.unshift({ id: 1451, who: 'Jordan Sample', type: 'Leave', kind: 'Vacation', from: ['Oct', 26], when: 'Oct 26, 2026', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Pending', age: 0 });
             }
             tAs('Jordan Sample', 'employee');
           } }
@@ -1840,12 +1840,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   // ---------- employee ----------
   // Avery's earlier requests this year, for This year and History (example data).
   var MY_PAST = [
-    { id: 1371, kind: 'Vacation', when: 'Sep 28', days: 1, status: 'Rejected', took: 2 },
-    { id: 1349, kind: 'Overtime', when: 'Aug 29', hours: 6, status: 'Approved', took: 1 },
-    { id: 1312, kind: 'Vacation', when: 'Jul 27 to Jul 31', days: 5, status: 'Approved', took: 2 },
-    { id: 1288, kind: 'Half day', when: 'Jun 12 (AM)', days: 0.5, status: 'Approved', took: 1 },
-    { id: 1231, kind: 'Sick', when: 'Mar 3', days: 1, status: 'Approved', took: 0 },
-    { id: 1204, kind: 'Vacation', when: 'Feb 16 to Feb 18', days: 3, status: 'Approved', took: 1 }
+    { id: 1371, kind: 'Vacation', when: 'Sep 28, 2026', days: 1, status: 'Rejected', took: 2 },
+    { id: 1349, kind: 'Overtime', when: 'Aug 29, 2026', hours: 6, status: 'Approved', took: 1 },
+    { id: 1312, kind: 'Vacation', when: 'Jul 27 to Jul 31, 2026', days: 5, status: 'Approved', took: 2 },
+    { id: 1288, kind: 'Half day', when: 'Jun 12, 2026 (AM)', days: 0.5, status: 'Approved', took: 1 },
+    { id: 1231, kind: 'Sick', when: 'Mar 3, 2026', days: 1, status: 'Approved', took: 0 },
+    { id: 1204, kind: 'Vacation', when: 'Feb 16 to Feb 18, 2026', days: 3, status: 'Approved', took: 1 }
   ];
   // Approved days off by month, Jan to Oct, matching MY_PAST plus the Oct 1 sick day.
   var MY_MONTHLY = { m: MONTHLY.m, vac: [0, 3, 0, 0, 0, 0.5, 5, 0, 0, 0], sick: [0, 0, 1, 0, 0, 0, 0, 0, 0, 1], other: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };

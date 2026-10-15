@@ -1,6 +1,7 @@
 import { RequestKind, kindOf } from '../../constants/leaveColors';
 import { getDescription } from '../dataGridDefaults';
-import { daysWaiting, shortDate } from '../../utils/requestText';
+import { daysWaiting } from '../../utils/requestText';
+import { formatDay, formatDayRange } from '../../utils/dates';
 
 /**
  * The one requests table spans the three SharePoint lists (Leave Requests,
@@ -189,14 +190,12 @@ export const COLUMN_WIDTHS: Record<string, number> = Object.fromEntries(
   Object.entries(COLUMNS).map(([k, c]) => [k, c.width]),
 );
 
-/** "Nov 2 to Nov 4", "Nov 3", or '' for a carry-over (no dates). */
+/** "Nov 2 to Nov 4, 2026", "Nov 3, 2026", or '' for a carry-over (no dates). */
 export function whenText(r: Row): string {
-  if (r.src === 'mu') return shortDate(r.date);
-  if (r.src === 'co') return '';
-  if (!r.start) return '';
-  const a = shortDate(r.start);
-  const b = shortDate(r.end);
-  return b && b !== a ? `${a} to ${b}` : a;
+  if (r.src === 'mu') return formatDay(r.date);          // overtime: one calendar day
+  if (r.src === 'co') return '';                          // carry-over/payout has no dates
+  if (!r.start) return '';                                // leave with no start yet
+  return formatDayRange(r.start, r.end);                  // leave: full day range, one date when same
 }
 
 /** "3 d" for leave/carry-over, "5 h" for make-up, '' when unknown. */

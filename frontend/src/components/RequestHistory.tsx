@@ -15,6 +15,7 @@ import {
   getStartDate,
   hasAuditLog,
 } from './dataGridDefaults';
+import { formatDay, formatInstantDay } from '../utils/dates';
 
 interface Props {
   requests: any[];
@@ -62,8 +63,10 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         Days: r.Days ?? null,
         Hours: r.Hours ?? null,
         Status: r.Status || '',
-        Created: r.Created ? r.Created.split('T')[0] : '',
-        ApprovedDate: r.ApprovedDate ? r.ApprovedDate.split('T')[0] : '',
+        // Keep the full ISO so the grid still sorts by the true instant; the
+        // column's valueFormatter renders the reader's local day (no UTC shift).
+        Created: r.Created || '',
+        ApprovedDate: r.ApprovedDate || '',
       })),
     [requests],
   );
@@ -99,12 +102,14 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
       { field: 'managers', headerName: 'Manager(s)', width: 200 },
       { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
       { field: 'description', headerName: 'Description', width: 200 },
-      { field: 'StartDate', headerName: 'Start', width: 120 },
-      { field: 'EndDate', headerName: 'End', width: 120 },
+      // Start/End are calendar dates: read the date part as written, no shift.
+      { field: 'StartDate', headerName: 'Start', width: 130, valueFormatter: (value) => formatDay(value as string) },
+      { field: 'EndDate', headerName: 'End', width: 130, valueFormatter: (value) => formatDay(value as string) },
       { field: 'Days', headerName: 'Days', width: 80, type: 'number' },
       { field: 'Hours', headerName: 'Hours', width: 80, type: 'number' },
-      { field: 'Created', headerName: 'Created', width: 120 },
-      { field: 'ApprovedDate', headerName: 'Approved Date', width: 120 },
+      // Created/Approved are instants: show the reader's local day of that moment.
+      { field: 'Created', headerName: 'Created', width: 130, valueFormatter: (value) => formatInstantDay(value as string) },
+      { field: 'ApprovedDate', headerName: 'Approved Date', width: 130, valueFormatter: (value) => formatInstantDay(value as string) },
     ];
 
     const needsActions = requests.some(hasAuditLog) || !!onRefund;

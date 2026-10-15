@@ -14,6 +14,7 @@ import { ManagerOption } from '../AddEmployee';
 import { requestKind, requestWhat, requestWhen } from '../../utils/requestText';
 import { Enter } from '../Motion';
 import { StaffRecord, SaveStaffPayload, saveStaffRecord } from '../../api/staff';
+import { formatDay, formatInstantDay } from '../../utils/dates';
 
 /*
  * The admin person profile (#273, #276). The staff row grows into this panel in
@@ -106,8 +107,6 @@ const HISTORY_LABELS: Record<string, string> = {
   SupervisorLink: 'Supervisor link', AllManagers: 'Managers',
 };
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
 /** A person-link edit value: the chosen user id (or null to clear) and the name. */
 interface PersonEdit { sp_user_id: number | null; name: string }
 
@@ -119,18 +118,6 @@ interface PersonEdit { sp_user_id: number | null; name: string }
  */
 function fmt(n: number): string {
   return String(Math.round(n * 1000) / 1000);
-}
-
-/**
- * "Oct 14, 2026" from an ISO timestamp, in the reader's locale day.
- *
- * @param iso - The ISO 8601 string.
- * @returns The short date, or the raw string when unreadable.
- */
-function niceDateTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
 /** Whether two name lists hold the same people, ignoring order. */
@@ -374,7 +361,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
                       {HISTORY_LABELS[h.field] || h.field}{' '}
                       <b style={{ fontVariantNumeric: 'tabular-nums' }}>{String(h.old_value ?? '')} → {String(h.new_value ?? '')}</b>
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">{niceDateTime(h.changed_at)} · {h.reason}</Typography>
+                    <Typography variant="caption" color="text.secondary">{formatInstantDay(h.changed_at)} · {h.reason}</Typography>
                   </Box>
                 </Box>
               ))}
@@ -428,7 +415,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
             </FieldGroup>
             <FieldGroup title="Record">
               <Fact label="Staff Directory ID" value={record.employee_id} system />
-              <Fact label="Last modified" value={String(record.fields.Modified ?? '')} system />
+              <Fact label="Last modified" value={formatInstantDay(String(record.fields.Modified ?? ''))} system />
             </FieldGroup>
           </Box>
         </Box>
@@ -486,7 +473,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
     const display = f.type === 'person'
       ? ((value as PersonEdit)?.name || (typeof value === 'string' ? value : ''))
       : f.type === 'date'
-        ? String(value).slice(0, 10)                              // day only, no stored time
+        ? formatDay(String(value))                                // read as "Nov 2, 2026"; the editor still uses the bare day
         : String(value);
 
     return (

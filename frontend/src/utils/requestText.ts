@@ -1,5 +1,6 @@
 import { getDescription } from '../components/dataGridDefaults';
 import { kindOf, RequestKind } from '../constants/leaveColors';
+import { formatDayRange } from './dates';
 
 /**
  * Plain-language helpers for a request row as the dashboard endpoints return
@@ -59,7 +60,8 @@ export function requestKind(r: any): RequestKind | null {
 }
 
 /**
- * When it is for: "Nov 2 to Nov 4", "Nov 3", or the amount for a carry-over.
+ * When it is for: "Nov 2 to Nov 4, 2026", "Nov 3, 2026", or the amount for a
+ * carry-over.
  *
  * @param r - The request row.
  * @returns A short phrase.
@@ -69,8 +71,8 @@ export function requestWhen(r: any): string {
     const d = Number(r.Days || 0);
     return `${d} day${d === 1 ? '' : 's'} ${r.TypeofRequest === 'Payout' ? 'paid out' : 'into next year'}`;
   }
-  const a = shortDate(r.StartDate), b = shortDate(r.EndDate);
-  return b && b !== a ? `${a} to ${b}` : a;
+  // Leave and overtime are calendar dates: full day format, one date when start == end.
+  return formatDayRange(r.StartDate, r.EndDate);
 }
 
 /**
