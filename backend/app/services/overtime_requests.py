@@ -26,7 +26,7 @@ from app.services.balance import (
     simulate_overtime_impact,
 )
 from app.services.concurrency import lock_manager
-from app.services.idempotency import claim_action
+from app.services.idempotency import approval_email_action, claim_action, release_claim
 from app.services.notify_blocked import notify_requests_blocked_by_approval
 from app.services.overlap_detection import (
     conflict_warning,
@@ -216,60 +216,82 @@ async def send_approval_email(request_id: str | int, employee: dict, managers: l
         if version > 1 and not is_reminder else None
     )
 
-    for manager in managers:
-        mgr_fields = manager["fields"]
-        manager_id = manager["id"]
+    # One approval email per version. The request page sends it as it creates
+    # the request; SharePoint's change notice for that same new item then reaches
+    # the dispatcher seconds later and asks again. Whoever claims the version first
+    # sends; a later call for the same version stops here. A real change or a
+    # reminder makes a new version, so those still send.
+    sent_key = approval_email_action(version)
+    if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, sent_key):
+        logger.info("Approval email for overtime request #%s version %s already sent; not sending again", request_id, version)
+        return
+    try:
+        for manager in managers:
+            mgr_fields = manager["fields"]
+            manager_id = manager["id"]
 
-        approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
-        reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
+            approve_url = generate_approval_url("overtime", request_id, "approve", manager_id, approval_version=version)
+            reject_url = generate_approval_url("overtime", request_id, "reject", manager_id, approval_version=version)
 
-        html = render_overtime_approval_email(
-            fields, submitter_name, approve_url, reject_url, is_hf,
-            emp_fields=emp_fields, projected=projected,
-            previous_snapshot=previous_snapshot,
-            conflict_warning=manager_warning,
-        )
-
-        await send_email_with_dashboard(
-            to=[mgr_fields.get("EmailAddress", "")],
-            subject=subject,
-            html_body=html,
-            primary_employee_id=manager_id,
-            reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
-        )
-
-        # Send SMS to manager if they have a cell number (skipped on reminders)
-        cell = mgr_fields.get("CellNumber", "")
-        if cell and not is_reminder:
-            ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
-            if projected:
-                bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
-            else:
-                bal_line = ""
-            await send_sms(
-                to=cell,
-                body=(
-                    f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
-                    f"{ot_date}\n"
-                    f"{bal_line}"
-                    f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
-                ),
+            html = render_overtime_approval_email(
+                fields, submitter_name, approve_url, reject_url, is_hf,
+                emp_fields=emp_fields, projected=projected,
+                previous_snapshot=previous_snapshot,
+                conflict_warning=manager_warning,
             )
 
-    logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
+            await send_email_with_dashboard(
+                to=[mgr_fields.get("EmailAddress", "")],
+                subject=subject,
+                html_body=html,
+                primary_employee_id=manager_id,
+                reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
+            )
 
-    # Send confirmation email to employee (not on reminders - already received once)
-    emp_email = emp_fields.get("EmailAddress", "")
-    if emp_email and not is_reminder:
-        html = render_overtime_confirmation(
-            fields, emp_fields, projected, conflict_warning=employee_warning,
-        )
-        await send_email_with_dashboard(
-            to=[emp_email],
-            subject=f"Time Make-Up Request Received - {submitter_name}",
-            html_body=html,
-            primary_employee_id=employee["id"],
-        )
+            # Send SMS to manager if they have a cell number (skipped on reminders)
+            cell = mgr_fields.get("CellNumber", "")
+            if cell and not is_reminder:
+                ot_date = overtime_date.strftime("%b %d, %Y") if overtime_date else fields.get("StartDate", "")[:10]
+                if projected:
+                    bal_line = f"If approved: MU: {projected['CurrentOvertimeBalance']}.\n"
+                else:
+                    bal_line = ""
+                # A failed text must not undo the emails: raising here would release
+                # the claim and let the next caller email this manager again.
+                try:
+                    await send_sms(
+                        to=cell,
+                        body=(
+                            f"Time Make-Up Request #{request_id} for {submitter_name} ({hours} hrs).\n"
+                            f"{ot_date}\n"
+                            f"{bal_line}"
+                            f"Reply \"OT Approve {request_id}\" or \"OT Reject {request_id}\""
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - logged; the email already went out
+                    logger.exception("Could not text the manager about overtime request #%s", request_id)
+
+        logger.info("Sent approval email for overtime #%s to %d manager(s)", request_id, len(managers))
+
+        # Send confirmation email to employee (not on reminders - already received once)
+        emp_email = emp_fields.get("EmailAddress", "")
+        if emp_email and not is_reminder:
+            html = render_overtime_confirmation(
+                fields, emp_fields, projected, conflict_warning=employee_warning,
+            )
+            await send_email_with_dashboard(
+                to=[emp_email],
+                subject=f"Time Make-Up Request Received - {submitter_name}",
+                html_body=html,
+                primary_employee_id=employee["id"],
+            )
+    except BaseException:                                       # cancellation too (a redeploy mid-send)
+        # The send failed: drop the claim so the next change notice or reminder can retry.
+        try:
+            await release_claim(settings.SP_LIST_OVERTIME_REQUESTS, request_id, sent_key)
+        except Exception:  # noqa: BLE001 - keep the send error, which is the one that matters
+            logger.exception("Could not release the approval email claim for #%s", request_id)
+        raise
 
 
 async def admin_edit_overtime_request(
