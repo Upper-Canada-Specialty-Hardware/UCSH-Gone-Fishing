@@ -2,6 +2,7 @@ import logging
 from datetime import date as dt_date
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -1449,6 +1450,36 @@ async def admin_stats():
 ADMIN_DEFAULT_ID = "admin"
 
 
+async def _run_request_action(handler, *args) -> dict:
+    """Call a request action and turn a missing item into a clean 4xx (#282).
+
+    Approve/reject/refund/remind reach a request by id, so an old email link or
+    the admin table acting on a request someone has since deleted would raise a
+    404 from SharePoint and surface as a 500. Catch that here, and the handler's
+    own {"error": ...} result, so the caller always gets a 4xx with a reason.
+
+    Args:
+        handler: The async action (approve/reject/refund/send_reminder_now).
+        *args: Its arguments.
+
+    Returns:
+        The handler's result dict.
+
+    Raises:
+        HTTPException: 404 when the request no longer exists; 400 for the
+            handler's own error; 502 for any other SharePoint failure.
+    """
+    try:
+        result = await handler(*args)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="This request no longer exists.") from None
+        raise HTTPException(status_code=502, detail="The request could not be updated. Try again shortly.") from e
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
 @router.post("/admin/approve/{request_type}/{request_id}")
 async def admin_approve(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
@@ -1456,10 +1487,7 @@ async def admin_approve(request_type: str, request_id: str):
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    result = await handler(request_id, ADMIN_DEFAULT_ID)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
 
 
 @router.post("/admin/reject/{request_type}/{request_id}")
@@ -1469,10 +1497,7 @@ async def admin_reject(request_type: str, request_id: str):
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    result = await handler(request_id, ADMIN_DEFAULT_ID)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
 
 
 @router.post("/admin/refund/{request_type}/{request_id}")
@@ -1493,10 +1518,7 @@ async def admin_refund(request_type: str, request_id: str):
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    result = await handler(request_id, ADMIN_DEFAULT_ID)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
 
 
 @router.post("/admin/send-reminder/{request_type}/{request_id}")
@@ -1504,10 +1526,7 @@ async def admin_send_reminder(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     from app.tasks.reminders import send_reminder_now
-    result = await send_reminder_now(request_type, request_id)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return await _run_request_action(send_reminder_now, request_type, request_id)
 
 
 # ============================

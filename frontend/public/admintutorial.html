@@ -134,6 +134,21 @@ td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: m
 tr:last-child td { border-bottom: 0; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 tr.click { cursor: pointer; } tr.click:hover td { background: var(--hover); } tr.sel td { background: var(--primary-soft); }
+.reqtable { width: 100%; border-collapse: separate; border-spacing: 0; }
+.reqtable th, .reqtable td { border-bottom: 1px solid var(--line); }
+.chk { width: 34px; text-align: center; }
+.chk input { cursor: pointer; }
+.reqopen td { padding: 0; background: var(--primary-soft); }
+.reqopen-h { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.cmdbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; background: var(--primary-soft); border-bottom: 1px solid var(--line); }
+.seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.calgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.calhead { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; padding: 6px; text-align: center; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.calcell { min-height: 84px; padding: 4px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; align-content: start; gap: 3px; }
+.caldate { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.calcell.hol { background: var(--warn-soft); }
+.calev { font-size: 11.5px; text-align: left; border: 0; background: var(--paper); color: var(--ink); border: 1px solid var(--line2); border-radius: 6px; padding: 1px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.calmore { font-size: 11px; color: var(--primary); background: none; border: 0; cursor: pointer; text-align: left; padding: 0 6px; }
 .sub { display: block; font-size: 12px; color: var(--muted); }
 .neg { color: var(--err-strong); font-weight: 600; }
 .chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--chip); white-space: nowrap; }
@@ -174,8 +189,6 @@ body[data-skin="harbour"] .btn.ok, body[data-skin="slate"] .btn.ok, body[data-sk
 .dialog h2 { margin: 0; font-family: var(--display); font-size: 19px; font-weight: 600; padding: 18px 20px 0; }
 .dialog .db { padding: 10px 20px 4px; display: grid; gap: 12px; }
 .dialog .df { padding: 14px 20px 18px; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(400px, 100vw); background: var(--paper); border-left: 1px solid var(--line); box-shadow: var(--shadow-lg); z-index: 25; display: grid; grid-template-rows: auto auto 1fr; }
-.drawer .dh { padding: 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: flex-start; }
 .x { margin-left: auto; background: none; border: 0; cursor: pointer; font-size: 22px; line-height: 1; padding: 2px 8px; color: var(--muted); border-radius: 6px; }
 .ptabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .ptabs button, .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 10px 8px; font-size: 13.5px; font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap; }
@@ -677,16 +690,16 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
 
   var FLOWS = {
     newhire: { role: 'admin', screen: 'held', hint: 'Riley asked for time off on the request page before being on staff. Click <b>Add employee</b>: the form opens filled in, and adding them sends the request to their supervisor.' },
-    approve: { role: 'admin', screen: 'pending', hint: 'Click a row to see the balances before and after, edit it, or send a reminder. <b>Approve</b> is one click; <b>Reject</b> asks first.' },
+    approve: { role: 'admin', screen: 'pending', hint: '<b>Approve</b> or <b>Reject</b> right on the row, or click the row to open it in place: every column, what it will do to each balance, Edit and a reminder. Tick a few rows and the toolbar becomes a command bar to approve, reject, export or delete them together.' },
     setup: { role: 'admin', screen: 'setup', hint: 'Same list as today\'s Employee Setup tab. <b>Open</b> a person to fix their supervisor, then <b>Check</b> the row, or check anyone with the picker below.' },
     stuck: { role: 'admin', screen: 'stuck', hint: 'Stuck requests sit in the quieter block at the bottom of the sidebar. Casey has no manager: set one from Staff, then <b>Reprocess</b> with a reason.' },
-    refund: { role: 'admin', screen: 'requests', view: 'all', hint: 'Find an approved request and click <b>Refund</b>. It shows what goes back before it happens.' },
+    refund: { role: 'admin', screen: 'requests', view: 'all', hint: 'Find an approved request and click <b>Refund</b>; it shows what goes back before it happens. <b>+ New request</b> adds one for someone (pending, or approved on the spot), and <b>Delete</b> removes one with a reason and a few seconds to undo.' },
     bulk: { role: 'admin', screen: 'staff', hint: 'Click <b>Manage assignments</b> (today\'s wizard): add, remove or replace a manager across a whole team, with a preview first.' },
     manager: { role: 'manager', mtab: 'today', hint: 'Each request shows the dates, what it does to each balance, and who else on the team is off. Decide, and the list moves on.' },
     employee: { role: 'employee', hint: 'Their record and every manager up top, all five balances, then requests by what they are waiting on. <b>This year</b> has their numbers and <b>History</b> every request.' }
   };
 
-  var state = { role: 'admin', authed: true, coDates: null, tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, ptab: 'Balances', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
+  var state = { role: 'admin', authed: true, coDates: null, tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, reqChecked: [], reqmode: 'table', reqlist: 'all', ptab: 'Balances', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
     rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', name: '', first: '', last: '', dept: '', sup: 'Sam Supervisor', supq: '', supmode: 'name', supemail: '', loc: 'British Columbia', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
   try { var ss = localStorage.getItem('proto-skin2'); if (ss) state.skin = ss; var sm = localStorage.getItem('proto-mode'); if (sm) state.mode = sm; } catch (e) {}
   try { var sa = localStorage.getItem('ucshoo-anim'); if (sa === 'on' || sa === 'auto') state.animMode = sa; } catch (e) {}   // remembered Animations choice
@@ -779,47 +792,98 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     return '';
   }
   function findReq(key) { var p = key.split('|'); return REQS.filter(function (r) { return String(r.id) === p[0] && r.who === p[1] && r.status === p[2]; })[0]; }
+  // The requests ticked for a command-bar action, as request objects (missing ones dropped).
+  function checkedReqs() { return state.reqChecked.map(findReq).filter(Boolean); }
+  // One table, no sideways scroll: a checkbox column first, then the request, and
+  // the opened request shows inline right under its own row (no side drawer).
   function requestTable(rows, empty) {
     if (!rows.length) return '<div class="empty">' + empty + '</div>';
-    return '<div class="scroll"><table><thead><tr><th>#</th><th>Employee</th><th>Request</th><th>Manager</th><th>Status</th><th class="num">Waiting</th><th></th></tr></thead><tbody>' +
+    var allOn = rows.every(function (r) { return state.reqChecked.indexOf(r.id + '|' + r.who + '|' + r.status) >= 0; });
+    return '<table class="reqtable"><thead><tr>' +
+      '<th class="chk"><input type="checkbox" data-rcheckall aria-label="Select every request shown"' + (allOn ? ' checked' : '') + '></th>' +
+      '<th>#</th><th>Employee</th><th>Request</th><th>Manager</th><th>Status</th><th class="num">Waiting</th><th></th></tr></thead><tbody>' +
       rows.map(function (r) {
-        var key = r.id + '|' + r.who + '|' + r.status;
+        var key = r.id + '|' + r.who + '|' + r.status;                 // the row's identity in the sample
+        var open = state.reqSel === key;                               // this row is the one opened in place
+        var checked = state.reqChecked.indexOf(key) >= 0;             // this row is ticked for a bulk action
         var detail = r.issues ? r.issues.map(function (i) { return chip(i, 'err'); }).join(' ') : r.why ? '<span class="sub">' + esc(r.why) + '</span>' : r.desc ? '<span class="sub">' + esc(r.desc) + '</span>' : '';
-        return '<tr class="click' + (state.reqSel === key ? ' sel' : '') + '" tabindex="0" data-rsel="' + esc(key) + '"><td class="muted">' + (r.id || '–') + '</td><td><div style="display:flex;gap:10px;align-items:center">' + av(r.who) + '<b>' + esc(r.who) + '</b></div></td><td>' + what(r) + (r.clash ? ' <span class="flag">' + esc(r.clash) + '</span>' : '') + '<div>' + detail + '</div></td>' +
-          '<td>' + (r.mgr ? esc(r.mgr) : chip('None', 'err')) + '</td><td>' + chip(r.status, CHIP[r.status]) + '</td><td class="num">' + age(r.age) + '</td><td><div class="acts">' + rowActions(r) + '</div></td></tr>';
-      }).join('') + '</tbody></table></div>';
+        return '<tr class="click' + (open ? ' sel' : '') + '" tabindex="0" data-rsel="' + esc(key) + '">' +
+          '<td class="chk"><input type="checkbox" data-rcheck="' + esc(key) + '" aria-label="Select request ' + (r.id || '') + '"' + (checked ? ' checked' : '') + '></td>' +
+          '<td class="muted">' + (r.id || '-') + '</td><td><div style="display:flex;gap:10px;align-items:center">' + av(r.who) + '<b>' + esc(r.who) + '</b></div></td><td>' + what(r) + (r.clash ? ' <span class="flag">' + esc(r.clash) + '</span>' : '') + '<div>' + detail + '</div></td>' +
+          '<td>' + (r.mgr ? esc(r.mgr) : chip('None', 'err')) + '</td><td>' + chip(r.status, CHIP[r.status]) + '</td><td class="num">' + age(r.age) + '</td><td><div class="acts">' + rowActions(r) + '</div></td></tr>' +
+          (open ? reqOpenRow(r, 8) : '');                              // opened detail injected right below
+      }).join('') + '</tbody></table>';
+  }
+  // The opened request, as an inline row spanning the table (replaces the drawer).
+  function reqOpenRow(r, colspan) {
+    var bal = r.cur ? '<div class="field">Balances<div class="balrow">' + Object.keys(r.cur).map(function (k) { return '<div class="bal">' + k + '<b>' + r.cur[k] + ' <span class="arrow">&rarr;</span> <span class="' + (r.next[k] < r.cur[k] ? 'to' : '') + '">' + r.next[k] + '</span></b></div>'; }).join('') + '</div></div>' : '';
+    var k = ' data-req="' + r.id + '|' + esc(r.who) + '|' + r.status + '"';
+    // Carry-over and payout show the balance they leave behind, as the owner asked.
+    var newbal = (r.kind === 'Carry Over' || r.kind === 'Payout') && r.next ? '<dt>New balance after this request</dt><dd>' + Object.keys(r.next).map(function (x) { return x + ' ' + r.next[x]; }).join(', ') + '</dd>' : '';
+    var extra = r.status === 'Pending' ? '<button class="btn out' + P + '" type="button" data-act="edit"' + k + '>Edit</button><button class="btn ghost' + P + '" type="button" data-act="remind"' + k + '>Send reminder</button>' : '';
+    return '<tr class="reqopen"><td colspan="' + colspan + '"><div class="pbody" aria-label="Request ' + (r.id || '') + '">' +
+      '<div class="reqopen-h">' + av(r.who, true) + '<b>' + esc(r.who) + '</b> <span class="small muted">' + (r.id ? '#' + r.id + ' &middot; ' : '') + esc(r.type) + '</span> ' + chip(r.status, CHIP[r.status]) + (r.age ? ' <span class="small muted">waiting ' + r.age + ' days</span>' : '') + '<button class="x" type="button" data-act="closepanel" aria-label="Close" style="margin-left:auto">&times;</button></div>' +
+      '<dl class="kv"><dt>Request</dt><dd>' + what(r) + '</dd><dt>Description</dt><dd>' + esc(r.desc || '-') + '</dd><dt>Manager</dt><dd>' + esc(r.mgr || 'None') + '</dd>' + (r.dept ? '<dt>Department</dt><dd>' + esc(r.dept) + '</dd>' : '') + newbal + '</dl>' +
+      (r.issues ? '<div>' + r.issues.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + (r.clash ? '<div><span class="flag">' + esc(r.clash) + '</span></div>' : '') + bal +
+      '<div class="acts" style="justify-content:flex-start">' + rowActions(r) + extra + '<button class="btn ghost" type="button" data-act="audit"' + k + '>Audit trail</button></div></div></td></tr>';
+  }
+  // Kind colours for the calendar, and a small legend key above it.
+  var CAL_KIND = { Vacation: 'info', Sick: 'err', 'Half day': 'warn', Overtime: 'ok', 'Carry Over': 'info', Payout: 'info' };
+  // A compact leave calendar for the sample's busiest month (November 2026).
+  function reqCalendar(rows) {
+    var y = 2026, mi = 10;                                             // November (month index 10)
+    var lead = (new Date(y, mi, 1).getDay() + 6) % 7;                 // blanks before day 1, Monday-first
+    var dim = new Date(y, mi + 1, 0).getDate();                       // days in the month
+    var leave = rows.filter(function (r) { return r.from && r.from[0] === 'Nov'; });   // only rows dated in Nov
+    var hol = {};                                                      // day number -> holiday name, for shading
+    HOLIDAYS.forEach(function (h) { var m = /^[A-Za-z]+ Nov (\d+), 2026$/.exec(h[1]); if (m) hol[+m[1]] = h[0]; });
+    var days = 'Mon Tue Wed Thu Fri Sat Sun'.split(' ').map(function (d) { return '<div class="calhead">' + d + '</div>'; }).join('');
+    var cells = '';
+    for (var i = 0; i < lead; i++) cells += '<div class="calcell"></div>';   // blanks before the 1st
+    for (var d = 1; d <= dim; d++) {
+      var on = leave.filter(function (r) { var a = r.from[1], b = r.to ? r.to[1] : r.from[1]; return d >= a && d <= b; });
+      var ev = on.slice(0, 2).map(function (r) { return '<button class="calev" type="button" data-rsel="' + esc(r.id + '|' + r.who + '|' + r.status) + '" style="border-color:var(--' + (CAL_KIND[r.kind] || 'line2') + ')">' + esc(r.who.split(' ')[0]) + '</button>'; }).join('');
+      var more = on.length > 2 ? '<button class="calmore" type="button" data-calday="' + d + '">+' + (on.length - 2) + ' more</button>' : '';
+      cells += '<div class="calcell' + (hol[d] ? ' hol' : '') + '"><span class="caldate">' + d + (hol[d] ? ' &middot; ' + esc(hol[d]) : '') + '</span>' + ev + more + '</div>';
+    }
+    var legend = Object.keys(CAL_KIND).filter(function (k) { return k !== 'Overtime'; }).map(function (k) { return '<span class="chip ' + CAL_KIND[k] + '">' + k + '</span>'; }).join(' ');
+    return '<div style="padding:12px 16px 4px" class="small muted">November 2026 leave. Statutory holidays are shaded. Click a name to open it, or <b>+N more</b> for a busy day.</div>' +
+      '<div style="padding:0 16px 10px;display:flex;gap:6px;flex-wrap:wrap">' + legend + '</div>' +
+      '<div style="padding:0 16px 16px"><div class="calgrid">' + days + cells + '</div></div>';
   }
   // One requests table; Pending, Held, Stuck and All are views of it.
   function requestsView(view) {
     var VIEWS = [['pending', 'Pending', 'Pending'], ['held', 'Held for new hires', 'Held'], ['stuck', 'Stuck', 'Stuck'], ['all', 'All', null]];
-    var q = (state.filter.reqq || '').toLowerCase(), tf = state.filter.rtype || 'Any type';
-    // Type filter follows the real app: Carry Over matches the carry kind, Payout the payout kind.
-    var typeOk = function (r) { return tf === 'Any type' || (tf === 'Carry Over' ? r.kind === 'Carry Over' : tf === 'Payout' ? r.kind === 'Payout' : r.type === tf); };
-    var match = function (r) { return (!q || (r.who + ' #' + r.id + ' ' + r.kind + ' ' + r.desc).toLowerCase().indexOf(q) >= 0) && typeOk(r); };
+    var q = (state.filter.reqq || '').toLowerCase();
+    var ls = state.reqlist || 'all';
+    // The list switch mirrors the app: one of the three lists, or all three together.
+    var LISTS = [['all', 'All lists'], ['Leave', 'Leave'], ['Overtime', 'Make-up'], ['co', 'Carry-over and payout']];
+    var listOk = function (r) { return ls === 'all' || (ls === 'co' ? r.type === 'Carry Over' : r.type === ls); };
+    var match = function (r) { return (!q || (r.who + ' #' + r.id + ' ' + r.kind + ' ' + r.desc).toLowerCase().indexOf(q) >= 0) && listOk(r); };
     var cur = VIEWS.filter(function (v) { return v[0] === view; })[0];
     var rows = REQS.filter(function (r) { return (!cur[2] || r.status === cur[2]) && match(r); }).sort(function (a, b) { return b.age - a.age; });
     var titles = { pending: 'Pending approvals', held: 'Held for new hires', stuck: 'Stuck requests', all: 'All requests' };
-    var desc = { pending: 'Waiting on a manager, oldest first. Click a request for its balances, edit and reminders.', held: 'Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on. Their supervisor is reminded after 2 business days; admins are emailed after 5.', stuck: 'Requests the system could not finish on its own. Fix the cause, then reprocess.', all: STATS.leave.toLocaleString() + ' leave, ' + STATS.overtime + ' overtime and ' + STATS.co + ' carry over or payout requests in total.' };
+    var desc = { pending: 'Waiting on a manager, oldest first. Approve or reject right on the row, tick several to act together, or open a request in place for its balances, edit and a reminder.', held: 'Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on. Their supervisor is reminded after 2 business days; admins are emailed after 5.', stuck: 'Requests the system could not finish on its own. Fix the cause, then reprocess.', all: 'The three lists in one table: switch lists, open a request in place, or show leave on a calendar. ' + STATS.leave.toLocaleString() + ' leave, ' + STATS.overtime + ' overtime and ' + STATS.co + ' carry over or payout requests in total.' };
     var empties = { pending: 'No pending requests.', held: 'Nothing is waiting.', stuck: 'No stuck requests found.', all: 'No requests match.' };
+    // The view chips (Pending, Held, Stuck, All) sit in their own toolbar, always visible.
+    var tabs = VIEWS.map(function (v) {
+      var n = REQS.filter(function (r) { return (!v[2] || r.status === v[2]) && match(r); }).length;
+      return '<button class="fchip" type="button" data-view="' + v[0] + '" aria-pressed="' + (v[0] === view) + '">' + v[1] + ' <span class="c">' + n + '</span></button>';
+    }).join('');
+    var isAll = view === 'all';                                        // only All offers the list switch and calendar
+    var checked = checkedReqs();
+    // Ticked rows turn the tool row into a command bar over the selection.
+    var bar = checked.length
+      ? '<div class="cmdbar" role="toolbar" aria-label="Selected requests"><button class="btn ghost" type="button" data-act="cmdclear" aria-label="Clear selection">&times;</button><b>' + checked.length + ' selected</b>' +
+        '<span style="flex:1"></span><button class="btn ok" type="button" data-act="cmdapprove">Approve</button><button class="btn err" type="button" data-act="cmdreject">Reject</button><button class="btn ghost" type="button" data-act="cmdremind">Remind</button><button class="btn out" type="button" data-act="cmdexport">Export</button><button class="btn err" type="button" data-act="cmddelete">Delete</button></div>'
+      : '<div class="toolbar"><button class="btn pri" type="button" data-act="newreq">+ New request</button>' +
+        '<input class="input" data-search="reqq" placeholder="Search employee, #id or description" value="' + esc(state.filter.reqq || '') + '" aria-label="Search requests">' +
+        (isAll ? '<span class="seg" role="group" aria-label="Which list">' + LISTS.map(function (l) { return '<button type="button" class="fchip" data-rlist="' + l[0] + '" aria-pressed="' + (l[0] === ls) + '">' + l[1] + '</button>'; }).join('') + '</span>' +
+          '<span class="seg" role="group" aria-label="Show as"><button type="button" class="fchip" data-rmode="table" aria-pressed="' + (state.reqmode !== 'cal') + '">Table</button><button type="button" class="fchip" data-rmode="cal" aria-pressed="' + (state.reqmode === 'cal') + '">Calendar</button></span>' +
+          '<button class="btn out" type="button" data-act="cmdexport">Export to Excel</button>' : '') + '</div>';
+    var body = (isAll && state.reqmode === 'cal') ? reqCalendar(rows) : requestTable(rows, empties[view]);
     return head(titles[view], desc[view]) +
-      '<div class="paper"><div class="toolbar">' + VIEWS.map(function (v) {
-        var n = REQS.filter(function (r) { return (!v[2] || r.status === v[2]) && match(r); }).length;
-        return '<button class="fchip" type="button" data-view="' + v[0] + '" aria-pressed="' + (v[0] === view) + '">' + v[1] + ' <span class="c">' + n + '</span></button>';
-      }).join('') + '<select class="input" data-fsel="rtype" aria-label="Request type">' + ['Any type', 'Leave', 'Overtime', 'Carry Over', 'Payout'].map(function (t) { return '<option' + (t === tf ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' +
-      '<input class="input" data-search="reqq" placeholder="Search employee, #id or description" value="' + esc(state.filter.reqq || '') + '" aria-label="Search requests"></div>' + requestTable(rows, empties[view]) + '</div>';
-  }
-  function requestPanel() {
-    if (!state.reqSel) return '';
-    var r = findReq(state.reqSel);
-    if (!r) return '';
-    var bal = r.cur ? '<div class="field">Balances<div class="balrow">' + Object.keys(r.cur).map(function (k) { return '<div class="bal">' + k + '<b>' + r.cur[k] + ' <span class="arrow">→</span> <span class="' + (r.next[k] < r.cur[k] ? 'to' : '') + '">' + r.next[k] + '</span></b></div>'; }).join('') + '</div></div>' : '';
-    var k = ' data-req="' + r.id + '|' + esc(r.who) + '|' + r.status + '"';
-    var extra = r.status === 'Pending' ? '<button class="btn out' + P + '" type="button" data-act="edit"' + k + '>Edit</button><button class="btn ghost' + P + '" type="button" data-act="remind"' + k + '>Send reminder</button>' : '';
-    return '<aside class="drawer" aria-label="Request ' + (r.id || '') + '"><div class="dh">' + av(r.who, true) + '<div><b style="font-size:16px">' + esc(r.who) + '</b><div class="small muted">' + (r.id ? '#' + r.id + ' · ' : '') + esc(r.type) + '</div></div><button class="x" type="button" data-act="closepanel" aria-label="Close">×</button></div>' +
-      '<div style="padding:12px 16px;border-bottom:1px solid var(--line)">' + chip(r.status, CHIP[r.status]) + (r.age ? ' <span class="small muted">waiting ' + r.age + ' days</span>' : '') + '</div>' +
-      '<div class="pbody"><dl class="kv"><dt>Request</dt><dd>' + what(r) + '</dd><dt>Description</dt><dd>' + esc(r.desc || '–') + '</dd><dt>Manager</dt><dd>' + esc(r.mgr || 'None') + '</dd>' + (r.dept ? '<dt>Department</dt><dd>' + esc(r.dept) + '</dd>' : '') + '</dl>' +
-      (r.issues ? '<div>' + r.issues.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + (r.clash ? '<div><span class="flag">' + esc(r.clash) + '</span></div>' : '') + bal +
-      '<div class="acts" style="justify-content:flex-start">' + rowActions(r) + extra + '<button class="btn ghost" type="button" data-act="audit"' + k + '>Audit trail</button></div></div></aside>';
+      '<div class="paper"><div class="toolbar">' + tabs + '</div>' + bar + body + '</div>';
   }
 
   // The admin password gate: the dashboard opens here until HR signs in on this device.
@@ -1389,6 +1453,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     state.role = 'admin'; state.screen = screen || 'home'; state.authed = true; state.coDates = null;
     state.flow = null; state.modal = null; state.created = null; state.prefill = null;
     state.sel = null; state.reqSel = null; state.setupChecked = null; state.filter = {};
+    state.reqChecked = []; state.reqmode = 'table'; state.reqlist = 'all';   // a tour step always lands on the plain table
     state.rp = JSON.parse(RP_BASE);
   }
 
@@ -1421,28 +1486,28 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           enter: function () { adminAt('pending'); },
           signal: function () { return !!state.reqSel; },
           act: function () { var b = document.querySelector('tr[data-rsel="1432|Avery Example|Pending"]'); if (b) b.click(); } },
-        { title: 'What approving would do', target: '.drawer .pbody',
+        { title: 'What approving would do', target: '.reqopen .pbody',
           todo: 'The panel shows the request, its manager, and the balances before and after. Edit, Send reminder, Approve and Reject are all here.',
           know: 'Balances only move when a manager approves. The panel shows the result in advance so there are no surprises.',
           enter: function () { adminAt('pending'); state.reqSel = '1432|Avery Example|Pending'; } },
-        { title: 'Edit before approving', target: '.drawer [data-act="edit"]',
+        { title: 'Edit before approving', target: '.reqopen [data-act="edit"]',
           todo: 'Wrong dates or the wrong type? Select <b>Edit</b> to fix the request before it is approved.',
           know: 'Editing is for small corrections. Anything bigger is better rejected so the person sends a fresh request.',
           enter: function () { adminAt('pending'); state.reqSel = '1432|Avery Example|Pending'; },
           signal: function () { return !!(state.modal && state.modal.kind === 'edit'); },
-          act: function () { var b = document.querySelector('.drawer [data-act="edit"]'); if (b) b.click(); } },
+          act: function () { var b = document.querySelector('.reqopen [data-act="edit"]'); if (b) b.click(); } },
         { title: 'Save and re-send', target: '.dialog [data-act="saveedit"]',
           todo: 'Change what you need, give a reason, then <b>Save</b>.',
           know: 'Saving sends a fresh approval email and the old link stops working, so a stale version of the request cannot be approved by mistake.',
           enter: function () { adminAt('pending'); state.reqSel = '1432|Avery Example|Pending'; var r = REQS.filter(function (x) { return x.id === 1432 && x.status === 'Pending'; })[0]; state.modal = { kind: 'edit', req: r }; },
           signal: function () { return !state.modal; },
           act: function () { var b = document.querySelector('.dialog [data-act="saveedit"]'); if (b) b.click(); } },
-        { title: 'Help it along', target: '.drawer [data-act="approve"]',
+        { title: 'Help it along', target: '.reqopen [data-act="approve"]',
           todo: 'When a request is right and its manager is away or slow, Approve and Reject work here too, exactly like the manager\'s own buttons.',
           know: 'Whoever acts first wins, across the dashboard, the email buttons and the text message. A second try is simply told it was already handled.',
           enter: function () { adminAt('pending'); state.reqSel = '1432|Avery Example|Pending'; TV.approveId = 1432; },
           signal: function () { return !pendingHas(1432); },
-          act: function () { var b = document.querySelector('.drawer [data-act="approve"]'); if (b) b.click(); } },
+          act: function () { var b = document.querySelector('.reqopen [data-act="approve"]'); if (b) b.click(); } },
         { title: 'The person is emailed',
           mail: { to: 'avery.example@ucsh.com', subject: 'Approved: vacation, Nov 2 to 4', kind: 'decision', lines: ['Sam Supervisor approved the leave for Avery Example.'], dl: [['Dates', 'Mon Nov 2 to Wed Nov 4, 2026'], ['Working days', '3'], ['Vacation left', '2.5 days']] },
           todo: 'Every decision emails the employee by itself. You never send anything by hand.',
@@ -1523,12 +1588,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           enter: function () { adminAt('requests'); },
           signal: function () { return !!state.reqSel; },
           act: function () { var b = document.querySelector('tr[data-rsel="1395|Taylor Mock|Approved"]'); if (b) b.click(); } },
-        { title: 'Refund an approved request', target: '.drawer [data-act="refund"]',
+        { title: 'Refund an approved request', target: '.reqopen [data-act="refund"]',
           todo: 'Approved by mistake, or plans changed after approval? Select <b>Refund</b>.',
           know: 'Refund is the only action on an already-approved request; a pending one is simply rejected instead.',
           enter: function () { adminAt('requests'); state.reqSel = '1395|Taylor Mock|Approved'; },
           signal: function () { return !!(state.modal && state.modal.kind === 'refund'); },
-          act: function () { var b = document.querySelector('.drawer [data-act="refund"]'); if (b) b.click(); } },
+          act: function () { var b = document.querySelector('.reqopen [data-act="refund"]'); if (b) b.click(); } },
         { title: 'See what goes back', target: '.dialog [data-act="dorefund"]',
           todo: 'The dialog shows what returns before it happens: here, 5 days go back to Vacation. Confirm to mark it Refunded.',
           know: 'The days go back to the balances they were taken from.',
@@ -2070,6 +2135,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           '<button class="btn ghost" type="button" data-act="wzback">Back</button><button class="btn pri" type="button" data-act="wzdone">Done</button>', true);
       case 'checklist': return dialog('What moved where', '<span class="small muted">Every part of today\'s admin dashboard, and where it lives in this design.</span><div class="scroll"><table class="checklist"><thead><tr><th>Today</th><th>Now</th></tr></thead><tbody>' + CHECKLIST.map(function (c) { return '<tr><td>' + c[0] + '</td><td>' + c[1] + '</td></tr>'; }).join('') + '</tbody></table></div>', '', true);
       case 'mgradd': return dialog('Add a new hire', addEmployee(false), '', true);
+      case 'newreq': return dialog('New request', '<div class="row2"><label class="field">List<select class="input">' + ['Leave', 'Make-up (overtime)', 'Carry-over or payout'].map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select></label><label class="field">Employee<select class="input">' + STAFF.map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label></div><label class="field">When<input class="input" placeholder="e.g. Nov 23 to Nov 25"></label><label class="field">Status<select class="input">' + ['Pending: ask the manager', 'Approved: apply it now'].map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select></label><div class="small muted">Pending sends it to the manager. Approved applies it at once and emails the person (example).</div>', '<button class="btn pri" type="button" data-act="donewreq">Create</button>');
+      case 'calday': var dd = m.day; var dayrows = REQS.filter(function (x) { return x.from && x.from[0] === 'Nov' && dd >= x.from[1] && dd <= (x.to ? x.to[1] : x.from[1]); }); return dialog('November ' + dd + ', 2026', (dayrows.length ? '<table><tbody>' + dayrows.map(function (x) { return '<tr class="click" data-rsel="' + esc(x.id + '|' + x.who + '|' + x.status) + '"><td>' + av(x.who) + '</td><td><b>' + esc(x.who) + '</b><div class="sub">' + what(x) + '</div></td><td>' + chip(x.status, CHIP[x.status]) + '</td></tr>'; }).join('') + '</tbody></table>' : '<div class="empty">No leave on this day.</div>') + '<div class="small muted" style="margin-top:8px">Click a name to open it in the table.</div>');
     }
     return '';
   }
@@ -2124,7 +2191,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }
     if (state.role === 'admin' && !SCREENS[state.screen]) state.screen = 'home';
     if (state.screen !== 'staff') state.sel = null;
-    if (['pending', 'held', 'stuck', 'requests'].indexOf(state.screen) < 0) state.reqSel = null;
+    if (['pending', 'held', 'stuck', 'requests'].indexOf(state.screen) < 0) { state.reqSel = null; state.reqChecked = []; }   // leaving the lists drops any open row and selection
     renderSide();
     var flow = state.flow ? '<div class="flowbar"><span><b>Flow:</b> ' + FLOWS[state.flow].hint + '</span><button class="x" type="button" data-act="endflow" aria-label="End flow">×</button></div>' : '';
     var ro = state.readonly ? '<div class="banner">System is in reporting-only mode. Approve/reject actions are disabled.</div>' : '';
@@ -2139,7 +2206,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     mainEl.innerHTML = flow + ro + html;                      // content sits straight in the #main grid (gap:18px)
     if (fresh) { void mainEl.offsetWidth; mainEl.classList.add('anim', 'enter-on'); }   // force reflow, then replay
     state.lastAnim = key;
-    $('overlay').innerHTML = (state.role === 'admin' ? requestPanel() : '') + renderModal();
+    $('overlay').innerHTML = renderModal();
     var hash = hashNow();
     if (location.hash !== hash) { try { history.replaceState(null, '', hash); } catch (e) {} }
     var ri = $('reasonIn'); if (ri) ri.focus();
@@ -2166,6 +2233,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
 
   document.addEventListener('click', function (e) {
+    // Checkbox clicks are handled on the change event, and must not bubble up to
+    // open the row they sit in, so stop them resolving to their tr[data-rsel].
+    if (e.target.matches && e.target.matches('input[data-rcheck], input[data-rcheckall]')) return;
     var t = e.target.closest('button, tr[data-sel], tr[data-rsel], .modal, input[data-op]');
     if (!t) return;
     if (handleTourClick(t)) return;                       // tour controls win over app clicks
@@ -2178,8 +2248,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (t.hasAttribute('data-go')) { go(t.getAttribute('data-go')); return; }
     if (t.hasAttribute('data-filter')) { var f = t.getAttribute('data-filter').split('|'); state.filter[f[0]] = f[1]; render(); return; }
     if (t.hasAttribute('data-view')) { var v = t.getAttribute('data-view'); state.filter.reqview = v; go({ pending: 'pending', stuck: 'stuck', held: 'held', all: 'requests' }[v]); return; }
+    if (t.hasAttribute('data-rlist')) { state.reqlist = t.getAttribute('data-rlist'); state.reqChecked = []; state.reqSel = null; render(); return; }   // switch which list the table shows
+    if (t.hasAttribute('data-rmode')) { state.reqmode = t.getAttribute('data-rmode'); render(); return; }   // table or calendar
+    if (t.hasAttribute('data-calday')) { state.modal = { kind: 'calday', day: +t.getAttribute('data-calday') }; render(); return; }   // open a busy day
     if (t.hasAttribute('data-sel')) { state.sel = +t.getAttribute('data-sel'); render(); return; }
-    if (t.hasAttribute('data-rsel')) { state.reqSel = t.getAttribute('data-rsel'); render(); return; }
+    if (t.hasAttribute('data-rsel')) { state.reqSel = t.getAttribute('data-rsel'); if (state.reqmode === 'cal') state.reqmode = 'table'; state.modal = null; render(); return; }   // calendar and day-list clicks open in the table
     if (t.hasAttribute('data-ptab')) { state.ptab = t.getAttribute('data-ptab'); render(); return; }
     if (t.hasAttribute('data-mtab')) { state.mtab = t.getAttribute('data-mtab'); render(); return; }
     if (t.hasAttribute('data-etab')) { state.etab = t.getAttribute('data-etab'); render(); window.scrollTo(0, 0); return; }
@@ -2245,6 +2318,14 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'openperson': var w = person(t.getAttribute('data-who')); state.screen = 'staff'; state.created = null; state.sel = w ? w.id : null; state.ptab = 'Balances'; render(); return;
       case 'closepanel': state.sel = null; state.reqSel = null; render(); return;
       case 'endflow': state.flow = null; render(); return;
+      case 'cmdclear': state.reqChecked = []; render(); return;                    // drop the selection
+      case 'cmdapprove': { var ca = checkedReqs(), na = 0; ca.forEach(function (x) { if (x.status === 'Pending') { x.status = 'Approved'; x.age = 0; na++; } }); state.reqChecked = []; state.reqSel = null; toast('Approved ' + na + ' request' + (na === 1 ? '' : 's') + '. Each person is emailed (example).'); render(); return; }
+      case 'cmdreject': { var cr2 = checkedReqs(), nr = 0; cr2.forEach(function (x) { if (x.status === 'Pending') { x.status = 'Rejected'; x.age = 0; nr++; } }); state.reqChecked = []; state.reqSel = null; toast('Rejected ' + nr + ' request' + (nr === 1 ? '' : 's') + ' (example).'); render(); return; }
+      case 'cmdremind': { var nrem = checkedReqs().filter(function (x) { return x.status === 'Pending'; }).length; state.reqChecked = []; toast('Reminder sent for ' + nrem + ' request' + (nrem === 1 ? '' : 's') + ' (example).'); render(); return; }
+      case 'cmdexport': toast('Downloaded requests.xlsx (example).'); return;
+      case 'cmddelete': { var keys = state.reqChecked.slice(), nd = keys.length; REQS = REQS.filter(function (x) { return keys.indexOf(x.id + '|' + x.who + '|' + x.status) < 0; }); state.reqChecked = []; state.reqSel = null; toast('Deleted ' + nd + ' request' + (nd === 1 ? '' : 's') + ', with a few seconds to undo (example).'); render(); return; }
+      case 'newreq': state.modal = { kind: 'newreq' }; render(); return;           // open the add-a-request form
+      case 'donewreq': state.modal = null; toast('Request created (example). It shows in the list, pending its manager.'); render(); return;
       case 'checkone': case 'checkpicked':
         var nm = act === 'checkone' ? t.getAttribute('data-who') : $('checkPick').value;
         var s2 = SETUP.filter(function (s) { return s.who === nm; })[0];
@@ -2286,6 +2367,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (msgs[act]) toast(msgs[act]);
   });
   document.addEventListener('change', function (e) {
+    // A row checkbox toggled: add or drop its key from the selection.
+    var rc = e.target.getAttribute && e.target.getAttribute('data-rcheck');
+    if (rc != null) { var i = state.reqChecked.indexOf(rc); if (e.target.checked && i < 0) state.reqChecked.push(rc); else if (!e.target.checked && i >= 0) state.reqChecked.splice(i, 1); render(); return; }
+    // The header checkbox: tick or clear every row currently shown.
+    if (e.target.hasAttribute && e.target.hasAttribute('data-rcheckall')) { var keys = Array.prototype.map.call(document.querySelectorAll('input[data-rcheck]'), function (b) { return b.getAttribute('data-rcheck'); }); state.reqChecked = e.target.checked ? keys : []; render(); return; }
     var k = e.target.getAttribute && e.target.getAttribute('data-fsel');
     if (k) { state.filter[k] = e.target.value; render(); }
     var rs = e.target.getAttribute && e.target.getAttribute('data-rpsel');

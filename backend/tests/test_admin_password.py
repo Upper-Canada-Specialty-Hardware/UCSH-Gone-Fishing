@@ -93,6 +93,22 @@ def test_every_admin_route_in_the_app_is_guarded():
         assert response.status_code == 401, f"{method} {path} answered {response.status_code}"
 
 
+def test_the_requests_screen_router_is_behind_the_guard():
+    """The #278 admin requests router (new, delete, export, options) sits behind
+    the same password guard as every other admin route (#294 S15).
+
+    It is a separate router from the main dashboard one, mounted with the same
+    guard in app.main; this confirms its routes are published under the admin
+    path and refuse an unauthenticated call.
+    """
+    from app.main import app
+    client = TestClient(app)                                            # no `with`: startup tasks stay off
+    published = [p for p in app.openapi()["paths"] if p.startswith(admin_auth.ADMIN_PATH + "requests")]
+    assert published, "the admin requests routes should be published"
+    assert client.post("/api/dashboard/admin/requests/new", json={}).status_code == 401
+    assert client.get("/api/dashboard/admin/requests/new-options").status_code == 401
+
+
 def test_admin_calls_are_refused_without_a_session(client):
     response = client.get("/api/dashboard/admin/held-requests")
     assert response.status_code == 401

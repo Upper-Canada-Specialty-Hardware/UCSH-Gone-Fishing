@@ -40,7 +40,7 @@ def client(monkeypatch):
         return 12 if test_client.linked else None
 
     def recorder(kind):
-        async def create(form_data, email, source=None):
+        async def create(form_data, email, source=None, notify=True):
             test_client.created.append((kind, form_data, email, source))
             return {"id": "500"}
         return create

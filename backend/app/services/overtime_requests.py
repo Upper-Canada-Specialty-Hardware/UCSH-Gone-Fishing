@@ -36,6 +36,7 @@ from app.services.overlap_detection import (
 from app.services.approval_links import generate_approval_url
 from app.services.approval_versions import (
     bump_and_snapshot,
+    get_current_version,
     get_previous_snapshot,
     MATERIAL_FIELDS_OVERTIME,
 )
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 async def process_new_overtime_request(
     form_data: dict, submitter_email: str, source: str | None = None,
+    notify: bool = True,
 ) -> dict:
     """Create the SharePoint overtime item, assign its manager, ask for approval.
 
@@ -61,6 +63,9 @@ async def process_new_overtime_request(
         submitter_email: Who the request is for.
         source: Where it came from (a request_submitter.SOURCE_* value),
             written to RequestSource when those columns are enabled.
+        notify: True asks the manager for approval, as a normal submission
+            does. False assigns the manager but skips that email, so an admin
+            can create and approve the request in one step (#283).
 
     Returns:
         The created SharePoint item.
@@ -88,12 +93,19 @@ async def process_new_overtime_request(
     logger.info("Created overtime request #%s", item_id)
 
     # Auto-assign manager
-    await auto_assign_manager(item_id, submitter_email)
+    await auto_assign_manager(item_id, submitter_email, notify=notify)   # notify=False skips the approval email
     return item
 
 
-async def auto_assign_manager(request_id: str | int, submitter_email: str | None = None):
-    """Look up submitter → supervisor → assign manager → trigger approval."""
+async def auto_assign_manager(request_id: str | int, submitter_email: str | None = None, notify: bool = True):
+    """Look up submitter → supervisor → assign manager → trigger approval.
+
+    Args:
+        request_id: The overtime item.
+        submitter_email: Fallback when the person column misses the submitter.
+        notify: True sends the approval email at the end; False stops after the
+            manager is assigned, for an admin-created-and-approved request.
+    """
     item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -123,8 +135,66 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
     await request_store.update_list_item_fields(settings.SP_LIST_OVERTIME_REQUESTS, request_id, update)
     logger.info("Assigned manager %s to overtime request #%s", mgr_fields.get("Title"), request_id)
 
-    # Trigger approval pipeline with all managers
-    await send_approval_email(request_id, employee, managers)
+    # Trigger approval pipeline with all managers, unless an admin approves it.
+    if notify:
+        await send_approval_email(request_id, employee, managers)
+    else:
+        # Admin create-and-approve: suppress the manager email now and durably,
+        # so the dispatcher's later change-notice call sends nothing (#294 B1).
+        await _suppress_approval_notification(request_id, fields)
+
+
+async def _suppress_approval_notification(request_id: str | int, fields: dict) -> None:
+    """Claim the approval email without sending it, so no later call sends one.
+
+    Mirrors send_approval_email's once-per-version guard: take the same version
+    and claim ``approval_email_v<version>`` without sending, so the dispatcher's
+    send_approval_email for this item finds the claim taken and stops. Undone by
+    notify_manager_after_failed_admin_approval if the admin's approval fails.
+
+    Args:
+        request_id: The overtime item.
+        fields: Its fields, already read, holding the material columns the
+            version snapshot is taken from (Hours, StartDate, Title).
+    """
+    version = await bump_and_snapshot(
+        settings.SP_LIST_OVERTIME_REQUESTS, request_id, fields, MATERIAL_FIELDS_OVERTIME,
+    )                                                           # same version send_approval_email would use
+    await claim_action(
+        settings.SP_LIST_OVERTIME_REQUESTS, request_id, approval_email_action(version),
+    )                                                           # mark it sent, so no real send follows
+
+
+async def notify_manager_after_failed_admin_approval(request_id: str | int) -> bool:
+    """Undo the suppressed approval email and ask the manager, after an admin's
+    create-and-approve did not approve the request (#294 S3).
+
+    Turns an admin-created overtime request the admin could not approve into an
+    ordinary Pending one the manager is emailed about. Does nothing when the
+    request is no longer Pending, so a terminal decision is not reopened.
+
+    Args:
+        request_id: The overtime item.
+
+    Returns:
+        True when the manager was asked; False when it was not in a state to ask.
+    """
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    if item is None or item["fields"].get("Status") != "Pending":
+        return False                                            # gone or already decided: leave it
+    fields = item["fields"]
+    version = await get_current_version(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    await release_claim(
+        settings.SP_LIST_OVERTIME_REQUESTS, request_id, approval_email_action(version),
+    )                                                           # give the claim back so the send can run
+    employee = await resolve_request_submitter(fields, "SubmittedBy")
+    if not employee:
+        return False                                            # cannot resolve who it is for
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
+        return False                                            # nobody to ask
+    await send_approval_email(request_id, employee, managers)   # ask the manager the normal way
+    return True
 
 
 async def send_approval_email(request_id: str | int, employee: dict, managers: list[dict], is_reminder: bool = False):
@@ -614,7 +684,11 @@ async def reject_overtime_request(request_id: str | int, manager_id: str | int) 
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 
-    item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    # Read without raising: a link may reject a request that was since deleted,
+    # which must read as a clean message rather than a 500 (#294 S6).
+    item = await request_store.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
+    if item is None:
+        return {"error": "This request no longer exists."}
     fields = item["fields"]
 
     if fields.get("Status") != "Pending":

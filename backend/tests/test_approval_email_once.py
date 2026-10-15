@@ -214,7 +214,7 @@ def test_days_are_worked_out_before_the_manager_is_emailed(monkeypatch):
     async def calc(item_id):
         order.append("days")
 
-    async def assign(item_id):
+    async def assign(item_id, notify=True):
         order.append("manager")                                  # this step sends the email
 
     async def alert(item_id):
@@ -231,6 +231,159 @@ def test_days_are_worked_out_before_the_manager_is_emailed(monkeypatch):
         {"leave_type": "Vacation", "start_date": "2026-11-02", "end_date": "2026-11-03"}, "casey@ucsh.com",
     ))
     assert order.index("days") < order.index("manager")
+
+
+def stub_or_none(monkeypatch, module, fields: dict) -> None:
+    """Make request_store.get_list_item_or_none in a module return one item.
+
+    Args:
+        monkeypatch: pytest's monkeypatch.
+        module: The service module whose request_store is stubbed.
+        fields: The item's fields.
+    """
+    async def get_or_none(list_id, item_id):
+        return {"id": str(item_id), "fields": dict(fields)}
+    monkeypatch.setattr(module.request_store, "get_list_item_or_none", get_or_none)
+
+
+# ----- B1: an admin's create-and-approve suppresses the manager email, durably -----
+
+LEAVE_FIELDS = {
+    "Status": "Pending", "ManagerLookupId": "5", "LeaveType": "Vacation", "Days": 2,
+    "StartDate": "2026-11-02", "EndDate": "2026-11-03",
+}
+OVERTIME_FIELDS = {
+    "Status": "Pending", "ManagerLookupId": "5", "Hours": 4, "StartDate": "2026-11-04", "Title": "Inventory count",
+}
+CARRYOVER_FIELDS = {
+    "Status": "Pending", "EmployeeID": "12", "ManagerID": "77", "ManagerLookupId": "5",
+    "SystemState": "Not Processed", "TypeofRequest": "Carry Over", "Days": 1,
+}
+
+
+def test_admin_approved_leave_suppresses_the_manager_email(monkeypatch, outbox):
+    # The notify=False path claims the approval email's version without sending.
+    # The dispatcher's later send computes the same version, finds the claim and
+    # sends nothing (#294 B1).
+    stub_leave(monkeypatch)
+    request_id = new_id()
+    run(leave_requests._suppress_approval_notification(request_id, dict(LEAVE_FIELDS)))
+    run(leave_requests.send_approval_email(request_id))          # the dispatcher's change-notice call
+    assert outbox.emails == []                                   # nothing went out
+    assert outbox.texts == []
+
+
+def test_admin_failed_leave_approval_releases_and_asks_the_manager(monkeypatch, outbox):
+    # When the admin's own approval then fails, the suppression is undone and the
+    # manager is emailed the normal way, so nothing is left silently blocked (#294 S3).
+    stub_leave(monkeypatch)
+    stub_or_none(monkeypatch, leave_requests, LEAVE_FIELDS)
+    request_id = new_id()
+    run(leave_requests._suppress_approval_notification(request_id, dict(LEAVE_FIELDS)))
+    asked = run(leave_requests.notify_manager_after_failed_admin_approval(request_id))
+    assert asked is True
+    subjects = [subject for _, subject in outbox.emails]
+    assert "Leave Request - Casey Demo" in subjects             # the manager was asked after all
+
+
+def test_recovery_does_nothing_for_a_request_that_is_no_longer_pending(monkeypatch, outbox):
+    # A terminal decision (rejected, or gone) is not reopened by recovery (#294 S2/S3).
+    stub_leave(monkeypatch)
+    stub_or_none(monkeypatch, leave_requests, {**LEAVE_FIELDS, "Status": "Rejected"})
+    request_id = new_id()
+    run(leave_requests._suppress_approval_notification(request_id, dict(LEAVE_FIELDS)))
+    asked = run(leave_requests.notify_manager_after_failed_admin_approval(request_id))
+    assert asked is False
+    assert outbox.emails == []                                   # nothing sent
+
+
+def _stub_overtime(monkeypatch):
+    """Point the overtime sender at one item, employee, manager and no conflicts."""
+    stub_item(monkeypatch, overtime_requests, OVERTIME_FIELDS)
+
+    async def no_holidays(province):
+        return []
+
+    async def no_conflict(request_id, fields):
+        return None
+
+    async def employee(fields, column):
+        return EMPLOYEE
+
+    async def managers(emp):
+        return [MANAGER]
+    monkeypatch.setattr(overtime_requests, "get_holidays_for_province", no_holidays)
+    monkeypatch.setattr(overtime_requests, "find_overtime_conflict_for_request", no_conflict)
+    monkeypatch.setattr(overtime_requests, "resolve_request_submitter", employee)
+    monkeypatch.setattr(overtime_requests, "get_all_managers_for_employee", managers)
+
+
+def test_admin_approved_overtime_suppresses_the_manager_email(monkeypatch, outbox):
+    _stub_overtime(monkeypatch)
+    request_id = new_id()
+    run(overtime_requests._suppress_approval_notification(request_id, dict(OVERTIME_FIELDS)))
+    run(overtime_requests.send_approval_email(request_id, EMPLOYEE, [MANAGER]))   # the dispatcher's call
+    assert [e for e in outbox.emails if e[0] == ["pat@ucsh.com"]] == []           # no manager email
+    assert outbox.texts == []
+
+
+def test_admin_failed_overtime_approval_releases_and_asks_the_manager(monkeypatch, outbox):
+    _stub_overtime(monkeypatch)
+    stub_or_none(monkeypatch, overtime_requests, OVERTIME_FIELDS)
+    request_id = new_id()
+    run(overtime_requests._suppress_approval_notification(request_id, dict(OVERTIME_FIELDS)))
+    asked = run(overtime_requests.notify_manager_after_failed_admin_approval(request_id))
+    assert asked is True
+    assert len([e for e in outbox.emails if e[0] == ["pat@ucsh.com"]]) == 1       # the manager was asked
+
+
+def _stub_carryover(monkeypatch):
+    """Stub the carry-over pipeline's employee, managers and writes; return the
+    received-email subjects list it records into."""
+    sent: list[str] = []
+
+    async def email(to, subject, html_body, **kwargs):
+        sent.append(subject)
+    monkeypatch.setattr(carryover_payout, "send_email", email)
+    for name in ("render_carryover_confirmation", "render_payout_confirmation"):
+        monkeypatch.setattr(f"app.templates_render.{name}", lambda *a, **k: "<p>body</p>")
+
+    async def no_write(list_id, item_id, fields):
+        return fields
+
+    async def employee(employee_id):
+        return MANAGER if employee_id == "77" else EMPLOYEE
+
+    async def managers(emp):
+        return [MANAGER]
+    monkeypatch.setattr(carryover_payout.request_store, "update_list_item_fields", no_write)
+    monkeypatch.setattr(carryover_payout, "get_employee_by_id", employee)
+    monkeypatch.setattr(carryover_payout, "get_all_managers_for_employee", managers)
+    return sent
+
+
+def test_admin_approved_carryover_suppresses_the_emails(monkeypatch, outbox):
+    # Carry-over suppression claims both the received email and the manager email,
+    # so the dispatcher's pipeline run sends neither (#294 B1).
+    sent = _stub_carryover(monkeypatch)
+    stub_item(monkeypatch, carryover_payout, CARRYOVER_FIELDS)
+    request_id = new_id()
+    run(carryover_payout._suppress_approval_notification(request_id))
+    run(carryover_payout.run_approval_pipeline(request_id))      # the dispatcher's run
+    assert sent == []                                           # no "Request Received" email
+    assert outbox.emails == []                                  # no manager email
+
+
+def test_admin_failed_carryover_approval_releases_and_runs_the_pipeline(monkeypatch, outbox):
+    sent = _stub_carryover(monkeypatch)
+    stub_item(monkeypatch, carryover_payout, CARRYOVER_FIELDS)
+    stub_or_none(monkeypatch, carryover_payout, CARRYOVER_FIELDS)
+    request_id = new_id()
+    run(carryover_payout._suppress_approval_notification(request_id))
+    asked = run(carryover_payout.notify_manager_after_failed_admin_approval(request_id))
+    assert asked is True
+    assert sent.count("Request Received for Carry Over") == 1    # received email now sent
+    assert len(outbox.emails) == 1                              # and the manager email
 
 
 def test_carryover_received_email_is_sent_once(monkeypatch, outbox):

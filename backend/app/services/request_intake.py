@@ -212,7 +212,9 @@ def parse_request_form(request_type: str, data: dict) -> BaseModel:
         raise RequestFormError(message) from None
 
 
-async def submit_request(request_type: str, form: BaseModel, employee: dict, source: str) -> dict:
+async def submit_request(
+    request_type: str, form: BaseModel, employee: dict, source: str, notify: bool = True,
+) -> dict:
     """Create the request in SharePoint for a Staff Directory employee.
 
     Args:
@@ -220,6 +222,9 @@ async def submit_request(request_type: str, form: BaseModel, employee: dict, sou
         form: The checked form from parse_request_form.
         employee: The submitter's Staff Directory item ({"id", "fields"}).
         source: A request_submitter.SOURCE_* value for RequestSource.
+        notify: True asks the manager for approval, as every normal submission
+            does. False assigns the manager but skips that email, so an admin
+            can create a request and approve it at once (#283).
 
     Returns:
         The created SharePoint item.
@@ -238,10 +243,10 @@ async def submit_request(request_type: str, form: BaseModel, employee: dict, sou
     form_data = form.model_dump(mode="json")                   # dates as ISO strings, as SharePoint expects
     if request_type == "leave":
         form_data.update(employee_name=name, first_name=first_name, last_name=last_name)
-        item = await process_new_leave_request(form_data, email, source)
+        item = await process_new_leave_request(form_data, email, source, notify=notify)
     elif request_type == "overtime":
-        item = await process_new_overtime_request(form_data, email, source)
+        item = await process_new_overtime_request(form_data, email, source, notify=notify)
     else:
-        item = await process_new_carryover_payout(form_data, email, source)
-    logger.info("Request page: created %s request #%s", request_type, item.get("id"))
+        item = await process_new_carryover_payout(form_data, email, source, notify=notify)
+    logger.info("Admin/request: created %s request #%s (notify=%s)", request_type, item.get("id"), notify)
     return item
