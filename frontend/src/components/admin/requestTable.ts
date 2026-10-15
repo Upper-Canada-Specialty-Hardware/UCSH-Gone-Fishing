@@ -144,6 +144,8 @@ export const COLUMNS: Record<string, ColumnDef> = {
   what: { label: 'Details', wrap: true, width: 220 },
   when: { label: 'When', wrap: true, width: 150 },
   amount: { label: 'Amount', numeric: true, width: 90 },
+  // Which balances a request's days came from (approved) or would (pending); chips wrap, so it narrows before dropping.
+  taken: { label: 'Taken from', wrap: true, width: 200, noSort: true },
   status: { label: 'Status', wrap: true, width: 140 },
   mgr: { label: 'Manager', width: 150 },
   created: { label: 'Created', width: 110 },
@@ -161,17 +163,17 @@ export const COLUMNS: Record<string, ColumnDef> = {
 
 /** The columns each list shows, in display order. All lists shares one set. */
 export const COLUMN_SETS: Record<Src | 'all', string[]> = {
-  all: ['id', 'kind', 'person', 'what', 'when', 'amount', 'status', 'mgr', 'created', 'quick'],
-  leave: ['id', 'kind', 'person', 'what', 'start', 'end', 'days', 'status', 'mgr', 'approved', 'created', 'quick'],
-  mu: ['id', 'person', 'what', 'date', 'hours', 'hdays', 'status', 'mgr', 'approved', 'created', 'quick'],
-  co: ['id', 'kind', 'person', 'days', 'status', 'mgr', 'newbal', 'sysstate', 'approved', 'created', 'quick'],
+  all: ['id', 'kind', 'person', 'what', 'when', 'amount', 'taken', 'status', 'mgr', 'created', 'quick'],
+  leave: ['id', 'kind', 'person', 'what', 'start', 'end', 'days', 'taken', 'status', 'mgr', 'approved', 'created', 'quick'],
+  mu: ['id', 'person', 'what', 'date', 'hours', 'hdays', 'taken', 'status', 'mgr', 'approved', 'created', 'quick'],
+  co: ['id', 'kind', 'person', 'days', 'taken', 'status', 'mgr', 'newbal', 'sysstate', 'approved', 'created', 'quick'],
 };
 
 // Most important first: when space runs out the LAST of these present in the
 // set drops first. Person, status, type, amount and the actions are kept; ids,
 // dates and system fields step aside (their values stay in the opened row).
 const PRIORITY = [
-  'person', 'status', 'quick', 'kind', 'amount', 'days', 'hours', 'when',
+  'person', 'status', 'quick', 'kind', 'amount', 'days', 'hours', 'when', 'taken',
   'start', 'date', 'what', 'end', 'mgr', 'newbal', 'created', 'approved', 'hdays', 'sysstate', 'id',
 ];
 

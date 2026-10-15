@@ -1,6 +1,7 @@
 import { Box, Button, Paper, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
+import TakenFrom from '../TakenFrom';
 import { parseDay } from '../../utils/dates';
 import { ColorOf } from '../../utils/personColor';
 import { Clash } from './teamStats';
@@ -131,6 +132,14 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
           ))}
         </Box>
       ))}
+
+      {/* Which balances approving would draw from, as projected chips under the bars. */}
+      {item.taken_from?.state === 'projected' && (
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <Typography variant="body2" color="text.secondary">Taken from</Typography>
+          <TakenFrom value={item.taken_from} compact />
+        </Box>
+      )}
 
       {/* Others away at the same time. */}
       {clashes.length > 0 && (

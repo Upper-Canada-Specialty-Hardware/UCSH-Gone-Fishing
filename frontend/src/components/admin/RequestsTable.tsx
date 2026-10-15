@@ -2,6 +2,7 @@ import { Fragment, ReactNode, useEffect, useMemo, useRef } from 'react';
 import { Box, Button, Checkbox, Collapse } from '@mui/material';
 import { Theme, alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
+import TakenFrom from '../TakenFrom';
 import { hasAuditLog } from '../dataGridDefaults';
 import { DIAGNOSTIC_LABELS } from './requestRows';
 import {
@@ -151,6 +152,8 @@ export default function RequestsTable(props: Props) {
       case 'what': return <Box sx={{ color: r.title ? 'text.primary' : 'text.secondary', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{r.title || 'No description'}</Box>;
       case 'when': return whenText(r) || '-';
       case 'amount': return amountText(r);
+      case 'taken': return <TakenFrom value={r.raw.taken_from} compact />;   // the taken_from the admin endpoints stamp
+
       case 'status': return <StatusCell r={r} theme={theme} />;
       case 'mgr': return r.manager ? `${r.manager}${r.managers.length > 1 ? ` +${r.managers.length - 1}` : ''}` : <Box sx={{ color: 'error.main' }}>None</Box>;
       case 'created': return <Box component="span" title={formatInstantDay(r.created)}>{agoText(r.created)}</Box>;   // created is an instant; tooltip shows its day
@@ -396,10 +399,23 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
       </Box>
 
       <Box sx={panelSx}>
-        <Box component="h3" sx={{ m: 0, fontSize: 16, display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'baseline', fontFamily: theme.tokens.display }}>
-          What it did to balances<Box component="small" sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 400, fontFamily: 'inherit' }}>BalanceAuditLog</Box>
-        </Box>
-        <BalanceSteps r={r} onAudit={() => actions.audit(r)} />
+        {r.status === 'Pending' ? (
+          // A pending request has no audit log yet, so show what approving it today would take, as chips.
+          <>
+            <Box component="h3" sx={{ m: 0, fontSize: 16, display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'baseline', fontFamily: theme.tokens.display }}>
+              What approving does<Box component="small" sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 400, fontFamily: 'inherit' }}>From today's balances</Box>
+            </Box>
+            <TakenFrom value={r.raw.taken_from} />
+          </>
+        ) : (
+          // Approved or refunded: the real movements, read from the balance audit log.
+          <>
+            <Box component="h3" sx={{ m: 0, fontSize: 16, display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'baseline', fontFamily: theme.tokens.display }}>
+              What it did to balances<Box component="small" sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 400, fontFamily: 'inherit' }}>BalanceAuditLog</Box>
+            </Box>
+            <BalanceSteps r={r} onAudit={() => actions.audit(r)} />
+          </>
+        )}
       </Box>
     </Box>
   );
