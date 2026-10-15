@@ -662,11 +662,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     { who: 'Quinn Fixture', problems: ['A balance value looks wrong'], fix: 'Sick is below zero. Check the balance against their history; a value outside the expected range usually means an approval only half applied.' }
   ];
   var HOLIDAYS = [['Thanksgiving', 'Mon Oct 12, 2026', 'All provinces'], ['Remembrance Day', 'Wed Nov 11, 2026', 'British Columbia'], ['Christmas Day', 'Fri Dec 25, 2026', 'All provinces'], ['Boxing Day', 'Mon Dec 28, 2026', 'Ontario']];
+  // date, subject, to, cc, http, ok count, failed count, outcome, message id, service, likely duplicate, response body (verbatim).
+  // The first two rows are the real incident: one request emailed the same manager the same approval twice, minutes apart, through the UCSH mailer.
   var EMAILS = [
-    ['Oct 7 9:12', 'Your request was received', 'avery.example@ucsh.com', '', 200, 'succeeded: 1', 'Accepted', 'em_1f9a', 'UCSH mailer'],
-    ['Oct 7 9:12', 'New leave request to approve', 'sam.supervisor@ucsh.com', 'hr@ucsh.com', 200, 'succeeded: 2', 'Accepted', 'em_1f9b', 'UCSH mailer'],
-    ['Oct 6 16:40', 'Your sign-in code', 'riley.newhire@gmail.com', '', 200, 'succeeded: 1', 'Accepted', 'em_1f71', 'SMTP2GO'],
-    ['Oct 6 8:02', 'Reminder: request waiting', 'lee.lead@ucsh.com', '', 401, 'error: invalid api key', 'HTTP Error', '', 'SMTP2GO']
+    ['Oct 9 14:02', 'New leave request to approve', 'sam.supervisor@ucsh.com', '', 200, 1, 0, 'Accepted', '<a1b2@ucsh.com>', 'UCSH mailer', true, '{"status": "sent", "recipients": 1, "messages": [{"messageId": "<a1b2@ucsh.com>"}]}'],
+    ['Oct 9 14:00', 'New leave request to approve', 'sam.supervisor@ucsh.com', '', 200, 1, 0, 'Accepted', '<a1b1@ucsh.com>', 'UCSH mailer', true, '{"status": "sent", "recipients": 1, "messages": [{"messageId": "<a1b1@ucsh.com>"}]}'],
+    ['Oct 9 9:12', 'Your request was received', 'avery.example@ucsh.com', '', 200, 1, 0, 'Accepted', '<9f0a@ucsh.com>', 'UCSH mailer', false, '{"status": "sent", "recipients": 1, "messages": [{"messageId": "<9f0a@ucsh.com>"}]}'],
+    ['Oct 9 9:12', 'New leave request to approve', 'sam.supervisor@ucsh.com', 'hr@ucsh.com', 200, 2, 0, 'Accepted', '<9f0b@ucsh.com>', 'UCSH mailer', false, '{"status": "sent", "recipients": 2, "messages": [{"messageId": "<9f0b@ucsh.com>"}]}'],
+    ['Oct 8 16:40', 'Your sign-in code', 'riley.newhire@gmail.com', '', 200, 1, 0, 'Accepted', 'em_1f71', 'SMTP2GO', false, '{"data": {"succeeded": 1, "failed": 0, "email_id": "em_1f71"}}'],
+    ['Oct 8 8:02', 'Reminder: request waiting', 'lee.lead@ucsh.com', '', 401, null, null, 'HTTP error', '', 'SMTP2GO', false, '{"data": {"error": "invalid api key"}}']
   ];
   var STATS = { leave: 1284, overtime: 412, co: 96 };
   var CHIP = { Pending: 'warn', Stuck: 'err', Held: 'info', Approved: 'ok', Rejected: 'err', Refunded: 'info' };
@@ -902,12 +906,39 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div class="paper pad" style="display:grid;gap:8px"><b>Postgres storage</b><span class="small muted">Company holidays moved to Postgres. This compares the two copies and copies SharePoint\'s in, before STORAGE_HOLIDAYS is switched over.</span><div class="okbox">SharePoint: 12 holidays. Postgres: 12 holidays. In step.</div><div class="acts" style="justify-content:flex-start"><button class="btn out" type="button" data-act="parity">Compare again</button><button class="btn ghost' + P + '" type="button" data-act="copyhol">Copy from SharePoint</button></div></div>';
     },
     emails: function () {
+      // Two modes, like the live screen: "recent" lists every send; "person" scopes to one employee.
+      var mode = state.filter.mailmode || 'recent';
       var who = state.filter.mailwho || 'Everyone';
-      var rows = EMAILS.filter(function (e) { var p = person(who); return who === 'Everyone' || (p && (e[2] === p.email || e[3] === p.email)); });
-      return head('Email log', 'Every email the app tried to send, with the service\'s answer. An accepted email that never arrived is a delivery or mailbox problem, not a problem in the app; a missing row means the app never tried to send it.') +
-        '<div class="paper"><div class="toolbar"><select class="input" data-fsel="mailwho" aria-label="Employee">' + ['Everyone'].concat(STAFF.map(function (p) { return p.name; })).map(function (n) { return '<option' + (n === who ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select></div>' +
-        (rows.length ? '<div class="scroll"><table><thead><tr><th>Attempted (Toronto)</th><th>Subject</th><th>To</th><th>CC</th><th>Service</th><th class="num">HTTP</th><th>Outcome</th><th></th></tr></thead><tbody>' +
-        rows.map(function (e) { return '<tr><td class="muted">' + e[0] + '</td><td>' + esc(e[1]) + '</td><td>' + esc(e[2]) + '</td><td class="muted">' + esc(e[3] || '–') + '</td><td style="white-space:nowrap">' + esc(e[8] || 'SMTP2GO') + '</td><td class="num">' + e[4] + '</td><td>' + chip(e[6], e[6] === 'Accepted' ? 'ok' : 'err') + '</td><td><div class="acts"><button class="btn ghost" type="button" data-act="maildetail" data-i="' + EMAILS.indexOf(e) + '">Details</button></div></td></tr>'; }).join('') + '</tbody></table></div>' : '<div class="empty">No emails for this person.</div>') + '</div>';
+      var q = (state.filter.mailq || '').toLowerCase();                 // recipient/subject text filter, both modes
+      var rows = EMAILS.filter(function (e) {
+        if (mode === 'person') {                                        // by-employee: only the picked person's mail
+          var p = person(who);
+          if (!(who !== 'Everyone' && p && (e[2] === p.email || e[3] === p.email))) return false;
+        }
+        if (q && (e[1] + ' ' + e[2] + ' ' + e[3]).toLowerCase().indexOf(q) < 0) return false;  // text filter
+        return true;
+      });
+      var dupN = rows.filter(function (e) { return e[10]; }).length;    // likely-duplicate rows on screen
+      var modeTabs = '<button class="fchip" type="button" data-mailmode="recent" aria-pressed="' + (mode === 'recent') + '">All recent</button>' +
+        '<button class="fchip" type="button" data-mailmode="person" aria-pressed="' + (mode === 'person') + '">By employee</button>';
+      var picker = mode === 'person' ? '<select class="input" data-fsel="mailwho" aria-label="Employee">' + ['Everyone'].concat(STAFF.map(function (p) { return p.name; })).map(function (n) { return '<option' + (n === who ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select>' : '';
+      var search = '<input class="input" data-search="mailq" placeholder="Filter by recipient or subject" value="' + esc(state.filter.mailq || '') + '" aria-label="Filter emails">';
+      var note = mode === 'recent'
+        ? 'Every email in the last 24 hours across both services, newest first.' + (dupN ? ' ' + dupN + ' look like a duplicate: the same subject reached the same recipient within five minutes.' : '')
+        : (who === 'Everyone' ? 'Pick a person to see only the emails that named them.' : 'Every email that named ' + esc(who) + '.');
+      // No sideways scrolling: auto layout so columns size to content (no overlap),
+      // cells wrap, and under 560px the lower-priority columns (marked "opt") drop,
+      // like the live screen. The style is scoped to .mailrows so only this table changes.
+      var mailStyle = '<style>.mailrows table{table-layout:auto;width:100%;border-collapse:collapse}.mailrows th,.mailrows td{word-break:break-word;vertical-align:top}.mailrows th{white-space:normal}.mailrows .chip,.mailrows .btn{white-space:normal}@media (max-width:560px){.mailrows .opt{display:none}}</style>';
+      return head('Email log', 'Every email the app tried to send, with the service\'s answer. When the UCSH mailer is switched on, internal (ucsh.com) staff go through it as notifications@ucsh.com and everyone else goes through SMTP2GO. An accepted email that never arrived is a delivery or mailbox problem, not a problem in the app; a missing row means the app never tried to send it.') +
+        '<div class="paper">' + mailStyle + '<div class="toolbar">' + modeTabs + picker + search + '</div>' +
+        '<div class="small muted" style="padding:0 16px 10px">' + note + '</div>' +
+        (rows.length ? '<div class="mailrows"><table><thead><tr><th>Attempted (Toronto)</th><th>Recipient</th><th>Subject</th><th class="opt">Service</th><th class="num opt">HTTP</th><th class="opt">Result</th><th>Outcome</th><th></th></tr></thead><tbody>' +
+        rows.map(function (e) {
+          var okfail = (e[5] === null && e[6] === null) ? '–' : ((e[5] || 0) + ' ok / ' + (e[6] || 0) + ' failed');
+          var dup = e[10] ? '<div>' + chip('Possible duplicate', 'warn') + '</div>' : '';
+          return '<tr><td class="muted">' + e[0] + '</td><td>' + esc(e[2]) + (e[3] ? '<div class="small muted">cc: ' + esc(e[3]) + '</div>' : '') + '</td><td>' + esc(e[1]) + dup + '</td><td class="opt">' + esc(e[9] || 'SMTP2GO') + '</td><td class="num opt">' + e[4] + '</td><td class="opt">' + okfail + '</td><td>' + chip(e[7], e[7] === 'Accepted' ? 'ok' : 'err') + '</td><td><div class="acts"><button class="btn ghost" type="button" data-act="maildetail" data-i="' + EMAILS.indexOf(e) + '">Details</button></div></td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="empty">' + (mode === 'person' && who === 'Everyone' ? 'Pick a person above.' : 'No emails match.') + '</div>') + '</div>';
     },
     checks: function () {
       return head('Data checks', 'Checks that keep the stored data in step. Rarely needed day to day.') +
@@ -1415,7 +1446,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         { title: 'The person is emailed',
           mail: { to: 'avery.example@ucsh.com', subject: 'Approved: vacation, Nov 2 to 4', kind: 'decision', lines: ['Sam Supervisor approved the leave for Avery Example.'], dl: [['Dates', 'Mon Nov 2 to Wed Nov 4, 2026'], ['Working days', '3'], ['Vacation left', '2.5 days']] },
           todo: 'Every decision emails the employee by itself. You never send anything by hand.',
-          know: 'The Email log shows each attempt and the service\'s reply, so you can tell a delivery problem from an app one.',
+          know: 'The Email log shows each attempt and the service\'s reply, names the service that sent it, and flags a likely duplicate, so you can tell a delivery problem from an app one.',
           enter: function () { adminAt('pending'); } },
         { title: 'Stuck requests', target: '[data-act="reprocess"][data-req="1437|Drew Stub|Stuck"]',
           todo: 'Stuck requests sit in the quieter block at the foot of the sidebar: the ones the system could not finish on its own. Drew\'s days were never worked out. Select <b>Reprocess</b> on Drew\'s row.',
@@ -1512,16 +1543,16 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           todo: 'Company holidays are moving from SharePoint to Postgres. This panel compares the two copies and can copy SharePoint\'s in before the switch.',
           know: 'Requests are moving the same way; see Data checks. Each switch is a setting the developer changes, so until then SharePoint stays the live copy.',
           enter: function () { adminAt('holidays'); } },
-        { title: 'Email log', target: '.paper .scroll table',
-          todo: 'Every email the app tried to send, with the service\'s reply. Filter by employee at the top.',
-          know: 'An accepted email that never arrived is a delivery or mailbox problem, not an app one; a missing row means the app never tried to send it.',
+        { title: 'Email log', target: '.paper .mailrows table',
+          todo: 'Every email the app tried to send, with the service\'s reply. "All recent" lists every send; "By employee" scopes to one person. Each row names the service, the ok/failed counts and marks a likely duplicate.',
+          know: 'An accepted email that never arrived is a delivery or mailbox problem, not an app one; a missing row means the app never tried to send it. The top two rows show one request emailing the same manager twice, both flagged Possible duplicate.',
           enter: function () { adminAt('emails'); } },
-        { title: 'Why one failed', target: '[data-act="maildetail"][data-i="3"]',
-          todo: 'Select <b>Details</b> on the failed send to see the HTTP code and the service\'s exact response.',
+        { title: 'Why one failed', target: '[data-act="maildetail"][data-i="5"]',
+          todo: 'Select <b>Details</b> on the failed send to see the service, the HTTP code and the exact response body.',
           know: 'Here a 401 means an invalid API key, so the email never went out and the request kept waiting until the key was fixed.',
           enter: function () { adminAt('emails'); },
           signal: function () { return !!(state.modal && state.modal.kind === 'mail'); },
-          act: function () { var b = document.querySelector('[data-act="maildetail"][data-i="3"]'); if (b) b.click(); } },
+          act: function () { var b = document.querySelector('[data-act="maildetail"][data-i="5"]'); if (b) b.click(); } },
         { title: 'Data checks', target: '.two',
           todo: 'Data checks hold the rarely-needed jobs that keep the stored data in step: where the request lists are read and written with the copy into Postgres, and the two request-page columns.',
           know: 'The copy only reads SharePoint and writes Postgres; nothing changes for anyone until the developer switches the setting. Add the columns is only needed if requests stay in SharePoint for a long time.',
@@ -2008,7 +2039,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     ['Manager Assignments: Manage Assignments wizard', 'Staff: Manage assignments, same three operations and preview.'],
     ['Add Employee', 'People, Add employee: same fields and wording.'],
     ['Stuck (n): issues, Reprocess with a reason', 'Lower block, Stuck requests (n): same issue names, Reprocess asks for a reason.'],
-    ['Email Log: employee filter, details with the response body', 'Lower block, Email log: same columns, filter and Details.'],
+    ['Email Log: employee filter, details with the response body', 'Lower block, Email log: All recent and By employee modes, the service column, ok/failed counts, the duplicate mark, a text filter and Details with the response body.'],
     ['Held Requests (request page change)', 'Approvals, Held for new hires (n). Its Add the columns check moves to Data checks.'],
     ['Holidays (holidays change): editor, compare, copy', 'Company, Holidays for the editor; compare and copy in Data checks.']
   ];
@@ -2023,7 +2054,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'cancelheld': return dialog('Cancel this held request?', '<div><b>' + esc(r.who) + '</b>, ' + what(r) + '</div><div class="small muted">Use this when they will not be joining. Nothing is sent to anyone.</div>', '<button class="btn err" type="button" data-act="docancelheld">Cancel request</button>');
       case 'edit': return dialog('Edit Leave Request #' + r.id, '<label class="field">Leave Type<select class="input">' + ['Vacation', 'Sick or Personal Day', 'Half Day or Partial Day Off', 'Bereavement', 'Jury Duty'].map(function (t) { return '<option' + (t === (r.kind === 'Sick' ? 'Sick or Personal Day' : r.kind === 'Half day' ? 'Half Day or Partial Day Off' : 'Vacation') ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></label><div class="row2"><label class="field">Start Date<input class="input" value="' + esc(r.from ? r.from[0] + ' ' + r.from[1] : '') + '"></label><label class="field">End Date<input class="input" value="' + esc(r.to ? r.to[0] + ' ' + r.to[1] : '') + '"></label></div><label class="field">Days<input class="input" type="number" value="' + (r.days || 0) + '"></label><label class="field">Reason for edit (required)<input class="input" id="editReason" placeholder="Recorded in the request audit log"></label><div class="small muted">Saving will send a fresh approval email and invalidate any previous one.</div>', '<button class="btn pri" type="button" data-act="saveedit">Save &amp; Re-send Email</button>');
       case 'audit': return dialog('Audit trail', '<pre class="resp">2026-10-07 09:12  created\n2026-10-07 09:12  days worked out: ' + (r.days || 0) + '\n2026-10-07 09:12  approval email sent to ' + esc(r.mgr || 'nobody') + (r.status === 'Approved' ? '\n2026-10-08 10:30  approved from the dashboard\n2026-10-08 10:30  balance moved' : '') + '</pre>');
-      case 'mail': var e = EMAILS[m.i]; return dialog('Email details', '<dl class="kv"><dt>Subject</dt><dd>' + esc(e[1]) + '</dd><dt>To</dt><dd>' + esc(e[2]) + '</dd><dt>HTTP</dt><dd>' + e[4] + '</dd><dt>Result</dt><dd>' + esc(e[5]) + '</dd><dt>email_id</dt><dd>' + esc(e[7] || '–') + '</dd></dl><b class="small">Response body (verbatim)</b><pre class="resp">{"data": {"' + esc(e[5].split(':')[0]) + '": "' + esc(e[5].split(': ')[1]) + '"}}</pre>', '', true);
+      case 'mail':
+        var e = EMAILS[m.i];
+        var okfail = (e[5] === null && e[6] === null) ? '–' : ((e[5] || 0) + ' ok / ' + (e[6] || 0) + ' failed');
+        var from = e[9] === 'UCSH mailer' ? 'notifications@ucsh.com' : 'the app\'s SMTP2GO sender';
+        return dialog('Email details', '<dl class="kv"><dt>Service</dt><dd>' + esc(e[9]) + '</dd><dt>From</dt><dd>' + esc(from) + '</dd><dt>Subject</dt><dd>' + esc(e[1]) + '</dd><dt>To</dt><dd>' + esc(e[2]) + '</dd>' + (e[3] ? '<dt>CC</dt><dd>' + esc(e[3]) + '</dd>' : '') + '<dt>HTTP</dt><dd>' + e[4] + '</dd><dt>Result</dt><dd>' + okfail + '</dd><dt>message id</dt><dd>' + esc(e[8] || '–') + '</dd>' + (e[10] ? '<dt>Duplicate</dt><dd>The same subject reached this recipient within five minutes</dd>' : '') + '</dl><b class="small">Response body (verbatim)</b><pre class="resp">' + esc(e[11]) + '</pre>', '', true);
       case 'mgrs': return dialog('Managers for ' + esc(m.who), '<span class="mchips" role="group" aria-label="Managers">' + MANAGERS.map(function (x) { return '<button type="button" data-msel="' + x + '" aria-pressed="' + (m.sel.indexOf(x) >= 0) + '">' + x + '</button>'; }).join('') + '</span><div class="small muted">Their pending requests move to the new manager. A stuck request can then be reprocessed.</div>', '<button class="btn pri" type="button" data-act="savemgrs">Save</button>');
       case 'wizard':
         var ops = [['add', 'Add Manager', 'Add a manager to employees of another manager.'], ['remove', 'Remove Manager', 'Remove a manager from all their reports.'], ['replace', 'Replace Manager', 'Swap one manager for another across all their reports.']];
@@ -2148,6 +2183,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (t.hasAttribute('data-ptab')) { state.ptab = t.getAttribute('data-ptab'); render(); return; }
     if (t.hasAttribute('data-mtab')) { state.mtab = t.getAttribute('data-mtab'); render(); return; }
     if (t.hasAttribute('data-etab')) { state.etab = t.getAttribute('data-etab'); render(); window.scrollTo(0, 0); return; }
+    if (t.hasAttribute('data-mailmode')) { state.filter.mailmode = t.getAttribute('data-mailmode'); render(); return; }
     if (t.hasAttribute('data-mail')) { state.mail = +t.getAttribute('data-mail'); render(); return; }
     if (t.hasAttribute('data-mailw')) { state.mailw = t.getAttribute('data-mailw'); render(); return; }
     if (t.hasAttribute('data-cal')) { state.calView = t.getAttribute('data-cal'); render(); return; }

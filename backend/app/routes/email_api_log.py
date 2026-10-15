@@ -1,9 +1,11 @@
-"""Admin lookup of the SMTP2GO request/response log.
+"""Admin lookup of the outbound email request/response log.
 
-Answers the support question "did the backend ask SMTP2GO to email this
-person, and what did SMTP2GO say back" from ``email_api_log``. The Email Log
-tab of the admin dashboard is the intended reader; the endpoint URL also
-works directly in a browser.
+Answers the support questions "did the backend ask a service to email this
+person, and what did it say back" (per person) and "what has gone out lately
+across every service" (the recent view) from ``email_api_log``. Rows come from
+both SMTP2GO and the UCSH mailer (Microsoft HVE); each row names its service.
+The Email Log tab of the admin dashboard is the intended reader; the endpoint
+URLs also work directly in a browser.
 """
 
 import json
@@ -21,7 +23,9 @@ from app.models.mixins import utcnow
 from app.services.email_api_log import (
     DEFAULT_WINDOW_DAYS,
     as_utc,
+    find_duplicate_ids,
     find_exchanges,
+    find_recent,
     log_coverage_start,
     normalize_address,
     service_for_url,
@@ -78,15 +82,20 @@ async def _resolve_address(
     return employee_name, resolved, directory_lookup
 
 
-def _serialize(row: EmailApiLog) -> dict:
+def _serialize(row: EmailApiLog, duplicate_ids: set[int] | None = None) -> dict:
     """Shape one log row for the JSON response.
 
     Args:
         row: The stored exchange, recipients loaded.
+        duplicate_ids: Ids flagged as likely duplicates in the result set this
+            row belongs to; the row's own id is looked up in it.
 
     Returns:
         A snake_case dict: the redacted request as an object, the response
-        body verbatim, and the derived fields alongside.
+        body verbatim, and the derived fields alongside. ``service`` names the
+        email service that sent the row and ``message_id`` is that service's
+        own id (a service-neutral alias of ``smtp2go_email_id``, which is kept
+        for callers that still read it).
     """
     try:
         request = json.loads(row.request_json)                     # stored as JSON text
@@ -100,14 +109,16 @@ def _serialize(row: EmailApiLog) -> dict:
         "http_status": row.http_status,
         "succeeded": row.succeeded_count,
         "failed": row.failed_count,
-        "smtp2go_email_id": row.smtp2go_email_id,
+        "service": service_for_url(row.request_url),               # smtp2go | ucsh_mailer
+        "message_id": row.smtp2go_email_id,                        # service-neutral name; mailer id lives here too
+        "smtp2go_email_id": row.smtp2go_email_id,                  # kept for compatibility
         "smtp2go_request_id": row.smtp2go_request_id,
         "sender": row.sender,
         "subject": row.subject,
         "to": [r.address for r in row.recipients if r.field == "to"],
         "cc": [r.address for r in row.recipients if r.field == "cc"],
         "request_url": row.request_url,
-        "service": service_for_url(row.request_url),               # smtp2go | ucsh_mailer
+        "likely_duplicate": row.id in (duplicate_ids or set()),    # same subject+recipient within 5 min
         "request": request,
         "response_body": row.response_body,
         "no_response_reason": row.no_response_reason,
@@ -125,13 +136,13 @@ async def admin_email_log(
     ),
     limit: int = Query(100, ge=1, le=1000, description="Maximum rows to return"),
 ):
-    """Every SMTP2GO call that named one person, newest first.
+    """Every call (either service) that named one person, newest first.
 
     Behind the admin password like every other ``/admin/*`` endpoint (#228).
 
     Resolution: an explicit ``address`` wins; otherwise the employee's address
     is read from the Staff Directory. Only an address can be matched, because
-    the log records what SMTP2GO was asked to send and SMTP2GO only knows
+    the log records what each service was asked to send and a service only knows
     addresses. So an employee with no directory address, or an id the
     directory cannot find, gets an empty list and a ``directory_lookup``
     value saying why. That empty answer is itself a finding: no address
@@ -163,6 +174,7 @@ async def admin_email_log(
         limit=limit,
     )
     coverage = await log_coverage_start()
+    duplicate_ids = find_duplicate_ids(rows)                       # flag repeat sends to this person
     return {
         "employee_id": employee_id,
         "employee_name": employee_name,
@@ -171,7 +183,59 @@ async def admin_email_log(
         "days": days,
         "log_since": coverage.isoformat() if coverage else None,
         "count": len(rows),
-        "emails": [_serialize(r) for r in rows],
+        "emails": [_serialize(r, duplicate_ids) for r in rows],
+    }
+
+
+@router.get("/admin/email-log/recent")
+async def admin_email_log_recent(
+    hours: int = Query(
+        24, ge=1, le=2160, description="How far back to look, in hours (default 24; max 90 days)"
+    ),
+    limit: int = Query(200, ge=1, le=1000, description="Maximum rows to return"),
+    text: str | None = Query(
+        None, description="Case-insensitive substring filter on recipient or subject"
+    ),
+):
+    """Every recent email through any service, no person picked, newest first.
+
+    This is the triage view: when an incident is "the system double-sent" or
+    "did anything go out at all", an admin needs the whole stream, not one
+    person's. The window is on ``attempted_at`` (indexed) and capped by
+    ``limit``, so the scan stays bounded however busy the log is. Rows that
+    repeat the same subject to the same recipient within five minutes are
+    flagged (``likely_duplicate``) so a double-send stands out.
+
+    Behind the admin password like every other ``/admin/*`` endpoint (#228).
+
+    Args:
+        hours: Window size in hours, ending now. Defaults to 24.
+        limit: Row cap; ``truncated`` says when it was hit.
+        text: Optional substring matched against recipient addresses and the
+            subject, to narrow a noisy window.
+
+    Returns:
+        ``hours``, ``since`` (window start), ``log_since`` (when the log began),
+        ``limit``, ``count``, ``truncated`` (whether the cap was reached, so
+        more may exist earlier in the window), and ``emails`` newest first.
+    """
+    since = utcnow() - timedelta(hours=hours)
+    # Ask for one more than the cap: if that extra row comes back the window
+    # really does hold more than `limit`, so exactly `limit` rows is not
+    # mistaken for a truncated result.
+    fetched = await find_recent(since=since, limit=limit + 1, text=text)
+    truncated = len(fetched) > limit
+    rows = fetched[:limit]                                          # trim the probe row before serialising
+    coverage = await log_coverage_start()
+    duplicate_ids = find_duplicate_ids(rows)                       # mark bursts within the returned window
+    return {
+        "hours": hours,
+        "since": since.isoformat(),
+        "log_since": coverage.isoformat() if coverage else None,
+        "limit": limit,
+        "count": len(rows),
+        "truncated": truncated,                                     # a row beyond the cap exists
+        "emails": [_serialize(r, duplicate_ids) for r in rows],
     }
 
 
@@ -181,9 +245,11 @@ async def admin_email_log_test(body: TestEmailRequest):
 
     This is how an admin checks the email path for a specific person without
     creating a request or involving a manager: the message goes through the
-    same ``send_email`` call every system email uses, so it leaves the same
-    ``email_api_log`` row, and that row is returned so the answer SMTP2GO gave
-    is visible at once. Nothing in SharePoint is touched and no SMS is sent.
+    same ``send_email`` call every system email uses, so it is routed to the
+    right service (the UCSH mailer for an internal recipient when it is on,
+    otherwise SMTP2GO) and leaves the same ``email_api_log`` row, and that row
+    is returned so the service's answer is visible at once. Nothing in
+    SharePoint is touched and no SMS is sent.
 
     Behind the admin password like every other ``/admin/*`` endpoint (#228).
 
@@ -193,8 +259,8 @@ async def admin_email_log_test(body: TestEmailRequest):
 
     Returns:
         ``employee_id``, ``employee_name``, ``address``, ``directory_lookup``
-        and ``email``: the serialised log row for this send, whatever SMTP2GO
-        answered. A send that never reached SMTP2GO still has a row.
+        and ``email``: the serialised log row for this send, whatever the
+        service answered. A send that never reached the service still has a row.
 
     Raises:
         HTTPException: 400 when neither field is given, or when no address

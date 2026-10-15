@@ -1548,12 +1548,18 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
 
     logger.info("Admin reprocess for leave #%s — reason: %s", request_id, body.reason.strip())
 
-    # Re-run through the dispatcher pipeline
+    # Re-run through the dispatcher pipeline. A request that already has its
+    # manager would only reach send_approval_email there, which sends once per
+    # version; the admin asked for a resend, so that case asks for a new version.
     from app.tasks.dispatcher import dispatch_change
+    from app.services.leave_requests import send_approval_email
     try:
-        await dispatch_change(settings.SP_LIST_LEAVE_REQUESTS, item)
+        if fields.get("ManagerLookupId"):
+            await send_approval_email(request_id, new_version=True)
+        else:
+            await dispatch_change(settings.SP_LIST_LEAVE_REQUESTS, item)
     except Exception:
-        logger.exception("Reprocess: dispatch_change failed for leave #%s", request_id)
+        logger.exception("Reprocess: failed for leave #%s", request_id)
         raise HTTPException(status_code=500, detail="Reprocessing failed — check server logs")
 
     # Re-fetch and diagnose remaining issues
