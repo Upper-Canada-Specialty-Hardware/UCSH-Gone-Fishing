@@ -33,7 +33,7 @@ from app.services.balance import (
     simulate_leave_impact,
 )
 from app.services.concurrency import lock_manager
-from app.services.idempotency import claim_action
+from app.services.idempotency import approval_email_action, claim_action, release_claim
 from app.services.notify_blocked import notify_requests_blocked_by_approval
 from app.services.overlap_detection import (
     conflict_warning,
@@ -110,9 +110,15 @@ async def process_new_leave_request(
     item_id = item["id"]
     logger.info("Created leave request #%s", item_id)
 
-    # Fire parallel tasks
+    # Days first: the approval email (sent by auto_assign_manager) shows them, and
+    # its version is taken from them. Run alongside, the email could go out before
+    # Days landed; the dispatcher's later call would then see a "changed" request
+    # (a new version) and email the manager a second time.
+    try:
+        await auto_calculate_days(item_id)
+    except Exception:  # noqa: BLE001 - as before: a failure here must not stop the rest
+        logger.exception("Could not work out the days for leave request #%s", item_id)
     await asyncio.gather(
-        auto_calculate_days(item_id),
         auto_assign_manager(item_id),
         send_bereavement_alert(item_id),
         return_exceptions=True,
@@ -290,8 +296,19 @@ async def send_bereavement_alert(leave_request_id: str | int):
     logger.info("Sent bereavement/jury duty alert for leave request #%s", leave_request_id)
 
 
-async def send_approval_email(leave_request_id: str | int, is_reminder: bool = False):
-    """Send approval email with HMAC links to all managers."""
+async def send_approval_email(
+    leave_request_id: str | int, is_reminder: bool = False, new_version: bool = False,
+):
+    """Send approval email with HMAC links to all managers.
+
+    Sent once per approval version (see the claim below).
+
+    Args:
+        leave_request_id: The leave request item id.
+        is_reminder: A reminder: new version, "Reminder:" subject, no text or confirmation.
+        new_version: Send again with fresh links although nothing material changed
+            (an admin reprocessing the request, e.g. after a manager change).
+    """
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
@@ -349,7 +366,7 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
 
     version = await bump_and_snapshot(
         settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, fields, MATERIAL_FIELDS_LEAVE,
-        force_bump=is_reminder,
+        force_bump=is_reminder or new_version,                 # either one means fresh links
     )
     from app.services.approval_versions import get_previous_snapshot
     previous_snapshot = (
@@ -357,75 +374,97 @@ async def send_approval_email(leave_request_id: str | int, is_reminder: bool = F
         if version > 1 and not is_reminder else None
     )
 
-    for manager in managers:
-        mgr_fields = manager["fields"]
-        manager_id = manager["id"]
+    # One approval email per version. The request page sends it as it creates
+    # the request; SharePoint's change notice for that same new item then reaches
+    # the dispatcher seconds later and asks again. Whoever claims the version first
+    # sends; a later call for the same version stops here. A real change or a
+    # reminder makes a new version, so those still send.
+    sent_key = approval_email_action(version)
+    if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, sent_key):
+        logger.info("Approval email for leave request #%s version %s already sent; not sending again", leave_request_id, version)
+        return
+    try:
+        for manager in managers:
+            mgr_fields = manager["fields"]
+            manager_id = manager["id"]
 
-        approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
-        reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
+            approve_url = generate_approval_url("leave", leave_request_id, "approve", manager_id, approval_version=version)
+            reject_url = generate_approval_url("leave", leave_request_id, "reject", manager_id, approval_version=version)
 
-        html = render_leave_approval_email(
-            fields, emp_fields, approve_url, reject_url, submitter_name, projected,
-            previous_snapshot=previous_snapshot,
-            conflict_warning=manager_warning,
-        )
-
-        await send_email_with_dashboard(
-            to=[mgr_fields.get("EmailAddress", "")],
-            subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
-            html_body=html,
-            primary_employee_id=manager_id,
-            reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
-        )
-
-        # Send SMS to manager if they have a cell number (skipped on reminders -
-        # reminders are email-only with fresh links)
-        cell = mgr_fields.get("CellNumber", "")
-        if cell and not is_reminder:
-            if projected:
-                bal_line = (
-                    f"If approved: Vac: {projected['CurrentVacationBalance']}, "
-                    f"Sick: {projected['CurrentSickDayBalance']}, "
-                    f"MU: {projected['CurrentOvertimeBalance']}, "
-                    f"CO: {projected['CarryOver']}.\n"
-                )
-            else:
-                bal_line = "No balance change.\n"
-            _s = _parse_date(start_str)
-            _e = _parse_date(end_str)
-            if _s and _e:
-                if _s == _e:
-                    date_line = f"{_s.strftime('%b %d, %Y')}\n"
-                else:
-                    date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
-            elif start_str:
-                date_line = f"{start_str[:10]}\n"
-            else:
-                date_line = ""
-            await send_sms(
-                to=cell,
-                body=(
-                    f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
-                    f"{date_line}"
-                    f"{bal_line}"
-                    f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
-                ),
+            html = render_leave_approval_email(
+                fields, emp_fields, approve_url, reject_url, submitter_name, projected,
+                previous_snapshot=previous_snapshot,
+                conflict_warning=manager_warning,
             )
 
-        logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
+            await send_email_with_dashboard(
+                to=[mgr_fields.get("EmailAddress", "")],
+                subject=("Reminder: " if is_reminder else "") + f"Leave Request - {submitter_name}",
+                html_body=html,
+                primary_employee_id=manager_id,
+                reply_to=emp_fields.get("EmailAddress", ""),       # replies reach the employee
+            )
 
-    # Send confirmation email to employee (not on reminders - already received once)
-    emp_email = emp_fields.get("EmailAddress", "")
-    if emp_email and not is_reminder:
-        html = render_leave_confirmation(
-            fields, emp_fields, projected, conflict_warning=employee_warning,
-        )
-        await send_email_with_dashboard(
-            to=[emp_email],
-            subject=f"Leave Request Received - {submitter_name}",
-            html_body=html,
-            primary_employee_id=employee["id"],
-        )
+            # Send SMS to manager if they have a cell number (skipped on reminders -
+            # reminders are email-only with fresh links)
+            cell = mgr_fields.get("CellNumber", "")
+            if cell and not is_reminder:
+                if projected:
+                    bal_line = (
+                        f"If approved: Vac: {projected['CurrentVacationBalance']}, "
+                        f"Sick: {projected['CurrentSickDayBalance']}, "
+                        f"MU: {projected['CurrentOvertimeBalance']}, "
+                        f"CO: {projected['CarryOver']}.\n"
+                    )
+                else:
+                    bal_line = "No balance change.\n"
+                _s = _parse_date(start_str)
+                _e = _parse_date(end_str)
+                if _s and _e:
+                    if _s == _e:
+                        date_line = f"{_s.strftime('%b %d, %Y')}\n"
+                    else:
+                        date_line = f"{_s.strftime('%b %d')} - {_e.strftime('%b %d, %Y')}\n"
+                elif start_str:
+                    date_line = f"{start_str[:10]}\n"
+                else:
+                    date_line = ""
+                # A failed text must not undo the emails: raising here would release
+                # the claim and let the next caller email this manager again.
+                try:
+                    await send_sms(
+                        to=cell,
+                        body=(
+                            f"Leave Request #{leave_request_id} for {submitter_name} ({days} days {leave_type}).\n"
+                            f"{date_line}"
+                            f"{bal_line}"
+                            f"Reply \"LR Approve {leave_request_id}\" or \"LR Reject {leave_request_id}\""
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - logged; the email already went out
+                    logger.exception("Could not text the manager about leave request #%s", leave_request_id)
+
+            logger.info("Sent approval email for leave request #%s to %s", leave_request_id, mgr_fields.get("Title"))
+
+        # Send confirmation email to employee (not on reminders - already received once)
+        emp_email = emp_fields.get("EmailAddress", "")
+        if emp_email and not is_reminder:
+            html = render_leave_confirmation(
+                fields, emp_fields, projected, conflict_warning=employee_warning,
+            )
+            await send_email_with_dashboard(
+                to=[emp_email],
+                subject=f"Leave Request Received - {submitter_name}",
+                html_body=html,
+                primary_employee_id=employee["id"],
+            )
+    except BaseException:                                       # cancellation too (a redeploy mid-send)
+        # The send failed: drop the claim so the next change notice or reminder can retry.
+        try:
+            await release_claim(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, sent_key)
+        except Exception:  # noqa: BLE001 - keep the send error, which is the one that matters
+            logger.exception("Could not release the approval email claim for #%s", leave_request_id)
+        raise
 
 
 ALLOWED_LEAVE_TYPES = {
