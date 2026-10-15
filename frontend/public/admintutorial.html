@@ -217,6 +217,34 @@ pre.resp { background: var(--chip); border-radius: 8px; padding: 10px; font-size
 .pill.ot { background: #fcefe2; color: #b0570d; } .pill.co { background: #ebebf8; color: #4c4f9e; } .pill.sick { background: #e8ecf0; color: #4b5d6e; } .pill.vac { background: #e2f2f4; color: #1f6c7c; } .pill.half { background: #e6f1ea; color: #3f7558; } .pill.pay { background: #e3f3e8; color: #2e7d4f; }
 :root[data-theme="dark"] .pill.ot, :root[data-theme="dark"] .pill.co, :root[data-theme="dark"] .pill.sick, :root[data-theme="dark"] .pill.vac, :root[data-theme="dark"] .pill.half, :root[data-theme="dark"] .pill.pay { filter: invert(.88) hue-rotate(180deg); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.ot, :root:not([data-theme="light"]) .pill.co, :root:not([data-theme="light"]) .pill.sick, :root:not([data-theme="light"]) .pill.vac, :root:not([data-theme="light"]) .pill.half, :root:not([data-theme="light"]) .pill.pay { filter: invert(.88) hue-rotate(180deg); } }
+/* "Taken from" (#296, #307): one soft pill per balance a request's days came from; chips wrap so they never scroll sideways. */
+.tf { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.tf .pill { font-size: 11.5px; padding: 2px 8px; }
+.tf .pill b { font-variant-numeric: tabular-nums; font-weight: 700; }
+/* Staff profile (#306): one surface, balances and details on the left, the Activity list on the right. Stacks under 860px. */
+.pf2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+.pf2 > section { padding: 18px 16px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.pf2 > section + section { border-left: 1px solid var(--line); }
+@media (max-width: 860px) { .pf2 { grid-template-columns: minmax(0, 1fr); } .pf2 > section + section { border-left: 0; border-top: 1px solid var(--line); } }
+.pfh { display: flex; align-items: baseline; gap: 10px; }
+.pfh h3 { margin: 0; font-size: 16px; font-family: var(--display); }
+.pfh .hint { font-size: 12px; color: var(--muted); }
+.actleg { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.actleg svg { width: 14px; height: 14px; flex: none; }
+/* Year folds: current year open, older years collapsed behind a counted header (native <details>, no script). */
+.actyr > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; }
+.actyr > summary::-webkit-details-marker { display: none; }
+.actyr > summary::before { content: '\203A'; font-size: 17px; line-height: 1; transition: transform .2s; }
+.actyr[open] > summary::before { transform: rotate(90deg); }
+.actyr .yrn { font-weight: 700; color: var(--ink); }
+.actlist { list-style: none; margin: 0; padding: 0; }
+.actlist > li { border-bottom: 1px solid var(--line); min-width: 0; }
+.actreq { padding: 10px 0; display: grid; gap: 6px; }
+.actmain { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.actchg { padding: 10px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; align-items: start; border-left: 2px dashed var(--line2); background: var(--hover); }
+.actchg svg { width: 16px; height: 16px; color: var(--muted); margin-top: 2px; }
+.actmore > summary { list-style: none; cursor: pointer; color: var(--primary); font-size: 13px; font-weight: 600; padding: 8px 0 2px; text-decoration: underline; text-underline-offset: 3px; }
+.actmore > summary::-webkit-details-marker { display: none; }
 .when { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .datebox { border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; text-align: center; min-width: 64px; }
 .datebox small { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
@@ -690,12 +718,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
 
   var FLOWS = {
     newhire: { role: 'admin', screen: 'held', hint: 'Riley asked for time off on the request page before being on staff. Click <b>Add employee</b>: the form opens filled in, and adding them sends the request to their supervisor.' },
-    approve: { role: 'admin', screen: 'pending', hint: '<b>Approve</b> or <b>Reject</b> right on the row, or click the row to open it in place: every column, what it will do to each balance, Edit and a reminder. Tick a few rows and the toolbar becomes a command bar to approve, reject, export or delete them together.' },
+    approve: { role: 'admin', screen: 'pending', hint: '<b>Approve</b> or <b>Reject</b> right on the row, or click the row to open it in place: every column, a <b>Taken from</b> column of which balances the days come from, what approving would do, Edit and a reminder. Tick a few rows and the toolbar becomes a command bar to approve, reject, export or delete them together.' },
     setup: { role: 'admin', screen: 'setup', hint: 'Same list as today\'s Employee Setup tab. <b>Open</b> a person to fix their supervisor, then <b>Check</b> the row, or check anyone with the picker below.' },
     stuck: { role: 'admin', screen: 'stuck', hint: 'Stuck requests sit in the quieter block at the bottom of the sidebar. Casey has no manager: set one from Staff, then <b>Reprocess</b> with a reason.' },
     refund: { role: 'admin', screen: 'requests', view: 'all', hint: 'Find an approved request and click <b>Refund</b>; it shows what goes back before it happens. <b>+ New request</b> adds one for someone (pending, or approved on the spot), and <b>Delete</b> removes one with a reason and a few seconds to undo.' },
     bulk: { role: 'admin', screen: 'staff', hint: 'Click <b>Manage assignments</b> (today\'s wizard): add, remove or replace a manager across a whole team, with a preview first.' },
-    manager: { role: 'manager', mtab: 'today', hint: 'Each request shows the dates, what it does to each balance, and who else on the team is off. Decide, and the list moves on.' },
+    manager: { role: 'manager', mtab: 'today', hint: 'Each request shows the dates, which balances the days come from, what it does to each balance, and who else on the team is off. Decide, and the list moves on.' },
     employee: { role: 'employee', hint: 'Their record and every manager up top, all five balances, then requests by what they are waiting on. <b>This year</b> has their numbers and <b>History</b> every request.' }
   };
 
@@ -708,6 +736,57 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function $(id) { return document.getElementById(id); }
   function count(st) { return REQS.filter(function (r) { return r.status === st; }).length; }
   function what(r) { return esc(r.kind) + ' · ' + esc(r.when) + (r.hours ? ' · ' + r.hours + ' h' : r.days ? ' · ' + r.days + (r.days === 1 ? ' day' : ' days') : ''); }
+  // ---- "Taken from" chips (#296, #307): which balances a request's days came from, worded exactly like TakenFrom.tsx. ----
+  var TF_YEAR = 2026;                                            // the sample's earned year for carry-over / payout
+  function tfNum(v) { return String(+(+v).toFixed(3)); }         // trim to 3 decimals, like fmtDays
+  var TF_PILL = { Vacation: 'vac', Sick: 'sick', 'Make-Up': 'ot', 'Carry Over': 'co', Payout: 'pay' };   // pot -> pill colour
+  // The chip segments a request produces: a move (carry-over/payout), an add (overtime), or plain takes (leave).
+  function segsForReq(r) {
+    if (r.status === 'Rejected') return [];                      // rejected: nothing taken
+    if (r.kind === 'Bereavement' || r.kind === 'Jury Duty' || r.kind === 'Jury duty') return [];   // cost nothing
+    if (r.kind === 'Carry Over' || r.kind === 'Payout') {        // vacation moves into the pot
+      var moved = r.cur && r.next ? (r.cur.Vacation - r.next.Vacation) : r.days;   // vacation taken out
+      return [{ cls: 'vac', amt: tfNum(moved), label: 'vacation' },
+        { cls: TF_PILL[r.kind], amt: '', label: '→ ' + TF_YEAR + (r.kind === 'Payout' ? ' payout' : ' carry-over') }];
+    }
+    if (r.type === 'Overtime') return [{ cls: 'ot', amt: '+' + tfNum((r.hours || 0) / 8), label: 'added to Make-Up' }];   // hours / 8 banked
+    if (r.cur && r.next) {                                        // leave with a known split: each pot that dropped, cascade order
+      var ORDER = [['Sick', 'sick', 'sick'], ['Make-Up', 'ot', 'Make-Up'], ['Carry Over', 'co', (TF_YEAR - 1) + ' carry-over'], ['Vacation', 'vac', 'vacation'], ['Payout', 'pay', TF_YEAR + ' payout']];
+      var out = [];
+      ORDER.forEach(function (o) {
+        var b = r.cur[o[0]], a = r.next[o[0]];                   // before and after for this pot
+        if (b == null || a == null) return;                     // pot not touched
+        if (b - a > 0) out.push({ cls: o[1], amt: tfNum(b - a), label: o[2] });   // days spent here
+      });
+      return out;
+    }
+    if (!r.days) return [];                                       // decided leave with no recorded split and no amount
+    var sick = r.kind === 'Sick';                                // a single chip by kind
+    return [{ cls: sick ? 'sick' : 'vac', amt: tfNum(r.days), label: sick ? 'sick' : 'vacation' }];
+  }
+  // Render chip segments, or a muted line when nothing moved. ``refund`` strikes the chips through, as on the real screens.
+  function tfPills(segs, refund) {
+    if (!segs || !segs.length) return '<span class="small muted">No balance used</span>';
+    var body = '<span class="tf"' + (refund ? ' style="text-decoration:line-through;opacity:.75"' : '') + '>' + segs.map(function (s) {
+      return '<span class="pill ' + s.cls + '">' + (s.amt ? '<b>' + esc(s.amt) + '</b> ' : '') + esc(s.label) + '</span>';
+    }).join('') + '</span>';
+    return body + (refund ? ' <span class="small muted">Refunded</span>' : '');
+  }
+  // One request's "Taken from" cell: projected for pending, recorded for decided, struck through for refunded.
+  function takenCell(r) {
+    if (r.status === 'Stuck' || r.status === 'Held') return '<span class="small muted">-</span>';   // never processed
+    return tfPills(segsForReq(r), r.status === 'Refunded');
+  }
+  // An employee-history row's chips, by kind (the row shape has no cur/next). Rejected takes nothing.
+  function histSegs(r) {
+    if (r.status === 'Rejected') return [];                     // rejected: nothing taken
+    if (r.kind === 'Overtime') return [{ cls: 'ot', amt: '+' + tfNum((r.hours || 0) / 8), label: 'added to Make-Up' }];
+    if (r.kind === 'Payout') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'pay', amt: '', label: '→ ' + TF_YEAR + ' payout' }];
+    if (r.kind === 'Carry Over') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'co', amt: '', label: '→ ' + TF_YEAR + ' carry-over' }];
+    if (r.kind === 'Bereavement' || r.kind === 'Jury Duty' || r.kind === 'Jury duty') return [];   // cost nothing
+    if (r.kind === 'Sick') return r.days ? [{ cls: 'sick', amt: tfNum(r.days), label: 'sick' }] : [];
+    return r.days ? [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }] : [];   // vacation / part day
+  }
   function age(n) { return n ? '<span class="age' + (n > 7 ? ' old' : '') + '">' + n + ' d</span>' : ''; }
   function chip(t, c) { return '<span class="chip ' + (c || '') + '">' + esc(t) + '</span>'; }
   function toast(msg) { var t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(function () { t.hidden = true; }, 3400); }
@@ -801,7 +880,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var allOn = rows.every(function (r) { return state.reqChecked.indexOf(r.id + '|' + r.who + '|' + r.status) >= 0; });
     return '<table class="reqtable"><thead><tr>' +
       '<th class="chk"><input type="checkbox" data-rcheckall aria-label="Select every request shown"' + (allOn ? ' checked' : '') + '></th>' +
-      '<th>#</th><th>Employee</th><th>Request</th><th>Manager</th><th>Status</th><th class="num">Waiting</th><th></th></tr></thead><tbody>' +
+      '<th>#</th><th>Employee</th><th>Request</th><th>Taken from</th><th>Manager</th><th>Status</th><th class="num">Waiting</th><th></th></tr></thead><tbody>' +
       rows.map(function (r) {
         var key = r.id + '|' + r.who + '|' + r.status;                 // the row's identity in the sample
         var open = state.reqSel === key;                               // this row is the one opened in place
@@ -810,8 +889,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         return '<tr class="click' + (open ? ' sel' : '') + '" tabindex="0" data-rsel="' + esc(key) + '">' +
           '<td class="chk"><input type="checkbox" data-rcheck="' + esc(key) + '" aria-label="Select request ' + (r.id || '') + '"' + (checked ? ' checked' : '') + '></td>' +
           '<td class="muted">' + (r.id || '-') + '</td><td><div style="display:flex;gap:10px;align-items:center">' + av(r.who) + '<b>' + esc(r.who) + '</b></div></td><td>' + what(r) + (r.clash ? ' <span class="flag">' + esc(r.clash) + '</span>' : '') + '<div>' + detail + '</div></td>' +
+          '<td>' + takenCell(r) + '</td>' +                            // which balances the days came from (#307)
           '<td>' + (r.mgr ? esc(r.mgr) : chip('None', 'err')) + '</td><td>' + chip(r.status, CHIP[r.status]) + '</td><td class="num">' + age(r.age) + '</td><td><div class="acts">' + rowActions(r) + '</div></td></tr>' +
-          (open ? reqOpenRow(r, 8) : '');                              // opened detail injected right below
+          (open ? reqOpenRow(r, 9) : '');                              // opened detail injected right below (9 columns now)
       }).join('') + '</tbody></table>';
   }
   // The opened request, as an inline row spanning the table (replaces the drawer).
@@ -820,10 +900,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var k = ' data-req="' + r.id + '|' + esc(r.who) + '|' + r.status + '"';
     // Carry-over and payout show the balance they leave behind, as the owner asked.
     var newbal = (r.kind === 'Carry Over' || r.kind === 'Payout') && r.next ? '<dt>New balance after this request</dt><dd>' + Object.keys(r.next).map(function (x) { return x + ' ' + r.next[x]; }).join(', ') + '</dd>' : '';
+    // Pending: what approving would take (projected). Decided: what it actually took (recorded). (#307)
+    var tfLabel = r.status === 'Pending' ? 'What approving does' : (r.status === 'Approved' || r.status === 'Refunded') ? 'Taken from' : '';
+    var tfRow = tfLabel ? '<dt>' + tfLabel + '</dt><dd>' + takenCell(r) + '</dd>' : '';
     var extra = r.status === 'Pending' ? '<button class="btn out' + P + '" type="button" data-act="edit"' + k + '>Edit</button><button class="btn ghost' + P + '" type="button" data-act="remind"' + k + '>Send reminder</button>' : '';
     return '<tr class="reqopen"><td colspan="' + colspan + '"><div class="pbody" aria-label="Request ' + (r.id || '') + '">' +
       '<div class="reqopen-h">' + av(r.who, true) + '<b>' + esc(r.who) + '</b> <span class="small muted">' + (r.id ? '#' + r.id + ' &middot; ' : '') + esc(r.type) + '</span> ' + chip(r.status, CHIP[r.status]) + (r.age ? ' <span class="small muted">waiting ' + r.age + ' days</span>' : '') + '<button class="x" type="button" data-act="closepanel" aria-label="Close" style="margin-left:auto">&times;</button></div>' +
-      '<dl class="kv"><dt>Request</dt><dd>' + what(r) + '</dd><dt>Description</dt><dd>' + esc(r.desc || '-') + '</dd><dt>Manager</dt><dd>' + esc(r.mgr || 'None') + '</dd>' + (r.dept ? '<dt>Department</dt><dd>' + esc(r.dept) + '</dd>' : '') + newbal + '</dl>' +
+      '<dl class="kv"><dt>Request</dt><dd>' + what(r) + '</dd><dt>Description</dt><dd>' + esc(r.desc || '-') + '</dd><dt>Manager</dt><dd>' + esc(r.mgr || 'None') + '</dd>' + (r.dept ? '<dt>Department</dt><dd>' + esc(r.dept) + '</dd>' : '') + tfRow + newbal + '</dl>' +
       (r.issues ? '<div>' + r.issues.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + (r.clash ? '<div><span class="flag">' + esc(r.clash) + '</span></div>' : '') + bal +
       '<div class="acts" style="justify-content:flex-start">' + rowActions(r) + extra + '<button class="btn ghost" type="button" data-act="audit"' + k + '>Audit trail</button></div></div></td></tr>';
   }
@@ -1054,37 +1137,88 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function personPanel() {
     var p = STAFF.filter(function (x) { return x.id === state.sel; })[0];
     if (!p) return '';
-    // The profile is one surface now: balances and entitlements, every Staff
-    // Directory detail, managers and the change history, with a reason-required
-    // save bar. No "open their dashboard" or "copy link" any more.
-    var tabs = ['Balances', 'Details', 'History'];
-    var tab = tabs.indexOf(state.ptab) >= 0 ? state.ptab : tabs[0];   // guard an old stored tab
-    var mine = REQS.filter(function (r) { return r.who === p.name; });
+    // One surface (#306): balances and every Staff Directory detail on the left,
+    // and one Activity list (the person's requests and HR's hand edits, newest
+    // first, grouped by year) on the right. No tabs, no side drawer.
+    var mine = REQS.filter(function (r) { return r.who === p.name; });   // this person's live requests
     var setup = SETUP.filter(function (s) { return s.who === p.name; })[0];
     var tile = function (label, val, sub) { return '<div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px;background:var(--bg)"><span class="small muted">' + label + '</span><b style="font-size:22px' + (val < 0 ? ';color:var(--err)' : '') + '">' + val + '</b><span class="small muted">' + sub + '</span></div>'; };
     var fact = function (label, val) { return '<div style="display:grid;gap:2px"><span class="small muted">' + label + '</span><span>' + (val || '<span class="muted">Not set</span>') + '</span></div>'; };
-    var body = {
-      Balances: '<div class="small muted" style="margin-bottom:8px">Click a tile to change it with − / + or a typed value. One save bar collects every change and asks for a reason before it saves to the Staff Directory.</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' +
-        tile('Vacation entitlement', p.vacY, 'days a year') + tile('Sick entitlement', p.sickY, 'days a year') +
-        tile('Vacation', p.vac, 'of ' + p.vacY + ' a year') + tile('Sick', p.sick, 'of ' + p.sickY + ' a year') +
-        tile('Make-up', p.mu, 'days (hours ÷ 8)') + tile('Carry-over', p.co, 'days') + tile('Payout', 0, 'days') + '</div>' +
-        (mine.length ? '<div class="small muted" style="margin:12px 0 4px">Requests</div><ul class="list" style="margin:0 -16px">' + mine.map(function (r) { return '<li>' + what(r) + '<span class="r">' + chip(r.status, CHIP[r.status]) + '</span></li>'; }).join('') + '</ul>' : ''),
-      Details: '<div class="small muted" style="margin-bottom:8px">Click any field to change it: contact, placement, managers and the Microsoft 365 links. Changed fields turn orange and show the old value, and save with the same reason.</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px">' +
-        fact('Email', esc(p.email)) + fact('Cell', '') + fact('Location', esc(p.loc)) + fact('Department', esc(p.dept)) +
-        fact('Salary or hourly', esc(p.etype || 'Salary')) + fact('System check', 'Ready') + fact('Comments', '') +
-        fact('Managers', p.mgrs.length ? esc(p.mgrs.join(', ')) : chip('No manager', 'err')) + '</div>' +
-        '<div><button class="btn out' + P + '" type="button" data-act="mgrs" data-who="' + esc(p.name) + '">Change managers</button></div>',
-      History: '<ul class="list" style="margin:0 -16px">' + [['Vacation entitlement', '10 → 15', 'Apr 2, 2026 · Five years of service'], ['Carry-over', '2 → 0', 'Sep 30, 2026 · Paid out with the September run']].map(function (h) { return '<li><div><b>' + h[0] + '</b> <span style="font-variant-numeric:tabular-nums">' + h[1] + '</span><div class="small muted">' + h[2] + '</div></div></li>'; }).join('') + '</ul>'
+
+    // ---- Left column: balance tiles, then every detail ----
+    var tiles = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' +
+      tile('Vacation entitlement', p.vacY, 'days a year') + tile('Sick entitlement', p.sickY, 'days a year') +
+      tile('Vacation', p.vac, 'of ' + p.vacY + ' a year') + tile('Sick', p.sick, 'of ' + p.sickY + ' a year') +
+      tile('Make-up', p.mu, 'days (hours ÷ 8)') + tile('Carry-over', p.co, 'days') + tile('Payout', 0, 'days') + '</div>';
+    var details = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">' +
+      fact('Email', esc(p.email)) + fact('Cell', '') + fact('Location', esc(p.loc)) + fact('Department', esc(p.dept)) +
+      fact('Salary or hourly', esc(p.etype || 'Salary')) + fact('System check', 'Ready') + fact('Comments', '') +
+      fact('Managers', p.mgrs.length ? esc(p.mgrs.join(', ')) : chip('No manager', 'err')) + '</div>' +
+      '<div><button class="btn out' + P + '" type="button" data-act="mgrs" data-who="' + esc(p.name) + '">Change managers</button></div>';
+    var left = '<section>' +
+      '<div class="pfh"><h3>Entitlements and balances</h3><span class="hint">Click a tile to change it</span></div>' +
+      '<div class="small muted">Change a tile with − / + or a typed value. One save bar collects every change and asks for a reason.</div>' + tiles +
+      '<div class="pfh"><h3>Details</h3><span class="hint">Click any field to change it</span></div>' +
+      '<div class="small muted">Contact, placement, managers and the Microsoft 365 links. Changed fields turn orange and save with the same reason.</div>' + details + '</section>';
+
+    // ---- Right column: one Activity list, grouped by year ----
+    var PENCIL = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.4a1.6 1.6 0 0 1 2.3 2.3L5.4 12.8l-3 .8.8-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+    var yearOf = function (r) { var m = /(\d{4})/.exec(r.when || ''); return m ? +m[1] : TF_YEAR; };   // the year named in the when text
+    // HR's sample hand edits for the profile (example data).
+    var CHANGES = [
+      { year: 2026, field: 'Vacation entitlement', from: 10, to: 15, when: 'Apr 2, 2026', why: 'Five years of service' },
+      { year: 2026, field: 'Carry-over', from: 2, to: 0, when: 'Sep 30, 2026', why: 'Paid out with the September run' },
+      { year: 2025, field: 'Sick entitlement', from: 4, to: 5, when: 'Jan 6, 2025', why: 'Sick days policy update' }
+    ];
+    // Extra sample requests, so the current year pages past five and an older year folds (example data).
+    var PRIOR = [
+      { year: 2026, kind: 'Vacation', pill: 'vac', when: 'Jul 8 to Jul 19, 2026', amount: '10 days', status: 'Approved', segs: [{ cls: 'ot', amt: '0.5', label: 'Make-Up' }, { cls: 'vac', amt: '9.5', label: 'vacation' }] },
+      { year: 2026, kind: 'Payout', pill: 'pay', when: '2 days paid out', amount: '2 days', status: 'Approved', segs: [{ cls: 'vac', amt: '2', label: 'vacation' }, { cls: 'pay', amt: '', label: '→ 2026 payout' }] },
+      { year: 2026, kind: 'Bereavement', pill: '', when: 'Aug 4 to Aug 6, 2026', amount: '3 days', status: 'Approved', segs: [] },
+      { year: 2025, kind: 'Vacation', pill: 'vac', when: 'Dec 23 to Dec 24, 2025', amount: '2 days', status: 'Approved', segs: [{ cls: 'vac', amt: '2', label: 'vacation' }] },
+      { year: 2025, kind: 'Carry Over', pill: 'co', when: '3 days into next year', amount: '3 days', status: 'Approved', segs: [{ cls: 'vac', amt: '3', label: 'vacation' }, { cls: 'co', amt: '', label: '→ 2025 carry-over' }] },
+      { year: 2025, kind: 'Make-Up', pill: 'ot', when: 'May 3, 2025', amount: '4 hours', status: 'Approved', segs: [{ cls: 'ot', amt: '+0.5', label: 'added to Make-Up' }] }
+    ];
+    // Merge: live requests, sample prior requests, and HR's hand edits.
+    var items = mine.map(function (r) {
+      var pill = r.type === 'Overtime' ? 'ot' : r.type === 'Carry Over' ? (r.kind === 'Payout' ? 'pay' : 'co') : ({ Vacation: 'vac', Sick: 'sick', 'Half day': 'half' }[r.kind] || '');
+      return { chg: false, year: yearOf(r), kind: r.kind, pill: pill, when: r.when, amount: (r.hours ? r.hours + ' hours' : r.days ? r.days + (r.days === 1 ? ' day' : ' days') : ''), status: r.status, segs: segsForReq(r), refund: r.status === 'Refunded' };
+    }).concat(PRIOR.map(function (x) { return { chg: false, year: x.year, kind: x.kind, pill: x.pill, when: x.when, amount: x.amount, status: x.status, segs: x.segs, refund: false }; }))
+      .concat(CHANGES.map(function (c) { return { chg: true, year: c.year, field: c.field, from: c.from, to: c.to, when: c.when, why: c.why }; }));
+    // Group by year, newest year first.
+    var byYear = {};
+    items.forEach(function (it) { (byYear[it.year] = byYear[it.year] || []).push(it); });
+    var years = Object.keys(byYear).map(Number).sort(function (a, b) { return b - a; });
+    var reqRow = function (it) {
+      return '<li class="actreq"><div class="actmain"><span class="pill' + (it.pill ? ' ' + it.pill : '') + '">' + esc(it.kind) + '</span>' +
+        '<span class="small muted" style="flex:1 1 auto;min-width:0">' + esc(it.when) + '</span>' +
+        (it.amount ? '<span class="small muted" style="font-variant-numeric:tabular-nums">' + esc(it.amount) + '</span>' : '') +
+        chip(it.status, CHIP[it.status]) + '</div>' + tfPills(it.segs, it.refund) + '</li>';
     };
-    // In place of the staff table (not a side drawer), the row grows into this
-    // profile, matching the app: a back button returns to the table.
+    var chgRow = function (it) {
+      return '<li class="actchg">' + PENCIL + '<div><b>' + esc(it.field) + '</b> <span style="font-variant-numeric:tabular-nums">' + esc(it.from) + ' → ' + esc(it.to) + '</span><div class="small muted">Changed by HR · ' + esc(it.when) + ' · ' + esc(it.why) + '</div></div></li>';
+    };
+    var rowHtml = function (it) { return it.chg ? chgRow(it) : reqRow(it); };
+    // Each year: a counted header; the current year open, older years folded; five rows then "Show N more".
+    var activity = years.map(function (y) {
+      var its = byYear[y];
+      var nr = its.filter(function (it) { return !it.chg; }).length, nc = its.length - nr;
+      var summary = [nr ? nr + ' request' + (nr === 1 ? '' : 's') : '', nc ? nc + ' change' + (nc === 1 ? '' : 's') : ''].filter(Boolean).join(' · ');
+      var rest = its.slice(5);
+      var more = rest.length ? '<details class="actmore"><summary>Show ' + rest.length + ' more</summary><ul class="actlist">' + rest.map(rowHtml).join('') + '</ul></details>' : '';
+      return '<details class="actyr"' + (y === TF_YEAR ? ' open' : '') + '><summary><span class="yrn">' + y + '</span>· ' + summary + '</summary><ul class="actlist">' + its.slice(0, 5).map(rowHtml).join('') + '</ul>' + more + '</details>';
+    }).join('');
+    var right = '<section>' +
+      '<div class="pfh"><h3>Activity</h3><span class="hint">Requests and changes, newest first</span></div>' +
+      '<p class="actleg">' + PENCIL + ' a change made by HR, not a request</p>' +
+      (items.length ? '<div class="activity">' + activity + '</div>' : '<div class="empty">Nothing here yet.</div>') + '</section>';
+
+    // In place of the staff table (not a side drawer), the row grows into this profile; Back returns to the table.
     return '<div class="paper" aria-label="' + esc(p.name) + '" style="overflow:hidden">' +
       '<div style="padding:16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center">' +
       '<button class="btn out" type="button" data-act="closepanel" aria-label="Back to staff">← Back</button>' + av(p.name, true) +
       '<div style="flex:1;min-width:0"><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div></div>' +
-      '<div class="ptabs" role="tablist">' + tabs.map(function (tt) { return '<button type="button" role="tab" data-ptab="' + tt + '" aria-selected="' + (tt === tab) + '">' + tt + '</button>'; }).join('') + '</div><div class="pbody">' + body[tab] + '</div></div>';
+      '<div class="pf2">' + left + right + '</div></div>';
   }
 
   // ---------- manager ----------
@@ -1177,6 +1311,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div><b>' + (r.hours ? r.hours + ' hours' : r.days + (r.days === 1 ? ' working day' : ' working days')) + '</b>' + (r.desc ? '<div class="quote">"' + esc(r.desc) + '"</div>' : '') + '</div></div>' : '<div><b>' + esc(r.when) + '</b></div>';
     return '<article class="dcard" data-reqid="' + r.id + '"><div class="dhead">' + av(r.who, true) + '<div><div class="nm">' + esc(r.who) + '</div><div class="small muted">asked ' + (r.age === 0 ? 'today' : r.age === 1 ? 'yesterday' : r.age + ' days ago') + '</div></div><span class="pill ' + pill + '">' + esc(r.kind) + '</span>' + (r.age > 7 ? '<span class="age old">waiting ' + r.age + ' days</span>' : '') + '</div>' +
       dates +
+      '<div class="small" style="display:flex;gap:8px;flex-wrap:wrap;align-items:baseline"><span class="muted">Taken from</span>' + tfPills(segsForReq(r)) + '</div>' +   // which balances approving spends (#307)
       (r.cur ? '<div class="impacts">' + Object.keys(r.cur).map(function (k) { return '<div class="imp"><span class="muted">' + k + '</span>' + meter(r.cur[k], r.next[k], max(k)) + '<span class="v">' + r.cur[k] + ' → ' + r.next[k] + '</span></div>'; }).join('') + '</div>' : '') +
       (r.overlap || r.clash ? '<div>' + (r.overlap ? '<span class="flag">' + esc(r.overlap) + '</span> ' : '') + (r.clash ? '<span class="flag">' + esc(r.clash) + '</span>' : '') + '</div>' : '') +
       '<div class="dfoot">' + rowActions(r) + '</div></article>';
@@ -1273,7 +1408,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (!partial && wd.skipped.length) notes.push(wd.skipped.join(', ') + ' is a company holiday and is not counted.');
         if (nextYear && order.length) notes.push('Next year: uses Make-Up, then Carry Over. Next year\'s vacation is not touched.');
         var warn = partial && wd.skipped.length ? 'This date is the company holiday ' + wd.skipped[0] + '. A part day on a holiday is rejected automatically.' : partial && (+s.hours || 0) >= 8 ? 'A partial day is less than 8 hours; choose a full-day leave type instead.' : '';
-        f += preview(me, [[partial ? 'Days (8 hours = 1 day)' : 'Working days', n]], order.length ? spend(me, n, order) : [], notes.join(' '), warn);
+        var potRows = order.length ? spend(me, n, order) : [];   // each pot [label, before, after], cascade order
+        // Taken from: one chip per pot that dropped, worded like TakenFrom.tsx (carry-over names last year).
+        var POT_TF = { Vacation: ['vac', 'vacation'], Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'], 'Carry Over': ['co', (TF_YEAR - 1) + ' carry-over'] };
+        var leaveSegs = potRows.filter(function (x) { return x[2] < x[1]; }).map(function (x) { var m = POT_TF[x[0]] || ['', x[0]]; return { cls: m[0], amt: tfNum(x[1] - x[2]), label: m[1] }; });
+        f += preview(me, [[partial ? 'Days (8 hours = 1 day)' : 'Working days', n]], potRows, notes.join(' '), warn, leaveSegs);
       }
     } else if (s.type === 'overtime') {
       f = '<label class="field">What was the overtime for?<input class="input big" data-rp="notes" value="' + esc(s.notes) + '"></label><div class="row2"><label class="field">Date worked<input class="input big" type="date" data-rp="start" value="' + s.start + '"></label><label class="field">Hours<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-hour steps.</span></label></div>';
@@ -1282,14 +1421,18 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         var me2 = person(s.session), d2 = (+s.hours || 0) / 8, mu2 = me2.mu + d2, vac2 = me2.vac;
         if (vac2 < 0 && mu2 > 0) { vac2 += mu2; mu2 = 0; if (vac2 > 0) { mu2 = vac2; vac2 = 0; } }
         var hol2 = holidaysFor(me2.loc)[s.start];
-        f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '');
+        var otSegs = [{ cls: 'ot', amt: '+' + tfNum(d2), label: 'added to Make-Up' }];   // hours / 8 banked to Make-Up
+        f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', otSegs);
       }
     } else {
       f = '<div class="row2"><label class="field">Request<select class="input big" data-rpsel="co">' + ['Carry over to next year', 'Pay out'].map(function (o) { return '<option' + (s.co === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></label><label class="field">Days<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-day steps.</span></label></div>';
       if (employee) {
         // simulate_carryover_payout_impact: days leave Vacation; more than the balance is rejected automatically.
         var me3 = person(s.session), d3 = +s.hours || 0, pay = s.co === 'Pay out';
-        f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', me3.vac - d3 < 0 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '');
+        var refused3 = me3.vac - d3 < 0;                          // more than the vacation balance is auto-refused
+        // Taken from: vacation moves into carry-over or payout (this year's), or a refusal note when there is not enough.
+        var coSegs = refused3 ? [] : [{ cls: 'vac', amt: tfNum(d3), label: 'vacation' }, { cls: pay ? 'pay' : 'co', amt: '', label: '→ ' + TF_YEAR + (pay ? ' payout' : ' carry-over') }];
+        f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', refused3 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '', coSegs, refused3);
       }
     }
     // Carry-over and payout are closed until HR saves dates on the admin home, like the live page.
@@ -1310,9 +1453,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     return out;
   }
   function num(v) { return +(+v).toFixed(2); }
-  function preview(me, facts, pots, note, warn) {
+  // ``segs`` adds a "Taken from" line of chips (the split, same wording as the real request page); ``refused`` shows the auto-refusal note.
+  function preview(me, facts, pots, note, warn, segs, refused) {
+    var takenRow = segs
+      ? '<div class="row" style="align-items:baseline"><span class="muted">Taken from</span>' +
+        (segs.length ? tfPills(segs) : '<span class="small muted">' + (refused ? 'Would be refused: not enough vacation' : 'No balance used') + '</span>') + '</div>'
+      : '';
     return (warn ? '<div class="note" style="background:var(--warn-soft);color:var(--warn)">' + esc(warn) + '</div>' : '') + '<div class="preview">' + facts.map(function (x) { return '<div class="row"><span class="muted">' + x[0] + '</span><b>' + num(x[1]) + '</b></div>'; }).join('') +
       pots.map(function (x) { return '<div class="row"><span class="muted">' + x[0] + ' after this</span><b' + (x[2] < 0 ? ' style="color:var(--err)"' : '') + '>' + num(x[1]) + ' → ' + num(x[2]) + '</b></div>'; }).join('') +
+      takenRow +
       (note ? '<div class="small muted">' + note + '</div>' : '') +
       '<div class="row"><span class="muted">Goes to</span><b>' + esc((me && me.mgrs[0]) || 'your manager') + '</b></div></div>';
   }
@@ -1487,8 +1636,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           signal: function () { return !!state.reqSel; },
           act: function () { var b = document.querySelector('tr[data-rsel="1432|Avery Example|Pending"]'); if (b) b.click(); } },
         { title: 'What approving would do', target: '.reqopen .pbody',
-          todo: 'The panel shows the request, its manager, and the balances before and after. Edit, Send reminder, Approve and Reject are all here.',
-          know: 'Balances only move when a manager approves. The panel shows the result in advance so there are no surprises.',
+          todo: 'The panel shows the request, its manager, a <b>What approving does</b> line of which balances the days come from, and the balances before and after. Edit, Send reminder, Approve and Reject are all here.',
+          know: 'Balances only move when a manager approves. The chips name each balance the days come out of, and the panel shows the result in advance so there are no surprises.',
           enter: function () { adminAt('pending'); state.reqSel = '1432|Avery Example|Pending'; } },
         { title: 'Edit before approving', target: '.reqopen [data-act="edit"]',
           todo: 'Wrong dates or the wrong type? Select <b>Edit</b> to fix the request before it is approved.',
@@ -2038,8 +2187,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div class="paper"><div class="sect">By kind</div><div class="pad" style="display:grid;gap:12px;padding-top:4px">' + kinds.map(function (k) { return '<div class="kbar"><span>' + k[0] + '</span><span class="meter"><span class="keep" style="width:' + (k[1] / top * 100) + '%;background:' + k[2] + '"></span></span><b>' + k[1] + '</b></div>'; }).join('') + '</div></div></div>';
     }
     if (tab === 'history') {
-      return html + '<div class="paper"><div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th class="num">Amount</th><th class="num">Request</th></tr></thead><tbody>' +
-        all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
+      return html + '<div class="paper"><div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th>Taken from</th><th class="num">Amount</th><th class="num">Request</th></tr></thead><tbody>' +
+        all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td>' + tfPills(histSegs(r)) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
     }
     var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + (of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : '') + '<div class="chg">' + note + '</div></div>'; };
     return html + '<div class="pots5">' + pot('Vacation', p.vac, 'left of ' + p.vacY + ' days this year', p.vacY) + pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') + pot('Carry Over', p.co, 'used before vacation, cleared April 1 (in 174 days)') + pot('Payout', p.po || 0, 'days set aside to be paid out') + '</div>' +

@@ -8,19 +8,23 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddIcon from '@mui/icons-material/Add';
 import CloseIcon from '@mui/icons-material/Close';
 import RemoveIcon from '@mui/icons-material/Remove';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import KindPill from '../KindPill';
+import TakenFrom from '../TakenFrom';
 import { STATUS_COLOR } from '../dataGridDefaults';
 import { ManagerOption } from '../AddEmployee';
-import { requestKind, requestWhat, requestWhen } from '../../utils/requestText';
+import { requestAmount, requestKind, requestWhat, requestWhen } from '../../utils/requestText';
 import { Enter } from '../Motion';
-import { StaffRecord, SaveStaffPayload, saveStaffRecord } from '../../api/staff';
+import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord } from '../../api/staff';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 
 /*
- * The admin person profile (#273, #276). The staff row grows into this panel in
- * the table's place (no side drawer): balances and entitlements as click-to-edit
- * tiles, every Staff Directory detail as a click-to-edit field, managers, and
- * the change history. One save bar covers every change and needs a reason.
+ * The admin person profile (#273, #276, #306). The staff row grows into this
+ * panel in the table's place (no side drawer): the left column holds balance and
+ * entitlement tiles as click-to-edit tiles and every Staff Directory detail as a
+ * click-to-edit field; the right column holds one Activity list that merges the
+ * person's requests and HR's hand edits, newest first, grouped by year. One save
+ * bar covers every change and needs a reason.
  */
 
 /** A balance pot: its wire key, SharePoint column, label, step and entitlement. */
@@ -159,7 +163,6 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   const [edits, setEdits] = useState<Record<string, any>>({});   // wire key -> unsaved value
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
-  const [reqFilter, setReqFilter] = useState('all');
   const [editingKey, setEditingKey] = useState<string | null>(null);  // which field is open in its inline editor
 
   // The saved managers are {sp_user_id, name}; the editor works in names, so keep
@@ -274,14 +277,6 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   const currentLoc = String(fieldValue('location'));
   const currentMgrs = fieldValue('managers') as string[];
 
-  // The person's requests, filtered by the segmented control.
-  const shownRequests = requests.filter((r) => {
-    if (reqFilter === 'all') return true;
-    if (reqFilter === 'pending') return (r.Status || 'Pending') === 'Pending';
-    if (reqFilter === 'mu') return r.request_type === 'overtime';
-    return r.request_type === 'leave';                           // "leave"
-  });
-
   return (
     <>
       <Box sx={{
@@ -335,7 +330,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
           </Stack>
         </Box>
 
-        {/* Body: balances + history on the left, requests + details on the right. */}
+        {/* Body: balances + every detail on the left, the one Activity list on the right (#306). */}
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'minmax(0, 1.25fr) minmax(0, 1fr)' } }}>
           <Box sx={{ p: 2.5, display: 'grid', gap: 2.5, alignContent: 'start', minWidth: 0 }}>
             <SectionHead title="Entitlements and balances" hint="Click a tile to change it" />
@@ -349,52 +344,7 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
               ))}
             </Box>
 
-            <SectionHead title="History" hint="Every change, with its reason" />
-            <Box sx={{ display: 'grid', gap: 1.5 }}>
-              {record.history.length === 0 ? (
-                <Typography color="text.secondary">No changes made from the app yet.</Typography>
-              ) : record.history.map((h, i) => (
-                <Box key={i} sx={{ display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr)', gap: 1.5 }}>
-                  <Box sx={{ width: 14, height: 14, mt: 0.5, borderRadius: '50%', border: `3px solid ${theme.palette.primary.main}`, bgcolor: 'background.paper' }} />
-                  <Box>
-                    <Typography sx={{ fontSize: 14 }}>
-                      {HISTORY_LABELS[h.field] || h.field}{' '}
-                      <b style={{ fontVariantNumeric: 'tabular-nums' }}>{String(h.old_value ?? '')} → {String(h.new_value ?? '')}</b>
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">{formatInstantDay(h.changed_at)} · {h.reason}</Typography>
-                  </Box>
-                </Box>
-              ))}
-            </Box>
-          </Box>
-
-          <Box sx={{ p: 2.5, display: 'grid', gap: 2.5, alignContent: 'start', minWidth: 0, borderTop: { xs: 1, md: 0 }, borderLeft: { md: 1 }, borderColor: { xs: 'divider', md: 'divider' } }}>
-            <SectionHead title="Requests" />
-            <ToggleButtonGroup
-              exclusive size="small" value={reqFilter}
-              onChange={(_, v) => v && setReqFilter(v)} aria-label="Filter requests"
-            >
-              <ToggleButton value="all">All</ToggleButton>
-              <ToggleButton value="leave">Leave</ToggleButton>
-              <ToggleButton value="mu">Make-up</ToggleButton>
-              <ToggleButton value="pending">Pending</ToggleButton>
-            </ToggleButtonGroup>
-            <Enter key={reqFilter}>
-              {shownRequests.length === 0 ? (
-                <Typography color="text.secondary">Nothing here.</Typography>
-              ) : (
-                <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
-                  {shownRequests.map((r) => (
-                    <Box key={`${r.request_type}-${r.id}`} sx={{ display: 'flex', gap: 1, alignItems: 'center', py: 1 }}>
-                      <KindPill kind={requestKind(r)} label={requestWhat(r)} />
-                      <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>{requestWhen(r)}</Typography>
-                      <Chip size="small" color={STATUS_COLOR[r.Status] || 'default'} label={r.Status || 'Pending'} />
-                    </Box>
-                  ))}
-                </Stack>
-              )}
-            </Enter>
-
+            {/* Details: moved under the tiles in the left column (#306 mockup). */}
             <SectionHead title="Details" hint="Click any field to change it" />
             <FieldGroup title="Contact">
               {['email', 'cell', 'extension', 'birthday'].map((k) => renderField(k))}
@@ -417,6 +367,12 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
               <Fact label="Staff Directory ID" value={record.employee_id} system />
               <Fact label="Last modified" value={formatInstantDay(String(record.fields.Modified ?? ''))} system />
             </FieldGroup>
+          </Box>
+
+          {/* Right column: requests and HR's hand edits in one timeline. */}
+          <Box sx={{ p: 2.5, display: 'grid', gap: 2, alignContent: 'start', minWidth: 0, borderTop: { xs: 1, md: 0 }, borderLeft: { md: 1 }, borderColor: 'divider' }}>
+            <SectionHead title="Activity" hint="Requests and changes, newest first" />
+            <Activity requests={requests} history={record.history} />
           </Box>
         </Box>
       </Box>
@@ -729,6 +685,210 @@ function Tile({ pot, value, saved, entitlement, onChange }: {
           <Box sx={{ height: '100%', width: `${meterPct}%`, borderRadius: 2, bgcolor: negative ? 'error.main' : 'primary.main', transition: 'width .4s ease' }} />
         </Box>
       )}
+    </Box>
+  );
+}
+
+/** One item in the merged Activity timeline: a request, or an HR hand edit. */
+type ActItem =
+  | { kind: 'req'; key: string; day: number; year: number; r: any }        // a request row (carries taken_from)
+  | { kind: 'chg'; key: string; day: number; year: number; e: StaffChange }; // an HR hand edit
+
+/** The Activity filters, each a test over a merged item. */
+const ACT_FILTERS: { key: string; label: string; test: (it: ActItem) => boolean }[] = [
+  { key: 'all', label: 'All', test: () => true },                                                  // everything
+  { key: 'leave', label: 'Leave', test: (it) => it.kind === 'req' && it.r.request_type === 'leave' },       // leave requests
+  { key: 'mu', label: 'Make-up', test: (it) => it.kind === 'req' && it.r.request_type === 'overtime' },     // overtime requests
+  { key: 'pending', label: 'Pending', test: (it) => it.kind === 'req' && (it.r.Status || 'Pending') === 'Pending' }, // not yet decided
+  { key: 'changes', label: 'Changes', test: (it) => it.kind === 'chg' },                           // HR hand edits only
+];
+
+/** Rows a year shows before the "Show N more" control. */
+const PER_YEAR = 5;
+
+/**
+ * A sortable YYYYMMDD number from a date or timestamp string's date part.
+ *
+ * @param iso - "YYYY-MM-DD" or an ISO timestamp (or '').
+ * @returns y*10000 + m*100 + d, or 0 when unreadable.
+ */
+function dayNum(iso?: string | null): number {
+  if (!iso) return 0;                                            // nothing to read
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);    // date part only, no timezone shift
+  return y && m && d ? y * 10000 + m * 100 + d : 0;             // 0 when any part is missing
+}
+
+/**
+ * The day a request sits on in the timeline: its approval day once decided, else
+ * when it was created, else its start date.
+ *
+ * @param r - The raw request row.
+ * @returns The date string used for sorting and the year group.
+ */
+function requestDay(r: any): string {
+  return String(r.ApprovedDate || r.Created || r.StartDate || '');  // decided day wins, then created, then start
+}
+
+/**
+ * The merged Activity list (#306): the person's requests and HR's hand edits in
+ * one timeline, newest first, grouped by year. The current year is open; older
+ * years collapse behind a header with a count, and each year shows five rows
+ * before a "Show N more" control. Requests show the type pill, when, amount,
+ * status and the "Taken from" chips; hand edits show a pencil marker, a muted
+ * tint, a dashed edge and before to after with no status, so the two read apart
+ * at a glance. Everything stacks, so a phone never scrolls sideways.
+ *
+ * @param props.requests - The person's raw request rows (each carries taken_from).
+ * @param props.history - HR's hand edits, newest first (from the record).
+ * @returns The Activity list.
+ */
+function Activity({ requests, history }: { requests: any[]; history: StaffChange[] }) {
+  const [filter, setFilter] = useState('all');
+  const [yearOpen, setYearOpen] = useState<Record<number, boolean>>({});   // per-year unfold override
+  const [yearAll, setYearAll] = useState<Record<number, boolean>>({});     // per-year show-every-row override
+  const currentYear = new Date().getFullYear();                            // the year open by default
+
+  // Merge both kinds into one list: changes seeded first, then a stable descending
+  // sort by day keeps a change above a request on the same day.
+  const items = useMemo<ActItem[]>(() => {
+    const chgs: ActItem[] = history.map((e, i): ActItem => {
+      const day = dayNum(e.changed_at);                          // the day the edit was made
+      return { kind: 'chg', key: `chg-${i}`, day, year: Math.floor(day / 10000), e };
+    });
+    const reqs: ActItem[] = requests.map((r): ActItem => {
+      const day = dayNum(requestDay(r));                         // approval/created/start day
+      return { kind: 'req', key: `req-${r.request_type}-${r.id}`, day, year: Math.floor(day / 10000), r };
+    });
+    return [...chgs, ...reqs].sort((a, b) => b.day - a.day);     // newest first, stable within a day
+  }, [requests, history]);
+
+  // Live counts per filter, so each chip carries its number.
+  const counts = useMemo(
+    () => ACT_FILTERS.reduce<Record<string, number>>((acc, f) => { acc[f.key] = items.filter(f.test).length; return acc; }, {}),
+    [items],
+  );
+
+  const test = (ACT_FILTERS.find((f) => f.key === filter) || ACT_FILTERS[0]).test;   // the active filter's test
+  const shown = items.filter(test);
+
+  // Group the shown items by year, years newest first.
+  const byYear = new Map<number, ActItem[]>();
+  shown.forEach((it) => { const arr = byYear.get(it.year) || []; arr.push(it); byYear.set(it.year, arr); });
+  const years = Array.from(byYear.keys()).sort((a, b) => b - a);
+
+  return (
+    <>
+      {/* Filter chips with live counts (All / Leave / Make-up / Pending / Changes). */}
+      <ToggleButtonGroup
+        exclusive size="small" value={filter} onChange={(_, v) => v && setFilter(v)}
+        aria-label="Filter activity" sx={{ flexWrap: 'wrap' }}
+      >
+        {ACT_FILTERS.map((f) => (
+          <ToggleButton key={f.key} value={f.key} aria-label={`${f.label}, ${counts[f.key]}`}>
+            {f.label}
+            <Box component="span" sx={{ ml: 0.5, fontSize: 11, fontWeight: 700, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{counts[f.key]}</Box>
+          </ToggleButton>
+        ))}
+      </ToggleButtonGroup>
+      {/* Legend: what the pencil-marked rows are. */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, color: 'text.secondary', fontSize: 12.5 }}>
+        <EditOutlinedIcon sx={{ fontSize: 15 }} /> a change made by HR, not a request
+      </Box>
+
+      <Enter key={filter}>
+        {shown.length === 0 ? (
+          <Typography color="text.secondary">Nothing here.</Typography>
+        ) : (
+          <Box sx={{ display: 'grid', minWidth: 0 }}>
+            {years.map((year) => {
+              const its = byYear.get(year)!;                      // this year's items
+              const open = yearOpen[year] ?? year === currentYear; // current year open, older years folded
+              const nr = its.filter((it) => it.kind === 'req').length;   // requests this year
+              const nc = its.length - nr;                         // changes this year
+              const summary = [nr ? `${nr} request${nr === 1 ? '' : 's'}` : '', nc ? `${nc} change${nc === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+              const visible = yearAll[year] ? its : its.slice(0, PER_YEAR);   // paged to five unless opened
+              return (
+                <Box key={year}>
+                  {/* Year header: a button, so an older year folds into one summary line with a count. */}
+                  <Box
+                    component="button" type="button" aria-expanded={open}
+                    onClick={() => setYearOpen((p) => ({ ...p, [year]: !open }))}
+                    sx={{ width: '100%', display: 'flex', alignItems: 'center', gap: 1, border: 0, borderBottom: 1, borderColor: 'divider', background: 'none', color: 'text.secondary', font: 'inherit', cursor: 'pointer', py: 1, px: 0, textAlign: 'left', '&:hover': { color: 'text.primary' } }}
+                  >
+                    <Box component="span" sx={{ fontSize: 17, lineHeight: 1, transition: 'transform .2s', transform: open ? 'rotate(90deg)' : 'none' }}>›</Box>
+                    <Box component="span" sx={{ fontWeight: 700 }}>{year || 'Undated'}</Box>
+                    {summary && <Box component="span" sx={{ fontWeight: 600 }}>· {summary}</Box>}
+                  </Box>
+                  {open && (
+                    <>
+                      {visible.map((it) => (it.kind === 'req'
+                        ? <RequestRow key={it.key} r={it.r} />
+                        : <ChangeRow key={it.key} e={it.e} />))}
+                      {its.length > PER_YEAR && (
+                        <Button
+                          size="small" variant="text" sx={{ justifySelf: 'start', mt: 0.5 }}
+                          onClick={() => setYearAll((p) => ({ ...p, [year]: !yearAll[year] }))}
+                        >
+                          {yearAll[year] ? 'Show fewer' : `Show ${its.length - PER_YEAR} more`}
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </Box>
+              );
+            })}
+          </Box>
+        )}
+      </Enter>
+    </>
+  );
+}
+
+/**
+ * One request in the Activity list: the type pill, when, amount and status on a
+ * wrapping line, then the "Taken from" chips on their own line below. Nothing is
+ * fixed-width, so the row wraps instead of scrolling sideways on a phone.
+ *
+ * @param props.r - The raw request row.
+ * @returns The request row.
+ */
+function RequestRow({ r }: { r: any }) {
+  const status = r.Status || 'Pending';                          // SharePoint leaves it blank while pending
+  const amount = requestAmount(r);                               // "3 days" / "4 hours" / ''
+  return (
+    <Box sx={{ display: 'grid', gap: 0.75, py: 1, borderBottom: 1, borderColor: 'divider', minWidth: 0 }}>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
+        <KindPill kind={requestKind(r)} label={requestWhat(r)} />
+        <Typography variant="body2" color="text.secondary" sx={{ flex: '1 1 auto', minWidth: 0 }}>{requestWhen(r)}</Typography>
+        {amount && <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{amount}</Typography>}
+        <Chip size="small" color={STATUS_COLOR[status] || 'default'} label={status} />
+      </Box>
+      <TakenFrom value={r.taken_from} compact />
+    </Box>
+  );
+}
+
+/**
+ * One HR hand edit in the Activity list: a pencil marker, a muted tint and a
+ * dashed left edge set it apart from a request; it names the field and before to
+ * after, then who, when and why, and never shows a status.
+ *
+ * @param props.e - The change row.
+ * @returns The change row.
+ */
+function ChangeRow({ e }: { e: StaffChange }) {
+  const theme = useTheme();
+  const t = theme.tokens;
+  return (
+    <Box sx={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', columnGap: 1.25, rowGap: 0.25, py: 1, px: 1.25, borderBottom: 1, borderColor: 'divider', borderLeft: `2px dashed ${t.line2}`, bgcolor: t.hover, minWidth: 0 }}>
+      <EditOutlinedIcon sx={{ fontSize: 16, color: 'text.secondary', mt: '2px' }} />
+      <Typography sx={{ fontSize: 14, minWidth: 0, overflowWrap: 'anywhere' }}>
+        {HISTORY_LABELS[e.field] || e.field}{' '}
+        <b style={{ fontVariantNumeric: 'tabular-nums' }}>{String(e.old_value ?? '')} → {String(e.new_value ?? '')}</b>
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ gridColumn: 2, minWidth: 0, overflowWrap: 'anywhere' }}>
+        Changed by HR · {formatInstantDay(e.changed_at)} · {e.reason}
+      </Typography>
     </Box>
   );
 }
