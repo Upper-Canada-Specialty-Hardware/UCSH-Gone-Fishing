@@ -16,6 +16,7 @@ import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
 import { greeting } from '../utils/greeting';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
+import { isHourlyBc } from '../utils/employment';
 import { CountUp, EASE, Enter, KF, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
 import { EmployeeSkeleton } from '../components/Skeletons';
 
@@ -72,6 +73,32 @@ function Pot({ label, value, note, of, count }: { label: string; value: number; 
         </Box>
       )}
       <Typography variant="caption" color="text.secondary">{note}</Typography>
+    </Paper>
+  );
+}
+
+/**
+ * A counter tile (#300): a BC hourly person's "vacation taken this year", shown
+ * as days with no bar, no "left" and no "of N", so it never reads like a
+ * balance. The caption spells out that it only counts up.
+ *
+ * @param props.label - The tile heading ("Vacation taken").
+ * @param props.value - The counted days.
+ * @param props.caption - The line under it saying it is a counter.
+ * @param props.count - Count the number up from 0 (on arrival only).
+ * @returns The tile.
+ */
+function CounterTile({ label, value, caption, count }: { label: string; value: number; caption: string; count?: boolean }) {
+  const theme = useTheme();                                     // for the display serif
+  return (
+    <Paper sx={{ p: 2, display: 'grid', gap: 0.5, alignContent: 'start' }}>
+      <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>{label}</Typography>
+      <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 32, fontWeight: 600, lineHeight: 1.15 }}>
+        {count ? <CountUp from={0} value={value} format={fmt} /> : fmt(value)}
+        {/* "days" sits small beside the number: a count, not a balance figure. */}
+        <Box component="span" sx={{ fontSize: 15, fontWeight: 600, color: 'text.secondary', ml: 0.5 }}>days</Box>
+      </Typography>
+      <Typography variant="caption" color="text.secondary">{caption}</Typography>
     </Paper>
   );
 }
@@ -207,6 +234,7 @@ export default function EmployeeDashboard() {
   }
 
   const b = balances || {};
+  const hourlyBc = isHourlyBc(b);                       // BC hourly: Sick plus the vacation counter only (#300)
   const resetIn = daysToCarryReset();
   // The "by kind" bars: the longest bar fills the track.
   const kindRows = myKindRows(mine);
@@ -263,13 +291,24 @@ export default function EmployeeDashboard() {
       <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'overview' && (
         <>
-          {/* All five balances, each with how it works in a line; they arrive in reading order. */}
+          {/* The balances, each with how it works in a line; they arrive in reading order.
+              BC hourly people have only Sick plus the vacation counter (#300). */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
-            <Pot count={arriving} label="Vacation" value={b.vacation_balance ?? 0} of={b.vacation_entitlement} note={b.vacation_entitlement ? `left of ${fmt(b.vacation_entitlement)} days this year` : 'days left'} />
-            <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
-            <Pot count={arriving} label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
-            <Pot count={arriving} label="Carry Over" value={b.carryover ?? 0} note={`used before vacation, cleared April 1 (in ${resetIn} day${resetIn === 1 ? '' : 's'})`} />
-            <Pot count={arriving} label="Payout" value={b.payout ?? 0} note="days set aside to be paid out" />
+            {hourlyBc ? (
+              <>
+                {/* Vacation is a counter here, not a balance: no bar, no "left". */}
+                <CounterTile count={arriving} label="Vacation taken" value={b.vacation_taken ?? 0} caption="This year. Counted, not a balance." />
+                <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
+              </>
+            ) : (
+              <>
+                <Pot count={arriving} label="Vacation" value={b.vacation_balance ?? 0} of={b.vacation_entitlement} note={b.vacation_entitlement ? `left of ${fmt(b.vacation_entitlement)} days this year` : 'days left'} />
+                <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
+                <Pot count={arriving} label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
+                <Pot count={arriving} label="Carry Over" value={b.carryover ?? 0} note={`used before vacation, cleared April 1 (in ${resetIn} day${resetIn === 1 ? '' : 's'})`} />
+                <Pot count={arriving} label="Payout" value={b.payout ?? 0} note="days set aside to be paid out" />
+              </>
+            )}
           </Box>
 
           <Paper sx={{ overflow: 'hidden', pb: 0.5 }}>

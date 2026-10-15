@@ -5,10 +5,14 @@ import { Balances, EmployeeSession, RequestPreview, RequestType, previewMyReques
 import { AutoHeight, CountUp, Fold, riseAt } from '../Motion';
 import TakenFrom from '../TakenFrom';
 import { describeTakenFrom, takenFromPreview } from '../../utils/takenFrom';
+import { belowZeroSentence, isHourlyBc } from '../../utils/employment';
 import { today } from '../../utils/dates';
 
+/** The numeric balance pots (Balances also holds the non-numeric hourly_bc / vacation_taken, #300). */
+type NumericBalanceKey = 'vacation_balance' | 'sick_balance' | 'overtime' | 'carryover' | 'payout';
+
 /** The balances shown, in the order spending uses them. */
-const POTS: { key: keyof Balances; label: string }[] = [
+const POTS: { key: NumericBalanceKey; label: string }[] = [
   { key: 'overtime', label: 'Make-Up' },
   { key: 'sick_balance', label: 'Sick' },
   { key: 'carryover', label: 'Carry Over' },
@@ -55,7 +59,12 @@ export default function BalancePreview({ session, type, body }: Props) {
   const amountLabel = type === 'leave' ? 'Working days' : type === 'overtime' ? 'Adds (8 hours = 1 day)' : 'Days';
   const current = preview?.current;
   const projected = preview?.projected;
-  const changed = current && projected ? POTS.filter((p) => p.key === 'vacation_balance' || current[p.key] !== projected[p.key]) : [];
+  // BC hourly have only Sick, so their preview lists Sick alone; everyone else keeps Vacation
+  // always on and adds any other pot that moves (#300).
+  const hourlyBc = isHourlyBc(current);
+  const alwaysKey: NumericBalanceKey = hourlyBc ? 'sick_balance' : 'vacation_balance';
+  const pots = hourlyBc ? POTS.filter((p) => p.key === 'sick_balance') : POTS;
+  const changed = current && projected ? pots.filter((p) => p.key === alwaysKey || current[p.key] !== projected[p.key]) : [];
   // The same split the dashboards show, worked out from the preview's current vs projected
   // balances (there is no server taken_from for an unsent request). Shown only when the
   // request actually moves a balance; a no-change case is already covered by `unchanged`.
@@ -88,6 +97,8 @@ export default function BalancePreview({ session, type, body }: Props) {
             ))}
             {preview.unchanged && <Typography variant="body2" color="text.secondary">{preview.unchanged}</Typography>}
             {preview.notes.map((n) => <Typography key={n} variant="body2" color="text.secondary">{n}</Typography>)}
+            {/* Approving would take the floor below zero: the shared sentence in red. Sending stays allowed (#300). */}
+            {preview.below_zero && <Typography variant="body2" color="error.main" sx={{ fontWeight: 600 }}>{belowZeroSentence(preview.below_zero)}</Typography>}
             {preview.warning && <Alert severity="warning" sx={{ mt: 0.5 }}>{preview.warning}</Alert>}
           </Box>
         )}

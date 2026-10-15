@@ -92,6 +92,8 @@ interface Props {
   values: RequestValues;
   /** Update one field. */
   onChange: (key: keyof RequestValues, value: string) => void;
+  /** True for a BC hourly employee: a part day uses one whole sick day (#300). */
+  hourlyBc?: boolean;
 }
 
 /**
@@ -153,7 +155,7 @@ const ROW2 = { display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1f
  * @param props - See {@link Props}.
  * @returns The form fields, without a submit button.
  */
-export default function RequestForm({ type, values: v, onChange }: Props) {
+export default function RequestForm({ type, values: v, onChange, hourlyBc = false }: Props) {
   /** A change handler for one field. @param key - The field. */
   const field = (key: keyof RequestValues) =>
     (e: React.ChangeEvent<HTMLInputElement>) => onChange(key, e.target.value);
@@ -164,6 +166,12 @@ export default function RequestForm({ type, values: v, onChange }: Props) {
     return (
       <Stack spacing={2}>
         <LeaveChips value={v.leave_type} onPick={(t) => onChange('leave_type', t)} />
+        {/* Shown with the leave types for everyone: sick is never part of a day. */}
+        <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>Sick days are taken in full days only.</Typography>
+        {/* For BC hourly a part day still costs one whole sick day, so say so under the picker (#300). */}
+        {partial && hourlyBc && (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>Uses one whole sick day.</Typography>
+        )}
         <Box sx={ROW2}>
           <TextField label={<Swap k={partial ? 'date' : 'first'}>{partial ? 'Date' : 'First day away'}</Swap>} required {...dateProps}
             value={v.start_date} onChange={field('start_date')} />

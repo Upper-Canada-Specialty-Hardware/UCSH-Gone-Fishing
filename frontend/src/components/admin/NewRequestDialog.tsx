@@ -8,6 +8,7 @@ import PillToggle from '../PillToggle';
 import {
   AdminRequestForm, PreviewResult, StaffOption, createAdminRequest, previewAdminRequest,
 } from '../../api/requestsAdmin';
+import { belowZeroSentence } from '../../utils/employment';
 import { Src } from './requestTable';
 
 /** The one leave type measured in hours, not a date range (backend's name). */
@@ -263,6 +264,8 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
                   ) : preview.unchanged ? (
                     <Typography variant="body2" sx={{ fontStyle: 'italic' }}>{preview.unchanged}</Typography>
                   ) : null}
+                  {/* Approving would take the floor below zero: the shared sentence in red, never a block (#300). */}
+                  {preview.below_zero && <Typography variant="body2" color="error.main" sx={{ fontWeight: 600 }}>{belowZeroSentence(preview.below_zero)}</Typography>}
                   {preview.notes.map((n, i) => <Typography key={i} variant="caption" color="text.secondary">{n}</Typography>)}
                   {preview.warning && <Alert severity="warning" sx={{ py: 0 }}>{preview.warning}</Alert>}
                 </>

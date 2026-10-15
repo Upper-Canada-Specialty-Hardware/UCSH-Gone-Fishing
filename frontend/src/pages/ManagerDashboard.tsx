@@ -36,6 +36,7 @@ import {
   createEmployee,
 } from '../api/client';
 import { greeting } from '../utils/greeting';
+import { isHourlyBc } from '../utils/employment';
 
 /**
  * A new hire's details left by the supervisor's "add this person" email link
@@ -388,6 +389,8 @@ export default function ManagerDashboard() {
               const nextOff = absences
                 .filter((a) => a.who === mem.name && a.end >= today())
                 .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
+              // BC hourly team members have only Sick plus a vacation counter (#300).
+              const bc = isHourlyBc(b);
               /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
               const line = (label: string, v: number, of?: number) => (
                 <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -420,10 +423,24 @@ export default function ManagerDashboard() {
                       <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
                     </Box>
                   </Box>
-                  {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
-                  {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
-                  {line('Make-Up', b.overtime ?? 0)}
-                  {line('Carry Over', b.carryover ?? 0)}
+                  {bc ? (
+                    <>
+                      {/* Vacation is a counter here, not a balance: no "of", with a caption. */}
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{b.vacation_taken ?? 0}</Typography>
+                      </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>This year. Counted, not a balance.</Typography>
+                      {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+                    </>
+                  ) : (
+                    <>
+                      {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
+                      {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+                      {line('Make-Up', b.overtime ?? 0)}
+                      {line('Carry Over', b.carryover ?? 0)}
+                    </>
+                  )}
                   <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>
                     {nextOff ? (
                       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>

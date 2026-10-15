@@ -3,6 +3,7 @@ import { Box, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { TakenFromValue, describeTakenFrom, fmtDays, potKind, potLabel } from '../utils/takenFrom';
+import { belowZeroSentence } from '../utils/employment';
 
 interface Props {
   /** The row's taken_from, as the backend stamps it (or null/undefined when absent). */
@@ -21,17 +22,21 @@ interface Props {
  * @param props.label - The pot label (with its year when it has one).
  * @param props.projected - Draw it as a projection (dashed, unfilled).
  * @param props.refunded - Draw it as reversed (struck through, dimmed).
+ * @param props.danger - Draw it in the error colour (approving goes below zero, #300).
+ * @param props.title - A native tooltip (the below-zero sentence).
  * @param props.compact - Smaller text for dense rows.
  * @returns The chip.
  */
-function Chip({ kind, amount, label, projected, refunded, compact }: {
-  kind: RequestKind; amount?: string; label: string; projected: boolean; refunded: boolean; compact?: boolean;
+function Chip({ kind, amount, label, projected, refunded, danger, title, compact }: {
+  kind: RequestKind; amount?: string; label: string; projected: boolean; refunded: boolean; danger?: boolean; title?: string; compact?: boolean;
 }) {
   const theme = useTheme();
-  const c = kindColor(kind, theme.palette.mode);                 // the pot's shade for light or dark
+  // A below-zero chip borrows the error colour; otherwise the pot's own shade.
+  const c = danger ? theme.palette.error.main : kindColor(kind, theme.palette.mode);
   return (
     <Box
       component="span"
+      title={title}
       sx={{
         display: 'inline-flex', alignItems: 'baseline', gap: 0.5, whiteSpace: 'nowrap',
         px: compact ? 0.75 : 1, py: 0.25, borderRadius: '7px',
@@ -61,6 +66,7 @@ function Chip({ kind, amount, label, projected, refunded, compact }: {
  * @returns The chips (with a note for a projection or a refund), or a muted line.
  */
 export default function TakenFrom({ value, compact }: Props) {
+  const theme = useTheme();
   const shape = describeTakenFrom(value);                        // the pure read of the value
 
   // Nothing moved, not recorded, or would be refused: one muted line, no chips.
@@ -72,8 +78,29 @@ export default function TakenFrom({ value, compact }: Props) {
     );
   }
 
-  const { segments, projected, refunded } = shape;
+  // BC hourly vacation: one neutral chip saying it was counted, not spent (#300).
+  if (shape.kind === 'counted') {
+    return (
+      <Box
+        component="span"
+        title="BC hourly: counted as vacation taken. No balance used."
+        sx={{
+          display: 'inline-flex', alignItems: 'baseline', gap: 0.5, whiteSpace: 'nowrap',
+          px: compact ? 0.75 : 1, py: 0.25, borderRadius: '7px',
+          fontSize: compact ? 11.5 : 12.5, fontWeight: 600, color: 'text.secondary',
+          bgcolor: theme.tokens.chip, border: '1px solid transparent',
+        }}
+      >
+        <Box component="b" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>{fmtDays(shape.days)}</Box>
+        vacation counted
+      </Box>
+    );
+  }
+
+  const { segments, projected, refunded, belowZero } = shape;
   const noteFont = compact ? 11 : 11.5;                          // the sub-note sits on its own line
+  const danger = !!belowZero;                                    // approving would push the floor below zero
+  const sentence = belowZeroSentence(belowZero) || undefined;    // the shared red sentence, as a tooltip
 
   return (
     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, alignItems: 'baseline' }}>
@@ -81,24 +108,28 @@ export default function TakenFrom({ value, compact }: Props) {
         let chips: ReactNode;
         if (s.type === 'add') {
           // Overtime: "+0.4 added to Make-Up".
-          chips = <Chip kind={potKind(s.pot)} amount={`+${fmtDays(s.days)}`} label={`added to ${potLabel(s.pot, null)}`} projected={projected} refunded={refunded} compact={compact} />;
+          chips = <Chip kind={potKind(s.pot)} amount={`+${fmtDays(s.days)}`} label={`added to ${potLabel(s.pot, null)}`} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />;
         } else if (s.type === 'move') {
           // Carry-over/payout: vacation moving into the pot, e.g. "3 vacation -> 2026 carry-over".
           chips = (
             <>
-              <Chip kind="vacation" amount={fmtDays(s.days)} label="vacation" projected={projected} refunded={refunded} compact={compact} />
-              <Chip kind={potKind(s.toPot)} label={`→ ${potLabel(s.toPot, s.toYear)}`} projected={projected} refunded={refunded} compact={compact} />
+              <Chip kind="vacation" amount={fmtDays(s.days)} label="vacation" projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />
+              <Chip kind={potKind(s.toPot)} label={`→ ${potLabel(s.toPot, s.toYear)}`} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />
             </>
           );
         } else {
           // A plain take: "1.5 Make-Up", "2 2025 carry-over", "1 vacation".
-          chips = <Chip kind={potKind(s.pot)} amount={fmtDays(s.days)} label={potLabel(s.pot, s.year)} projected={projected} refunded={refunded} compact={compact} />;
+          chips = <Chip kind={potKind(s.pot)} amount={fmtDays(s.days)} label={potLabel(s.pot, s.year)} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />;
         }
         return <Fragment key={i}>{chips}</Fragment>;
       })}
-      {/* A projection and a refund each explain themselves on their own line. */}
+      {/* A projection and a refund each explain themselves on their own line. The
+          below-zero warning rides on the chips' colour and tooltip (#300), and each
+          screen that needs the sentence in full shows it beside these chips. */}
       {projected && (
-        <Typography component="span" variant="caption" color="text.secondary" sx={{ width: '100%', fontSize: noteFont }}>If approved today</Typography>
+        <Typography component="span" variant="caption" color={danger ? 'error.main' : 'text.secondary'} sx={{ width: '100%', fontSize: noteFont }}>
+          {danger ? 'If approved today, below zero' : 'If approved today'}
+        </Typography>
       )}
       {refunded && (
         <Typography component="span" variant="caption" color="text.secondary" sx={{ width: '100%', fontSize: noteFont }}>Refunded</Typography>

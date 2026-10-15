@@ -15,6 +15,8 @@ import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import WhoYouAre, { EMPTY_STARTER, NewStarter, starterReady } from '../components/request/WhoYouAre';
 import { buildTheme } from '../theme';
 import { carryoverClosedReason } from '../utils/carryoverWindow';
+import { isHourlyBc } from '../utils/employment';
+import { getMyBalances } from '../api/client';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
   EmployeeSession, RequestType, VerifiedEmail,
@@ -168,6 +170,7 @@ export default function RequestPage() {
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
+  const [hourlyBc, setHourlyBc] = useState(false);             // signed-in employee is BC hourly (#300)
   const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
   const [misses, setMisses] = useState(0);                     // refused codes, to shake the boxes
   const navigate = useNavigate();
@@ -186,11 +189,15 @@ export default function RequestPage() {
       ))
       .catch(() => setCarryoverClosed(CARRYOVER_UNKNOWN));    // unknown: do not offer them
   }, []);
-  // A closed form cannot stay picked (e.g. closed while the page was open).
+  // A closed form (or a BC hourly employee, who has no vacation balance to move)
+  // cannot stay picked (e.g. closed while the page was open).
   useEffect(() => {
-    if (carryoverClosed && type === 'carryover-payout') setType('leave');
-  }, [carryoverClosed, type]);
-  const closedTypes: Partial<Record<RequestType, string>> = carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
+    if ((carryoverClosed || hourlyBc) && type === 'carryover-payout') setType('leave');
+  }, [carryoverClosed, hourlyBc, type]);
+  // BC hourly cannot carry over or pay out at all; otherwise the card is closed only outside HR's dates.
+  const closedTypes: Partial<Record<RequestType, string>> = hourlyBc
+    ? { 'carryover-payout': 'Not for BC hourly. You have no vacation balance to move.' }
+    : carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
 
   // Pick up where this address starts: a new hire's verified email, the
   // shared sign-in for a new request, or the landing page's note.
@@ -216,6 +223,17 @@ export default function RequestPage() {
     const note = takeSignInNotice();
     if (note) setNotice(note);                         // read once; a second run finds nothing
   }, [newHirePage]);
+
+  // Once signed in, learn whether this employee is BC hourly, so the forms adapt (#300).
+  // Read-only and harmless for new hires (no session), who are never BC hourly here.
+  useEffect(() => {
+    if (!session) { setHourlyBc(false); return; }
+    let live = true;
+    getMyBalances()
+      .then((r) => { if (live) setHourlyBc(isHourlyBc(r.data.balances)); })
+      .catch(() => { if (live) setHourlyBc(false); });          // unknown: treat as not BC hourly
+    return () => { live = false; };
+  }, [session]);
 
   // Count down to when a new code may be asked for.
   useEffect(() => {
@@ -443,7 +461,7 @@ export default function RequestPage() {
                 <AutoHeight>
                   <AnimatePresence mode="wait" initial={false}>
                     <m.div key={type} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: EXIT }}>
-                      <RequestForm type={type} values={values} onChange={setValue} />
+                      <RequestForm type={type} values={values} onChange={setValue} hourlyBc={hourlyBc} />
                     </m.div>
                   </AnimatePresence>
                 </AutoHeight>

@@ -5,6 +5,7 @@ import { AnimatePresence, m } from 'motion/react';
 import { kindColor } from '../../constants/leaveColors';
 import { addDays, dayKey, isWeekend, today } from '../../utils/dates';
 import { ColorOf, LabelOf } from '../../utils/personColor';
+import { isHourlyBc } from '../../utils/employment';
 import { shortDate } from '../../utils/requestText';
 import { Absence } from './teamStats';
 import { CountUp, EASE, EXIT, INSTANT, KF, SPRING, useCalm } from '../Motion';
@@ -311,8 +312,10 @@ export function VacationRings({ members, colorOf, labelOf }: { members: any[]; c
       {/* A search fades out the people who no longer match while the rest slide together. */}
       <AnimatePresence mode="popLayout" initial={false}>
       {members.map((mem, k) => {
-        const left = mem.balances?.vacation_balance ?? 0;
-        const of = mem.balances?.vacation_entitlement ?? 0;
+        // BC hourly have no vacation balance: the ring shows their counter ("taken") with no arc (#300).
+        const bc = isHourlyBc(mem.balances);
+        const left = bc ? (mem.balances?.vacation_taken ?? 0) : (mem.balances?.vacation_balance ?? 0);
+        const of = bc ? 0 : (mem.balances?.vacation_entitlement ?? 0);
         const frac = of > 0 ? Math.max(0, Math.min(1, left / of)) : 0;
         return (
           <m.div
@@ -341,7 +344,8 @@ export function VacationRings({ members, colorOf, labelOf }: { members: any[]; c
               </Box>
             </Box>
             <Typography variant="body2" sx={{ fontWeight: 700, maxWidth: '100%' }} noWrap>{labelOf(mem.name)}</Typography>
-            <Typography variant="caption" color="text.secondary">vacation left</Typography>
+            {/* BC hourly: the figure is days taken this year, not days left (#300). */}
+            <Typography variant="caption" color="text.secondary">{bc ? 'vacation taken' : 'vacation left'}</Typography>
           </m.div>
         );
       })}
