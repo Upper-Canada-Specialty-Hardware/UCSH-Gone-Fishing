@@ -1,11 +1,13 @@
-"""Record and query every SMTP2GO API exchange.
+"""Record and query every outbound email exchange, for both services.
 
-``app/graph/email.py`` calls ``record_exchange`` once per send attempt, whatever
-happened, and the admin email-log endpoint calls ``find_exchanges`` to answer
-"what did the backend ask SMTP2GO to send this person, and what did SMTP2GO
-answer". Everything here is bookkeeping around a send that has already
-happened: a failure to write or read a row is logged and swallowed, and never
-changes the outcome the caller sees.
+``app/graph/email.py`` (SMTP2GO) and ``app/graph/mailer_client.py`` (the UCSH
+mailer, which relays internal mail over Microsoft HVE) each call
+``record_exchange`` once per send attempt, whatever happened. The admin
+email-log endpoints read it back: ``find_exchanges`` answers "what did the
+backend ask to send this person, and what did the service answer", and
+``find_recent`` lists every recent send across both services. Everything here is
+bookkeeping around a send that has already happened: a failure to write a row is
+logged and swallowed, and never changes the outcome the caller sees.
 
 Two halves, kept apart on purpose:
 
@@ -21,7 +23,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 
 from app.database import async_session
 from app.models import EmailApiLog, EmailApiLogRecipient
@@ -44,6 +46,12 @@ RESPONSE_MAX_CHARS = 8000
 # Default lookup window: the admin question is "the past 30 days", and thirty
 # days also matches the dashboard link lifetime and the first reminder.
 DEFAULT_WINDOW_DAYS = 30
+
+# A send is a likely duplicate when the same subject reached the same recipient
+# again within this many seconds. Five minutes catches the real case (one
+# request firing the same approval email at a manager twice) without flagging a
+# genuine resend days later.
+DUPLICATE_WINDOW_SECONDS = 300
 
 # Recipient fields of a payload, in the order they are recorded.
 RECIPIENT_FIELDS = ("to", "cc")
@@ -346,7 +354,7 @@ async def find_exchanges(
     since: datetime | None = None,
     limit: int = 100,
 ) -> list[EmailApiLog]:
-    """Newest-first SMTP2GO calls that named an address in To or CC.
+    """Newest-first calls (either service) that named an address in To or CC.
 
     Args:
         address: Email address to match; normalised here.
@@ -375,6 +383,105 @@ async def find_exchanges(
     except Exception:
         logger.exception("Email log query failed for %s", needle)
         return []
+
+
+async def find_recent(
+    *,
+    since: datetime | None = None,
+    limit: int = 200,
+    text: str | None = None,
+) -> list[EmailApiLog]:
+    """Newest-first calls to any service in a window, no person needed.
+
+    This backs the "every recent email" view: unlike ``find_exchanges`` it is
+    not scoped to one address, so the primary filter is the window on
+    ``attempted_at`` (an indexed column), which keeps the scan bounded. An
+    optional ``text`` further narrows the window to rows whose subject or one of
+    whose recipient addresses contains it.
+
+    Args:
+        since: Only calls made at or after this instant, when given.
+        limit: Hard cap on rows returned; the window plus this cap bound the work.
+        text: Case-insensitive substring to match in the subject or a recipient
+            address; blank or None means no text filter.
+
+    Returns:
+        Matching rows with recipients loaded, newest first.
+
+    Raises:
+        Exception: The underlying query failed. Unlike ``find_exchanges`` this
+            does not swallow the error into an empty list, so the admin page can
+            show "lookup failed" instead of falsely claiming nothing was sent.
+    """
+    stmt = select(EmailApiLog)
+    if since is not None:
+        stmt = stmt.where(EmailApiLog.attempted_at >= since)        # indexed window filter first
+    needle = (text or "").strip().lower()                           # addresses are stored lower-cased
+    if needle:
+        # contains() with autoescape treats % and _ in the text as literals, so
+        # a subject or address containing them cannot act as a wildcard.
+        subject_match = func.lower(EmailApiLog.subject).contains(needle, autoescape=True)
+        # Correlated EXISTS on the child table: tied to this row's id, so the
+        # attempted_at window above still bounds which rows are probed.
+        address_match = (
+            select(EmailApiLogRecipient.id)
+            .where(EmailApiLogRecipient.log_id == EmailApiLog.id)
+            .where(EmailApiLogRecipient.address.contains(needle, autoescape=True))
+            .exists()
+        )
+        stmt = stmt.where(or_(subject_match, address_match))
+    stmt = stmt.order_by(desc(EmailApiLog.attempted_at), desc(EmailApiLog.id)).limit(limit)
+    async with async_session() as session:
+        return list((await session.execute(stmt)).scalars().all())
+
+
+# Only a send that actually went out can be a real duplicate. A refused mailer
+# call, its resend and the SMTP2GO fallback all share one subject within seconds
+# (graph/email.py), and a failed-then-retried send repeats too; none of those is
+# a double-delivery, so only these outcomes are bucketed.
+_DELIVERED_OUTCOMES = (OUTCOME_ACCEPTED, OUTCOME_PARTIALLY_ACCEPTED)
+
+
+def find_duplicate_ids(rows: list[EmailApiLog]) -> set[int]:
+    """Ids of rows that look like a duplicate send within the given set. Pure.
+
+    A row is flagged when another row in ``rows`` carried the same subject to
+    the same recipient address within ``DUPLICATE_WINDOW_SECONDS``. Both rows of
+    a close pair are flagged, so the admin page can mark every member of a burst.
+    Only rows whose outcome is accepted or partially accepted are considered: a
+    refused mailer call followed by its resend and fallback, or a failed call
+    then its retry, are not double-deliveries and must not be flagged. The check
+    is confined to the rows passed in (one window, or one person), so it never
+    queries the database and never raises.
+
+    Args:
+        rows: The exchanges under consideration, recipients loaded.
+
+    Returns:
+        The set of ``EmailApiLog.id`` values that are likely duplicates; empty
+        when nothing repeats.
+    """
+    # (subject, recipient address) -> {row id: when}, one entry per row so an
+    # address that is in both To and CC of one row cannot pair with itself.
+    buckets: dict[tuple[str, str], dict[int, datetime]] = {}
+    for row in rows:
+        if row.outcome not in _DELIVERED_OUTCOMES:                  # only real deliveries can duplicate
+            continue
+        when = as_utc(row.attempted_at)                             # compare in a single zone
+        if when is None:                                            # undated row cannot be placed
+            continue
+        for recipient in row.recipients:
+            buckets.setdefault((row.subject, recipient.address), {})[row.id] = when
+    duplicates: set[int] = set()
+    for by_id in buckets.values():
+        if len(by_id) < 2:                                          # one send to this pair: nothing to compare
+            continue
+        ordered = sorted(by_id.items(), key=lambda item: item[1])  # by time, oldest first
+        for (prev_id, prev_when), (this_id, this_when) in zip(ordered, ordered[1:]):
+            if (this_when - prev_when).total_seconds() <= DUPLICATE_WINDOW_SECONDS:
+                duplicates.add(prev_id)                             # both ends of a close pair
+                duplicates.add(this_id)
+    return duplicates
 
 
 async def log_coverage_start() -> datetime | None:
