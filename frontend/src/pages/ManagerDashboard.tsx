@@ -21,7 +21,7 @@ import {
   absencesFrom, approveSummary, clashesFor, daysOffByMonth, inPerDay, insights, offThisWeek, totalsByKind, workingDays,
 } from '../components/manager/teamStats';
 import { kindColor, RequestKind } from '../constants/leaveColors';
-import { addDays, dayKey, mondayOf, today } from '../utils/dates';
+import { addDays, dayKey, formatDayRange, mondayOf, today } from '../utils/dates';
 import { firstName, teamColors, teamLabeler } from '../utils/personColor';
 import { daysWaiting, shortDate } from '../utils/requestText';
 import {
@@ -430,7 +430,8 @@ export default function ManagerDashboard() {
                         <Typography variant="body2" color="text.secondary">Next off</Typography>
                         <KindPill kind={nextOff.kind} label={nextOff.label} />
                         <Typography variant="body2">
-                          {shortDate(dayKey(nextOff.start))}{nextOff.end > nextOff.start ? ` to ${shortDate(dayKey(nextOff.end))}` : ''}{nextOff.pending ? ' (asked)' : ''}
+                          {/* Full day format; formatDayRange shows one date when start == end. */}
+                          {formatDayRange(dayKey(nextOff.start), dayKey(nextOff.end))}{nextOff.pending ? ' (asked)' : ''}
                         </Typography>
                       </Box>
                     ) : <Typography variant="body2" color="text.secondary">No time off booked.</Typography>}

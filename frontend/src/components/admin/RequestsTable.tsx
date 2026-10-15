@@ -7,6 +7,7 @@ import { DIAGNOSTIC_LABELS } from './requestRows';
 import {
   COLUMNS, COLUMN_SETS, COLUMN_WIDTHS, Row, Src, amountText, num, priorityOrder, refDate, whenText,
 } from './requestTable';
+import { formatDay, formatInstantDay } from '../../utils/dates';
 import { useFitColumns } from './useFitColumns';
 
 /** The actions a row offers; each is wired to the dashboard's existing handlers. */
@@ -62,14 +63,6 @@ function agoText(created: string): string {
   const then = new Date(y, m - 1, d).getTime();
   const days = Math.round((Date.now() - then) / 86400000);
   return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-}
-
-/** "Oct 14" / "Oct 14, 2027" from a YYYY-MM-DD string. */
-function niceDate(s: string, withYear = false): string {
-  if (!s) return '';
-  const [y, m, d] = s.split('-').map(Number);
-  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1];
-  return `${mon} ${d}${withYear ? `, ${y}` : ''}`;
 }
 
 /** The totals line for a set of rows, by list. */
@@ -160,12 +153,12 @@ export default function RequestsTable(props: Props) {
       case 'amount': return amountText(r);
       case 'status': return <StatusCell r={r} theme={theme} />;
       case 'mgr': return r.manager ? `${r.manager}${r.managers.length > 1 ? ` +${r.managers.length - 1}` : ''}` : <Box sx={{ color: 'error.main' }}>None</Box>;
-      case 'created': return <Box component="span" title={niceDate(r.created, true)}>{agoText(r.created)}</Box>;
-      case 'approved': return r.approved ? niceDate(r.approved) : <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;
-      case 'start': return niceDate(r.start) || '-';
-      case 'end': return niceDate(r.end) || '-';
+      case 'created': return <Box component="span" title={formatInstantDay(r.created)}>{agoText(r.created)}</Box>;   // created is an instant; tooltip shows its day
+      case 'approved': return r.approved ? formatInstantDay(r.approved) : <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;   // decided-at instant
+      case 'start': return formatDay(r.start) || '-';     // calendar date
+      case 'end': return formatDay(r.end) || '-';         // calendar date
       case 'days': return r.days == null ? '-' : num(r.days, 2);
-      case 'date': return niceDate(r.date) || '-';
+      case 'date': return formatDay(r.date) || '-';       // overtime calendar date
       case 'hours': return r.hours == null ? '-' : num(r.hours, 1);
       case 'hdays': return <Box component="span" sx={{ color: 'text.secondary' }}>{num((r.hours || 0) / 8, 3)}</Box>;
       case 'newbal': return r.newBalance || <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;
@@ -384,8 +377,8 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
         </Box>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px 14px' }}>
           <Field label="ID" value={r.id} />
-          {r.src === 'leave' && <><Field label="Leave type" value={r.kindLabel} /><Field label="Start date" value={niceDate(r.start, true)} /><Field label="End date" value={niceDate(r.end, true)} /><Field label="Days" value={r.days == null ? '' : num(r.days, 2)} /></>}
-          {r.src === 'mu' && <><Field label="Date" value={niceDate(r.date, true)} /><Field label="Hours" value={r.hours == null ? '' : num(r.hours, 1)} /><Field label="As days" value={`${num((r.hours || 0) / 8, 3)} (hours ÷ 8)`} /></>}
+          {r.src === 'leave' && <><Field label="Leave type" value={r.kindLabel} /><Field label="Start date" value={formatDay(r.start)} /><Field label="End date" value={formatDay(r.end)} /><Field label="Days" value={r.days == null ? '' : num(r.days, 2)} /></>}
+          {r.src === 'mu' && <><Field label="Date" value={formatDay(r.date)} /><Field label="Hours" value={r.hours == null ? '' : num(r.hours, 1)} /><Field label="As days" value={`${num((r.hours || 0) / 8, 3)} (hours ÷ 8)`} /></>}
           {r.src === 'co' && <><Field label="Type of request" value={r.kindLabel} /><Field label="Days" value={r.days == null ? '' : num(r.days, 3)} /><Field label="New balance after this request" value={r.newBalance} wide /></>}
           <Field label="Status" value={r.status} />
           <Field label="System state" value={r.sysState} />
@@ -393,8 +386,8 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           <Field label="Submitted by" value={r.submittedBy} />
           <Field label="Manager" value={r.manager} />
           {r.src === 'leave' && <Field label="All managers" value={r.managers.join(', ')} />}
-          <Field label="Created" value={niceDate(r.created, true)} />
-          <Field label="Approved date" value={r.approved ? niceDate(r.approved, true) : ''} />
+          <Field label="Created" value={formatInstantDay(r.created)} />
+          <Field label="Approved date" value={r.approved ? formatInstantDay(r.approved) : ''} />
           <Field label="Department" value={r.dept} />
           <Field label="Location" value={r.loc} />
           {r.src !== 'co' && <Field label={r.src === 'mu' ? 'Overtime details' : 'Title'} value={r.title} wide />}
