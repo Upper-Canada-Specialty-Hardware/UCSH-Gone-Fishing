@@ -2,9 +2,9 @@
 
 Sent from both dashboards' Add Employee (routes/dashboard.py
 _after_employee_created). It goes through send_email_with_dashboard, so it also
-carries the person's own dashboard link, and through send_email, so a UCSH
-address goes out over the UCSH mailer and any other address over SMTP2GO, the
-same as every other email.
+ends with the standard footer linking to the site, and through send_email, so a
+UCSH address goes out over the UCSH mailer and any other address over SMTP2GO,
+the same as every other email.
 """
 
 import logging
@@ -56,7 +56,7 @@ async def send_welcome_email(record: dict) -> bool:
     html = render_welcome_employee(first_name, email, site_url, tutorial_url)
     await send_email_with_dashboard(
         to=[email], subject=WELCOME_SUBJECT, html_body=html,
-        primary_employee_id=record.get("id"),                  # appends their own dashboard link
+        primary_employee_id=record.get("id"),                  # appends the site-link footer
     )
     logger.info("Welcome email sent to new employee #%s", record.get("id"))
     return True

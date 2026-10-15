@@ -21,10 +21,16 @@ class DashboardLinkState(Base):
     ``RequestApprovalState``, which tracks emails per request and is why manager
     links stay fresh while employee links quietly expire.
 
-    ``expires_at`` is what the renewal task reads, not ``last_sent_at``. The two
-    are the same thing today — expiry is always the send date plus thirty days —
-    but the question being asked is "is this person about to lose access", and
-    only the expiry stays truthful if that window is ever changed.
+    ``expires_at`` is what the renewal task read, not ``last_sent_at``. The two
+    are the same thing (expiry is always the send date plus thirty days), but
+    the question being asked was "is this person about to lose access", and only
+    the expiry stays truthful if that window is ever changed.
+
+    Obsolete as of #274: staff now sign in on the site itself, so personal
+    emailed dashboard links and the task that renewed them are gone, and nothing
+    writes this table any more. The model and table are kept only so the data is
+    not dropped mid-flight; a later Alembic revision can drop the table once no
+    open work still claims the current revision numbers.
     """
 
     __tablename__ = "dashboard_link_state"

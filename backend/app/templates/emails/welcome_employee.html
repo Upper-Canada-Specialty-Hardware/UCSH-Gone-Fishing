@@ -1,7 +1,7 @@
 {# Sent to someone right after Add Employee creates their Staff Directory
    record, from the manager or the admin dashboard. It tells them how to sign
    in and points them at the staff tutorial. Goes out through
-   send_email_with_dashboard, which appends their own dashboard link. #}
+   send_email_with_dashboard, which appends the standard site-link footer. #}
 {% import "_macros.html" as ui %}
 <h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Welcome to UCSH Out of Office</h2>
 <p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Hi {{ first_name }},</p>
