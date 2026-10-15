@@ -11,6 +11,7 @@ from app.models.email_code import EmailCode
 from app.models.held_request import HeldRequest
 from app.models.app_setting import AppSetting
 from app.models.admin_password import AdminPassword
+from app.models.staff_change import StaffChange
 
 # Company Holidays and the three request lists, served from Postgres once their
 # storage setting says so (STORAGE_HOLIDAYS, STORAGE_REQUESTS).
@@ -36,6 +37,7 @@ __all__ = [
     "HeldRequest",
     "AppSetting",
     "AdminPassword",
+    "StaffChange",
     # business
     "Holiday",
     "LeaveRequestItem",

@@ -124,6 +124,11 @@ body.readonly .needs-processing { opacity: .45; pointer-events: none; }
 select.input { flex: 0 1 auto; }
 .scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
+/* The staff table drops columns by width so it never scrolls sideways (matches StaffScreen): Managers below 900px, then Make-up and Carry-over below 720px, and a note says so. */
+.stafftbl th, .stafftbl td { white-space: normal; overflow-wrap: anywhere; }
+.staffnote { display: none; }
+@media (max-width: 899px) { .stafftbl .col-mgrs { display: none; } .staffnote { display: block; } }
+@media (max-width: 719px) { .stafftbl .col-mu, .stafftbl .col-co { display: none; } }
 th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 tr:last-child td { border-bottom: 0; }
@@ -681,7 +686,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     employee: { role: 'employee', hint: 'Their record and every manager up top, all five balances, then requests by what they are waiting on. <b>This year</b> has their numbers and <b>History</b> every request.' }
   };
 
-  var state = { role: 'admin', authed: true, coDates: null, tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, ptab: 'Requests', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
+  var state = { role: 'admin', authed: true, coDates: null, tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, ptab: 'Balances', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
     rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', name: '', first: '', last: '', dept: '', sup: 'Sam Supervisor', supq: '', supmode: 'name', supemail: '', loc: 'British Columbia', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
   try { var ss = localStorage.getItem('proto-skin2'); if (ss) state.skin = ss; var sm = localStorage.getItem('proto-mode'); if (sm) state.mode = sm; } catch (e) {}
   try { var sa = localStorage.getItem('ucshoo-anim'); if (sa === 'on' || sa === 'auto') state.animMode = sa; } catch (e) {}   // remembered Animations choice
@@ -717,7 +722,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       }, 320);
     } else { done(); }
   }
-  function numCell(v) { return '<td class="num' + (v < 0 ? ' neg' : '') + '">' + v + '</td>'; }
+  function numCell(v, cls) { return '<td class="num' + (v < 0 ? ' neg' : '') + (cls ? ' ' + cls : '') + '">' + v + '</td>'; }
   function person(name) { return STAFF.filter(function (p) { return p.name === name; })[0]; }
   function initials(n) { return n.split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2); }
   function colorOf(n) { var h = 0; for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0; return COLORS[h % COLORS.length]; }
@@ -868,26 +873,22 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         (c ? (c.problems.length ? '<div class="note" style="background:var(--err-soft);color:var(--err)"><b>' + esc(c.who) + '</b>: ' + esc(c.problems.join(', ')) + '. Fix: ' + esc(c.fix) + '</div>' : '<div class="okbox"><b>' + esc(c.who) + '</b> is fully set up. Every check on their record and their existing requests is in range.</div>') : '') + '</div>';
     },
     staff: function () {
-      var f = state.filter.staff || 'All', g = state.filter.group || 'No grouping';
-      var q = (state.filter.staffq || '').toLowerCase();
-      var F = { 'All': function () { return true; }, 'Below zero': function (p) { return p.vac < 0 || p.sick < 0; }, 'No manager': function (p) { return !p.mgrs.length; }, 'Managers': function (p) { return !!p.isMgr; } };
-      var rows = STAFF.filter(function (p) { return F[f](p) && (!q || (p.name + ' ' + p.email + ' ' + p.mgrs.join(' ')).toLowerCase().indexOf(q) >= 0); });
-      var rowHtml = function (x) { return '<tr class="click' + (x.id === state.sel ? ' sel' : '') + '" tabindex="0" data-sel="' + x.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(x.name) + '<div><b>' + esc(x.name) + '</b><span class="sub">' + esc(x.dept || 'No department') + ' · ' + esc(x.loc) + '</span></div></div></td><td>' + (x.mgrs.length ? esc(x.mgrs.join(', ')) : chip('None', 'err')) + '</td>' + numCell(x.vac) + numCell(x.sick) + numCell(x.mu) + numCell(x.co) + '</tr>'; };
-      var body;
-      if (g === 'No grouping') body = rows.map(rowHtml).join('');
-      else {
-        var key = g === 'By department' ? 'dept' : 'loc', groups = {};
-        rows.forEach(function (p) { (groups[p[key] || 'Not set'] = groups[p[key] || 'Not set'] || []).push(p); });
-        body = Object.keys(groups).sort().map(function (k) {
-          var ps = groups[k], avg = function (fl) { return (ps.reduce(function (a, p) { return a + p[fl]; }, 0) / ps.length).toFixed(1); };
-          return '<tr><td colspan="6" style="background:var(--hover)"><b>' + esc(k) + '</b> <span class="muted small">' + ps.length + ' people · avg vacation ' + avg('vac') + ' · avg sick ' + avg('sick') + '</span></td></tr>' + ps.map(rowHtml).join('');
-        }).join('');
+      // A selected person grows the table into their profile in place (no drawer).
+      if (state.sel && STAFF.some(function (x) { return x.id === state.sel; })) {
+        return head('Staff', 'Everyone with their balances and managers. Click a person to see and edit their whole record.', '<button class="btn out" type="button" data-go="assignments">Manage assignments</button>') + personPanel();
       }
-      return head('Staff', 'Everyone with their balances and managers. Click a person for their requests, managers and dashboard links.', '<button class="btn out" type="button" data-go="assignments">Manage assignments</button>') +
-        '<div class="paper"><div class="toolbar"><input class="input" data-search="staffq" placeholder="Search name, email or manager" value="' + esc(state.filter.staffq || '') + '" aria-label="Search staff">' +
+      var f = state.filter.staff || 'All';
+      var q = (state.filter.staffq || '').toLowerCase();
+      // Quick chips now match the app: All, Below zero, No manager, Setup problem.
+      var F = { 'All': function () { return true; }, 'Below zero': function (p) { return p.vac < 0 || p.sick < 0 || p.mu < 0 || p.co < 0; }, 'No manager': function (p) { return !p.mgrs.length; }, 'Setup problem': function (p) { return SETUP.some(function (s) { return s.who === p.name; }); } };
+      var rows = STAFF.filter(function (p) { return F[f](p) && (!q || (p.name + ' ' + p.email + ' ' + p.mgrs.join(' ') + ' ' + (p.dept || '') + ' ' + p.loc).toLowerCase().indexOf(q) >= 0); });
+      var rowHtml = function (x) { return '<tr class="click' + (x.id === state.sel ? ' sel' : '') + '" tabindex="0" data-sel="' + x.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(x.name) + '<div><b>' + esc(x.name) + '</b><span class="sub">' + esc(x.dept || 'No department') + ' · ' + esc(x.loc) + '</span></div></div></td><td class="col-mgrs">' + (x.mgrs.length ? esc(x.mgrs.join(', ')) : chip('None', 'err')) + '</td>' + numCell(x.vac) + numCell(x.sick) + numCell(x.mu, 'col-mu') + numCell(x.co, 'col-co') + '</tr>'; };
+      return head('Staff', 'Everyone with their balances and managers. Click a person to see and edit their whole record.', '<button class="btn out" type="button" data-go="assignments">Manage assignments</button>') +
+        '<div class="paper"><div class="toolbar"><input class="input" data-search="staffq" placeholder="Search name, email, manager, department or location" value="' + esc(state.filter.staffq || '') + '" aria-label="Search staff">' +
         Object.keys(F).map(function (k) { return '<button class="fchip" type="button" data-filter="staff|' + k + '" aria-pressed="' + (k === f) + '">' + k + ' <span class="c">' + STAFF.filter(F[k]).length + '</span></button>'; }).join('') +
-        '<select class="input" data-fsel="group" aria-label="Group by">' + ['No grouping', 'By department', 'By location'].map(function (t) { return '<option' + (t === g ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>' +
-        (rows.length ? '<div class="scroll"><table><thead><tr><th>Employee</th><th>Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th class="num">Carry Over</th></tr></thead><tbody>' + body + '</tbody></table></div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
+        '<button class="btn out" type="button" data-act="stafffilters">Filters</button><button class="btn out" type="button" data-act="exportstaff">Export to Excel</button></div>' +
+        '<div class="small muted" style="padding:0 16px 10px">Filters narrow by location, department, salary or hourly, manager and system check; each active filter shows as a chip you can remove. Export opens a preview first, then downloads the .xlsx.</div>' +
+        (rows.length ? '<div class="scroll"><table class="stafftbl"><thead><tr><th>Employee</th><th class="col-mgrs">Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num col-mu">Make-Up</th><th class="num col-co">Carry Over</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div><div class="staffnote small muted" style="padding:0 16px 10px">Some columns are hidden at this width. Open a person to see every value.</div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
     },
     add: function () { return addEmployee(true); },
     // Reached from Staff, not the sidebar; the directory-wide view of who reports to whom.
@@ -989,17 +990,37 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function personPanel() {
     var p = STAFF.filter(function (x) { return x.id === state.sel; })[0];
     if (!p) return '';
-    var tabs = ['Requests', 'Managers', 'Links'];
+    // The profile is one surface now: balances and entitlements, every Staff
+    // Directory detail, managers and the change history, with a reason-required
+    // save bar. No "open their dashboard" or "copy link" any more.
+    var tabs = ['Balances', 'Details', 'History'];
+    var tab = tabs.indexOf(state.ptab) >= 0 ? state.ptab : tabs[0];   // guard an old stored tab
     var mine = REQS.filter(function (r) { return r.who === p.name; });
     var setup = SETUP.filter(function (s) { return s.who === p.name; })[0];
+    var tile = function (label, val, sub) { return '<div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px;background:var(--bg)"><span class="small muted">' + label + '</span><b style="font-size:22px' + (val < 0 ? ';color:var(--err)' : '') + '">' + val + '</b><span class="small muted">' + sub + '</span></div>'; };
+    var fact = function (label, val) { return '<div style="display:grid;gap:2px"><span class="small muted">' + label + '</span><span>' + (val || '<span class="muted">Not set</span>') + '</span></div>'; };
     var body = {
-      Requests: mine.length ? '<ul class="list" style="margin:0 -16px">' + mine.map(function (r) { return '<li>' + what(r) + '<span class="r">' + chip(r.status, CHIP[r.status]) + '</span></li>'; }).join('') + '</ul>' : '<span class="muted">No requests yet.</span>',
-      Managers: (p.mgrs.length ? p.mgrs.map(function (m) { return chip(m); }).join(' ') : chip('No supervisor assigned', 'err') + '<div class="small muted">Their requests cannot reach anyone until a supervisor is set.</div>') + '<div><button class="btn out' + P + '" type="button" data-act="mgrs" data-who="' + esc(p.name) + '">Change managers</button></div>',
-      Links: '<b class="small">Their own dashboard</b><div class="acts" style="justify-content:flex-start"><button class="btn pri" type="button" data-act="link">Open employee dashboard</button><button class="btn out" type="button" data-act="link">Copy link</button></div>' +
-        (p.isMgr ? '<b class="small">Their team dashboard</b><div class="acts" style="justify-content:flex-start"><button class="btn pri" type="button" data-act="link">Open team dashboard</button><button class="btn out" type="button" data-act="link">Send dashboard link</button></div>' : '')
+      Balances: '<div class="small muted" style="margin-bottom:8px">Click a tile to change it with − / + or a typed value. One save bar collects every change and asks for a reason before it saves to the Staff Directory.</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' +
+        tile('Vacation entitlement', p.vacY, 'days a year') + tile('Sick entitlement', p.sickY, 'days a year') +
+        tile('Vacation', p.vac, 'of ' + p.vacY + ' a year') + tile('Sick', p.sick, 'of ' + p.sickY + ' a year') +
+        tile('Make-up', p.mu, 'days (hours ÷ 8)') + tile('Carry-over', p.co, 'days') + tile('Payout', 0, 'days') + '</div>' +
+        (mine.length ? '<div class="small muted" style="margin:12px 0 4px">Requests</div><ul class="list" style="margin:0 -16px">' + mine.map(function (r) { return '<li>' + what(r) + '<span class="r">' + chip(r.status, CHIP[r.status]) + '</span></li>'; }).join('') + '</ul>' : ''),
+      Details: '<div class="small muted" style="margin-bottom:8px">Click any field to change it: contact, placement, managers and the Microsoft 365 links. Changed fields turn orange and show the old value, and save with the same reason.</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px">' +
+        fact('Email', esc(p.email)) + fact('Cell', '') + fact('Location', esc(p.loc)) + fact('Department', esc(p.dept)) +
+        fact('Salary or hourly', esc(p.etype || 'Salary')) + fact('System check', 'Ready') + fact('Comments', '') +
+        fact('Managers', p.mgrs.length ? esc(p.mgrs.join(', ')) : chip('No manager', 'err')) + '</div>' +
+        '<div><button class="btn out' + P + '" type="button" data-act="mgrs" data-who="' + esc(p.name) + '">Change managers</button></div>',
+      History: '<ul class="list" style="margin:0 -16px">' + [['Vacation entitlement', '10 → 15', 'Apr 2, 2026 · Five years of service'], ['Carry-over', '2 → 0', 'Sep 30, 2026 · Paid out with the September run']].map(function (h) { return '<li><div><b>' + h[0] + '</b> <span style="font-variant-numeric:tabular-nums">' + h[1] + '</span><div class="small muted">' + h[2] + '</div></div></li>'; }).join('') + '</ul>'
     };
-    return '<aside class="drawer" aria-label="' + esc(p.name) + '"><div class="dh">' + av(p.name, true) + '<div><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div><button class="x" type="button" data-act="closepanel" aria-label="Close">×</button></div>' +
-      '<div class="ptabs" role="tablist">' + tabs.map(function (t) { return '<button type="button" role="tab" data-ptab="' + t + '" aria-selected="' + (t === state.ptab) + '">' + t + '</button>'; }).join('') + '</div><div class="pbody">' + body[state.ptab] + '</div></aside>';
+    // In place of the staff table (not a side drawer), the row grows into this
+    // profile, matching the app: a back button returns to the table.
+    return '<div class="paper" aria-label="' + esc(p.name) + '" style="overflow:hidden">' +
+      '<div style="padding:16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center">' +
+      '<button class="btn out" type="button" data-act="closepanel" aria-label="Back to staff">← Back</button>' + av(p.name, true) +
+      '<div style="flex:1;min-width:0"><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div></div>' +
+      '<div class="ptabs" role="tablist">' + tabs.map(function (tt) { return '<button type="button" role="tab" data-ptab="' + tt + '" aria-selected="' + (tt === tab) + '">' + tt + '</button>'; }).join('') + '</div><div class="pbody">' + body[tab] + '</div></div>';
   }
 
   // ---------- manager ----------
@@ -2118,7 +2139,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     mainEl.innerHTML = flow + ro + html;                      // content sits straight in the #main grid (gap:18px)
     if (fresh) { void mainEl.offsetWidth; mainEl.classList.add('anim', 'enter-on'); }   // force reflow, then replay
     state.lastAnim = key;
-    $('overlay').innerHTML = (state.role === 'admin' ? personPanel() + requestPanel() : '') + renderModal();
+    $('overlay').innerHTML = (state.role === 'admin' ? requestPanel() : '') + renderModal();
     var hash = hashNow();
     if (location.hash !== hash) { try { history.replaceState(null, '', hash); } catch (e) {} }
     var ri = $('reasonIn'); if (ri) ri.focus();
@@ -2192,6 +2213,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'savecodates': var cof = $('coFirst'), col = $('coLast'); state.coDates = { first: cof ? cof.value : '', last: col ? col.value : '' }; toast('Carry-over and payout are open (example).'); render(); return;
       case 'clearcodates': state.coDates = null; toast('Carry-over and payout are closed (example).'); render(); return;
       case 'exportco': toast('Downloaded carry-over-and-payout.xlsx'); return;
+      case 'stafffilters': toast('Opens the filter drawer: location, department, salary or hourly, manager, system check and needs-attention (example).'); return;
+      case 'exportstaff': toast('Opens the export preview: pick people, columns and sheets, then download staff-directory.xlsx (example).'); return;
       case 'doreject': var rq = m.req; state.modal = null; state.reqSel = null; render(); slideAway(document.querySelector('.dcard[data-reqid="' + rq.id + '"]'), function () { rq.status = 'Rejected'; rq.age = 0; toast('Rejected #' + rq.id + '. ' + first(rq.who) + ' is emailed (example).'); render(); }); return;
       case 'dorefund': m.req.status = 'Refunded'; state.modal = null; state.reqSel = null; toast('Refunded #' + m.req.id + '. ' + (m.req.back ? m.req.back + '. ' : '') + '(example)'); render(); return;
       case 'doreprocess':
@@ -2219,7 +2242,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (state.modal) { state.modal = null; toast(name + ' was added to your team (example).'); render(); return; }
         state.created = { name: name, released: released, mgr: mgr }; state.prefill = null; render(); window.scrollTo(0, 0); return;
       case 'another': state.created = null; state.prefill = null; render(); return;
-      case 'openperson': var w = person(t.getAttribute('data-who')); state.screen = 'staff'; state.created = null; state.sel = w ? w.id : null; state.ptab = 'Managers'; render(); return;
+      case 'openperson': var w = person(t.getAttribute('data-who')); state.screen = 'staff'; state.created = null; state.sel = w ? w.id : null; state.ptab = 'Balances'; render(); return;
       case 'closepanel': state.sel = null; state.reqSel = null; render(); return;
       case 'endflow': state.flow = null; render(); return;
       case 'checkone': case 'checkpicked':

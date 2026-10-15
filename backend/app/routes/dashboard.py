@@ -1,6 +1,6 @@
 import logging
 from datetime import date as dt_date
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -134,6 +134,8 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
         # "Salary" or "Hourly", the type Add Employee sets and the balance
         # engine acts on. The Staff Directory has no EmployeeType column (#205).
         "employment_type": fields.get("SalaryHourly", ""),
+        # Ready / Editing gate, so the staff table can filter by it (#273).
+        "system_check": fields.get("SystemCheck", ""),
     }
 
 
@@ -2020,6 +2022,172 @@ async def admin_set_balances(body: dict):
             report["errors"].append({"employee_id": emp_id, "error": str(e)})
 
     return report
+
+
+# ================================
+# Admin: person panel (view and edit)
+# ================================
+
+class EntitlementChanges(BaseModel):
+    """Body for the entitlements PATCH: the new values and the reason for them.
+
+    Attributes:
+        changes: snake_case wire key -> new numeric value (see
+            ``staff_entitlements.EDITABLE`` for the editable balance pots).
+        fields: snake_case wire key -> new value for the Staff Directory text,
+            choice and person fields (see ``staff_entitlements.TEXT_FIELDS`` /
+            ``PERSON_FIELDS`` and the managers key). Empty when only pots change.
+        reason: Why HR made the change; required and stored with the history.
+    """
+    # ``Any`` not ``float``: Pydantic v2 would coerce a stray bool or digit
+    # string into a float, hiding a bad value. The service's ``_as_number``
+    # does the real type-checking and rejects non-numbers with a clear message.
+    changes: dict[str, Any] = {}
+    fields: dict[str, Any] = {}
+    reason: str
+
+
+@router.get("/admin/employees/{employee_id}")
+async def admin_get_employee(employee_id: str):
+    """Read one person's record for the admin person panel.
+
+    Used by the admin person panel to show the editable entitlements and
+    balances, the resolved people fields, and the change history. Behind the
+    admin password like every ``/admin/`` route.
+
+    Args:
+        employee_id: Staff Directory item id of the person to show.
+
+    Returns:
+        The staff record payload (fields, people, history).
+
+    Raises:
+        HTTPException: 404 when no such employee exists.
+    """
+    from app.services.staff_entitlements import get_staff_record
+
+    record = await get_staff_record(employee_id)      # panel payload or None
+    if record is None:                                # unknown id
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return record
+
+
+@router.patch("/admin/employees/{employee_id}/entitlements")
+async def admin_update_entitlements(employee_id: str, body: EntitlementChanges):
+    """Change a person's entitlements and balances, with a recorded reason.
+
+    Used by the admin person panel's save action. Writes only the figures that
+    moved and records the change in the history. Behind the admin password like
+    every ``/admin/`` route, and gated on processing being enabled.
+
+    Args:
+        employee_id: Staff Directory item id of the person being edited.
+        body: The new values and the reason for the change.
+
+    Returns:
+        The service result: what changed and whether the history was recorded.
+
+    Raises:
+        HTTPException: 503 when processing is disabled, 400 on an invalid reason
+            or value, 404 when the employee does not exist, 502 when the write to
+            SharePoint failed.
+    """
+    if not settings.PROCESSING_ENABLED:               # same gate as set-balances
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+
+    from app.services.staff_entitlements import (
+        StaffWriteError,
+        apply_entitlement_changes,
+    )
+
+    try:
+        return await apply_entitlement_changes(
+            employee_id, body.changes, body.reason, body.fields,
+        )
+    except LookupError as e:                           # employee not found
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:                            # bad reason or value
+        raise HTTPException(status_code=400, detail=str(e))
+    except StaffWriteError as e:                       # SharePoint write failed upstream
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class StaffExportRequest(BaseModel):
+    """Body for the staff export: which people, columns and extra sheets.
+
+    Attributes:
+        employee_ids: Staff Directory item ids to list, in the order the table
+            showed them (filters and sort already applied on the frontend).
+            Omitted/null means everyone in name order; an empty list means no
+            one (a filter matched nothing), so the sheet comes out empty.
+        columns: The column keys HR chose (see ``staff_export.COLUMNS``); the
+            name column is always included.
+        include_summary: Add the per-department summary sheet.
+        include_history: Add the change-history sheet.
+    """
+    employee_ids: list[str] | None = None
+    columns: list[str] = []
+    include_summary: bool = False
+    include_history: bool = False
+
+
+@router.post("/admin/staff/export")
+async def admin_export_staff(body: StaffExportRequest):
+    """Download the staff table as an Excel file (#277).
+
+    Builds the workbook HR previews in the export dialog: a Staff sheet of the
+    chosen people and columns in the table's order, with optional per-department
+    summary and change-history sheets. Read only, so it is not gated on
+    processing; behind the admin password like every ``/admin/`` route.
+
+    Args:
+        body: Which people, columns and extra sheets to include.
+
+    Returns:
+        The .xlsx file as an attachment.
+    """
+    from fastapi.responses import Response
+    from app.services import staff_changes
+    from app.services.app_settings import toronto_today
+    from app.services.employee import _get_sp_user_name_map
+    from app.services.manager_assignments import _extract_all_managers
+    from app.services.staff_export import build_workbook, export_filename
+
+    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # every employee
+    by_id = {str(item.get("id")): item for item in items}
+
+    # Keep the order the table sent. None means "everyone" (in name order); an
+    # explicit list, even an empty one, means exactly those ids (a filter that
+    # matched nobody exports an empty sheet rather than the whole directory).
+    if body.employee_ids is None:
+        ordered = sorted(items, key=lambda it: (it.get("fields", {}).get("Title") or "").lower())
+    else:
+        ordered = [by_id[i] for i in body.employee_ids if i in by_id]
+
+    # Resolve each row's manager names once, so the Managers column reads as names.
+    id_to_name = await _get_sp_user_name_map()
+    rows = []
+    for item in ordered:
+        fields = item.get("fields", {})
+        managers = []
+        for mgr in _extract_all_managers(fields):          # [{sp_user_id, name}]
+            name = mgr["name"] or id_to_name.get(mgr["sp_user_id"], "")
+            if name:
+                managers.append(name)
+        rows.append({"id": item.get("id"), "fields": fields, "managers": managers})
+
+    # The change-history sheet, only when asked for, for the listed people.
+    history = []
+    if body.include_history:
+        history = await staff_changes.list_changes_for([str(r["id"]) for r in rows])
+
+    today = toronto_today()
+    data = build_workbook(rows, body.columns, body.include_summary, history)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{export_filename(today)}"'},
+    )
 
 
 @router.post("/admin/clear-carryover-reset-log/{year}")

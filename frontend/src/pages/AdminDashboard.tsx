@@ -166,6 +166,18 @@ export default function AdminDashboard() {
     return () => { cancelled = true; };
   }, []);
 
+  // Re-fetch the figures the staff screen shows, after a person's record is saved
+  // in the profile, so the table row follows the change without a full reload.
+  const refreshStaffData = useCallback(async () => {
+    try {
+      const [balRes, reqRes] = await Promise.all([getAdminBalances(), getAdminRequests()]);
+      setEmployees(balRes.data.employees || []);
+      setRequests(reqRes.data.requests || []);
+    } catch {
+      /* the save already succeeded; the table just keeps the pre-save figures */
+    }
+  }, []);
+
   // Re-runs the directory-wide setup check on its own. It is the one list an
   // admin refreshes after fixing a record, and it is the expensive read of the
   // set, so it is not folded into the dashboard's other refreshes.
@@ -481,10 +493,10 @@ export default function AdminDashboard() {
                   employees={employees}
                   requests={requests}
                   setup={employeeSetup}
-                  onOpenDashboard={handleOpenDashboard}
-                  onCopyLink={handleCopyEmployeeLink}
-                  onSendLink={handleSendDashboardLink}
+                  processingEnabled={processingEnabled}
                   onManageAssignments={() => setTab('assignments')}
+                  onReload={refreshStaffData}
+                  onNotify={(message, severity) => setSnack({ open: true, message, severity })}
                 />
               )}
 

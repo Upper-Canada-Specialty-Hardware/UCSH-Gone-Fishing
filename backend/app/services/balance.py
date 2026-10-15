@@ -126,7 +126,18 @@ def is_next_year_request(start_date: date, end_date: date) -> bool:
 
 async def recalculate_request_allow_date(
     employee_id: str | int, vacation: float, carryover: float
-) -> None:
+) -> str | None:
+    """Recompute the can-book-vacation date from the vacation/carry-over pair.
+
+    Args:
+        employee_id: Staff Directory item id of the person.
+        vacation: Current vacation balance (days).
+        carryover: Current carry-over balance (days).
+
+    Returns:
+        The new date as a ``YYYY-MM-DD`` string when it was written, or None when
+        nothing changed (both pots non-zero, or the stored date already matched).
+    """
     today = date.today()
     end_of_next_year_march = date(today.year + 1, 3, 31)
     end_of_current_year = date(today.year, 12, 31)
@@ -140,7 +151,7 @@ async def recalculate_request_allow_date(
         new_date = end_of_next_year
     else:
         # Both non-zero — no change
-        return
+        return None
 
     emp = await get_employee_by_id(employee_id)
     fields = emp["fields"]
@@ -148,7 +159,7 @@ async def recalculate_request_allow_date(
 
     new_date_str = new_date.isoformat()
     if current_rad and current_rad[:10] == new_date_str:
-        return  # No change needed
+        return None  # No change needed
 
     # Include Title to avoid clearing it (SP PatchItem behavior)
     await sp_client.update_list_item_fields(
@@ -160,6 +171,7 @@ async def recalculate_request_allow_date(
         },
     )
     logger.info("Updated RequestAllowDate for employee %s to %s", employee_id, new_date_str)
+    return new_date_str  # the caller records this as its own history row
 
 
 async def apply_vacation_offset(employee_id: str | int) -> None:
