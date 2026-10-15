@@ -649,6 +649,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   font-weight: 700; padding: 6px 12px; border-radius: 8px; white-space: nowrap;
 }
 .pbanner .pbgo:hover { background: #2c1e07; }
+.tpractice {                                             /* welcome card: says first, before anything else, that this is practice */
+  display: block; margin: -4px 0 4px; padding: 7px 12px; border-radius: 8px; color: #1a1205;
+  font-weight: 800; font-size: 13px; letter-spacing: .02em; border: 2px solid #1a1205; background: #f5a60b;
+  background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.16) 0 13px, transparent 13px 26px);
+}
+.tgoreal {                                               /* welcome card: the way out to the real site */
+  justify-self: start; background: #1a1205; color: #ffd36b; text-decoration: none; font-weight: 700;
+  padding: 8px 14px; border-radius: 8px;
+}
 .pframe {                                                /* thin amber frame around the whole practice app */
   position: fixed; inset: 0; z-index: 8; pointer-events: none; border: 3px solid #f5a60b;
 }
@@ -2048,10 +2057,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var root = $('tour'); if (!root) return;
     var seen = getSeen();
     root.innerHTML = '<div class="tgate"><div class="tcardbox" role="dialog" aria-modal="true" aria-label="Welcome" tabindex="-1">' +
+      '<div class="tpractice">PRACTICE TOUR. This is not the real admin dashboard.</div>' +   // first thing read: practice, not live
       '<div class="tbrand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' +
-      '<h2>The admin dashboard, up close</h2>' +
-      '<p>This is a full, offline copy of the admin dashboard that HR uses to keep UCSH Out of Office running: approvals, new hires, staff and balances, holidays, the email log and the data checks. Nothing here is sent or saved. Pick a path and a short tour points at the real buttons as you go.</p>' +
-      '<p style="font-size:12.5px;margin-top:-2px">You open the real dashboard from your own HR bookmark and sign in with the admin password, which starts as 123 until HR changes it under Admin password. Keep the password inside HR. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Riley Newhire).</p>' +
+      '<h2>Practice tour of the admin dashboard</h2>' +
+      '<p><b>Nothing done on this page is real.</b> Approvals, new hires, balance changes and holidays here are not sent or saved. Pick a path and a short tour points at the buttons as you go: approvals, new hires, staff and balances, holidays, the email log and the data checks.</p>' +
+      '<p style="font-size:12.5px;margin-top:-2px">The real dashboard opens from your own HR bookmark and asks for the admin password. Keep the password inside HR. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Riley Newhire).</p>' +
+      '<a class="tgoreal" href="https://ucshoutofoffice.up.railway.app/" target="_blank" rel="noopener">Go to the real site</a>' +
       '<div class="ttracks">' + trackBtn('daily', TRACK_DESC.daily, seen) + trackBtn('people', TRACK_DESC.people, seen) + trackBtn('records', TRACK_DESC.records, seen) + '</div>' +
       '<div class="tfoot"><button class="ghost" type="button" data-texplore="1">Just explore</button></div>' +
       '</div></div>';

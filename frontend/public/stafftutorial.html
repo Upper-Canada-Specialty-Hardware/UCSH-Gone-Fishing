@@ -607,6 +607,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   font-weight: 700; padding: 6px 12px; border-radius: 8px; white-space: nowrap;
 }
 .pbanner .pbgo:hover { background: #2c1e07; }
+.tpractice {                                             /* welcome card: says first, before anything else, that this is practice */
+  display: block; margin: -4px 0 4px; padding: 7px 12px; border-radius: 8px; color: #1a1205;
+  font-weight: 800; font-size: 13px; letter-spacing: .02em; border: 2px solid #1a1205; background: #f5a60b;
+  background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.16) 0 13px, transparent 13px 26px);
+}
+.tgoreal {                                               /* welcome card: the way out to the real site */
+  justify-self: start; background: #1a1205; color: #ffd36b; text-decoration: none; font-weight: 700;
+  padding: 8px 14px; border-radius: 8px;
+}
 .pframe {                                                /* thin amber frame around the whole practice app */
   position: fixed; inset: 0; z-index: 8; pointer-events: none; border: 3px solid #f5a60b;
 }
@@ -1759,10 +1768,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var root = $('tour'); if (!root) return;
     var seen = getSeen();
     root.innerHTML = '<div class="tgate"><div class="tcardbox" role="dialog" aria-modal="true" aria-label="Welcome" tabindex="-1">' +
+      '<div class="tpractice">PRACTICE TOUR. This is not the real site.</div>' +   // first thing read: practice, not live
       '<div class="tbrand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' +
-      '<h2>A quick practice run</h2>' +
-      '<p>This is a full, offline copy of the site you will use to book time off, log overtime, and carry over or cash out vacation. Nothing here is sent or saved. Pick a path and a short tour points at the real buttons as you go.</p>' +
+      '<h2>Practice tour, not the real site</h2>' +
+      '<p><b>Requests made on this page go nowhere.</b> Nothing is sent to your manager and nothing is saved. To book real time off, log overtime or carry over vacation, use the real site:</p>' +
       linkRow() +
+      '<a class="tgoreal" href="' + TOUR_LINK + '" target="_blank" rel="noopener">Go to the real site</a>' +   // the way out, before the practice paths
+      '<p>Or practise here first: pick a path and a short tour points at the buttons as you go.</p>' +
       '<p style="font-size:12.5px;margin-top:-2px">Bookmark that one link. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Jordan Sample).</p>' +
       '<div class="ttracks">' + trackBtn('everyone', TRACK_DESC.everyone, seen) + trackBtn('managers', TRACK_DESC.managers, seen) + trackBtn('newstarters', TRACK_DESC.newstarters, seen) + '</div>' +
       '<div class="tfoot"><button class="ghost" type="button" data-texplore="1">Just explore</button></div>' +
