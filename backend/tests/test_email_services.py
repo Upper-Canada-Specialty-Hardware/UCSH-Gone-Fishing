@@ -490,14 +490,41 @@ def test_button_macro_emits_both_the_vml_and_the_non_mso_anchor():
     assert "#15803d" in html                                        # painted the colour it was given
 
 
-def test_dashboard_footer_keeps_its_links_and_its_warning():
-    links = [
-        {"label": "My Dashboard", "url": "https://x.test/emp"},
-        {"label": "Team Dashboard", "url": "https://x.test/mgr"},
-    ]
-    html = templates_render.render_dashboard_footer(links)
-    for link in links:                                              # every dashboard still linked
-        assert link["url"] in html and link["label"] in html
-    assert "v:roundrect" in html                                    # Outlook-safe buttons, not thin links
-    assert "Do not forward this email" in html                     # the standing warning stays
-    assert "cryptographed" in html
+def test_dashboard_footer_links_to_the_site_without_a_personal_link(monkeypatch):
+    # #274: staff sign in on the site themselves, so the footer is the same for
+    # everyone: one button to the public site, no per-person signed link.
+    monkeypatch.setattr(settings, "DASHBOARD_FRONTEND_URL", "https://ooo.test")
+    from app.services.dashboard_tokens import build_dashboard_footer_html
+    html = build_dashboard_footer_html()
+    assert "https://ooo.test/" in html                              # the public site is linked
+    assert "token=" not in html                                     # no signed personal dashboard link
+    assert "v:roundrect" in html                                    # Outlook-safe button, not a thin link
+    assert "Open UCSH Out of Office" in html                        # the one button's label
+
+
+def test_dashboard_footer_has_no_do_not_forward_note(monkeypatch):
+    # No private link remains, so the old do-not-forward warning is gone.
+    monkeypatch.setattr(settings, "DASHBOARD_FRONTEND_URL", "https://ooo.test")
+    from app.services.dashboard_tokens import build_dashboard_footer_html
+    html = build_dashboard_footer_html()
+    assert "Do not forward" not in html
+    assert "cryptographed" not in html
+
+
+def test_dashboard_footer_is_empty_without_a_configured_site(monkeypatch):
+    # Local development leaves DASHBOARD_FRONTEND_URL blank; there is nowhere to
+    # point the button, so the footer renders nothing.
+    monkeypatch.setattr(settings, "DASHBOARD_FRONTEND_URL", "")
+    from app.services.dashboard_tokens import build_dashboard_footer_html
+    assert build_dashboard_footer_html() == ""
+
+
+def test_main_no_longer_starts_the_dashboard_link_renewal_task():
+    # #274: the renewal task and its module are gone. Importing the app must not
+    # pull them back in, and the task module must no longer exist.
+    import importlib
+
+    import app.main as main
+    assert not hasattr(main, "start_dashboard_link_task")           # not imported into the lifespan
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.tasks.dashboard_links")        # the module itself is deleted

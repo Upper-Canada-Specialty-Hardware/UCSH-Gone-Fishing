@@ -1,21 +1,16 @@
-{# Dashboard-links footer appended to many emails, then wrapped by the layout.
+{# Site-link footer appended to many emails, then wrapped by the layout.
 
    Built by build_dashboard_footer_html (app/services/dashboard_tokens.py) and
-   handed to send_email as dashboard_footer. One brand-green button per
-   dashboard the recipient can open, stacked so they never overflow the card in
-   Outlook, plus the standing do-not-forward warning. #}
+   handed to send_email as dashboard_footer. One brand-green button to the
+   public site; staff sign in there with their work email. No personal signed
+   link any more, so no do-not-forward note. #}
 {% import "_macros.html" as ui %}
-{% if dashboard_links %}
+{% if site_url %}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;margin-top:28px;border-top:1px solid #ebe4d8;">
   <tr>
-    <td style="padding-top:16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#6b6257;">View your dashboards:</td>
+    <td style="padding-top:16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#6b6257;">Sign in with your work email to see your requests, balances and team.</td>
   </tr>
-  {% for link in dashboard_links %}
-  {#- one button per dashboard, each on its own line -#}
-  <tr><td style="padding-top:8px;">{{ ui.button(link.url, link.label, "#2f5d50", 220) }}</td></tr>
-  {% endfor %}
-  <tr>
-    <td style="padding-top:12px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#b91c1c;">Do not forward this email to anyone. It contains cryptographed links that provide access to your employee and manager's dashboards.</td>
-  </tr>
+  {#- single button to the public site, same for everyone -#}
+  <tr><td style="padding-top:8px;">{{ ui.button(site_url, "Open UCSH Out of Office", "#2f5d50", 240) }}</td></tr>
 </table>
 {% endif %}

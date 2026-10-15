@@ -46,50 +46,28 @@ def validate_dashboard_token(role: str, user_id: str, token: str, expiry: str) -
     return True, ""
 
 
-async def build_dashboard_links(employee_id: str | int) -> list[dict]:
-    """Build dashboard link dicts for an employee based on their roles."""
-    if not settings.DASHBOARD_FRONTEND_URL:
-        return []
+def build_dashboard_footer_html() -> str:
+    """Build the site-link footer appended to notification emails.
 
-    from app.services.employee import get_employee_by_id, ADMIN_NAMES, is_manager
-
-    emp = await get_employee_by_id(employee_id)
-    if not emp:
-        return []
-
-    fields = emp.get("fields", {})
-    name = fields.get("Title", "")
-
-    links = [{"label": "My Dashboard", "url": generate_dashboard_url("employee", employee_id)}]
-
-    if await is_manager(name):
-        links.append({"label": "Team Dashboard", "url": generate_dashboard_url("manager", employee_id)})
-
-    if name in ADMIN_NAMES:
-        links.append({"label": "Admin Dashboard", "url": generate_dashboard_url("admin", employee_id)})
-
-    return links
-
-
-async def build_dashboard_footer_html(employee_id: str | int) -> str:
-    """Generate dashboard footer HTML for an employee.
-
-    Args:
-        employee_id: The recipient, used to work out which dashboards they can
-            open (their own, their team's, the admin one).
+    Staff now sign in on the site itself (an emailed code, see routes/intake),
+    so the footer no longer carries personal signed dashboard links. It is one
+    button to the public site, identical for everyone, which means no Staff
+    Directory read and no per-recipient token to build.
 
     Returns:
-        The footer HTML with one Outlook-safe button per dashboard and the
-        do-not-forward note, or "" when the person has no dashboards.
+        The footer HTML with one Outlook-safe button to the site, or "" when no
+        public site is configured (local development has DASHBOARD_FRONTEND_URL
+        blank, so there is nowhere to point the button).
     """
-    links = await build_dashboard_links(employee_id)
-    if not links:
-        return ""
+    from app.services.welcome_email import site_links
 
+    site_url, _ = site_links()                 # the one public address; "" in local dev
+    if not site_url:                           # no site to link to: emit nothing
+        return ""
     # Rendered from a template with the shared button macro, so the footer's
-    # buttons survive classic Outlook like every other button in these emails.
+    # button survives classic Outlook like every other button in these emails.
     from app import templates_render
-    return templates_render.render_dashboard_footer(links)
+    return templates_render.render_dashboard_footer(site_url)
 
 
 def _sign(role: str, user_id: str, expiry: str) -> str:
