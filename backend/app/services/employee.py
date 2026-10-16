@@ -2,6 +2,7 @@ import logging
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,9 @@ def map_location_to_province(location: str) -> str:
 
 
 async def get_employee_by_name(name: str) -> dict | None:
-    # Title is not indexed on Staff Directory — fetch all and match client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # Title is not indexed on Staff Directory, so fetch all and match in memory.
+    # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     target = name.strip().lower()
     for item in items:
         if item.get("fields", {}).get("Title", "").strip().lower() == target:
@@ -37,8 +39,9 @@ async def get_employee_by_name(name: str) -> dict | None:
 
 
 async def get_employee_by_email(email: str) -> dict | None:
-    # EmailAddress is not indexed on Staff Directory — fetch all and match client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # EmailAddress is not indexed on Staff Directory, so fetch all and match in memory.
+    # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     target = email.strip().lower()
     for item in items:
         if item.get("fields", {}).get("EmailAddress", "").strip().lower() == target:
@@ -49,7 +52,8 @@ async def get_employee_by_email(email: str) -> dict | None:
 
 async def get_employee_by_id(item_id: str | int) -> dict | None:
     try:
-        return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
+        # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+        return await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
     except Exception:
         logger.warning("Employee not found by ID: %s", item_id)
         return None
@@ -81,7 +85,8 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
 
 async def is_manager(employee_name: str) -> bool:
     """Check if anyone lists this employee in their AllManagers field."""
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     for staff in all_staff:
         all_managers = staff.get("fields", {}).get("AllManagers")
         if all_managers and isinstance(all_managers, list):

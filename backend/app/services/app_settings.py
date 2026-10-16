@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 CARRYOVER_PAYOUT_WINDOW = "carryover_payout_window"   # {"start", "end"} ISO dates, or None
 REQUESTS_STORAGE = "requests_storage"                 # "sharepoint" (default) or "postgres"
+STAFF_STORAGE = "staff_storage"                       # "sharepoint" (default) or "postgres"
 TORONTO = ZoneInfo("America/Toronto")                # the company's calendar day
 
 # The two backends the request lists can live in; the switch reads this.
@@ -30,6 +31,7 @@ POSTGRES = "postgres"
 DEFAULTS: dict[str, Any] = {
     CARRYOVER_PAYOUT_WINDOW: None,                  # no dates: closed until an admin sets them
     REQUESTS_STORAGE: SHAREPOINT,                   # requests stay in SharePoint until the switch is flipped
+    STAFF_STORAGE: SHAREPOINT,                      # the Staff Directory stays in SharePoint until the switch is flipped
 }
 
 
@@ -83,6 +85,19 @@ async def requests_storage() -> str:
         The stored backend name, or "sharepoint" when it was never set.
     """
     return await get_setting(REQUESTS_STORAGE)
+
+
+async def staff_storage() -> str:
+    """Where the Staff Directory is read and written now, from the database.
+
+    Read on every call, like ``requests_storage``, so an admin flipping the
+    switch takes effect without a redeploy. The staff store validates the value;
+    this only returns it.
+
+    Returns:
+        The stored backend name, or "sharepoint" when it was never set.
+    """
+    return await get_setting(STAFF_STORAGE)
 
 
 def toronto_today() -> date:

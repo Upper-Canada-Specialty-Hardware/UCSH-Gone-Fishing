@@ -35,6 +35,16 @@ from app.models.sharepoint_seen import SharepointSeen
 from app.models.sync_run import SyncRun
 from app.models.legacy_finding import LegacyFinding
 
+# The Staff Directory in Postgres (#261): the typed people table, the manager /
+# supervisor links, the location and department lookups, and the write-back queue.
+from app.models.staff import (
+    Department,
+    Location,
+    Staff,
+    StaffSupervisor,
+    StaffWriteback,
+)
+
 __all__ = [
     # plumbing
     "WebhookSubscription",
@@ -67,4 +77,10 @@ __all__ = [
     "SharepointSeen",
     "SyncRun",
     "LegacyFinding",
+    # staff directory (the Postgres move)
+    "Staff",
+    "StaffSupervisor",
+    "Location",
+    "Department",
+    "StaffWriteback",
 ]

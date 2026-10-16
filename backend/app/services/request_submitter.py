@@ -25,11 +25,13 @@ import logging
 from app.config import settings
 from app.graph.client import graph_client
 from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_in_postgres
 from app.services.employee import (
     get_employee_by_email,
     resolve_person_field,
     resolve_person_field_name,
 )
+from app.services.person_match import match_person
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,11 @@ async def resolve_request_submitter(fields: dict, person_column: str) -> dict | 
         nor the person column leads to one.
     """
     email = submitter_email_of(fields)
+    # Once the Staff Directory is in Postgres, match by staff id then email only
+    # (#265): no display-name match and no Microsoft 365 user-list lookup. The
+    # request item carries the submitter's staff id in EmployeeID when known.
+    if await staff_in_postgres():
+        return await match_person(staff_id=fields.get("EmployeeID"), email=email)
     if email:
         employee = await get_employee_by_email(email)          # works without a site visit
         if employee:
@@ -133,6 +140,11 @@ async def resolve_request_submitter_name(fields: dict, person_column: str) -> st
         The Staff Directory name, or "" when nothing resolves.
     """
     email = submitter_email_of(fields)
+    # Postgres era (#265): resolve by staff id then email; take the name off the
+    # matched record. No name or Microsoft 365 fallback.
+    if await staff_in_postgres():
+        matched = await match_person(staff_id=fields.get("EmployeeID"), email=email)
+        return matched.get("fields", {}).get("Title", "") if matched else ""
     if email:
         employee = await get_employee_by_email(email)
         if employee:
