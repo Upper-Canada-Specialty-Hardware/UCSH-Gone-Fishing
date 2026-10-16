@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert, Box, Button, Paper, Snackbar, Tab, Tabs, TextField, Typography,
@@ -40,6 +40,9 @@ import {
 } from '../api/client';
 import { greeting } from '../utils/greeting';
 import { isHourly } from '../utils/employment';
+import { useLiveRequests } from '../hooks/useLiveRequests';
+import { LiveEvent } from '../api/events';
+import LiveNotice from '../components/LiveNotice';
 
 /**
  * A new hire's details left by the supervisor's "add this person" email link
@@ -123,6 +126,19 @@ export default function ManagerDashboard() {
   // Decided cards showing their outcome before they leave: key to true (approved) or false (rejected).
   const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+
+  // Live updates: merge each timeline event into the team's requests, and refresh
+  // the pending queue (debounced) when a decision lands from another channel (#328).
+  const pendingRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLiveEvent = useCallback((ev: LiveEvent) => {
+    const queueTypes = ['approved', 'rejected', 'cancelled', 'submitted', 'sent_to_manager', 'refunded'];
+    if (!queueTypes.includes(ev.type)) return;
+    if (pendingRefresh.current) clearTimeout(pendingRefresh.current);
+    pendingRefresh.current = setTimeout(() => {
+      getTeamPending().then((r) => setPending(r.data.pending || [])).catch(() => { /* stale queue until next load */ });
+    }, 600);
+  }, []);
+  const { status: liveStatus } = useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   useEffect(() => {
     Promise.all([
@@ -235,6 +251,7 @@ export default function ManagerDashboard() {
 
   return (
     <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
+      <LiveNotice status={liveStatus} />
       {/* Greeting, what is waiting, the team's size, and the new-hire shortcut. */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 240 }}>
@@ -568,7 +585,7 @@ export default function ManagerDashboard() {
       {tab === 'history' && (
         // minWidth 0 lets this grid item shrink below the table's natural width; overflow hidden keeps the page from widening.
         <Paper sx={{ p: 2, minWidth: 0, overflow: 'hidden' }}>
-          <RequestHistory requests={requests} showEmployee />
+          <RequestHistory requests={requests} showEmployee timelineScope="team" />
         </Paper>
       )}
 

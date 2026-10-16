@@ -1,8 +1,9 @@
-import { Fragment, ReactNode, useEffect, useMemo, useRef } from 'react';
+import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Checkbox, Collapse } from '@mui/material';
 import { Theme, alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
 import TakenFrom from '../TakenFrom';
+import RequestTimelineDialog from '../RequestTimelineDialog';
 import { hasAuditLog } from '../dataGridDefaults';
 import { DIAGNOSTIC_LABELS } from './requestRows';
 import {
@@ -155,6 +156,7 @@ export default function RequestsTable(props: Props) {
       case 'taken': return <TakenFrom value={r.raw.taken_from} compact />;   // the taken_from the admin endpoints stamp
 
       case 'status': return <StatusCell r={r} theme={theme} />;
+      case 'stage': return r.stage ? <Box component="span" sx={{ color: 'text.secondary' }}>{r.stage}</Box> : '-';
       case 'mgr': return r.manager ? `${r.manager}${r.managers.length > 1 ? ` +${r.managers.length - 1}` : ''}` : <Box sx={{ color: 'error.main' }}>None</Box>;
       case 'created': return <Box component="span" title={formatInstantDay(r.created)}>{agoText(r.created)}</Box>;   // created is an instant; tooltip shows its day
       case 'approved': return r.approved ? formatInstantDay(r.approved) : <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;   // decided-at instant
@@ -366,6 +368,7 @@ function Field({ label, value, wide }: { label: string; value: ReactNode; wide?:
  */
 function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const theme = useTheme();
+  const [timelineOpen, setTimelineOpen] = useState(false);   // the full timeline dialog (#329, #332)
   const listName = r.src === 'leave' ? 'Leave Requests' : r.src === 'mu' ? 'Overtime Requests Data' : 'CarryOver_Payout_Data';
   const title = r.src === 'leave' ? 'Leave request' : r.src === 'mu' ? 'Make-up request' : `${r.kindLabel} request`;
   const stuck = r.source === 'stuck' || r.sysState === 'Needs attention';
@@ -384,6 +387,7 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           {r.src === 'mu' && <><Field label="Date" value={formatDay(r.date)} /><Field label="Hours" value={r.hours == null ? '' : num(r.hours, 1)} /><Field label="As days" value={`${num((r.hours || 0) / 8, 3)} (hours ÷ 8)`} /></>}
           {r.src === 'co' && <><Field label="Type of request" value={r.kindLabel} /><Field label="Days" value={r.days == null ? '' : num(r.days, 3)} /><Field label="New balance after this request" value={r.newBalance} wide /></>}
           <Field label="Status" value={r.status} />
+          <Field label="Stage" value={r.stage} />
           <Field label="System state" value={r.sysState} />
           <Field label="Employee" value={r.person} />
           <Field label="Submitted by" value={r.submittedBy} />
@@ -396,6 +400,15 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           {r.src !== 'co' && <Field label={r.src === 'mu' ? 'Overtime details' : 'Title'} value={r.title} wide />}
         </Box>
         <DetailActions r={r} stuck={stuck} processingEnabled={processingEnabled} busy={busy} actions={actions} />
+        {/* The request's full timeline and, for admins, its field history (#329, #332). */}
+        <Button size="small" variant="text" onClick={() => setTimelineOpen(true)} sx={{ justifySelf: 'start' }}>View full timeline</Button>
+        <RequestTimelineDialog
+          open={timelineOpen}
+          onClose={() => setTimelineOpen(false)}
+          scope="admin"
+          requestType={r.request_type}
+          itemId={r.id}
+        />
       </Box>
 
       <Box sx={panelSx}>

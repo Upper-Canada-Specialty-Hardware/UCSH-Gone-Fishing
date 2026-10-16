@@ -17,6 +17,7 @@ import { buildTheme } from '../theme';
 import { carryoverClosedReason } from '../utils/carryoverWindow';
 import { isHourly } from '../utils/employment';
 import { getMyBalances } from '../api/client';
+import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
   Balances, EmployeeSession, RequestType, VerifiedEmail,
@@ -175,6 +176,11 @@ export default function RequestPage() {
   const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
   const [misses, setMisses] = useState(0);                     // refused codes, to shake the boxes
   const navigate = useNavigate();
+  // Keep the typed request across a #331 auto-update reload: save the form values
+  // and restore them once on mount. clearDraft forgets them after a submit.
+  const { clearDraft } = useSessionDraft<RequestValues>(
+    'request-form-draft', values, (saved) => setValues({ ...EMPTY_REQUEST, ...saved }),
+  );
   const { pathname } = useLocation();
   const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
   const signedInPage = pathname.startsWith('/my/request');    // under the top bar with the page tabs
@@ -293,6 +299,7 @@ export default function RequestPage() {
     setError(''); setBusy(true);
     try {
       await submitMyRequest(session, type, buildRequestBody(type, values));
+      clearDraft();                                   // submitted: no draft to keep
       setHeldWith('');
       setDoneText('Your request was sent to your manager. You will get an email when it is approved or rejected.');
       setStep('done');
@@ -325,6 +332,7 @@ export default function RequestPage() {
           : { supervisor_id: starter.supervisor?.id }),
         request_type: type, form: buildRequestBody(type, values),
       });
+      clearDraft();                                     // held: no draft to keep
       setHeldWith(res.data.supervisor_name);
       saveNewHire(null);                                // held: a refresh must not send it twice
       setDoneText(
@@ -353,6 +361,7 @@ export default function RequestPage() {
       return;
     }
     setValues({ ...EMPTY_REQUEST });
+    clearDraft();                                       // fresh form: drop the old draft
     setError('');
     setStep('form');
   };

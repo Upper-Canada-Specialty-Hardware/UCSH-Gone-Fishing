@@ -10,6 +10,17 @@ import AdminDashboard from './pages/AdminDashboard';
 import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
 import { canSeeTeam, loadSession, saveLinkSession, setAfterSignIn, setSignInNotice } from './api/intake';
+import { useVersionReload } from './hooks/useVersionReload';
+
+/**
+ * Mounts the auto-update watcher once for the whole app; renders nothing (#331).
+ *
+ * @returns null.
+ */
+function VersionWatcher() {
+  useVersionReload();
+  return null;
+}
 
 /**
  * The frame around a signed-in page: the top bar with the page tabs, then the
@@ -128,6 +139,7 @@ export default function App() {
   return (
     <ColorModeProvider>
       <MotionProvider>
+      <VersionWatcher />
       <HashRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
