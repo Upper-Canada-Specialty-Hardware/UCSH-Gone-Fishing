@@ -1,12 +1,12 @@
 /**
- * Shared helpers for the three employment types (#300). The Staff Directory
- * SalaryHourly column holds "Salary", "Hourly" (Ontario hourly) and "Hourly BC"
- * (British Columbia hourly). BC hourly people have one real balance, Sick, and
- * a vacation counter ("days taken this year") instead of a vacation balance;
- * they have no Make-Up, Carry-over or Payout. These helpers keep that test and
+ * Shared helpers for the employment types (#300). The Staff Directory
+ * SalaryHourly column holds "Salary", "Hourly" and "Hourly BC" (an older value
+ * for hourly staff in BC). Every hourly person, wherever they work, has one real
+ * balance, Sick, and a vacation counter ("days taken this year") instead of a
+ * vacation balance; they have no Make-Up, Carry-over or Payout. These helpers keep that test and
  * the shared red "below zero" wording in one place so every screen reads alike.
  *
- * The matching backend lives in app/services/employment.py (is_hourly_bc,
+ * The matching backend lives in app/services/employment.py (is_hourly,
  * floor_warning, floor_warning_text); this mirrors its wording exactly.
  */
 
@@ -19,7 +19,7 @@ export type EmploymentType = 'Salary' | 'Hourly' | 'Hourly BC';
  * Never a block; the manager may still approve.
  */
 export interface BelowZero {
-  /** The floor pot: sick for BC hourly, vacation for everyone else. */
+  /** The floor pot: sick for hourly, vacation for everyone else. */
   pot: 'sick' | 'vacation';
   /** The pot's value now. */
   before: number;
@@ -28,15 +28,15 @@ export interface BelowZero {
 }
 
 /**
- * Whether a person is British Columbia hourly ("Hourly BC").
+ * Whether a person is hourly ("Hourly" or "Hourly BC"), wherever they work.
  *
- * @param source - A balances object carrying `hourly_bc`, or the raw
- *   employment-type string ("Hourly BC"). Anything else reads as not BC hourly.
- * @returns True for a BC hourly person.
+ * @param source - A balances object carrying `hourly`, or the raw
+ *   employment-type string. Anything else reads as not hourly.
+ * @returns True for an hourly person.
  */
-export function isHourlyBc(source: { hourly_bc?: unknown } | string | null | undefined): boolean {
-  if (typeof source === 'string') return source === 'Hourly BC';   // the SalaryHourly value itself
-  return !!source?.hourly_bc;                                       // the wire flag on balances
+export function isHourly(source: { hourly?: unknown } | string | null | undefined): boolean {
+  if (typeof source === 'string') return source === 'Hourly' || source === 'Hourly BC';   // the SalaryHourly value itself
+  return !!source?.hourly;                                       // the wire flag on balances
 }
 
 /**
@@ -61,6 +61,6 @@ export function belowZeroSentence(bz: BelowZero | null | undefined): string {
   const label = bz.pot === 'sick' ? 'Sick' : 'Vacation';          // the floor pot's name
   return (
     `Approving this takes ${label} below zero, to ${trimDays(bz.after)} days. `
-    + "You can still approve it; that is the manager's call."
+    + "It can still be approved; that is the manager's call."
   );
 }

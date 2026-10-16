@@ -78,12 +78,12 @@ export default function TakenFrom({ value, compact }: Props) {
     );
   }
 
-  // BC hourly vacation: one neutral chip saying it was counted, not spent (#300).
+  // hourly vacation: one neutral chip saying it was counted, not spent (#300).
   if (shape.kind === 'counted') {
     return (
       <Box
         component="span"
-        title="BC hourly: counted as vacation taken. No balance used."
+        title="hourly: counted as vacation taken. No balance used."
         sx={{
           display: 'inline-flex', alignItems: 'baseline', gap: 0.5, whiteSpace: 'nowrap',
           px: compact ? 0.75 : 1, py: 0.25, borderRadius: '7px',

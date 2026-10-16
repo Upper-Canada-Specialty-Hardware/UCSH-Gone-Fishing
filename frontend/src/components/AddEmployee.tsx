@@ -4,7 +4,7 @@ import {
   Divider, CircularProgress, Box, Select, InputLabel, FormControl,
   OutlinedInput, Chip,
 } from '@mui/material';
-import { isHourlyBc } from '../utils/employment';
+import { isHourly } from '../utils/employment';
 
 /**
  * The Location values the backend maps to a province. Anything outside this set
@@ -23,12 +23,13 @@ const LOCATIONS = [
 ];
 
 /**
- * Employment type drives real balance logic on the backend: "Salary" and
- * "Hourly" (Ontario hourly) keep all five pots; "Hourly BC" (British Columbia
- * hourly, #300) has only Sick, with vacation tracked as a counter, so it is
- * created with a vacation entitlement of 0.
+ * Employment type drives real balance logic on the backend: "Salary" keeps all
+ * five pots; "Hourly" (every hourly employee, wherever they work, #300) has only
+ * Sick, with vacation tracked as a counter, so it is created with a vacation
+ * entitlement of 0. The older "Hourly BC" value still works on existing records
+ * but is not offered for new people.
  */
-const SALARY_HOURLY = ['Salary', 'Hourly', 'Hourly BC'];
+const SALARY_HOURLY = ['Salary', 'Hourly'];
 
 /** One selectable supervisor, as returned by /admin/sp-users. */
 export interface ManagerOption {
@@ -112,17 +113,17 @@ export default function AddEmployee({
   /** Update one field by name. @param key - form key. @param value - new value. */
   const set = (key: string, value: string) => setForm((f) => ({ ...f, [key]: value }));
 
-  // Whether the chosen type is BC hourly, which has no vacation entitlement (#300).
-  const bc = isHourlyBc(form.salary_hourly);
+  // Whether the chosen type is hourly, which has no vacation entitlement (#300).
+  const bc = isHourly(form.salary_hourly);
 
   /**
-   * Change the employment type. Picking "Hourly BC" seeds the entitlements BC
-   * hourly staff get by default: no vacation entitlement, five sick days (#300).
+   * Change the employment type. Picking "Hourly" seeds the entitlements hourly
+   * staff get by default: no vacation entitlement, five sick days (#300).
    *
    * @param value - The chosen SalaryHourly value.
    */
   const setType = (value: string) =>
-    setForm((f) => (isHourlyBc(value)
+    setForm((f) => (isHourly(value)
       ? { ...f, salary_hourly: value, vacation_entitlement: '0', sick_entitlement: f.sick_entitlement || '5' }
       : { ...f, salary_hourly: value }));
 
@@ -164,7 +165,7 @@ export default function AddEmployee({
     !!form.location &&
     !!form.department.trim() &&
     !!form.salary_hourly &&
-    // BC hourly may have 0 vacation entitlement (never negative); everyone else needs > 0.
+    // hourly may have 0 vacation entitlement (never negative); everyone else needs > 0.
     (bc ? Number(form.vacation_entitlement) >= 0 : Number(form.vacation_entitlement) > 0) &&
     Number(form.sick_entitlement) > 0 &&
     (!showPicker || managerIds.length > 0);
@@ -214,7 +215,7 @@ export default function AddEmployee({
         <TextField
           label="Employment type" required select
           value={form.salary_hourly} onChange={(e) => setType(e.target.value)}
-          helperText={bc ? 'BC hourly have only a sick balance; vacation is counted, not a balance.' : undefined}
+          helperText={bc ? 'hourly staff have only a sick balance; vacation is counted, not a balance.' : undefined}
         >
           {SALARY_HOURLY.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
         </TextField>
@@ -259,7 +260,7 @@ export default function AddEmployee({
             label="Vacation days / year" required type="number" fullWidth
             value={form.vacation_entitlement} onChange={(e) => set('vacation_entitlement', e.target.value)}
             inputProps={{ min: 0 }}
-            helperText={bc ? 'BC hourly have no vacation entitlement.' : undefined}
+            helperText={bc ? 'hourly staff have no vacation entitlement.' : undefined}
           />
           <TextField
             label="Sick days / year" required type="number" fullWidth
@@ -273,7 +274,7 @@ export default function AddEmployee({
           </Typography>
         </Divider>
         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-          {/* BC hourly have only a Sick balance; the other pots do not apply to them (#300). */}
+          {/* hourly staff have only a Sick balance; the other pots do not apply to them (#300). */}
           {!bc && (
             <TextField
               label="Vacation" type="number" sx={{ flex: '1 1 150px' }}

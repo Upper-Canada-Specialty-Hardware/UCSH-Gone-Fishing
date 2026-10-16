@@ -17,7 +17,7 @@ import { requestAmount, requestKind, requestWhat, requestWhen } from '../../util
 import { Enter } from '../Motion';
 import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord } from '../../api/staff';
 import { formatDay, formatInstantDay } from '../../utils/dates';
-import { isHourlyBc } from '../../utils/employment';
+import { isHourly } from '../../utils/employment';
 
 /*
  * The admin person profile (#273, #276, #306). The staff row grows into this
@@ -270,9 +270,9 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   /** Undo every unsaved change. */
   const cancel = () => { setEdits({}); setReason(''); setEditingKey(null); };
 
-  // BC hourly (current or edited type): Sick is the only balance, vacation is a
+  // hourly (current or edited type): Sick is the only balance, vacation is a
   // counter, and Make-up/Carry-over/Payout do not apply (#300).
-  const hourlyBc = isHourlyBc(String(fieldValue('salary_hourly')));
+  const hourlyStaff = isHourly(String(fieldValue('salary_hourly')));
   // The record carries no vacation_taken, so rebuild the counter from this
   // person's own requests: approved Vacation days whose start date is this year
   // (matches app/services/employment.py vacation_days_counted).
@@ -284,8 +284,8 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
       .reduce((sum, r) => sum + (Number(r.Days) || 0), 0),
     [requests, currentYear],
   );
-  // For BC hourly: the two entitlements and Sick only (vacation becomes the counter below).
-  const potsToShow = hourlyBc ? POTS.filter((p) => ['vacation_entitlement', 'sick_entitlement', 'sick'].includes(p.key)) : POTS;
+  // For hourly: the two entitlements and Sick only (vacation becomes the counter below).
+  const potsToShow = hourlyStaff ? POTS.filter((p) => ['vacation_entitlement', 'sick_entitlement', 'sick'].includes(p.key)) : POTS;
 
   // Header values follow unsaved edits live.
   const currentName = String(fieldValue('name'));
@@ -354,9 +354,9 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
             <SectionHead title="Entitlements and balances" hint="Click a tile to change it" />
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 1.25 }}>
               {potsToShow.flatMap((p) => {
-                // BC hourly may set a 0 vacation entitlement, so drop the 0.5 floor and relabel its caption (#300).
-                const pot = hourlyBc && p.key === 'vacation_entitlement'
-                  ? { ...p, min: 0, unit: 'BC hourly have no vacation entitlement.' }
+                // hourly may set a 0 vacation entitlement, so drop the 0.5 floor and relabel its caption (#300).
+                const pot = hourlyStaff && p.key === 'vacation_entitlement'
+                  ? { ...p, min: 0, unit: 'hourly staff have no vacation entitlement.' }
                   : p;
                 const tile = (
                   <Tile
@@ -365,8 +365,8 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
                     onChange={(v) => setEdit(p.key, v)}
                   />
                 );
-                // For BC hourly, the vacation counter sits just before Sick, in place of the vacation balance tile.
-                if (hourlyBc && p.key === 'sick') {
+                // For hourly, the vacation counter sits just before Sick, in place of the vacation balance tile.
+                if (hourlyStaff && p.key === 'sick') {
                   return [
                     <CounterTile key="vacation-taken" label="Vacation taken" value={vacationTaken} caption="This year. Counted, not a balance." />,
                     tile,
@@ -722,7 +722,7 @@ function Tile({ pot, value, saved, entitlement, onChange }: {
 }
 
 /**
- * A read-only counter tile (#300): a BC hourly person's "vacation taken this
+ * A read-only counter tile (#300): an hourly person's "vacation taken this
  * year", shown as days with no meter and no edit, so it never reads as a
  * balance. It sits where the vacation balance tile would be.
  *

@@ -39,7 +39,7 @@ import {
   logSickDay,
 } from '../api/client';
 import { greeting } from '../utils/greeting';
-import { isHourlyBc } from '../utils/employment';
+import { isHourly } from '../utils/employment';
 
 /**
  * A new hire's details left by the supervisor's "add this person" email link
@@ -437,8 +437,8 @@ export default function ManagerDashboard() {
               const nextOff = absences
                 .filter((a) => a.who === mem.name && a.end >= today())
                 .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
-              // BC hourly team members have only Sick plus a vacation counter (#300).
-              const bc = isHourlyBc(b);
+              // hourly team members have only Sick plus a vacation counter (#300).
+              const bc = isHourly(b);
               /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
               const line = (label: string, v: number, of?: number) => (
                 <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>

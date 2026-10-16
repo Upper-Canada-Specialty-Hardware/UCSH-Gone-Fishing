@@ -3,8 +3,8 @@
 <h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">Updated Leave Balance</h2>
 <p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">Updated Balances for (<strong>{{ employee_name }}</strong>):</p>
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
-  {% if hourly_bc %}
-  {#- BC hourly (#300): sick is the only balance; vacation is a counter on the dashboard -#}
+  {% if hourly %}
+  {#- hourly (#300): sick is the only balance; vacation is a counter on the dashboard -#}
   {{ ui.row('Sick/Personal:', balances.CurrentSickDayBalance ~ ' days') }}
   {% else %}
   {{ ui.row('Vacation:', balances.CurrentVacationBalance ~ ' days') }}

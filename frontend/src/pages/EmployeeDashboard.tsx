@@ -16,7 +16,7 @@ import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
 import { greeting } from '../utils/greeting';
 import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/requestText';
-import { isHourlyBc } from '../utils/employment';
+import { isHourly } from '../utils/employment';
 import { CountUp, EASE, Enter, KF, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
 import { EmployeeSkeleton } from '../components/Skeletons';
 
@@ -78,7 +78,7 @@ function Pot({ label, value, note, of, count }: { label: string; value: number; 
 }
 
 /**
- * A counter tile (#300): a BC hourly person's "vacation taken this year", shown
+ * A counter tile (#300): an hourly person's "vacation taken this year", shown
  * as days with no bar, no "left" and no "of N", so it never reads like a
  * balance. The caption spells out that it only counts up.
  *
@@ -234,7 +234,7 @@ export default function EmployeeDashboard() {
   }
 
   const b = balances || {};
-  const hourlyBc = isHourlyBc(b);                       // BC hourly: Sick plus the vacation counter only (#300)
+  const hourlyStaff = isHourly(b);                       // hourly: Sick plus the vacation counter only (#300)
   const resetIn = daysToCarryReset();
   // The "by kind" bars: the longest bar fills the track.
   const kindRows = myKindRows(mine);
@@ -292,9 +292,9 @@ export default function EmployeeDashboard() {
       {tab === 'overview' && (
         <>
           {/* The balances, each with how it works in a line; they arrive in reading order.
-              BC hourly people have only Sick plus the vacation counter (#300). */}
+              hourly people have only Sick plus the vacation counter (#300). */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
-            {hourlyBc ? (
+            {hourlyStaff ? (
               <>
                 {/* Vacation is a counter here, not a balance: no bar, no "left". */}
                 <CounterTile count={arriving} label="Vacation taken" value={b.vacation_taken ?? 0} caption="This year. Counted, not a balance." />

@@ -1,4 +1,4 @@
-"""BC hourly staff (#300): sick is the only balance, vacation is a counter.
+"""hourly staff (#300): sick is the only balance, vacation is a counter.
 
 Covers the rules in services/employment.py and every place that reads them:
 the balance simulation, approval and refund, the request page preview, the
@@ -30,7 +30,7 @@ from app.services.taken_from import taken_from_for
 
 TODAY = date(2026, 11, 2)
 
-# A BC hourly person with 2 sick days left and a stray -3.5 vacation left over
+# An hourly person with 2 sick days left and a stray -3.5 vacation left over
 # from before #300 (when they were run as salaried).
 BC = {
     "Title": "Jamie Sample", "EmailAddress": "jamie@ucsh.com", "Location": "British Columbia",
@@ -58,9 +58,14 @@ def test_which_kinds_cost_a_balance_per_type():
     assert employment.leave_costs_balance(BC, "Sick or Personal Day")
     assert employment.leave_costs_balance(BC, "Half Day or Partial Day Off")   # a whole sick day
     assert not employment.leave_costs_balance(BC, "Vacation")                  # counted only
-    assert not employment.leave_costs_balance(ontario, "Half Day or Partial Day Off")  # unchanged
+    # Every hourly employee follows the same rules, wherever they work (2026-10-16).
+    assert employment.leave_costs_balance(ontario, "Half Day or Partial Day Off")      # a whole sick day too
+    assert not employment.leave_costs_balance(ontario, "Vacation")                     # counted only
+    assert employment.is_hourly(ontario) and employment.is_hourly(BC)
+    assert employment.floor_field(ontario) == "CurrentSickDayBalance"                  # sick is the floor
     assert employment.leave_costs_balance(SALARY, "Vacation")
     assert not employment.overtime_costs_balance(BC)
+    assert not employment.overtime_costs_balance(ontario)
     assert employment.overtime_costs_balance(SALARY)
 
 
@@ -119,7 +124,7 @@ def test_preview_counts_bc_vacation():
     form = _form("leave", leave_type="Vacation", start_date="2030-11-12", end_date="2030-11-12")
     out = build_preview("leave", form, BC, [])
     assert out["projected"] is None
-    assert "counted" in out["unchanged"]
+    assert out["unchanged"] == "Counted only. No balance is used."
     assert out["below_zero"] is None
 
 
@@ -142,7 +147,7 @@ def test_preview_notes_a_bc_part_day_is_a_whole_sick_day():
 def test_preview_refuses_bc_carry_over():
     form = _form("carryover-payout", type_of_request="Carry Over", days=1)
     out = build_preview("carryover-payout", form, BC, [])
-    assert out["projected"] is None and "BC hourly" in out["warning"]
+    assert out["projected"] is None and out["warning"] == "Hourly staff have no vacation balance to carry over or pay out."
 
 
 # ----- taken from -----
@@ -184,12 +189,12 @@ def test_bc_vacation_entitlement_may_be_zero_but_not_negative():
         plan_changes(BC, {"vacation_entitlement": -1})
     with pytest.raises(ValueError, match="above zero"):
         plan_changes(SALARY, {"vacation_entitlement": 0})               # salaried still need one
-    # The same save switching the type to BC hourly allows the zero too.
+    # The same save switching the type to hourly allows the zero too.
     assert plan_changes(SALARY, {"vacation_entitlement": 0}, "Hourly BC")[0]["after"] == 0
 
 
 def _creation_form(**over):
-    """An Add Employee form for a BC hourly person."""
+    """An Add Employee form for an hourly person."""
     return {
         "title": "Taylor Mock", "email_address": "taylor@ucsh.com", "location": "British Columbia",
         "department": "Warehouse", "salary_hourly": "Hourly BC",
@@ -209,7 +214,7 @@ def test_add_employee_accepts_hourly_bc_with_no_vacation():
 
 @pytest.fixture
 def bc_store(monkeypatch):
-    """A BC hourly submitter, requests in Postgres, Staff Directory writes captured."""
+    """An hourly submitter, requests in Postgres, Staff Directory writes captured."""
     monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
     record = {"id": "7", "fields": dict(BC)}                  # mutated by the fake writes
     boss = {"id": "3", "fields": {"Title": "Sam Supervisor", "EmailAddress": "sam@ucsh.com"}}

@@ -18,6 +18,26 @@ export const LEAVE_TYPES = [
 
 export const PARTIAL_DAY = 'Half Day or Partial Day Off';
 
+/**
+ * Hourly staff (#300): the same leave types, grouped by what they use, so sick
+ * (their one balance) and vacation (tracked, not a balance) read apart before
+ * anything is picked. The values sent stay the LEAVE_TYPES words.
+ */
+const HOURLY_GROUPS: { heading: string; tone: 'vacation' | 'sick' | 'none'; types: string[] }[] = [
+  { heading: 'Tracked, no balance used', tone: 'vacation', types: ['Vacation'] },
+  { heading: 'Uses your sick days (full days)', tone: 'sick', types: ['Sick or Personal Day', 'Half Day or Partial Day Off'] },
+  { heading: 'Uses nothing', tone: 'none', types: ['Bereavement', 'Jury Duty'] },
+];
+
+/** For hourly staff: one line under the types saying what the picked one does. */
+const HOURLY_EXPLAIN: Record<string, string> = {
+  'Vacation': 'Vacation is tracked, not taken from a balance. Approved days are added to the vacation days you have taken this year. Your sick days are not touched.',
+  'Sick or Personal Day': 'Comes out of your sick days, in full days. If you have none left you can still ask; your manager decides.',
+  'Half Day or Partial Day Off': 'Sick days are taken in full days, so any part of a day uses one sick day.',
+  'Bereavement': 'Not taken from sick days and not added to vacation taken.',
+  'Jury Duty': 'Not taken from sick days and not added to vacation taken.',
+};
+
 /** The three forms on the request page, with the label shown on the picker. */
 export const REQUEST_TYPES: { value: RequestType; label: string; hint: string }[] = [
   { value: 'leave', label: 'Leave', hint: 'Vacation, sick, part day, bereavement or jury duty' },
@@ -92,24 +112,39 @@ interface Props {
   values: RequestValues;
   /** Update one field. */
   onChange: (key: keyof RequestValues, value: string) => void;
-  /** True for a BC hourly employee: a part day uses one whole sick day (#300). */
-  hourlyBc?: boolean;
+  /** True for an hourly employee: a part day uses one whole sick day (#300). */
+  hourlyStaff?: boolean;
 }
 
 /**
  * The leave types as a row of pills; the chosen one fills with the page colour.
+ * Hourly staff see the same pills under three short headings (#300).
  *
  * @param props.value - The chosen type.
  * @param props.onPick - Called with the type picked.
+ * @param props.hourlyStaff - Group the pills by what they use.
  * @returns The labelled group.
  */
-function LeaveChips({ value, onPick }: { value: string; onPick: (t: string) => void }) {
+function LeaveChips({ value, onPick, hourlyStaff = false }: { value: string; onPick: (t: string) => void; hourlyStaff?: boolean }) {
   const theme = useTheme();
+  // Everyone else keeps one plain row; hourly staff get the three groups.
+  const groups = hourlyStaff ? HOURLY_GROUPS : [{ heading: '', tone: 'none' as const, types: LEAVE_TYPES }];
+  // The small dot before each heading: vacation and sick in their own colours.
+  const dot = { vacation: theme.palette.primary.main, sick: theme.palette.warning.main, none: theme.tokens.line2 };
   return (
     <Box>
       <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }} id="leave-type-label">Type of leave</Typography>
-      <Box role="group" aria-labelledby="leave-type-label" sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-        {LEAVE_TYPES.map((t) => {
+      <Box role="group" aria-labelledby="leave-type-label" sx={{ display: 'grid', gap: 1.25 }}>
+        {groups.map((g) => (
+          <Box key={g.heading || 'all'} sx={{ display: 'grid', gap: 0.75 }}>
+            {g.heading && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: dot[g.tone] }} />
+                {g.heading}
+              </Typography>
+            )}
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+        {g.types.map((t) => {
           const on = value === t;
           return (
             <ButtonBase
@@ -140,6 +175,9 @@ function LeaveChips({ value, onPick }: { value: string; onPick: (t: string) => v
             </ButtonBase>
           );
         })}
+            </Box>
+          </Box>
+        ))}
       </Box>
     </Box>
   );
@@ -155,7 +193,7 @@ const ROW2 = { display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1f
  * @param props - See {@link Props}.
  * @returns The form fields, without a submit button.
  */
-export default function RequestForm({ type, values: v, onChange, hourlyBc = false }: Props) {
+export default function RequestForm({ type, values: v, onChange, hourlyStaff = false }: Props) {
   /** A change handler for one field. @param key - The field. */
   const field = (key: keyof RequestValues) =>
     (e: React.ChangeEvent<HTMLInputElement>) => onChange(key, e.target.value);
@@ -165,12 +203,13 @@ export default function RequestForm({ type, values: v, onChange, hourlyBc = fals
     const partial = v.leave_type === PARTIAL_DAY;
     return (
       <Stack spacing={2}>
-        <LeaveChips value={v.leave_type} onPick={(t) => onChange('leave_type', t)} />
-        {/* Shown with the leave types for everyone: sick is never part of a day. */}
-        <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>Sick days are taken in full days only.</Typography>
-        {/* For BC hourly a part day still costs one whole sick day, so say so under the picker (#300). */}
-        {partial && hourlyBc && (
-          <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>Uses one whole sick day.</Typography>
+        <LeaveChips value={v.leave_type} onPick={(t) => onChange('leave_type', t)} hourlyStaff={hourlyStaff} />
+        {/* Hourly staff: one line says what the picked type does (#300). Everyone
+            else keeps the shared note: sick is never part of a day. */}
+        {hourlyStaff && HOURLY_EXPLAIN[v.leave_type] ? (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>{HOURLY_EXPLAIN[v.leave_type]}</Typography>
+        ) : (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>Sick days are taken in full days only.</Typography>
         )}
         <Box sx={ROW2}>
           <TextField label={<Swap k={partial ? 'date' : 'first'}>{partial ? 'Date' : 'First day away'}</Swap>} required {...dateProps}

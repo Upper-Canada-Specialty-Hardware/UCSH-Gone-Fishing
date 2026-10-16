@@ -26,7 +26,7 @@ from app.services.employee import (
     map_location_to_province,
 )
 from app.services.balance import recalculate_request_allow_date
-from app.services.employment import HOURLY, HOURLY_BC, SALARY
+from app.services.employment import HOURLY, HOURLY_BC, HOURLY_TYPES, SALARY
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.manager_assignments import update_employee_managers
 
@@ -109,7 +109,7 @@ def build_employee_fields(form_data: dict) -> dict:
 
     vacation_entitlement = _num(form_data.get("vacation_entitlement"), "Yearly vacation entitlement")
     sick_entitlement = _num(form_data.get("sick_entitlement"), "Sick day entitlement")
-    if salary_hourly == HOURLY_BC:                     # BC hourly have no vacation (#300)
+    if salary_hourly in HOURLY_TYPES:                  # hourly staff have no vacation (#300)
         if vacation_entitlement < 0:
             raise EmployeeValidationError("Yearly vacation entitlement cannot be below zero.")
     elif vacation_entitlement <= 0:

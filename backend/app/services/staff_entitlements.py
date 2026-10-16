@@ -24,7 +24,7 @@ from app.graph.sharepoint import sp_client
 from app.services import staff_changes
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
-from app.services.employment import HOURLY_BC
+from app.services.employment import HOURLY_TYPES
 from app.services.employee import (
     _get_sp_user_name_map,
     get_employee_by_id,
@@ -217,7 +217,7 @@ def plan_changes(current_fields: dict, requested: dict, employment_type: str | N
     changes: list[dict] = []                         # accumulates only real diffs
     if employment_type is None:                      # same save did not change the type
         employment_type = current_fields.get("SalaryHourly")
-    bc = (employment_type or "").strip() == HOURLY_BC  # BC hourly: 0 vacation grant is valid
+    bc = (employment_type or "").strip() in HOURLY_TYPES  # hourly: 0 vacation grant is valid
     for key, raw in requested.items():               # one pass over the request
         if key not in EDITABLE:                      # guard against stray keys
             raise ValueError(f"'{key}' is not a field that can be changed.")
@@ -580,7 +580,7 @@ async def apply_entitlement_changes(
         name = current.get("Title", "")              # person's display name
 
         # The type this record will have after the save decides whether a zero
-        # vacation entitlement is allowed (BC hourly, #300).
+        # vacation entitlement is allowed (hourly, #300).
         pot_changes = plan_changes(current, requested, fields_in.get("salary_hourly"))  # may raise
         # Resolve the "before" people from the pre-read map (no Graph call here).
         before_people = _resolve_before_people(current, fields_in, id_to_name)

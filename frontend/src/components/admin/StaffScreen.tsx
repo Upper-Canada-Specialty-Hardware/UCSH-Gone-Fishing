@@ -11,7 +11,7 @@ import { EmployeeSetupSummary } from '../EmployeeSetupList';
 import { ManagerOption } from '../AddEmployee';
 import { getManagerAssignments, getSpUsers } from '../../api/client';
 import { getStaffRecord, StaffRecord } from '../../api/staff';
-import { isHourlyBc } from '../../utils/employment';
+import { isHourly } from '../../utils/employment';
 import { Enter } from '../Motion';
 import PersonProfile from './PersonProfile';
 import StaffExportDialog, { ExportPerson } from './StaffExportDialog';
@@ -31,10 +31,10 @@ interface Person {
   managers: string[] | null;
 }
 
-/** A person is below zero in any pot that is a floor for them. BC hourly have
+/** A person is below zero in any pot that is a floor for them. Hourly staff have
  *  only Sick; everyone else can go negative on vacation too (#300). */
 const isBelowZero = (p: Person) =>
-  isHourlyBc(p.balances)
+  isHourly(p.balances)
     ? (p.balances?.sick_balance ?? 0) < 0
     : ['vacation_balance', 'sick_balance', 'overtime', 'carryover'].some((k) => (p.balances?.[k] ?? 0) < 0);
 
@@ -356,8 +356,8 @@ function StaffTable({ people, rows, problemsById, onOpen, theme }: {
             <Typography variant="caption" color="text.secondary">{p.department || 'No department'} · {p.location || 'No location'}</Typography>
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5, mt: 1 }}>
               {([['Vacation', 'vacation_balance'], ['Sick', 'sick_balance'], ['Make-up', 'overtime'], ['Carry-over', 'carryover']] as [string, string][]).map(([label, k]) => {
-                const bc = isHourlyBc(p.balances);
-                // BC hourly: Vacation reads as a counter, Make-up/Carry-over do not apply (#300).
+                const bc = isHourly(p.balances);
+                // hourly: Vacation reads as a counter, Make-up/Carry-over do not apply (#300).
                 if (bc && k === 'vacation_balance') {
                   return (
                     <Typography key={k} variant="body2" title="Vacation taken this year. Counted, not a balance.">
@@ -418,8 +418,8 @@ function StaffTable({ people, rows, problemsById, onOpen, theme }: {
               )}
               {([['vacation_balance', true], ['sick_balance', true], ['overtime', showMakeUp], ['carryover', showCarryOver]] as [string, boolean][]).map(([k, show]) => {
                 if (!show) return null;
-                const bc = isHourlyBc(p.balances);
-                // BC hourly: Vacation is a counter ("N taken"); Make-up and Carry-over do not apply (#300).
+                const bc = isHourly(p.balances);
+                // hourly: Vacation is a counter ("N taken"); Make-up and Carry-over do not apply (#300).
                 if (bc && k === 'vacation_balance') {
                   return (
                     <TableCell key={k} align="right" title="Vacation taken this year. Counted, not a balance." sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>

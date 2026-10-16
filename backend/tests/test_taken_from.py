@@ -186,18 +186,19 @@ def test_pending_overtime_projection_rounds_to_three_decimals():
     assert result["pieces"] == [{"pot": "make_up", "days": 0.625, "year": None}]
 
 
-def test_pending_hourly_vacation_is_none():
+def test_pending_hourly_vacation_is_counted():
+    # Hourly vacation is a count of days taken, not a balance, wherever they work.
     item = {"Status": "Pending", "LeaveType": "Vacation", "StartDate": "2026-11-02", "EndDate": "2026-11-06", "Days": 5}
-    assert taken_from_for(item, "leave", HOURLY, TODAY) == {"state": "none", "pieces": []}
+    assert taken_from_for(item, "leave", HOURLY, TODAY) == {"state": "counted", "pieces": [], "counted_days": 5.0}
 
 
 # ---------------------------------------------------------------------------
 # Pure function: none / unrecorded / refunded
 # ---------------------------------------------------------------------------
 
-def test_approved_hourly_vacation_is_none():
-    item = {"Status": "Approved", "LeaveType": "Vacation", "ApprovedDate": "2026-11-02"}
-    assert taken_from_for(item, "leave", HOURLY, TODAY) == {"state": "none", "pieces": []}
+def test_approved_hourly_vacation_is_counted():
+    item = {"Status": "Approved", "LeaveType": "Vacation", "ApprovedDate": "2026-11-02", "Days": 2}
+    assert taken_from_for(item, "leave", HOURLY, TODAY) == {"state": "counted", "pieces": [], "counted_days": 2.0}
 
 
 def test_bereavement_is_none():

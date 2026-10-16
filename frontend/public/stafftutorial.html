@@ -632,7 +632,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
 .pbnote a { color: inherit; font-weight: 700; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pbnote { background: #2a2206; color: #f6d98a; border-color: #5c4a12; } }
 :root[data-theme="dark"] .pbnote { background: #2a2206; color: #f6d98a; border-color: #5c4a12; }
-.pill.count { background: var(--chip); color: var(--muted); }   /* neutral "vacation counted" chip (BC hourly) */
+.pill.count { background: var(--chip); color: var(--muted); }   /* neutral "vacation counted" chip (hourly) */
 </style>
 
 <div class="pbanner" role="note" aria-label="Practice copy notice">
@@ -650,7 +650,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
 <div class="review" role="region" aria-label="Practice copy">
   <span class="rvmsg"><b>Practice copy.</b> Example data; nothing is sent or saved.</span>
   <span class="pa">Practise as</span>
-  <span class="seg" role="group" aria-label="Practise as"><button type="button" data-visit="out" aria-pressed="true">Signed out</button><button type="button" data-visit="avery" aria-pressed="false">Avery (staff)</button><button type="button" data-visit="sam" aria-pressed="false">Sam (staff and manager)</button><button type="button" data-visit="jamie" aria-pressed="false" title="hourly, British Columbia">Jamie (BC hourly)</button><button type="button" data-visit="jordan" aria-pressed="false" title="new starter, no work email yet">Jordan (new starter)</button></span>
+  <span class="seg" role="group" aria-label="Practise as"><button type="button" data-visit="out" aria-pressed="true">Signed out</button><button type="button" data-visit="avery" aria-pressed="false">Avery (staff)</button><button type="button" data-visit="sam" aria-pressed="false">Sam (staff and manager)</button><button type="button" data-visit="jamie" aria-pressed="false" title="hourly, British Columbia">Jamie (hourly)</button><button type="button" data-visit="jordan" aria-pressed="false" title="new starter, no work email yet">Jordan (new starter)</button></span>
   <span class="addr" id="addr"></span>
   <span class="pa">Animations</span>
   <span class="seg" id="animSeg" role="group" aria-label="Animations" title="On plays animations even when your computer (or Remote Desktop) asks for less motion"><button type="button" data-anim-mode="auto" aria-pressed="true">Auto</button><button type="button" data-anim-mode="on" aria-pressed="false">On</button></span>
@@ -679,7 +679,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   var COLORS = ['#2f6f5e', '#d06b4f', '#3d5a80', '#b8892f', '#8e5572', '#4f8a8b', '#a0563c', '#5e6b8c'];
   var STAFF = [
     { id: 1, name: 'Avery Example', email: 'avery.example@ucsh.com', dept: 'Warehouse', loc: 'British Columbia', etype: 'Full Time', mgrs: ['Sam Supervisor', 'Pat Manager'], vac: 4.5, sick: 3, mu: 1, co: 0, vacY: 10, sickY: 5 },
-    { id: 2, name: 'Jamie Sample', email: 'jamie.sample@ucsh.com', dept: 'Sales', loc: 'British Columbia', etype: 'Hourly BC', mgrs: ['Lee Lead'], vac: 0, sick: 2, mu: 0, co: 0, vacY: 0, sickY: 5, vacTaken: 3 },
+    { id: 2, name: 'Jamie Sample', email: 'jamie.sample@ucsh.com', dept: 'Sales', loc: 'British Columbia', etype: 'Hourly', mgrs: ['Lee Lead'], vac: 0, sick: 2, mu: 0, co: 0, vacY: 0, sickY: 5, vacTaken: 3 },
     { id: 3, name: 'Casey Demo', email: 'casey.demo@ucsh.com', dept: 'Install', loc: 'Ottawa', mgrs: [], vac: 9, sick: 5, mu: 0, co: 2, vacY: 15, sickY: 5 },
     { id: 4, name: 'Morgan Placeholder', email: 'morgan.p@ucsh.com', dept: 'Office', loc: 'Leaside', mgrs: ['Pat Manager', 'Lee Lead'], vac: 12, sick: 5, mu: 2, co: 3, vacY: 15, sickY: 5 },
     { id: 5, name: 'Taylor Mock', email: 'taylor.mock@ucsh.com', dept: 'Warehouse', loc: 'British Columbia', mgrs: ['Sam Supervisor'], vac: 7, sick: 4, mu: 0, co: 1, vacY: 10, sickY: 5 },
@@ -759,7 +759,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   // A history row's chips, by kind. Rejected takes nothing; carry-over/payout move vacation into the pot.
   function histSegs(r) {
     if (r.status === 'Rejected') return [];                     // rejected: nothing taken
-    var pr = person(r.who);                                     // BC hourly: vacation is only counted, sick is whole days (#300)
+    var pr = person(r.who);                                     // hourly: vacation is only counted, sick is whole days (#300)
     if (isBC(pr) && (r.kind === 'Vacation' || r.kind === 'Half day')) return r.days ? [{ cls: 'count', amt: tfNum(r.days), label: 'vacation counted' }] : [];
     if (r.kind === 'Overtime') return [{ cls: 'ot', amt: '+' + tfNum((r.hours || 0) / 8), label: 'added to Make-Up' }];
     if (r.kind === 'Payout') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'pay', amt: '', label: '→ ' + TF_YEAR + ' payout' }];
@@ -797,13 +797,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
   function numCell(v) { return '<td class="num' + (v < 0 ? ' neg' : '') + '">' + v + '</td>'; }
   function person(name) { return STAFF.filter(function (p) { return p.name === name; })[0]; }
-  // BC hourly employees have one balance (Sick); vacation is only a counter, no Make-Up/Carry-over/Payout. (#300)
-  function isBC(p) { return !!(p && p.etype === 'Hourly BC'); }
+  // hourly employees have one balance (Sick); vacation is only a counter, no Make-Up/Carry-over/Payout. (#300)
+  function isBC(p) { return !!(p && (p.etype === 'Hourly' || p.etype === 'Hourly BC')); }   // every hourly person (#300)
   // A red line when approving a request would push a balance below zero. It never blocks approval. (#300)
   function belowZeroNote(next) {
     if (!next) return '';                                       // no projected balances: nothing to warn about
     for (var k in next) {                                       // the first pot that ends negative drives the message
-      if (next[k] < 0) return '<div class="note" style="background:var(--err-soft);color:var(--err)">Approving this takes ' + k + ' below zero, to ' + num(next[k]) + ' days. You can still approve it; that is the manager\'s call.</div>';
+      if (next[k] < 0) return '<div class="note" style="background:var(--err-soft);color:var(--err)">Approving this takes ' + k + ' below zero, to ' + num(next[k]) + ' days. It can still be approved; that is the manager\'s call.</div>';
     }
     return '';
   }
@@ -1189,13 +1189,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<p class="small muted" style="margin:4px 0 0">Sick days are taken in full days only.</p>';   // whole-day sick rule, for everyone (#300)
       var me = employee ? person(s.session) : null;
       if (employee && isBC(me)) {
-        // BC hourly: one Sick balance. Sick and part days both take whole sick days (a part day = one whole day) and may go below zero. Vacation is only counted.
+        // hourly: one Sick balance. Sick and part days both take whole sick days (a part day = one whole day) and may go below zero. Vacation is only counted.
         var wdB = workdays(s.start, partial ? s.start : s.end, me.loc);   // working days, holidays removed
         var bcNotes = [];
         if (!partial && wdB.skipped.length) bcNotes.push(wdB.skipped.join(', ') + ' is a company holiday and is not counted.');
         if (s.leave === 'Vacation') {
           // Vacation is a counter, not a balance: it goes up by the working days, never blocks, resets in January.
-          bcNotes.push('Vacation is counted for BC hourly, not a balance. It only goes up and resets each January.');
+          bcNotes.push('Vacation is counted for hourly staff, not a balance. It only goes up and resets each January.');
           f += preview(me, [['Working days', wdB.n]], [], bcNotes.join(' '), '', [{ cls: 'count', amt: tfNum(wdB.n), label: 'vacation counted' }]);
         } else if (s.leave === 'Sick or Personal Day' || partial) {
           // Whole sick days: a full-day request spends the working days, a part day spends one whole day.
@@ -1246,11 +1246,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', refused3 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '', coSegs, refused3);
       }
     }
-    // Carry-over and payout are open in the practice copy; a BC hourly person has no vacation balance to move. (#300)
+    // Carry-over and payout are open in the practice copy; an hourly person has no vacation balance to move. (#300)
     var meCo = s.session ? person(s.session) : null;             // the signed-in person, if any
     return '<div class="field">What do you need?<div class="types">' + RTYPES.map(function (t) {
-      // BC hourly: there is no vacation balance, so carry-over and payout stay disabled with a clear reason.
-      if (t[0] === 'carryover-payout' && isBC(meCo)) return '<button class="type off" type="button" disabled aria-disabled="true"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>Not for BC hourly. You have no vacation balance to move.</span></button>';
+      // hourly: there is no vacation balance, so carry-over and payout stay disabled with a clear reason.
+      if (t[0] === 'carryover-payout' && isBC(meCo)) return '<button class="type off" type="button" disabled aria-disabled="true"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>Not for hourly staff. You have no vacation balance to move.</span></button>';
       return '<button class="type" type="button" data-rpt="' + t[0] + '" aria-pressed="' + (s.type === t[0]) + '"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>' + t[2] + '</span></button>';
     }).join('') + '</div></div>' + f;
   }
@@ -1292,7 +1292,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       r.from = a; if (b && (b[0] !== a[0] || b[1] !== a[1])) r.to = b;
       r.when = a[0] + ' ' + a[1] + (r.to ? ' to ' + b[0] + ' ' + b[1] : '') + (partial ? ' (' + s.hours + ' h)' : ''); r.days = n;
       if (isBC(me)) {
-        // BC hourly: sick and part days spend whole sick days (may go below zero); vacation is only counted. (#300)
+        // hourly: sick and part days spend whole sick days (may go below zero); vacation is only counted. (#300)
         r.bc = true;
         if (s.leave === 'Sick or Personal Day' || partial) { var sdN = partial ? 1 : workdays(s.start, s.end, me.loc).n; r.days = sdN; r.cur = { Sick: me.sick }; r.next = { Sick: me.sick - sdN }; }
       } else {
@@ -1441,7 +1441,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           act: function () { fillCode('482913'); } },
         { title: 'Land on My requests', target: '.pots5',
           todo: 'This is your home page. Check your balances, and see every request with its status.',
-          know: 'Your five balances are Vacation, Sick or personal, Make-Up, Carry Over and Payout, all counted in days. BC hourly staff instead have one Sick balance, with vacation only counted; try the Jamie (BC hourly) button to see it.',
+          know: 'Your five balances are Vacation, Sick or personal, Make-Up, Carry Over and Payout, all counted in days. hourly staff instead have one Sick balance, with vacation only counted; try the Jamie (hourly) button to see it.',
           enter: function () { tAs('Avery Example', 'employee'); } },
         { title: 'Start a new request', target: '[data-act="request"]',
           todo: 'Select <b>Make a request</b>, then pick a form: Leave, Overtime, or Carry-over or payout.',
@@ -1888,7 +1888,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var base = JSON.parse(RP_BASE);
     state.flow = null; state.modal = null; state.created = null; state.sel = null; state.reqSel = null; state.after = null;
     if (v === 'out') { state.rp = base; state.role = 'request'; }
-    if (v === 'avery' || v === 'sam' || v === 'jamie') { var n = v === 'avery' ? 'Avery Example' : v === 'jamie' ? 'Jamie Sample' : 'Sam Supervisor'; state.rp = mix(base, { session: n, email: person(n).email, step: 'form' }); state.role = 'employee'; state.etab = 'overview'; }   // Jamie signs in as a BC hourly employee (#300)
+    if (v === 'avery' || v === 'sam' || v === 'jamie') { var n = v === 'avery' ? 'Avery Example' : v === 'jamie' ? 'Jamie Sample' : 'Sam Supervisor'; state.rp = mix(base, { session: n, email: person(n).email, step: 'form' }); state.role = 'employee'; state.etab = 'overview'; }   // Jamie signs in as an hourly employee (#300)
     if (v === 'jordan') { state.rp = mix(base, NEWHIRE); state.role = 'request'; }
     if (v === 'admin') { state.rp = base; state.role = 'admin'; state.screen = 'home'; }
     render(); window.scrollTo(0, 0);
@@ -2023,7 +2023,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td>' + tfPills(histSegs(r)) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
     }
     var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + (of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : '') + '<div class="chg">' + note + '</div></div>'; };
-    // BC hourly: one Sick balance, and vacation as a counted total (not a balance). No Make-Up/Carry-over/Payout. (#300)
+    // hourly: one Sick balance, and vacation as a counted total (not a balance). No Make-Up/Carry-over/Payout. (#300)
     var pots = isBC(p)
       ? pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Vacation taken', p.vacTaken || 0, 'days, this year. Counted, not a balance.')
       : pot('Vacation', p.vac, 'left of ' + p.vacY + ' days this year', p.vacY) + pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') + pot('Carry Over', p.co, 'used before vacation, cleared April 1 (in 174 days)') + pot('Payout', p.po || 0, 'days set aside to be paid out');

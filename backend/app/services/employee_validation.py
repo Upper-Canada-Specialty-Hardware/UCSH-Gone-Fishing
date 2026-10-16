@@ -56,7 +56,7 @@ from app.services.employee import (
     map_location_to_province,
     resolve_person_field,
 )
-from app.services.employment import is_hourly_bc
+from app.services.employment import is_hourly
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.overlap_detection import _extract_lookup_id
 from app.services.holidays import get_holidays_for_province, get_half_friday_season
@@ -557,9 +557,9 @@ def build_validation_report(
     # --- Yearly entitlements are set ---
     # These drive what an employee is granted; a zero here is almost always an
     # unfinished record rather than a deliberate value.
-    # BC hourly (#300) have no vacation, so a zero vacation grant is right for
+    # hourly (#300) have no vacation, so a zero vacation grant is right for
     # them and only their sick grant is checked.
-    entitlement_fields = (("sick", "SickDayEntitlement"),) if is_hourly_bc(employee_fields) else (
+    entitlement_fields = (("sick", "SickDayEntitlement"),) if is_hourly(employee_fields) else (
         ("yearly vacation", "DefaultYearlyVacationDays"),
         ("sick", "SickDayEntitlement"),
     )
@@ -573,7 +573,7 @@ def build_validation_report(
         actual=len(entitlement_fields) - len(missing_entitlements),
         expected=len(entitlement_fields), comparison="equals",
         ok_detail=(
-            "The sick entitlement is set (BC hourly have no vacation entitlement)."
+            "The sick entitlement is set (hourly staff have no vacation entitlement)."
             if len(entitlement_fields) == 1 else
             "Both the yearly vacation and sick entitlements are set."
         ),

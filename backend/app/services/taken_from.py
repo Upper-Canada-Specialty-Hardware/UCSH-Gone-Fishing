@@ -25,7 +25,7 @@ from app.services.audit_trail import extract_approval_deltas
 from app.services.employment import (
     VACATION,
     floor_warning,
-    is_hourly_bc,
+    is_hourly,
     leave_costs_balance,
     overtime_costs_balance,
 )
@@ -151,7 +151,7 @@ def _costs_balance(item_fields: dict, request_type: str, employee_fields: dict |
     Returns:
         True when a balance pot moves; False for the no-cost cases.
     """
-    # The per-type rules (salaried, Ontario hourly, BC hourly) live in
+    # The per-type rules (salaried, hourly) live in
     # services/employment.py; unknown person -> the salaried rule.
     if request_type == "leave":
         return leave_costs_balance(employee_fields, item_fields.get("LeaveType", ""))
@@ -252,9 +252,9 @@ def _pieces_from_deltas(deltas: dict[str, float], change_day: date) -> list[dict
 
 
 def _is_counted(item_fields: dict, request_type: str, employee_fields: dict | None, status: str) -> bool:
-    """Whether this row is a BC hourly vacation that only adds to the counter.
+    """Whether this row is an hourly vacation that only adds to the counter.
 
-    An approval from before #300 (when BC hourly were run as salaried) still has
+    An approval from before #300 (when hourly were run as salaried) still has
     an audit log of real movements, and keeps showing those instead.
 
     Args:
@@ -264,9 +264,9 @@ def _is_counted(item_fields: dict, request_type: str, employee_fields: dict | No
         status: The request's trimmed Status.
 
     Returns:
-        True for a pending or approved BC hourly vacation with no recorded movement.
+        True for a pending or approved hourly vacation with no recorded movement.
     """
-    if request_type != "leave" or not is_hourly_bc(employee_fields):
+    if request_type != "leave" or not is_hourly(employee_fields):
         return False
     if item_fields.get("LeaveType", "") != VACATION or status not in ("Pending", "Approved"):
         return False
@@ -307,10 +307,10 @@ def taken_from_for(
     if status in ("Rejected", "Cancelled"):            # a decision that moved nothing
         return _none()
     if _is_counted(item_fields, request_type, employee_fields, status):
-        # BC hourly vacation (#300): added to the days-taken counter, no pot moves.
+        # hourly vacation (#300): added to the days-taken counter, no pot moves.
         return {"state": "counted", "pieces": [], "counted_days": round(_num(item_fields.get("Days")), 3)}
     # A no-cost kind moved nothing, unless it was approved under an older rule
-    # that did move balances (BC hourly before #300): then show what it did.
+    # that did move balances (hourly before #300): then show what it did.
     moved_before = status in ("Approved", "Refunded") and extract_approval_deltas(
         item_fields.get("BalanceAuditLog", "") or "", BALANCE_KEYS,
     ) is not None
@@ -338,7 +338,7 @@ def taken_from_for(
         return {
             "state": "projected",
             "pieces": _pieces_from_deltas(deltas, today),
-            # Set when approving takes the floor (sick for BC hourly, vacation
+            # Set when approving takes the floor (sick for hourly, vacation
             # otherwise) below zero, so the chip can turn red (#300).
             "below_zero": floor_warning(employee_fields, projected),
         }

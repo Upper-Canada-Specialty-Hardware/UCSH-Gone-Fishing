@@ -44,7 +44,7 @@
   {% endif %}
 </table>
 {% if floor_warning %}
-{#- red notice: approving takes the floor (sick for BC hourly, vacation otherwise) below zero -#}
+{#- red notice: approving takes the floor (sick for hourly, vacation otherwise) below zero -#}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;margin:16px 0;">
   <tr>
     <td bgcolor="#fef2f2" style="background:#fef2f2;padding:12px 16px;border-left:4px solid #b91c1c;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#991b1b;">
@@ -57,8 +57,8 @@
 {% if emp_fields %}
 <h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Current Balances</h3>
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
-  {% if hourly_bc %}
-  {#- BC hourly (#300): sick is their only balance -#}
+  {% if hourly %}
+  {#- hourly (#300): sick is their only balance -#}
   {{ ui.row('Sick/Personal:', emp_fields.get('CurrentSickDayBalance', 0) ~ ' days') }}
   {% else %}
   {{ ui.row('Vacation:', emp_fields.get('CurrentVacationBalance', 0) ~ ' days') }}
@@ -71,7 +71,7 @@
 <h3 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:bold;margin:20px 0 8px;">Projected Balances (if approved)</h3>
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
   {% set floor_red = 'color:#b91c1c;font-weight:bold;' %}
-  {% if hourly_bc %}
+  {% if hourly %}
   {{ ui.row('Sick/Personal:', projected.CurrentSickDayBalance ~ ' days', floor_red if floor_warning else '') }}
   {% else %}
   {{ ui.row('Vacation:', projected.CurrentVacationBalance ~ ' days', floor_red if floor_warning else '') }}
@@ -80,8 +80,8 @@
   {{ ui.row('Make-Up:', projected.CurrentOvertimeBalance ~ ' days') }}
   {% endif %}
 </table>
-{% elif hourly_bc and fields.get('LeaveType') == 'Vacation' %}
-<p style="color:#6b6257;font-style:italic;margin:8px 0 0;">BC hourly: this vacation is counted as days taken this year. No balance is used.</p>
+{% elif hourly and fields.get('LeaveType') == 'Vacation' %}
+<p style="color:#6b6257;font-style:italic;margin:8px 0 0;">hourly: this vacation is counted as days taken this year. No balance is used.</p>
 {% else %}
 <p style="color:#6b6257;font-style:italic;margin:8px 0 0;">No balance change for this leave type.</p>
 {% endif %}

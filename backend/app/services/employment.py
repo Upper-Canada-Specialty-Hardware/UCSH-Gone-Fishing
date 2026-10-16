@@ -1,30 +1,32 @@
 """Employment types and the balance rules each one follows (#300).
 
-The Staff Directory's SalaryHourly column holds one of three values, and each
-one spends balances differently:
+The Staff Directory's SalaryHourly column holds one of three values, and they
+follow two sets of rules:
 
 - ``Salary``: every pot, with the Sick -> Make-Up -> Carry-over -> Vacation
   cascade. Vacation is the floor and may go below zero.
-- ``Hourly`` (Ontario hourly): only a sick day moves a balance; vacation, part
-  days and overtime change nothing.
-- ``Hourly BC``: sick is the only balance and the floor. A sick day or a part day
-  takes whole sick days from it and never overflows into another pot, so sick
-  may go below zero. Vacation is not a balance at all: it is a counter of days
-  taken this calendar year, worked out from approved requests.
+- ``Hourly`` and ``Hourly BC`` (every hourly employee, wherever they work):
+  sick is the only balance and the floor. A sick day or a part day takes whole
+  sick days from it and never overflows into another pot, so sick may go below
+  zero. Vacation is not a balance at all: it is a counter of days taken this
+  calendar year, worked out from approved requests. Overtime banks nothing.
 
+The rules were first agreed for BC hourly staff and then applied to all hourly
+staff (product owner, 2026-10-16), so "Hourly BC" is only a location detail now.
 Every place that used to test ``SalaryHourly == "Hourly"`` asks this module
-instead, so the three rules live in one spot. Everything here is pure (no I/O).
+instead, so the rules live in one spot. Everything here is pure (no I/O).
 """
 
 import math
 
 SALARY = "Salary"            # salaried: the full cascade
-HOURLY = "Hourly"            # Ontario hourly: sick only, overflow unchanged
-HOURLY_BC = "Hourly BC"      # BC hourly: sick only, no overflow, vacation counted
+HOURLY = "Hourly"            # hourly: sick only, no overflow, vacation counted
+HOURLY_BC = "Hourly BC"      # older value for hourly staff in BC: same rules
+HOURLY_TYPES = (HOURLY, HOURLY_BC)
 
-VACATION = "Vacation"                       # leave kind counted for Hourly BC
+VACATION = "Vacation"                       # leave kind counted for hourly staff
 SICK_LEAVE = "Sick or Personal Day"         # spends sick for everyone
-PARTIAL_DAY = "Half Day or Partial Day Off" # Hourly BC: a whole sick day
+PARTIAL_DAY = "Half Day or Partial Day Off" # hourly: a whole sick day
 NO_COST_LEAVE = ("Bereavement", "Jury Duty")  # never touch a balance
 
 # The column each type's floor lives in, and its wire pot name.
@@ -44,28 +46,16 @@ def employment_type(fields: dict | None) -> str:
     return str((fields or {}).get("SalaryHourly") or "").strip()  # None -> ""
 
 
-def is_hourly_bc(fields: dict | None) -> bool:
-    """Whether the person is BC hourly (sick only, vacation counted).
+def is_hourly(fields: dict | None) -> bool:
+    """Whether the person is hourly (sick only, vacation counted).
 
     Args:
         fields: Staff Directory fields, or None.
 
     Returns:
-        True for "Hourly BC".
+        True for "Hourly" and "Hourly BC", wherever the person works.
     """
-    return employment_type(fields) == HOURLY_BC
-
-
-def is_hourly_on(fields: dict | None) -> bool:
-    """Whether the person is Ontario hourly (plain "Hourly").
-
-    Args:
-        fields: Staff Directory fields, or None.
-
-    Returns:
-        True for "Hourly" only, not "Hourly BC".
-    """
-    return employment_type(fields) == HOURLY
+    return employment_type(fields) in HOURLY_TYPES
 
 
 def leave_costs_balance(fields: dict | None, leave_type: str) -> bool:
@@ -77,16 +67,14 @@ def leave_costs_balance(fields: dict | None, leave_type: str) -> bool:
         leave_type: The request's LeaveType.
 
     Returns:
-        False for bereavement and jury duty; for Ontario hourly, False unless
-        it is a sick day; for BC hourly, False unless it is a sick or part day
-        (their vacation is counted, not spent); True otherwise.
+        False for bereavement and jury duty; for hourly staff, False unless it
+        is a sick or part day (their vacation is counted, not spent); True
+        otherwise.
     """
     if leave_type in NO_COST_LEAVE:                       # nobody pays for these
         return False
-    if is_hourly_bc(fields):                              # sick pot only
+    if is_hourly(fields):                                 # sick pot only
         return leave_type in (SICK_LEAVE, PARTIAL_DAY)
-    if is_hourly_on(fields):                              # sick day only
-        return leave_type == SICK_LEAVE
     return True                                           # salaried: every other kind
 
 
@@ -97,13 +85,13 @@ def overtime_costs_balance(fields: dict | None) -> bool:
         fields: The submitter's Staff Directory fields, or None.
 
     Returns:
-        False for both hourly types (paid, not banked); True for salaried.
+        False for hourly staff (paid, not banked); True for salaried.
     """
-    return not (is_hourly_on(fields) or is_hourly_bc(fields))
+    return not is_hourly(fields)
 
 
 def whole_sick_days(days: float) -> float:
-    """The sick days a BC hourly request takes: always whole days, rounded up.
+    """The sick days an hourly request takes: always whole days, rounded up.
 
     A part day still uses a full sick day, and a stray fraction on a sick
     request rounds up too, so the sick pot only ever moves in whole days.
@@ -126,9 +114,9 @@ def floor_field(fields: dict | None) -> str:
         fields: Staff Directory fields, or None.
 
     Returns:
-        The sick column for BC hourly; the vacation column for everyone else.
+        The sick column for hourly; the vacation column for everyone else.
     """
-    return SICK_FIELD if is_hourly_bc(fields) else VACATION_FIELD
+    return SICK_FIELD if is_hourly(fields) else VACATION_FIELD
 
 
 def _num(value) -> float:
@@ -184,12 +172,12 @@ def floor_warning_text(warning: dict | None) -> str:
     label = "Sick" if warning["pot"] == "sick" else "Vacation"
     return (
         f"Approving this takes {label} below zero, to {warning['after']:g} days. "
-        "You can still approve it; that is the manager's call."
+        "It can still be approved; that is the manager's call."
     )
 
 
 def vacation_days_counted(leave_rows: list[dict], year: int) -> float:
-    """Vacation days one BC hourly person has taken in a calendar year.
+    """Vacation days one hourly person has taken in a calendar year.
 
     Counts approved Vacation requests whose start date is in ``year``. Nothing
     is stored: the counter is rebuilt from the requests each time, so it only

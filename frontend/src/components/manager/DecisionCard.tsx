@@ -8,7 +8,7 @@ import { Clash } from './teamStats';
 import { askedAgo, daysWaiting, requestAmount, requestKind, requestNote, requestWhat, requestWhen, requestWho } from '../../utils/requestText';
 import { BalanceMeter } from './Charts';
 import { Swap, riseAt } from '../Motion';
-import { belowZeroSentence, isHourlyBc } from '../../utils/employment';
+import { belowZeroSentence, isHourly } from '../../utils/employment';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -69,7 +69,7 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
   const note = requestNote(item);
   const waited = daysWaiting(item);
   const cur = item.current_balances, next = item.projected_balances;
-  const hourlyBc = isHourlyBc(cur);                                             // BC hourly: Sick only, no vacation balance (#300)
+  const hourlyStaff = isHourly(cur);                                             // hourly: Sick only, no vacation balance (#300)
   const belowZero = item.below_zero;                                            // set when approving drops the floor below zero (#300)
   const dated = item.request_type !== 'carryover-payout' && item.StartDate;     // carry-over has no dates
   const sameDay = !item.EndDate || item.EndDate.slice(0, 10) === item.StartDate?.slice(0, 10);
@@ -124,8 +124,8 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
         <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>{item.balance_unchanged}</Typography>
       ) : next && (
         <Box sx={{ display: 'grid', gap: 1 }}>
-          {/* Show every pot that moves; Vacation is always shown too, except for BC hourly who have no vacation balance (#300). */}
-          {POTS.filter((p) => (cur[p.key] ?? 0) !== (next[p.key] ?? 0) || (p.key === 'vacation_balance' && !hourlyBc)).map((p) => (
+          {/* Show every pot that moves; Vacation is always shown too, except for hourly who have no vacation balance (#300). */}
+          {POTS.filter((p) => (cur[p.key] ?? 0) !== (next[p.key] ?? 0) || (p.key === 'vacation_balance' && !hourlyStaff)).map((p) => (
             <Box key={p.key} sx={{ display: 'grid', gridTemplateColumns: '86px minmax(0, 1fr) auto', gap: 1.5, alignItems: 'center' }}>
               <Typography variant="body2" color="text.secondary">{p.label}</Typography>
               <BalanceMeter cur={cur[p.key] ?? 0} next={next[p.key] ?? 0} max={p.of ? cur[p.of] ?? 0 : 5} />

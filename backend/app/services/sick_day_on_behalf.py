@@ -8,7 +8,7 @@ What gets written is an ordinary leave request, LeaveType "Sick or Personal
 Day", created in the Leave Requests list like every other request, which is
 then approved through ``approve_leave_request``, the same handler behind the
 email link, the SMS reply and the dashboard Approve button. The balance
-deduction (for BC hourly, whole sick days from sick only, which may go below
+deduction (for hourly, whole sick days from sick only, which may go below
 zero; for salaried staff, the usual cascade), the exactly-once claim, the
 per-employee lock, the audit log and the employee's confirmation emails are
 therefore all the existing ones; nothing here touches a balance directly.

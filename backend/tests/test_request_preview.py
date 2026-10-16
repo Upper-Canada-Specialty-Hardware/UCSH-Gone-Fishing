@@ -95,11 +95,12 @@ def test_carry_over_moves_vacation():
 
 
 def test_hourly_staff_keep_their_balances_except_sick():
-    hourly = {**AVERY, "SalaryHourly": "Hourly"}
+    hourly = {**AVERY, "SalaryHourly": "Hourly"}               # any hourly employee, not only BC
     vac = build_preview("leave", _form("leave", leave_type="Vacation", start_date="2030-11-12", end_date="2030-11-12"), hourly, [])
-    assert vac["projected"] is None and "hourly" in vac["unchanged"]
+    assert vac["projected"] is None and vac["unchanged"] == "Counted only. No balance is used."
     sick = build_preview("leave", _form("leave", leave_type="Sick or Personal Day", start_date="2030-11-12", end_date="2030-11-12"), hourly, [])
     assert sick["projected"]["CurrentSickDayBalance"] == 2
+    assert sick["projected"]["CurrentVacationBalance"] == AVERY["CurrentVacationBalance"]  # never spills into vacation
 
 
 def test_next_year_leaves_vacation_alone():

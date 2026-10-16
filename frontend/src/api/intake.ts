@@ -314,9 +314,9 @@ export interface Balances {
   overtime: number;
   carryover: number;
   payout: number;
-  /** True for a BC hourly person: Sick is their only balance (#300). */
-  hourly_bc: boolean;
-  /** BC hourly vacation taken this calendar year (the counter); null otherwise. */
+  /** True for an hourly person: Sick is their only balance (#300). */
+  hourly: boolean;
+  /** hourly vacation taken this calendar year (the counter); null otherwise. */
   vacation_taken: number | null;
 }
 

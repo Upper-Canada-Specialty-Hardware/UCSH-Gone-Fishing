@@ -4,13 +4,13 @@ import {
   MenuItem, Stack, TextField, Typography,
 } from '@mui/material';
 import { addDays, dayKey, isWeekend, parseDay, today } from '../../utils/dates';
-import { isHourlyBc } from '../../utils/employment';
+import { isHourly } from '../../utils/employment';
 
 /** A team member as returned by GET /team/members (only what this dialog reads). */
 interface Member {
   id: string;                                                  // SharePoint item id
   name: string;                                                // display name for the picker
-  balances?: { sick_balance?: number; hourly_bc?: boolean };   // sick left + the BC hourly flag
+  balances?: { sick_balance?: number; hourly?: boolean };   // sick left + the hourly flag
 }
 
 /** The body POST /team/sick-days accepts (snake_case, as the backend expects). */
@@ -95,14 +95,14 @@ export default function LogSickDayDialog({ open, members, onClose, submitSickDay
   const [error, setError] = useState('');                    // backend or validation reason
 
   const selected = members.find((m) => String(m.id) === employeeId);   // the chosen member
-  const bc = isHourlyBc(selected?.balances);                 // BC hourly gets the sick-balance note
+  const bc = isHourly(selected?.balances);                 // hourly gets the sick-balance note
   const sickBalance = selected?.balances?.sick_balance ?? 0; // their sick left, days
 
   // A rough preview of how far this logs their Sick: weekdays in the range,
   // subtracted from what they have now. Recomputed as the dates change.
   const wholeDays = useMemo(() => roughWeekdays(startDate, endDate), [startDate, endDate]);
   const sickAfter = sickBalance - wholeDays;                 // their sick left afterwards
-  const belowZero = bc && wholeDays > 0 && sickAfter < 0;    // warn, never block, for BC hourly
+  const belowZero = bc && wholeDays > 0 && sickAfter < 0;    // warn, never block, for hourly
 
   /** Reset the form so the next open starts clean. */
   const reset = () => {
@@ -175,7 +175,7 @@ export default function LogSickDayDialog({ open, members, onClose, submitSickDay
             onChange={(e) => setNotes(e.target.value)} fullWidth multiline rows={2}
             helperText="Shown on the request as a note from you."
           />
-          {/* BC hourly: show their sick left and that it is whole days, approved on the spot. */}
+          {/* hourly: show their sick left and that it is whole days, approved on the spot. */}
           {selected && bc && (
             <Stack spacing={0.5}>
               <Typography variant="body2">

@@ -82,7 +82,7 @@ def render_leave_approval_email(
     Returns:
         The email body HTML.
     """
-    from app.services.employment import floor_warning_text, is_hourly_bc
+    from app.services.employment import floor_warning_text, is_hourly
     return _render(
         "leave_approval_email.html",
         fields=fields, emp_fields=emp_fields,
@@ -92,7 +92,7 @@ def render_leave_approval_email(
         conflict_warning=conflict_warning,
         floor_warning=floor_warning,
         floor_warning_text=floor_warning_text(floor_warning),   # same sentence as the text message
-        hourly_bc=is_hourly_bc(emp_fields),                     # sick-only balance table
+        hourly=is_hourly(emp_fields),                     # sick-only balance table
     )
 
 
@@ -105,7 +105,7 @@ def render_leave_rejected(fields: dict, manager_name: str) -> str:
 
 
 def render_leave_balance_update(
-    employee_name: str, balances: dict, is_next_year: bool, hourly_bc: bool = False,
+    employee_name: str, balances: dict, is_next_year: bool, hourly: bool = False,
 ) -> str:
     """The updated-balance email sent after a leave approval.
 
@@ -113,14 +113,14 @@ def render_leave_balance_update(
         employee_name: The employee's name.
         balances: Balances after approval.
         is_next_year: Whether the request was dated next year (own wording).
-        hourly_bc: BC hourly (#300): show sick only, the one balance they have.
+        hourly: hourly (#300): show sick only, the one balance they have.
 
     Returns:
         The email body HTML.
     """
-    # BC hourly never use the next-year cascade, so their note would be wrong.
-    template = "leave_balance_update_next_year.html" if is_next_year and not hourly_bc else "leave_balance_update.html"
-    return _render(template, employee_name=employee_name, balances=balances, hourly_bc=hourly_bc)
+    # hourly never use the next-year cascade, so their note would be wrong.
+    template = "leave_balance_update_next_year.html" if is_next_year and not hourly else "leave_balance_update.html"
+    return _render(template, employee_name=employee_name, balances=balances, hourly=hourly)
 
 
 def render_leave_hourly_approved(fields: dict, manager_name: str) -> str:

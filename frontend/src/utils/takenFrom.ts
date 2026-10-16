@@ -21,7 +21,7 @@ export type Pot = 'sick' | 'make_up' | 'carry_over' | 'vacation' | 'payout';
  * How a row's taken_from reads: recorded = approved, from its audit log;
  * projected = pending, what approving today would do; none = cost nothing, or
  * rejected/cancelled; unrecorded = approved but no usable log; refunded = the
- * reversed approval's original movements; counted = a BC hourly vacation that
+ * reversed approval's original movements; counted = an hourly vacation that
  * is added to "vacation taken this year", not spent from any balance (#300).
  */
 export type TakenState = 'recorded' | 'projected' | 'none' | 'unrecorded' | 'refunded' | 'counted';
@@ -37,7 +37,7 @@ export interface TakenPiece {
 export interface TakenFromValue {
   state: TakenState;
   pieces: TakenPiece[];
-  /** A BC hourly vacation's day count, when state is "counted" (#300). */
+  /** An hourly vacation's day count, when state is "counted" (#300). */
   counted_days?: number;
   /** Set on a projected row when approving would take the floor below zero (#300). */
   below_zero?: BelowZero | null;
@@ -145,7 +145,7 @@ function segmentsOf(pieces: TakenPiece[]): TakenSegment[] {
 /** What the component should draw: a muted message, a counter chip, or chip segments. */
 export type TakenShape =
   | { kind: 'message'; text: string }
-  | { kind: 'counted'; days: number }                                          // BC hourly vacation counter
+  | { kind: 'counted'; days: number }                                          // hourly vacation counter
   | { kind: 'segments'; segments: TakenSegment[]; projected: boolean; refunded: boolean; belowZero: BelowZero | null };
 
 /**
@@ -162,7 +162,7 @@ export function describeTakenFrom(value: TakenFromValue | null | undefined): Tak
 
   if (state === 'none') return { kind: 'message', text: 'No balance used' };
   if (state === 'unrecorded') return { kind: 'message', text: 'Not recorded' };
-  // A BC hourly vacation is counted as "taken this year", not spent: one neutral chip, no pots (#300).
+  // An hourly vacation is counted as "taken this year", not spent: one neutral chip, no pots (#300).
   if (state === 'counted') return { kind: 'counted', days: value?.counted_days ?? 0 };
   // A pending carry-over/payout that would push vacation below zero returns no pieces: it is auto-refused.
   if (state === 'projected' && pieces.length === 0) return { kind: 'message', text: 'Would be refused: not enough vacation' };
