@@ -52,11 +52,18 @@ def requests_linked_by_email() -> bool:
     are still in SharePoint once REQUEST_EMAIL_COLUMNS_ENABLED says the lists
     have the two columns.
 
+    This is a synchronous helper on the request-building path, so it reads the
+    ``STORAGE_REQUESTS`` environment override rather than the live
+    ``requests_storage`` database setting (which only the async
+    ``requests_in_postgres`` reads). The override is what pins the backend in
+    production, so this stays correct there; a runtime flip of the database
+    setting alone would not reach here.
+
     Returns:
         True when a request can name its submitter by email.
     """
-    from app.repositories.request_store import requests_in_postgres
-    return requests_in_postgres() or settings.REQUEST_EMAIL_COLUMNS_ENABLED
+    override = (settings.STORAGE_REQUESTS or "").strip().lower()   # the environment pin, read synchronously
+    return override == "postgres" or settings.REQUEST_EMAIL_COLUMNS_ENABLED
 
 
 def submitter_columns(submitter_email: str | None, source: str | None) -> dict:

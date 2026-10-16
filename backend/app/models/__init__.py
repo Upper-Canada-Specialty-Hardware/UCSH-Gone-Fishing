@@ -23,6 +23,18 @@ from app.models.request_item import (
     OvertimeRequestItem,
 )
 
+# The typed request tables and their ledger, timeline, outbox and sync records
+# (#321-#341): the Postgres home the migration moves requests into.
+from app.models.request_counter import RequestCounter
+from app.models.request_record import RequestRecord
+from app.models.balance_ledger import BalanceLedger
+from app.models.request_event import RequestEvent
+from app.models.request_change import RequestChange
+from app.models.outbox import Outbox
+from app.models.sharepoint_seen import SharepointSeen
+from app.models.sync_run import SyncRun
+from app.models.legacy_finding import LegacyFinding
+
 __all__ = [
     # plumbing
     "WebhookSubscription",
@@ -45,4 +57,14 @@ __all__ = [
     "LeaveRequestItem",
     "OvertimeRequestItem",
     "CarryoverPayoutRequestItem",
+    # typed request tables (the Postgres migration)
+    "RequestCounter",
+    "RequestRecord",
+    "BalanceLedger",
+    "RequestEvent",
+    "RequestChange",
+    "Outbox",
+    "SharepointSeen",
+    "SyncRun",
+    "LegacyFinding",
 ]

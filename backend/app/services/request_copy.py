@@ -128,7 +128,7 @@ async def copy_requests_from_sharepoint() -> dict:
     Raises:
         RequestsAlreadyMoved: When STORAGE_REQUESTS is already "postgres".
     """
-    if requests_in_postgres():
+    if await requests_in_postgres():
         raise RequestsAlreadyMoved(
             "Requests already live in Postgres; copying from SharePoint now would overwrite newer data."
         )
@@ -218,4 +218,4 @@ async def request_storage_report() -> dict:
             logger.exception("Request storage report: could not read %s", name)
             entry["error"] = str(e)
         lists[name] = entry
-    return {"storage": "postgres" if requests_in_postgres() else "sharepoint", "lists": lists}
+    return {"storage": "postgres" if await requests_in_postgres() else "sharepoint", "lists": lists}

@@ -18,7 +18,7 @@ async def dispatch_change(list_id: str, item: dict):
         list_id: The SharePoint list the change came from.
         item: The changed item as SharePoint sent it.
     """
-    if requests_in_postgres() and is_request_list(list_id):
+    if await requests_in_postgres() and is_request_list(list_id):
         from app.services.request_copy import move_form_item_into_postgres
         item = await move_form_item_into_postgres(list_id, str(item.get("id", "")))
         if item is None:

@@ -53,3 +53,49 @@ def extract_request_description(title: str | None, request_type: str = "leave") 
         _name, separator, description = raw.partition(LEAVE_TITLE_SEPARATOR)
         return description.strip() if separator else ""
     return raw.strip()
+
+
+def split_leave_title(
+    title: str | None, employee_name: str | None, leave_type: str | None
+) -> tuple[str, str | None]:
+    """Split a leave Title into its description and bereavement relation.
+
+    Leave Titles come in two shapes, and telling them apart is the descriptions
+    bug (#321): the app writes ``"<employee name> /// <notes>"`` while the
+    Microsoft Form writes ``"<description> /// <bereavement relation>"`` (or a
+    bare ``"<description>"`` for a part day with no relation). The left half is
+    compared to the employee name, case-insensitively and trimmed, to decide
+    which shape it is.
+
+    Args:
+        title: The stored Title, or None.
+        employee_name: The request's employee name, for the comparison.
+        leave_type: The leave type, which decides whether a Form right half is a
+            relation (Bereavement) or more description.
+
+    Returns:
+        ``(description, relation)``: the employee-entered description (``""`` when
+        there is none) and the bereavement relation, or None when there is none.
+    """
+    raw = title or ""
+    name = (employee_name or "").strip()                        # the name to match the left half against
+    left, separator, right = raw.partition(LEAVE_TITLE_SEPARATOR)
+    left_half = left.strip()
+    right_half = right.strip()
+
+    if not separator:
+        # No separator: a bare name carries no description; anything else is one.
+        if raw.strip().lower() == name.lower():
+            return "", None                                     # the Title is just the employee's name
+        return raw.strip(), None                                # a bare Form description (part day, no relation)
+
+    # App format: the left half is the employee's name (or blank, name-less app).
+    if left_half == "" or left_half.lower() == name.lower():
+        return right_half, None                                 # the notes are the right half; no relation
+
+    # Form format: the left half is the description.
+    if leave_type == "Bereavement":
+        return left_half, (right_half or None)                  # the right half is the relation
+    # A non-bereavement right half is extra description, appended on.
+    description = f"{left_half} {right_half}".strip() if right_half else left_half
+    return description, None
