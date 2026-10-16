@@ -36,6 +36,16 @@ logger = logging.getLogger(__name__)
 SUBMITTER_EMAIL_COLUMN = "SubmitterEmail"   # plain text: the submitter's address
 REQUEST_SOURCE_COLUMN = "RequestSource"     # plain text: where the request came from
 
+
+class UnknownSubmitter(ValueError):
+    """A new request whose submitter is on no staff record, so it cannot be saved.
+
+    Raised at intake once requests live in Postgres: the typed requests row needs
+    the submitter's staff id (employee_id is not null), so a request that resolves
+    to nobody is refused with a clear message instead of a half-written row. The
+    message is safe to show the person.
+    """
+
 SOURCE_REQUEST_PAGE = "Request page"        # the public request page (#131)
 SOURCE_API = "API"                          # the /api/forms endpoints
 SOURCE_ADMIN = "Admin dashboard"            # an admin made it on the requests screen (#283)

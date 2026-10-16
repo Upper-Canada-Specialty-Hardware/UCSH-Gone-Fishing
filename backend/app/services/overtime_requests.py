@@ -6,12 +6,17 @@ from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
+    get_employee_by_email,
     get_employee_by_id,
     get_all_managers_for_employee,
     map_location_to_province,
 )
 # Who a request is for: SubmitterEmail first, then the SubmittedBy person column.
-from app.services.request_submitter import resolve_request_submitter, submitter_columns
+from app.services.request_submitter import (
+    UnknownSubmitter,
+    resolve_request_submitter,
+    submitter_columns,
+)
 from app.services.holidays import (
     get_holidays_for_province,
     get_half_friday_season,
@@ -49,7 +54,7 @@ from app.services.audit_trail import (
     extract_approval_deltas,
     write_audit_log,
 )
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,18 @@ async def process_new_overtime_request(
         fields["SubmittedByLookupId"] = lookup_id
     # SubmitterEmail and RequestSource, for submitters the person column misses.
     fields.update(submitter_columns(submitter_email, source))
+
+    # Once requests live in Postgres the typed row needs the submitter's staff id
+    # (employee_id is not null), so resolve by email now and refuse a request that
+    # matches nobody rather than writing a half-formed row (#324). SharePoint mode
+    # is unchanged: there EmployeeID is not written on the overtime list.
+    if await requests_in_postgres():
+        submitter = await get_employee_by_email(submitter_email)
+        if not submitter:
+            raise UnknownSubmitter(
+                f"No staff record was found for {submitter_email}, so the request was not created."
+            )
+        fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
 
     # No duplicate check here, deliberately — a clash with an already-approved
     # entry is raised when a manager tries to approve. See the module docstring
@@ -416,6 +433,14 @@ async def admin_edit_overtime_request(
         "StartDate": new_start,
         "Title": new_title,
     }
+
+    # Once requests and staff live in Postgres the edit is applied in one
+    # transaction: bump the approval version (old links go stale), record the field
+    # changes, append an "edited" event and queue fresh manager links through the
+    # outbox (#324). SharePoint mode keeps the send path below.
+    from app.services.request_submission import apply_admin_edit, submission_active
+    if await submission_active():
+        return await apply_admin_edit("overtime", request_id, before, after, reason)
 
     async with lock_manager.lock(employee_id):
         fresh = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)

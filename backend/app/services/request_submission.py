@@ -25,6 +25,7 @@ from datetime import date
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import async_session
 from app.models.request_record import RequestRecord
 from app.repositories.postgres.typed_requests import TypedRequestList
@@ -47,7 +48,7 @@ from app.services.employment import (
     leave_costs_balance,
 )
 from app.services.request_decisions import _wake_sender, decisions_active
-from app.services.request_journal import append_event, enqueue_message, log_step, step_key
+from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
 from app.services.request_submitter import resolve_request_submitter
 from app import templates_render as tr
 
@@ -159,13 +160,16 @@ def _set_identity(record: RequestRecord, employee: dict | None, manager: dict | 
         record.manager_name = manager.get("fields", {}).get("Title") or record.manager_name
 
 
-async def _enqueue_notifications(session, record, employee, managers, *, event, suffix=None) -> None:
-    """Queue the manager approval email and text and the employee receipt.
+async def _enqueue_notifications(session, record, employee, managers, *, event, suffix=None,
+                                 include_receipt=True) -> None:
+    """Queue the manager approval email and text and (optionally) the employee receipt.
 
     One manager email (and a text when they have a cell) per manager, then one
     receipt to the employee. With a ``suffix`` (a date) and the reminder step the
-    same rows become a once-a-day reminder instead, email only. Each row carries a
-    step_key that is unique in the outbox, so a repeat queues nothing again.
+    same rows become a once-a-day reminder instead, email only. An admin edit asks
+    the manager again with fresh links but sends no receipt (``include_receipt``
+    False). Each row carries a step_key that is unique in the outbox, so a repeat
+    queues nothing again.
 
     Args:
         session: The open session; not committed here.
@@ -175,6 +179,7 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         event: The event the messages follow, for the outbox link, or None.
         suffix: A date string for a reminder (its key is per-day); None for a
             first submission, which also sends the receipt.
+        include_receipt: False skips the employee receipt (an edit re-ask only).
     """
     emp_fields = employee.get("fields", {})
     fields = TypedRequestList(record.kind)._item_shape(record)["fields"]   # SharePoint shape the templates read
@@ -206,8 +211,8 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
                 f"{manager_step}:sms:{cell}",
             )
 
-    if is_reminder:
-        return                                                      # a reminder re-asks the manager only
+    if is_reminder or not include_receipt:
+        return                                                      # a reminder or an edit re-asks the manager only
     email = record.employee_email
     if email:                                                      # the employee's "received" receipt
         receipt_subject, receipt_html = _build_receipt_content(record, emp_fields, fields)
@@ -411,6 +416,158 @@ def _leave_sms_balance(projected, emp_fields, leave_type, below_zero) -> str:
     return line
 
 
+# Payout days are capped at this many across all of a person's payout requests.
+PAYOUT_CAP_DAYS = 5
+
+
+async def _submit_time_rejection(record: RequestRecord, emp_fields: dict, fields: dict):
+    """Whether a new request is auto-rejected at submit, and the notice to send.
+
+    Mirrors, for the Postgres path, the auto-rejections the SharePoint intake runs
+    before a manager is asked: overtime worked on a company holiday; a partial-day
+    leave on a holiday or over the half-Friday limit; a payout past the cap; and a
+    carry-over/payout by hourly staff or one that would take vacation below zero.
+    Pure of writes: it only reads the request and the staff balances and renders
+    the employee's rejection email.
+
+    Args:
+        record: The request row (identity and details already stamped).
+        emp_fields: The submitter's Staff Directory fields (location, balances).
+        fields: The request in the SharePoint list-item shape, for the templates.
+
+    Returns:
+        ``(reason, subject, html)`` when the request is rejected, or None to let
+        it go to the manager.
+    """
+    if record.kind == "carryover_payout":
+        return _carryover_submit_rejection(record, emp_fields)    # no holiday calendar needed
+    # Only partial-day leave is auto-rejected at submit; full-day leave is not.
+    if record.kind == "leave" and (record.leave_type or "") != "Half Day or Partial Day Off":
+        return None
+    start = record.start_date
+    if start is None:                                             # no date to test against the calendar
+        return None
+    # The employee's province decides which holidays apply; an unmapped location
+    # degrades to "no holidays" rather than failing the whole submission.
+    from app.services.employee import map_location_to_province
+    from app.services.holidays import (
+        get_half_friday_season,
+        get_holidays_for_province,
+        is_company_holiday,
+        is_half_friday,
+    )
+    try:
+        province = map_location_to_province(emp_fields.get("Location", ""))
+    except ValueError:
+        province = None
+    holidays = await get_holidays_for_province(province) if province else []
+    is_holiday, holiday_name = is_company_holiday(start, holidays)
+
+    if record.kind == "overtime":
+        if is_holiday:
+            reason = f"{start} is the company holiday {holiday_name}."
+            html = tr.render_overtime_auto_rejected(fields, holiday_name, reason)
+            return reason, "Overtime Request - Auto Rejected", html
+        return None
+
+    # partial-day leave
+    days = float(record.days or 0)
+    if is_holiday:
+        reason = f"{start} is the company holiday {holiday_name}."
+        html = tr.render_partial_day_holiday_rejected(fields, holiday_name, reason)
+        return reason, "Partial Day Request - Auto Rejected", html
+    if is_half_friday(start, get_half_friday_season(holidays)) and days > 0.5:
+        reason = f"Requested {days} days on the half-Friday {start}, which exceeds the 0.5 day limit."
+        html = tr.render_partial_day_halffriday_rejected(fields, reason)
+        return reason, f"Leave Request {record.item_id} {fields.get('Title', '')}", html
+    return None
+
+
+def _carryover_submit_rejection(record: RequestRecord, emp_fields: dict):
+    """The carry-over/payout submit-time auto-rejection, if any (pure, no I/O).
+
+    Args:
+        record: The carry-over/payout request row.
+        emp_fields: The submitter's Staff Directory balance fields.
+
+    Returns:
+        ``(reason, subject, html)`` when rejected, or None.
+    """
+    days = float(record.days or 0)
+    request_type = OPTION_WORD.get(record.request_option or "", "Carry Over")
+    current_vacation = float(emp_fields.get("CurrentVacationBalance", 0) or 0)
+    current_carryover = float(emp_fields.get("CarryOver", 0) or 0)
+    current_payout = float(emp_fields.get("Payout", 0) or 0)
+    if request_type == "Payout" and current_payout + days > PAYOUT_CAP_DAYS:
+        new_payout = current_payout + days
+        reason = f"Payout cap exceeded - new total would be {new_payout} days (max {PAYOUT_CAP_DAYS})."
+        html = tr.render_payout_cap_rejected(record.item_id, emp_fields, reason)
+        return reason, "Payout Request - Auto Rejected", html
+    # Vacation cannot go below zero; hourly staff have no vacation pot at all (#300).
+    new_vacation = current_vacation - days
+    hourly = is_hourly(emp_fields)
+    if hourly or new_vacation < 0:
+        reason = (
+            "Hourly staff have no vacation balance to carry over or pay out."
+            if hourly else
+            f"Vacation balance would go to {new_vacation} days ({current_vacation} - {days})."
+        )
+        html = tr.render_system_override_reject(
+            record.item_id, emp_fields, request_type,
+            current_vacation, current_carryover, current_payout, reason,
+        )
+        return reason, "Carry Over / Payout Request - Auto Rejected", html
+    return None
+
+
+def _mark_auto_rejected(record: RequestRecord) -> None:
+    """Stamp a request as system-rejected at submit, matching the SharePoint flags.
+
+    Args:
+        record: The request row to mark in place.
+    """
+    from app.models.mixins import utcnow
+    record.status = "rejected"                                    # terminal: no manager is asked
+    record.decided_at = utcnow()
+    record.decided_by = "system"
+    record.decided_channel = record.submitted_channel or "system"
+    # Keep the SharePoint-compat flags older reads check, as the decision path does.
+    extra = dict(record.extra or {})
+    if record.kind == "leave":
+        extra["ApproveProcessedFlag"] = "Processed"
+    elif record.kind == "carryover_payout":
+        extra["SystemState"] = "Processed"
+    record.extra = extra
+
+
+async def _auto_reject(session, record: RequestRecord, rejection) -> None:
+    """Record a submit-time auto-rejection and queue the employee's notice (no commit).
+
+    Marks the request rejected, appends a ``rejected`` event and queues the
+    rejection email through the outbox. Nothing goes to the manager. Every write
+    is keyed, so a rerun of the same submission adds nothing.
+
+    Args:
+        session: The open session the caller commits.
+        record: The request row being rejected.
+        rejection: ``(reason, subject, html)`` from ``_submit_time_rejection``.
+    """
+    reason, subject, html = rejection
+    _mark_auto_rejected(record)
+    version = record.approval_version
+    rejected_key = step_key(record.kind, record.item_id, "rejected", version)
+    event = await append_event(
+        session, record, "rejected", record.submitted_channel or "system", "system",
+        {"reason": reason}, rejected_key,
+    )
+    if record.employee_email:                                     # tell the employee why, through the outbox
+        await enqueue_message(
+            session, record, event, "rejection", "email", record.employee_email, subject, html,
+            f"{rejected_key}:email:{record.employee_email}",
+        )
+    log_step(record, "rejected", channel=record.submitted_channel, auto=True)
+
+
 async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     """Record one request's submission in the given session (no commit).
 
@@ -443,9 +600,27 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     )
     log_step(record, "submitted", channel=record.submitted_channel, notify=notify)
 
-    if notify and employee is not None and managers:              # queue the manager ask and the receipt
+    if not notify:
+        return True                                               # a sick day approved on the spot: event only
+    if record.status != "pending":
+        return True                                               # already decided (a rerun or a parallel action)
+
+    # Rebuild the SharePoint-shaped fields now the identity is stamped, so the
+    # emails and any rejection notice carry the submitter's name and details.
+    fields = TypedRequestList(kind)._item_shape(record)["fields"]
+
+    if employee is not None:
+        # The same auto-rejections the SharePoint intake runs (overtime on a
+        # holiday, the payout cap, hourly carry-over/payout, partial-day limits)
+        # must still fire here, before the manager is ever asked (#324).
+        rejection = await _submit_time_rejection(record, employee.get("fields", {}), fields)
+        if rejection is not None:
+            await _auto_reject(session, record, rejection)        # rejected event + employee notice, no manager ask
+            return True
+
+    if employee is not None and managers:                         # queue the manager ask and the receipt
         await _enqueue_notifications(session, record, employee, managers, event=event)
-    elif notify and employee is not None:                        # no manager resolved: send the receipt only
+    elif employee is not None:                                    # no manager resolved: send the receipt only
         logger.warning("No manager for %s #%s; receipt queued, manager not asked", kind, record.item_id)
         emp_fields = employee.get("fields", {})
         if record.employee_email:
@@ -590,3 +765,120 @@ async def queue_due_reminders() -> int:
     if queued:
         _wake_sender()
     return queued
+
+
+# The SharePoint list id and the version-snapshot fields per kind, so an admin
+# edit keeps the approval route's get_current_version in step with the typed one.
+def _edit_list_id(kind: str) -> str:
+    """The SharePoint list id a kind's approval-version state is keyed under."""
+    return {
+        "leave": settings.SP_LIST_LEAVE_REQUESTS,
+        "overtime": settings.SP_LIST_OVERTIME_REQUESTS,
+        "carryover_payout": settings.SP_LIST_CARRYOVER_PAYOUT,
+    }[kind]
+
+
+async def _sync_version_state(session, kind, item_id, version, before, after) -> None:
+    """Hold the approval-version state at the typed row's new version after an edit.
+
+    The approval link route gates a click on ``get_current_version`` (the
+    ``request_approval_state`` row), while the Postgres decision path gates on the
+    typed ``approval_version``. An edit bumps the typed version, so this writes the
+    same number to the version-state row in the same transaction, so the route
+    shows the old link as outdated and lets the new link through, both agreeing.
+
+    Args:
+        session: The open session the caller commits.
+        kind: The request kind.
+        item_id: The item_id (the number people and links use).
+        version: The new approval version to pin.
+        before: The pre-edit field values (its material fields are the previous snapshot).
+        after: The post-edit field values (its material fields are the new snapshot).
+    """
+    from app.models import RequestApprovalState
+    from app.models.mixins import utcnow
+    from app.services.approval_versions import (
+        MATERIAL_FIELDS_CARRYOVER_PAYOUT,
+        MATERIAL_FIELDS_LEAVE,
+        MATERIAL_FIELDS_OVERTIME,
+    )
+    keys = {
+        "leave": MATERIAL_FIELDS_LEAVE,
+        "overtime": MATERIAL_FIELDS_OVERTIME,
+        "carryover_payout": MATERIAL_FIELDS_CARRYOVER_PAYOUT,
+    }[kind]
+    list_id = _edit_list_id(kind)
+    snapshot = {k: after.get(k) for k in keys}                    # the links now reflect these values
+    previous = {k: before.get(k) for k in keys}
+    state = await session.get(RequestApprovalState, (list_id, str(item_id)))
+    if state is None:                                             # a Postgres request has no row until its first edit
+        session.add(RequestApprovalState(
+            list_id=list_id, item_id=str(item_id), current_version=version,
+            current_snapshot=snapshot, previous_snapshot=previous,
+            last_emailed_at=utcnow(), reminder_count=0, reminders_closed=False,
+        ))
+    else:
+        state.previous_snapshot = state.current_snapshot
+        state.current_snapshot = snapshot
+        state.current_version = version
+        state.last_emailed_at = utcnow()
+        state.reminder_count = 0                                  # a material change restarts the reminder cadence
+        state.reminders_closed = False
+
+
+async def apply_admin_edit(kind, item_id, before, after, reason, *,
+                           actor="admin", channel="admin_dashboard") -> dict:
+    """Apply an admin's edit to a pending request and ask the manager again (#324).
+
+    In one transaction it writes the edited fields onto the typed row, bumps the
+    approval version so the previously emailed links go stale, records each field
+    change, appends an ``edited`` event and queues fresh manager approval email and
+    text through the outbox carrying the new version's links. No employee receipt
+    is sent (it is a re-ask, not a new submission). The outbox sender delivers the
+    links, so editing never waits on the email provider.
+
+    Args:
+        kind: The request kind ("leave", "overtime", "carryover_payout").
+        item_id: The item_id people and links use.
+        before: The field values before the edit (SharePoint column names).
+        after: The field values after the edit (SharePoint column names), applied
+            onto the typed row.
+        reason: Why the admin edited it, recorded on each change and the event.
+        actor: Who edited, for the change rows and the event.
+        channel: Where the edit came from (a request_vocab channel).
+
+    Returns:
+        ``{"status": "saved", "new_version", "fields"}`` on success, or
+        ``{"error": ...}`` when the request is gone or no longer pending.
+    """
+    from app.models.mixins import utcnow
+    async with async_session() as session:
+        record = await _load(session, kind, item_id)
+        if record is None:
+            return {"error": "This request no longer exists."}
+        if record.status != "pending":                           # a decided request cannot be edited
+            return {"error": f"Request is not Pending (current status: {record.status.capitalize()})"}
+
+        adapter = TypedRequestList(kind)
+        employee = await _resolve_employee(record, adapter._item_shape(record)["fields"])
+        managers = await get_all_managers_for_employee(employee) if employee else []
+
+        await adapter._resolve_people(record, after)             # keep names in step in production (no-op in tests)
+        adapter._apply_fields(record, after)                     # write the edited values onto the typed columns
+        new_version = (record.approval_version or 1) + 1
+        record.approval_version = new_version                    # fresh links; the old ones go stale
+        record.updated_at = utcnow()
+        await session.flush()                                    # enforce the CHECK constraints before recording
+
+        for col, new_val in after.items():                       # one change row per edited field, with the reason
+            record_change(session, record, col, before.get(col), new_val, actor, channel, reason)
+        await _sync_version_state(session, kind, record.item_id, new_version, before, after)
+
+        edited_key = step_key(kind, record.item_id, "edited", new_version)
+        event = await append_event(session, record, "edited", channel, actor, {"reason": reason}, edited_key)
+        if employee is not None and managers:                    # ask the manager again with the new links, no receipt
+            await _enqueue_notifications(session, record, employee, managers, event=event, include_receipt=False)
+        log_step(record, "edited", actor=actor, version=new_version)
+        await session.commit()
+    _wake_sender()                                               # deliver the new manager links without waiting
+    return {"status": "saved", "new_version": new_version, "fields": after}

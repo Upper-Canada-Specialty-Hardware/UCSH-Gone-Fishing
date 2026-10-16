@@ -23,12 +23,12 @@ from app.services.approval_versions import (
     MATERIAL_FIELDS_CARRYOVER_PAYOUT,
 )
 from app.services.leave_requests import _resolve_user_lookup_id
-from app.services.request_submitter import submitter_columns
+from app.services.request_submitter import UnknownSubmitter, submitter_columns
 from app.services.audit_trail import (
     AuditTrailBuilder,
     write_audit_log,
 )
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,18 @@ async def process_new_carryover_payout(
         fields["SubmittedByLookupId"] = lookup_id
     # SubmitterEmail and RequestSource (carryover already matches by email below).
     fields.update(submitter_columns(submitter_email, source))
+
+    # Once requests live in Postgres the typed row needs the submitter's staff id
+    # (employee_id is not null), so resolve by email now and refuse a request that
+    # matches nobody rather than writing a half-formed row (#324). SharePoint mode
+    # is unchanged: there EmployeeID is written later by auto_assign_manager.
+    if await requests_in_postgres():
+        submitter = await get_employee_by_email(submitter_email)
+        if not submitter:
+            raise UnknownSubmitter(
+                f"No staff record was found for {submitter_email}, so the request was not created."
+            )
+        fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
 
     item = await request_store.create_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, fields)
     item_id = item["id"]
@@ -488,6 +500,14 @@ async def admin_edit_carryover_payout(
         "TypeofRequest": new_type,
         "Days": new_days,
     }
+
+    # Once requests and staff live in Postgres the edit is applied in one
+    # transaction: bump the approval version (old links go stale), record the field
+    # changes, append an "edited" event and queue fresh manager links through the
+    # outbox (#324). SharePoint mode keeps the send path below.
+    from app.services.request_submission import apply_admin_edit, submission_active
+    if await submission_active():
+        return await apply_admin_edit("carryover_payout", request_id, before, after, reason)
 
     async with lock_manager.lock(employee_id):
         fresh = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)

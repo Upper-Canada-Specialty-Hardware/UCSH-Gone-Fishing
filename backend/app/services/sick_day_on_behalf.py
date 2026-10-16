@@ -30,7 +30,7 @@ grids and the audit dialog.
 import logging
 
 from app.config import settings
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.business_days import calculate_business_days
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
@@ -286,6 +286,12 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
             "Manager %s has no Microsoft 365 lookup id; sick day for %s will carry no Manager field",
             manager_name, employee_name,
         )
+
+    # Once requests live in Postgres the typed row needs the employee's staff id
+    # (employee_id is not null); the employee is already resolved above, so stamp it
+    # before the write. SharePoint mode is unchanged (EmployeeID is not on the list).
+    if await requests_in_postgres():
+        fields["EmployeeID"] = str(employee_id)
 
     # request_store, not SharePoint directly: request lists may live in Postgres.
     item = await request_store.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, fields)
