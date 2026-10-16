@@ -120,6 +120,7 @@ async def indexed_request_items(
         fields = item["fields"]
         fields["stage"] = row.stage or ""                      # the new stage column (Postgres only)
         fields["employee_name"] = row.employee_name or ""      # typed name, used when no person blob exists
+        fields["employment_type"] = row.employment_type or ""  # type recorded on the request, wins over today's (#338)
         if row.manager_id and "ManagerLookupId" not in fields:
             # Mark a routed request processed so the pending-visibility check passes.
             fields["ManagerLookupId"] = row.manager_id

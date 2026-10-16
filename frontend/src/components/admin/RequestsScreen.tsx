@@ -12,7 +12,8 @@ import { DIAGNOSTIC_LABELS, HELD_STATUS_LABEL, HeldRow, OPEN_HELD, RequestView }
 import {
   COLUMN_SETS, FilterDef, Row, SRC_META, Src, columnValue, filterDefs, num, refDate, searchText, toRow, whenText,
 } from './requestTable';
-import RequestsTable, { TableActions } from './RequestsTable';
+import { TableActions } from './RequestsTable';
+import SplitRequestsTable from './SplitRequestsTable';
 import RequestsCalendar from './RequestsCalendar';
 import { useFitColumns } from './useFitColumns';
 import DeleteRequestDialog from './DeleteRequestDialog';
@@ -470,7 +471,7 @@ export default function RequestsScreen(props: Props) {
         {mode === 'cal' ? (
           <RequestsCalendar rows={shown} holidays={holidays} onOpenRequest={openInTable} />
         ) : (
-          <RequestsTable
+          <SplitRequestsTable
             rows={shown}
             src={srcSel}
             sort={sort}

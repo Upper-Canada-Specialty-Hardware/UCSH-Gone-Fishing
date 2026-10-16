@@ -7,7 +7,7 @@ import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
 import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
-import RequestHistory from '../components/RequestHistory';
+import SplitRequestHistory from '../components/admin/SplitRequestHistory';
 import AddEmployee from '../components/AddEmployee';
 import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
@@ -77,6 +77,22 @@ const MONTH_LEGEND: [string, RequestKind][] = [['Vacation', 'vacation'], ['Sick'
  */
 function initials(name: string): string {
   return name.split(' ').map((w) => w[0]).slice(0, 2).join('');
+}
+
+/**
+ * A full-width banner heading one group of team cards in the balances grid.
+ *
+ * @param props.label - "Salaried" or "Hourly".
+ * @param props.count - How many people are in the group.
+ * @returns The banner, spanning every grid column.
+ */
+function GroupBanner({ label, count }: { label: string; count: number }) {
+  return (
+    <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'baseline', gap: 1, pt: 0.5 }}>
+      <Typography sx={{ fontWeight: 700 }}>{label}</Typography>
+      <Typography variant="caption" color="text.secondary">{count} {count === 1 ? 'person' : 'people'}</Typography>
+    </Box>
+  );
 }
 
 /**
@@ -240,6 +256,92 @@ export default function ManagerDashboard() {
   const q = teamSearch.trim().toLowerCase();
   const teamShown = q ? members.filter((mem) => (mem.name || '').toLowerCase().includes(q)) : members;
   const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
+
+  // Team balances split by type (#300, #338): salaried keeps every pot; hourly
+  // shows Sick and the vacation-taken counter only. isHourly reads the wire flag.
+  const salariedShown = teamShown.filter((mem) => !isHourly(mem.balances));
+  const hourlyShown = teamShown.filter((mem) => isHourly(mem.balances));
+
+  /**
+   * One team member's balance card, matching each type's rules.
+   *
+   * @param mem - The member and their balances.
+   * @param k - The card's index in its group, for the entrance stagger.
+   * @returns The animated card.
+   */
+  const renderMemberCard = (mem: any, k: number) => {
+    const b = mem.balances || {};
+    // Their next time away from today on, approved or asked.
+    const nextOff = absences
+      .filter((a) => a.who === mem.name && a.end >= today())
+      .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
+    const bc = isHourly(b);                            // hourly: Sick plus a vacation counter
+    /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
+    const line = (label: string, v: number, of?: number) => (
+      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+        <Typography variant="body2" color="text.secondary">{label}</Typography>
+        <Typography variant="body2" sx={{ fontWeight: 700, color: v < 0 ? 'error.main' : 'text.primary' }}>{v}{of ? ` of ${of}` : ''}</Typography>
+      </Box>
+    );
+    return (
+      <m.div
+        key={mem.id}
+        layout
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96, transition: EXIT }}
+        style={{ display: 'grid' }}
+      >
+        {/* A card lifts slightly under the pointer so it reads as one object. */}
+        <Paper sx={{
+          p: 2, display: 'grid', gap: 0.75, alignContent: 'start', ...riseAt(k, { step: 40, max: 8 }),
+          transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
+          '&:hover': { transform: 'translateY(-2px)', borderColor: theme.tokens.line2 },
+        }}>
+          <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center', mb: 0.5 }}>
+            <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(mem.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
+              {initials(mem.name)}
+            </Box>
+            <Box sx={{ minWidth: 0 }}>
+              {/* Wrap a long name onto a second line instead of cutting it off. */}
+              <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{mem.name}</Typography>
+              <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
+            </Box>
+          </Box>
+          {bc ? (
+            <>
+              {/* Vacation is a counter here, not a balance: no "of", with a caption. */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>{b.vacation_taken ?? 0}</Typography>
+              </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>This year. Counted, not a balance.</Typography>
+              {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+            </>
+          ) : (
+            <>
+              {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
+              {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+              {line('Make-Up', b.overtime ?? 0)}
+              {line('Carry Over', b.carryover ?? 0)}
+            </>
+          )}
+          <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>
+            {nextOff ? (
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Typography variant="body2" color="text.secondary">Next off</Typography>
+                <KindPill kind={nextOff.kind} label={nextOff.label} />
+                <Typography variant="body2">
+                  {/* Full day format; formatDayRange shows one date when start == end. */}
+                  {formatDayRange(dayKey(nextOff.start), dayKey(nextOff.end))}{nextOff.pending ? ' (asked)' : ''}
+                </Typography>
+              </Box>
+            ) : <Typography variant="body2" color="text.secondary">No time off booked.</Typography>}
+          </Box>
+        </Paper>
+      </m.div>
+    );
+  };
 
   if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
@@ -444,84 +546,22 @@ export default function ManagerDashboard() {
               </Button>
             )}
           </Box>
-          <Panel title="Vacation left"><VacationRings members={teamShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
-          {/* A search fades out the people who no longer match while the rest slide together. */}
+          {/* Vacation left is a salaried figure; hourly staff have a counter, not a balance. */}
+          {salariedShown.length > 0 && (
+            <Panel title="Vacation left"><VacationRings members={salariedShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
+          )}
+          {/* A search fades out the people who no longer match while the rest slide together.
+              With both types present the cards split into a Salaried and an Hourly band. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', position: 'relative' }}>
             <AnimatePresence mode="popLayout" initial={false}>
-            {teamShown.map((mem, k) => {
-              const b = mem.balances || {};
-              // Their next time away from today on, approved or asked.
-              const nextOff = absences
-                .filter((a) => a.who === mem.name && a.end >= today())
-                .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
-              // hourly team members have only Sick plus a vacation counter (#300).
-              const bc = isHourly(b);
-              /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
-              const line = (label: string, v: number, of?: number) => (
-                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Typography variant="body2" color="text.secondary">{label}</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 700, color: v < 0 ? 'error.main' : 'text.primary' }}>{v}{of ? ` of ${of}` : ''}</Typography>
-                </Box>
-              );
-              return (
-                <m.div
-                  key={mem.id}
-                  layout
-                  initial={{ opacity: 0, scale: 0.96 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, transition: EXIT }}
-                  style={{ display: 'grid' }}
-                >
-                {/* A card lifts slightly under the pointer so it reads as one object. */}
-                <Paper sx={{
-                  p: 2, display: 'grid', gap: 0.75, alignContent: 'start', ...riseAt(k, { step: 40, max: 8 }),
-                  transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
-                  '&:hover': { transform: 'translateY(-2px)', borderColor: theme.tokens.line2 },
-                }}>
-                  <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center', mb: 0.5 }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(mem.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
-                      {initials(mem.name)}
-                    </Box>
-                    <Box sx={{ minWidth: 0 }}>
-                      {/* Wrap a long name onto a second line instead of cutting it off. */}
-                      <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{mem.name}</Typography>
-                      <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
-                    </Box>
-                  </Box>
-                  {bc ? (
-                    <>
-                      {/* Vacation is a counter here, not a balance: no "of", with a caption. */}
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
-                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{b.vacation_taken ?? 0}</Typography>
-                      </Box>
-                      <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>This year. Counted, not a balance.</Typography>
-                      {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
-                    </>
-                  ) : (
-                    <>
-                      {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
-                      {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
-                      {line('Make-Up', b.overtime ?? 0)}
-                      {line('Carry Over', b.carryover ?? 0)}
-                    </>
-                  )}
-                  <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>
-                    {nextOff ? (
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <Typography variant="body2" color="text.secondary">Next off</Typography>
-                        <KindPill kind={nextOff.kind} label={nextOff.label} />
-                        <Typography variant="body2">
-                          {/* Full day format; formatDayRange shows one date when start == end. */}
-                          {formatDayRange(dayKey(nextOff.start), dayKey(nextOff.end))}{nextOff.pending ? ' (asked)' : ''}
-                        </Typography>
-                      </Box>
-                    ) : <Typography variant="body2" color="text.secondary">No time off booked.</Typography>}
-                  </Box>
-                </Paper>
-                </m.div>
-              );
-            })}
+            {salariedShown.length > 0 && hourlyShown.length > 0
+              ? [
+                  <GroupBanner key="band-salaried" label="Salaried" count={salariedShown.length} />,
+                  ...salariedShown.map((mem, k) => renderMemberCard(mem, k)),
+                  <GroupBanner key="band-hourly" label="Hourly" count={hourlyShown.length} />,
+                  ...hourlyShown.map((mem, k) => renderMemberCard(mem, k)),
+                ]
+              : teamShown.map((mem, k) => renderMemberCard(mem, k))}
             <m.div key="add" layout style={{ display: 'grid' }}>
               <Button variant="outlined" onClick={() => go('add')} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px` }}>
                 + Add a new hire
@@ -585,7 +625,7 @@ export default function ManagerDashboard() {
       {tab === 'history' && (
         // minWidth 0 lets this grid item shrink below the table's natural width; overflow hidden keeps the page from widening.
         <Paper sx={{ p: 2, minWidth: 0, overflow: 'hidden' }}>
-          <RequestHistory requests={requests} showEmployee timelineScope="team" />
+          <SplitRequestHistory requests={requests} showEmployee timelineScope="team" />
         </Paper>
       )}
 

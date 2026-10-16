@@ -164,6 +164,28 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
+def _employment_type_of(staff_item: dict | None, recorded: str | None = None) -> str:
+    """The employment type a request row is split by (#338).
+
+    A request in Postgres records the type that applied when it was made, and
+    that wins, so a later correction to the person (someone set as hourly by
+    mistake) does not move their old requests. SharePoint requests record none,
+    so they take the person's current Staff Directory value.
+
+    Args:
+        staff_item: The person's Staff Directory record, or None when unresolved.
+        recorded: The type stored on the request, or None/"" when there is none.
+
+    Returns:
+        "Salary", "Hourly", "Hourly BC", or "" when the person is unknown.
+    """
+    if recorded:
+        return recorded                                        # the request's own record wins
+    if not staff_item:
+        return ""                                              # unresolved person: left blank
+    return staff_item.get("fields", {}).get("SalaryHourly", "") or ""
+
+
 class _PersonNames(dict):
     """{SharePoint user id: display name}, plus staff names by email.
 
@@ -367,6 +389,7 @@ def _enrich_pending_item(
 
     item_data["employee_name"] = emp_name
     item_data["managers"] = _resolve_managers(staff)
+    item_data["employment_type"] = _employment_type_of(staff)   # salaried/hourly split (#338)
 
     if not staff:
         item_data["current_balances"] = None
@@ -745,6 +768,10 @@ async def team_requests(
         emp_name = _resolve_employee_name(f, request_type, sp_user_to_name, staff_by_id) or f.get("employee_name", "")
         r["employee_name"] = emp_name
         r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+        # Salaried/hourly split (#338): the request's recorded type, else the person's today.
+        r["employment_type"] = _employment_type_of(
+            staff_by_name.get(emp_name.lower()) if emp_name else None, f.get("employment_type"),
+        )
 
     # Leave — the team's rows (submitter in my_employees on the SharePoint path).
     if not type or type == "leave":
@@ -1252,6 +1279,7 @@ async def admin_requests(
             emp_name = _resolve_employee_name(item, request_type, sp_user_to_name, staff_by_id) or item.get("employee_name", "")
             item["employee_name"] = emp_name
             item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+            item["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None, item.get("employment_type"))  # recorded type wins (#338)
             results.append(item)
 
     # Reuse the staff map already built above; this list also feeds the staff
@@ -1451,6 +1479,7 @@ async def admin_stuck_requests():
         stuck.append({
             "id": item.get("id"),
             "employee_name": emp_name,
+            "employment_type": _employment_type_of(staff),    # salaried/hourly split (#338)
             "LeaveType": f.get("LeaveType"),
             "Title": f.get("Title"),
             "StartDate": f.get("StartDate"),
