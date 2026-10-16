@@ -20,10 +20,36 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.models.request_item import (
+    CarryoverPayoutRequestItem,
+    LeaveRequestItem,
+    OvertimeRequestItem,
+)
+from app.repositories.postgres.requests import PostgresRequestList
 from app.repositories.request_store import request_list_tables, requests_in_postgres
 from app.services.request_submitter import SUBMITTER_EMAIL_COLUMN
 
 logger = logging.getLogger(__name__)
+
+
+def _json_copy_tables() -> dict[str, PostgresRequestList]:
+    """The pre-move JSON copy tables for each request list, by SharePoint list id.
+
+    The live store (``request_store.request_list_tables``) now serves the typed
+    ``requests`` table, but the SharePoint-to-Postgres copy (#194/#195) still
+    reads and writes the original JSON-blob tables through ``PostgresRequestList``
+    (its ``save_copy`` / ``sync_id_sequence`` have no typed-table equivalent).
+    Keeping the copy on its own tables means repointing the live store did not
+    change the copy path.
+
+    Returns:
+        {SharePoint list id: PostgresRequestList}.
+    """
+    return {
+        settings.SP_LIST_LEAVE_REQUESTS: PostgresRequestList(LeaveRequestItem),
+        settings.SP_LIST_OVERTIME_REQUESTS: PostgresRequestList(OvertimeRequestItem),
+        settings.SP_LIST_CARRYOVER_PAYOUT: PostgresRequestList(CarryoverPayoutRequestItem),
+    }
 
 # The person column naming each list's submitter, by setting name of its list id.
 PERSON_COLUMNS = {
@@ -133,7 +159,7 @@ async def copy_requests_from_sharepoint() -> dict:
             "Requests already live in Postgres; copying from SharePoint now would overwrite newer data."
         )
     emails = await _user_emails()
-    tables = request_list_tables()
+    tables = _json_copy_tables()
     report: dict = {}
     for setting_name, name in LIST_NAMES.items():
         list_id = getattr(settings, setting_name)
@@ -173,6 +199,9 @@ async def move_form_item_into_postgres(list_id: str, sp_item_id: str) -> dict | 
         item was already moved, has been deleted, or another worker moved it
         at the same moment.
     """
+    # The Form fallback writes into the LIVE store (the typed requests table),
+    # so a moved item is what the app reads and the dispatcher processes. The
+    # bulk pre-copy above keeps its own JSON tables; only it needs save_copy.
     table = request_list_tables()[list_id]
     if await table.find_by_sp_item_id(str(sp_item_id)):
         logger.info("Form item %s on %s is already in Postgres; SharePoint changes are ignored", sp_item_id, list_id)
@@ -203,7 +232,7 @@ async def request_storage_report() -> dict:
         only_in_sharepoint counts SharePoint items with no Postgres row yet.
         A list SharePoint cannot be read for carries "error" instead.
     """
-    tables = request_list_tables()
+    tables = _json_copy_tables()
     lists: dict = {}
     for setting_name, name in LIST_NAMES.items():
         list_id = getattr(settings, setting_name)

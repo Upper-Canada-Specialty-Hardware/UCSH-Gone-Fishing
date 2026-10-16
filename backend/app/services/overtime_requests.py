@@ -439,17 +439,25 @@ async def admin_edit_overtime_request(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
-async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
+async def approve_overtime_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
+) -> dict:
     """Process overtime approval — update balance, vacation offset, recalc RAD.
 
     Args:
         request_id: SharePoint item id of the overtime request being approved.
         manager_id: Staff Directory id of whoever is approving.
+        channel: Which channel asked (for the Postgres decision path's audit).
+        link_version: The approval version a link carried, or None (stale check).
 
     Returns:
         A result dict describing the approval. An "error" key means nothing was
         written and the request is unchanged.
     """
+    from app.services.request_decisions import approve as _pg_approve, decisions_active
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_approve("overtime", request_id, manager_id, channel, link_version)
+
     # Conflict check runs BEFORE the idempotency claim so a blocked approval
     # stays retryable — same reasoning as approve_leave_request.
     pre_claim = await request_store.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
@@ -592,8 +600,13 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     return {"status": "approved", "balances": balances}
 
 
-async def refund_overtime_request(request_id: str | int, admin_id: str | int) -> dict:
+async def refund_overtime_request(
+    request_id: str | int, admin_id: str | int, channel: str = "system",
+) -> dict:
     """Reverse an approved overtime request — subtract from OT balance, cascade, recalc RAD."""
+    from app.services.request_decisions import decisions_active, refund as _pg_refund
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_refund("overtime", request_id, admin_id, channel)
     item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -684,8 +697,14 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
     return {"status": "refunded", "balances": balances}
 
 
-async def reject_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
+async def reject_overtime_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system",
+    link_version: int | None = None, reason: str | None = None,
+) -> dict:
     """Process overtime rejection."""
+    from app.services.request_decisions import decisions_active, reject as _pg_reject
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_reject("overtime", request_id, manager_id, channel, link_version, reason)
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 

@@ -15,30 +15,30 @@ either way.
 """
 from app.config import settings
 from app.graph.sharepoint import sp_client
-from app.models.request_item import (
-    CarryoverPayoutRequestItem,
-    LeaveRequestItem,
-    OvertimeRequestItem,
-)
-from app.repositories.postgres.requests import PostgresRequestList
+from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.app_settings import requests_storage
 
 SHAREPOINT = "sharepoint"
 POSTGRES = "postgres"
 
 
-def request_list_tables() -> dict[str, PostgresRequestList]:
+def request_list_tables() -> dict[str, TypedRequestList]:
     """The Postgres table for each request list, keyed by its SharePoint list id.
 
-    Read at call time, so a test or a settings change sees the current ids.
+    Read at call time, so a test or a settings change sees the current ids. Each
+    list is served by the typed ``requests`` table (one ``RequestRecord`` row per
+    request, told apart by kind), so the live request services read and write
+    real columns while still seeing the SharePoint list-item shapes (#321). The
+    pre-move JSON copy path keeps its own ``PostgresRequestList`` tables inside
+    request_copy.py; this is the live store.
 
     Returns:
-        {SharePoint list id: PostgresRequestList}.
+        {SharePoint list id: TypedRequestList}.
     """
     return {
-        settings.SP_LIST_LEAVE_REQUESTS: PostgresRequestList(LeaveRequestItem),
-        settings.SP_LIST_OVERTIME_REQUESTS: PostgresRequestList(OvertimeRequestItem),
-        settings.SP_LIST_CARRYOVER_PAYOUT: PostgresRequestList(CarryoverPayoutRequestItem),
+        settings.SP_LIST_LEAVE_REQUESTS: TypedRequestList("leave"),
+        settings.SP_LIST_OVERTIME_REQUESTS: TypedRequestList("overtime"),
+        settings.SP_LIST_CARRYOVER_PAYOUT: TypedRequestList("carryover_payout"),
     }
 
 

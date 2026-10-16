@@ -658,17 +658,28 @@ async def admin_edit_leave_request(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
-async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:
+async def approve_leave_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
+) -> dict:
     """Process leave approval — update SP, deduct balance, cascade, email.
 
     Args:
         request_id: SharePoint item id of the leave request being approved.
         manager_id: Staff Directory id of whoever is approving.
+        channel: Which channel asked (for the Postgres decision path's audit).
+        link_version: The approval version a link carried, or None; a mismatch
+            is a stale link (Postgres path only).
 
     Returns:
         A result dict describing the approval. An "error" key means nothing was
         written and the request is unchanged.
     """
+    # Once requests and staff both live in Postgres, every channel runs the one
+    # transactional decision path instead of this SharePoint flow (#324).
+    from app.services.request_decisions import approve as _pg_approve, decisions_active
+    if await decisions_active():
+        return await _pg_approve("leave", request_id, manager_id, channel, link_version)
+
     # Conflict check runs BEFORE the idempotency claim, on its own read of the
     # item. Claiming first would consume the one-shot claim on a blocked
     # approval, and the manager would then get "Already processed" forever, even
@@ -860,8 +871,14 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     return {"status": "approved", "balances": balances}
 
 
-async def reject_leave_request(request_id: str | int, manager_id: str | int) -> dict:
+async def reject_leave_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system",
+    link_version: int | None = None, reason: str | None = None,
+) -> dict:
     """Process leave rejection."""
+    from app.services.request_decisions import decisions_active, reject as _pg_reject
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_reject("leave", request_id, manager_id, channel, link_version, reason)
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 
@@ -901,8 +918,13 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     return {"status": "rejected"}
 
 
-async def refund_leave_request(request_id: str | int, admin_id: str | int) -> dict:
+async def refund_leave_request(
+    request_id: str | int, admin_id: str | int, channel: str = "system",
+) -> dict:
     """Reverse an approved leave request — restore balance, cascade, recalc RAD."""
+    from app.services.request_decisions import decisions_active, refund as _pg_refund
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_refund("leave", request_id, admin_id, channel)
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
     fields = item["fields"]
 

@@ -139,7 +139,9 @@ async def receive_sms(request: Request):
     # Replying "response has been received" regardless made a refused approval
     # indistinguishable from a successful one.
     if decision == "Approve":
-        result = await config["approve"](item_id, sender_id) or {}
+        # channel="sms"; SMS replies carry no link version, so stale-link
+        # checking does not apply here (link_version stays the default None).
+        result = await config["approve"](item_id, sender_id, "sms") or {}
         if result.get("error"):
             await send_sms(from_number, f"Request #{item_id} was not approved. {result['error']}")
             return ""
@@ -149,7 +151,8 @@ async def receive_sms(request: Request):
             f"Response has been received. An email will be sent to ({manager_email}) once the process is completed.",
         )
     else:
-        result = await config["reject"](item_id, sender_id) or {}
+        # channel="sms" for the reject path too; no link version by SMS.
+        result = await config["reject"](item_id, sender_id, "sms") or {}
         if result.get("error"):
             await send_sms(from_number, f"Request #{item_id} was not rejected. {result['error']}")
             return ""

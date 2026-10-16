@@ -507,8 +507,13 @@ async def admin_edit_carryover_payout(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
-async def approve_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
+async def approve_carryover_payout(
+    request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
+) -> dict:
     """Process approval — re-validate, apply balance transfer, recalc RAD."""
+    from app.services.request_decisions import approve as _pg_approve, decisions_active
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_approve("carryover_payout", request_id, manager_id, channel, link_version)
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "approve"):
         return {"error": "Already processed"}
 
@@ -649,8 +654,13 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
     return {"status": "approved", "balances": balances}
 
 
-async def refund_carryover_payout(request_id: str | int, admin_id: str | int) -> dict:
+async def refund_carryover_payout(
+    request_id: str | int, admin_id: str | int, channel: str = "system",
+) -> dict:
     """Reverse an approved carryover/payout — restore vacation, subtract from CO/Payout, recalc RAD."""
+    from app.services.request_decisions import decisions_active, refund as _pg_refund
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_refund("carryover_payout", request_id, admin_id, channel)
     item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
@@ -734,8 +744,14 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
     return {"status": "refunded", "balances": balances}
 
 
-async def reject_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
+async def reject_carryover_payout(
+    request_id: str | int, manager_id: str | int, channel: str = "system",
+    link_version: int | None = None, reason: str | None = None,
+) -> dict:
     """Process rejection."""
+    from app.services.request_decisions import decisions_active, reject as _pg_reject
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_reject("carryover_payout", request_id, manager_id, channel, link_version, reason)
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "reject"):
         return {"error": "Already processed"}
 

@@ -17,6 +17,7 @@ from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
 from app.tasks.setup_nudges import start_setup_nudge_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
+from app.tasks.outbox_worker import start_outbox_worker  # drains queued result emails/texts (#326)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,10 @@ async def lifespan(app: FastAPI):
         force=True,
     )
     logger.info("Database migrations applied")
+
+    # Start the outbox worker before the SharePoint step, and outside its try, so
+    # queued result emails/texts drain even when Graph/SharePoint is unavailable.
+    outbox_task = start_outbox_worker()
 
     # 2. Connect to Graph API and SharePoint
     renewal_task = None
@@ -113,6 +118,7 @@ async def lifespan(app: FastAPI):
         setup_nudge_task.cancel()
     if held_request_task:
         held_request_task.cancel()
+    outbox_task.cancel()                                            # stop draining the outbox on shutdown
     await sp_client.close()
     logger.info("Shutdown complete")
 
