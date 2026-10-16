@@ -56,6 +56,7 @@ from app.services.employee import (
     map_location_to_province,
     resolve_person_field,
 )
+from app.services.employment import is_hourly
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.overlap_detection import _extract_lookup_id
 from app.services.holidays import get_holidays_for_province, get_half_friday_season
@@ -556,18 +557,26 @@ def build_validation_report(
     # --- Yearly entitlements are set ---
     # These drive what an employee is granted; a zero here is almost always an
     # unfinished record rather than a deliberate value.
+    # hourly (#300) have no vacation, so a zero vacation grant is right for
+    # them and only their sick grant is checked.
+    entitlement_fields = (("sick", "SickDayEntitlement"),) if is_hourly(employee_fields) else (
+        ("yearly vacation", "DefaultYearlyVacationDays"),
+        ("sick", "SickDayEntitlement"),
+    )
     missing_entitlements = [
-        label for label, field in (
-            ("yearly vacation", "DefaultYearlyVacationDays"),
-            ("sick", "SickDayEntitlement"),
-        )
+        label for label, field in entitlement_fields
         if not _as_float(employee_fields.get(field)) > 0
     ]
     checks.append(_measured(
         "entitlements_set", "balances",
         label="Yearly entitlements with a value above zero",
-        actual=2 - len(missing_entitlements), expected=2, comparison="equals",
-        ok_detail="Both the yearly vacation and sick entitlements are set.",
+        actual=len(entitlement_fields) - len(missing_entitlements),
+        expected=len(entitlement_fields), comparison="equals",
+        ok_detail=(
+            "The sick entitlement is set (hourly staff have no vacation entitlement)."
+            if len(entitlement_fields) == 1 else
+            "Both the yearly vacation and sick entitlements are set."
+        ),
         bad_detail=(
             "No entitlement recorded for: " + ", ".join(missing_entitlements)
             + ". Their yearly grant cannot be worked out from this record."

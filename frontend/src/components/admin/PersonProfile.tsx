@@ -17,6 +17,7 @@ import { requestAmount, requestKind, requestWhat, requestWhen } from '../../util
 import { Enter } from '../Motion';
 import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord } from '../../api/staff';
 import { formatDay, formatInstantDay } from '../../utils/dates';
+import { isHourly } from '../../utils/employment';
 
 /*
  * The admin person profile (#273, #276, #306). The staff row grows into this
@@ -269,6 +270,23 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   /** Undo every unsaved change. */
   const cancel = () => { setEdits({}); setReason(''); setEditingKey(null); };
 
+  // hourly (current or edited type): Sick is the only balance, vacation is a
+  // counter, and Make-up/Carry-over/Payout do not apply (#300).
+  const hourlyStaff = isHourly(String(fieldValue('salary_hourly')));
+  // The record carries no vacation_taken, so rebuild the counter from this
+  // person's own requests: approved Vacation days whose start date is this year
+  // (matches app/services/employment.py vacation_days_counted).
+  const currentYear = new Date().getFullYear();
+  const vacationTaken = useMemo(
+    () => requests
+      .filter((r) => r.request_type === 'leave' && r.Status === 'Approved'
+        && r.LeaveType === 'Vacation' && Number(String(r.StartDate || '').slice(0, 4)) === currentYear)
+      .reduce((sum, r) => sum + (Number(r.Days) || 0), 0),
+    [requests, currentYear],
+  );
+  // For hourly: the two entitlements and Sick only (vacation becomes the counter below).
+  const potsToShow = hourlyStaff ? POTS.filter((p) => ['vacation_entitlement', 'sick_entitlement', 'sick'].includes(p.key)) : POTS;
+
   // Header values follow unsaved edits live.
   const currentName = String(fieldValue('name'));
   const initials = currentName.split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
@@ -335,13 +353,27 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
           <Box sx={{ p: 2.5, display: 'grid', gap: 2.5, alignContent: 'start', minWidth: 0 }}>
             <SectionHead title="Entitlements and balances" hint="Click a tile to change it" />
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 1.25 }}>
-              {POTS.map((p) => (
-                <Tile
-                  key={p.key} pot={p} value={potValue(p)} saved={potOriginal(p)}
-                  entitlement={p.of ? potValue(POT_BY_KEY[p.of]) : undefined}
-                  onChange={(v) => setEdit(p.key, v)}
-                />
-              ))}
+              {potsToShow.flatMap((p) => {
+                // hourly may set a 0 vacation entitlement, so drop the 0.5 floor and relabel its caption (#300).
+                const pot = hourlyStaff && p.key === 'vacation_entitlement'
+                  ? { ...p, min: 0, unit: 'hourly staff have no vacation entitlement.' }
+                  : p;
+                const tile = (
+                  <Tile
+                    key={p.key} pot={pot} value={potValue(p)} saved={potOriginal(p)}
+                    entitlement={p.of ? potValue(POT_BY_KEY[p.of]) : undefined}
+                    onChange={(v) => setEdit(p.key, v)}
+                  />
+                );
+                // For hourly, the vacation counter sits just before Sick, in place of the vacation balance tile.
+                if (hourlyStaff && p.key === 'sick') {
+                  return [
+                    <CounterTile key="vacation-taken" label="Vacation taken" value={vacationTaken} caption="This year. Counted, not a balance." />,
+                    tile,
+                  ];
+                }
+                return [tile];
+              })}
             </Box>
 
             {/* Details: moved under the tiles in the left column (#306 mockup). */}
@@ -667,7 +699,7 @@ function Tile({ pot, value, saved, entitlement, onChange }: {
         <Stack direction="row" spacing={0.5} alignItems="center" onClick={(e) => e.stopPropagation()}>
           <IconButton size="small" aria-label="Less" onClick={() => step(-pot.step)} sx={{ border: 1, borderColor: t.line2 }}><RemoveIcon fontSize="small" /></IconButton>
           <TextField
-            autoFocus inputRef={inputRef} size="small" type="number" defaultValue={fmt(value)} inputProps={{ step: pot.step, 'aria-label': `New ${pot.label}`, style: { textAlign: 'center', fontVariantNumeric: 'tabular-nums' } }}
+            autoFocus inputRef={inputRef} size="small" type="number" defaultValue={fmt(value)} inputProps={{ step: pot.step, min: pot.min, 'aria-label': `New ${pot.label}`, style: { textAlign: 'center', fontVariantNumeric: 'tabular-nums' } }}
             onChange={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) onChange(v); }}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') setEditing(false); }}
             onBlur={() => setEditing(false)}
@@ -685,6 +717,32 @@ function Tile({ pot, value, saved, entitlement, onChange }: {
           <Box sx={{ height: '100%', width: `${meterPct}%`, borderRadius: 2, bgcolor: negative ? 'error.main' : 'primary.main', transition: 'width .4s ease' }} />
         </Box>
       )}
+    </Box>
+  );
+}
+
+/**
+ * A read-only counter tile (#300): an hourly person's "vacation taken this
+ * year", shown as days with no meter and no edit, so it never reads as a
+ * balance. It sits where the vacation balance tile would be.
+ *
+ * @param props.label - The tile heading ("Vacation taken").
+ * @param props.value - The counted days.
+ * @param props.caption - The line saying it is a counter.
+ * @returns The tile.
+ */
+function CounterTile({ label, value, caption }: { label: string; value: number; caption: string }) {
+  const theme = useTheme();
+  const t = theme.tokens;
+  return (
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 2, p: 1.5, display: 'grid', gap: 0.5, bgcolor: t.bg }}>
+      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>{label}</Typography>
+      <Typography sx={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>
+        {fmt(value)}
+        {/* "days" is small beside the figure: this counts up, it is not a balance. */}
+        <Box component="span" sx={{ fontSize: 14, fontWeight: 600, color: 'text.secondary', ml: 0.5 }}>days</Box>
+      </Typography>
+      <Typography variant="caption" color="text.secondary">{caption}</Typography>
     </Box>
   );
 }

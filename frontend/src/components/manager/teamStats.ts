@@ -1,6 +1,7 @@
 import { RequestKind } from '../../constants/leaveColors';
 import { addDays, dayKey, daysBetween, isWeekend, mondayOf, overlaps, parseDay, today } from '../../utils/dates';
 import { LabelOf } from '../../utils/personColor';
+import { isHourly } from '../../utils/employment';
 import { requestKind, requestWhat, requestWho, shortDate } from '../../utils/requestText';
 
 /**
@@ -243,13 +244,16 @@ export function insights(members: any[], list: Absence[], labelOf: LabelOf): { t
       out.push({ tone: 'warn', text: `If every waiting request is approved, ${low.in} of ${names.length} are in on ${shortDate(dayKey(low.day))}.` });
     }
   }
-  // Below zero on vacation: approved leave has run past what they have.
+  // Below zero on vacation: approved leave has run past what they have. Hourly
+  // staff have no vacation balance (sick is their floor), so they are not flagged here (#300).
   for (const m of members) {
+    if (isHourly(m.balances)) continue;
     const v = m.balances?.vacation_balance ?? 0;
     if (v < 0) out.push({ tone: 'warn', text: `${labelOf(m.name)} is ${Math.abs(v)} vacation day${Math.abs(v) === 1 ? '' : 's'} below zero.` });
   }
-  // Carried-over days are cleared every April 1.
+  // Carried-over days are cleared every April 1. Hourly staff have no carry-over (#300).
   for (const m of members) {
+    if (isHourly(m.balances)) continue;
     const c = m.balances?.carryover ?? 0;
     if (c > 0) out.push({ tone: 'info', text: `${labelOf(m.name)} has ${c} carried-over day${c === 1 ? '' : 's'}. Carried-over days reset on April 1.` });
   }

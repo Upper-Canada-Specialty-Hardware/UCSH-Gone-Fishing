@@ -24,6 +24,7 @@ from app.graph.sharepoint import sp_client
 from app.services import staff_changes
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
+from app.services.employment import HOURLY_TYPES
 from app.services.employee import (
     _get_sp_user_name_map,
     get_employee_by_id,
@@ -190,16 +191,20 @@ def _current_number(value) -> float:
         return 0.0                                    # never let a stray value crash
 
 
-def plan_changes(current_fields: dict, requested: dict) -> list[dict]:
+def plan_changes(current_fields: dict, requested: dict, employment_type: str | None = None) -> list[dict]:
     """Validate requested changes and return only the ones that differ. No I/O.
 
     Each requested key must be editable and numeric; entitlements must be above
-    zero while balances may be negative or fractional. A requested value equal to
-    the current one is dropped, so the write touches only columns that moved.
+    zero while balances may be negative or fractional. The one exception is BC
+    hourly (#300): they have no vacation, so their vacation entitlement may be
+    zero (never negative). A requested value equal to the current one is
+    dropped, so the write touches only columns that moved.
 
     Args:
         current_fields: The record's current ``fields`` dict (SharePoint columns).
         requested: snake_case wire key -> new numeric value, as sent by the panel.
+        employment_type: The type the record will have after this save (the
+            same save may change it); defaults to the current SalaryHourly.
 
     Returns:
         One dict per differing field: ``{"field", "column", "before", "after"}``,
@@ -210,6 +215,9 @@ def plan_changes(current_fields: dict, requested: dict) -> list[dict]:
             entitlement at or below zero.
     """
     changes: list[dict] = []                         # accumulates only real diffs
+    if employment_type is None:                      # same save did not change the type
+        employment_type = current_fields.get("SalaryHourly")
+    bc = (employment_type or "").strip() in HOURLY_TYPES  # hourly: 0 vacation grant is valid
     for key, raw in requested.items():               # one pass over the request
         if key not in EDITABLE:                      # guard against stray keys
             raise ValueError(f"'{key}' is not a field that can be changed.")
@@ -217,7 +225,11 @@ def plan_changes(current_fields: dict, requested: dict) -> list[dict]:
         label = LABELS[key]                          # friendly name for messages
         after = _as_number(raw, label)               # validate + coerce the input
         if key in ENTITLEMENTS and after <= 0:       # grants cannot be zero/negative
-            raise ValueError(f"{label} must be above zero.")
+            if not (key == "vacation_entitlement" and after == 0 and bc):
+                raise ValueError(
+                    f"{label} cannot be below zero." if bc and key == "vacation_entitlement"
+                    else f"{label} must be above zero."
+                )
         before = _current_number(current_fields.get(column))  # current, blank -> 0
         if before != after:                          # skip no-op values entirely
             changes.append({                         # record a genuine change
@@ -567,7 +579,9 @@ async def apply_entitlement_changes(
         current = emp.get("fields", {})              # current column values
         name = current.get("Title", "")              # person's display name
 
-        pot_changes = plan_changes(current, requested)  # numeric diff (may raise)
+        # The type this record will have after the save decides whether a zero
+        # vacation entitlement is allowed (hourly, #300).
+        pot_changes = plan_changes(current, requested, fields_in.get("salary_hourly"))  # may raise
         # Resolve the "before" people from the pre-read map (no Graph call here).
         before_people = _resolve_before_people(current, fields_in, id_to_name)
         field_changes = plan_field_changes(current, before_people, fields_in)  # may raise

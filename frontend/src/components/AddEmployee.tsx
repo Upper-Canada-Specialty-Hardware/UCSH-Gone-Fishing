@@ -4,6 +4,7 @@ import {
   Divider, CircularProgress, Box, Select, InputLabel, FormControl,
   OutlinedInput, Chip,
 } from '@mui/material';
+import { isHourly } from '../utils/employment';
 
 /**
  * The Location values the backend maps to a province. Anything outside this set
@@ -21,7 +22,13 @@ const LOCATIONS = [
   'Newfound Land',
 ];
 
-/** Employment type drives real balance logic on the backend (`== "Hourly"`). */
+/**
+ * Employment type drives real balance logic on the backend: "Salary" keeps all
+ * five pots; "Hourly" (every hourly employee, wherever they work, #300) has only
+ * Sick, with vacation tracked as a counter, so it is created with a vacation
+ * entitlement of 0. The older "Hourly BC" value still works on existing records
+ * but is not offered for new people.
+ */
 const SALARY_HOURLY = ['Salary', 'Hourly'];
 
 /** One selectable supervisor, as returned by /admin/sp-users. */
@@ -106,6 +113,20 @@ export default function AddEmployee({
   /** Update one field by name. @param key - form key. @param value - new value. */
   const set = (key: string, value: string) => setForm((f) => ({ ...f, [key]: value }));
 
+  // Whether the chosen type is hourly, which has no vacation entitlement (#300).
+  const bc = isHourly(form.salary_hourly);
+
+  /**
+   * Change the employment type. Picking "Hourly" seeds the entitlements hourly
+   * staff get by default: no vacation entitlement, five sick days (#300).
+   *
+   * @param value - The chosen SalaryHourly value.
+   */
+  const setType = (value: string) =>
+    setForm((f) => (isHourly(value)
+      ? { ...f, salary_hourly: value, vacation_entitlement: '0', sick_entitlement: f.sick_entitlement || '5' }
+      : { ...f, salary_hourly: value }));
+
   /** Submit the form, showing the backend's reason on a 400. */
   const submit = async () => {
     setError('');
@@ -144,7 +165,8 @@ export default function AddEmployee({
     !!form.location &&
     !!form.department.trim() &&
     !!form.salary_hourly &&
-    Number(form.vacation_entitlement) > 0 &&
+    // hourly may have 0 vacation entitlement (never negative); everyone else needs > 0.
+    (bc ? Number(form.vacation_entitlement) >= 0 : Number(form.vacation_entitlement) > 0) &&
     Number(form.sick_entitlement) > 0 &&
     (!showPicker || managerIds.length > 0);
 
@@ -192,7 +214,8 @@ export default function AddEmployee({
         />
         <TextField
           label="Employment type" required select
-          value={form.salary_hourly} onChange={(e) => set('salary_hourly', e.target.value)}
+          value={form.salary_hourly} onChange={(e) => setType(e.target.value)}
+          helperText={bc ? 'hourly staff have only a sick balance; vacation is counted, not a balance.' : undefined}
         >
           {SALARY_HOURLY.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
         </TextField>
@@ -236,6 +259,8 @@ export default function AddEmployee({
           <TextField
             label="Vacation days / year" required type="number" fullWidth
             value={form.vacation_entitlement} onChange={(e) => set('vacation_entitlement', e.target.value)}
+            inputProps={{ min: 0 }}
+            helperText={bc ? 'hourly staff have no vacation entitlement.' : undefined}
           />
           <TextField
             label="Sick days / year" required type="number" fullWidth
@@ -249,26 +274,33 @@ export default function AddEmployee({
           </Typography>
         </Divider>
         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-          <TextField
-            label="Vacation" type="number" sx={{ flex: '1 1 150px' }}
-            value={form.vacation_balance} onChange={(e) => set('vacation_balance', e.target.value)}
-          />
+          {/* hourly staff have only a Sick balance; the other pots do not apply to them (#300). */}
+          {!bc && (
+            <TextField
+              label="Vacation" type="number" sx={{ flex: '1 1 150px' }}
+              value={form.vacation_balance} onChange={(e) => set('vacation_balance', e.target.value)}
+            />
+          )}
           <TextField
             label="Sick" type="number" sx={{ flex: '1 1 150px' }}
             value={form.sick_balance} onChange={(e) => set('sick_balance', e.target.value)}
           />
-          <TextField
-            label="Make-up" type="number" sx={{ flex: '1 1 150px' }}
-            value={form.overtime_balance} onChange={(e) => set('overtime_balance', e.target.value)}
-          />
-          <TextField
-            label="Carry-over" type="number" sx={{ flex: '1 1 150px' }}
-            value={form.carry_over} onChange={(e) => set('carry_over', e.target.value)}
-          />
-          <TextField
-            label="Payout" type="number" sx={{ flex: '1 1 150px' }}
-            value={form.payout} onChange={(e) => set('payout', e.target.value)}
-          />
+          {!bc && (
+            <>
+              <TextField
+                label="Make-up" type="number" sx={{ flex: '1 1 150px' }}
+                value={form.overtime_balance} onChange={(e) => set('overtime_balance', e.target.value)}
+              />
+              <TextField
+                label="Carry-over" type="number" sx={{ flex: '1 1 150px' }}
+                value={form.carry_over} onChange={(e) => set('carry_over', e.target.value)}
+              />
+              <TextField
+                label="Payout" type="number" sx={{ flex: '1 1 150px' }}
+                value={form.payout} onChange={(e) => set('payout', e.target.value)}
+              />
+            </>
+          )}
         </Box>
 
         <Box>

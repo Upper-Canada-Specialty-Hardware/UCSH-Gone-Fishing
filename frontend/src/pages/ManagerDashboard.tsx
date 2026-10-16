@@ -11,6 +11,8 @@ import RequestHistory from '../components/RequestHistory';
 import AddEmployee from '../components/AddEmployee';
 import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
+import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
+import EventBusyIcon from '@mui/icons-material/EventBusy';
 import {
   AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, riseAt, staggerChildren, useDirection,
 } from '../components/Motion';
@@ -34,8 +36,10 @@ import {
   approveRequest,
   rejectRequest,
   createEmployee,
+  logSickDay,
 } from '../api/client';
 import { greeting } from '../utils/greeting';
+import { isHourly } from '../utils/employment';
 
 /**
  * A new hire's details left by the supervisor's "add this person" email link
@@ -109,6 +113,10 @@ export default function ManagerDashboard() {
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [managerName, setManagerName] = useState('');
   const [processingEnabled, setProcessingEnabled] = useState(false);
+  // Whether this manager's location is enabled for logging a sick day on an
+  // employee's behalf (decided server-side from the Staff Directory, BC for now).
+  const [canLogSickDays, setCanLogSickDays] = useState(false);
+  const [sickDialogOpen, setSickDialogOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -128,6 +136,7 @@ export default function ManagerDashboard() {
       .then(([profileRes, membersRes, pendingRes, reqRes, calRes, configRes]) => {
         setManagerName(profileRes.data.employee?.name || '');
         setMembers((membersRes.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
+        setCanLogSickDays(Boolean(membersRes.data.can_log_sick_days));
         setPending(pendingRes.data.pending || []);
         setRequests(reqRes.data.requests || []);
         setCalendarEvents(calRes.data.events || []);
@@ -162,6 +171,34 @@ export default function ManagerDashboard() {
       setSnack({ open: true, message: typeof detail === 'string' ? detail : yes ? 'Approval failed' : 'Rejection failed', severity: 'error' });
     } finally {
       setActionLoading(null);
+    }
+  }, []);
+
+  /**
+   * After a sick day is approved the employee's sick balance, the request
+   * history and the calendar have all changed, so toast the result and pull
+   * those three endpoints again.
+   *
+   * @param result - What the backend returned for the logged sick day.
+   */
+  const handleSickDayLogged = useCallback(async (result: SickDayResult) => {
+    const dayWord = result.days === 1 ? 'day' : 'days';         // match the day count
+    setSnack({
+      open: true,
+      message: `Sick day logged and approved for ${result.employee_name} (${result.days} ${dayWord}).`,
+      severity: 'success',
+    });
+    try {
+      // The three views the sick day changed: balances, history and calendar.
+      const [membersRes, reqRes, calRes] = await Promise.all([
+        getTeamMembers(), getTeamRequests(), getTeamCalendar(),
+      ]);
+      setMembers((membersRes.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
+      setRequests(reqRes.data.requests || []);
+      setCalendarEvents(calRes.data.events || []);
+    } catch {
+      // The sick day is already approved; a failed refresh only leaves stale
+      // numbers on screen until the next reload.
     }
   }, []);
 
@@ -373,11 +410,23 @@ export default function ManagerDashboard() {
 
       {tab === 'team' && (
         <>
-          {/* Name filter: narrows the rings and the cards below as the manager types. */}
-          <TextField
-            label="Search by name" value={teamSearch} onChange={(e) => setTeamSearch(e.target.value)}
-            size="small" fullWidth placeholder="Start typing a name" sx={{ maxWidth: 360 }}
-          />
+          {/* Name filter on the left; the sick-day action sits with it, the team area
+              being where picking a team member to log for belongs. */}
+          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+            <TextField
+              label="Search by name" value={teamSearch} onChange={(e) => setTeamSearch(e.target.value)}
+              size="small" placeholder="Start typing a name" sx={{ flex: '1 1 240px', maxWidth: 360 }}
+            />
+            {/* Shown only where the manager's location is enabled; off in reporting-only mode. */}
+            {canLogSickDays && (
+              <Button
+                variant="contained" startIcon={<EventBusyIcon />} sx={{ ml: { sm: 'auto' } }}
+                disabled={!processingEnabled} onClick={() => setSickDialogOpen(true)}
+              >
+                Log sick day
+              </Button>
+            )}
+          </Box>
           <Panel title="Vacation left"><VacationRings members={teamShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
           {/* A search fades out the people who no longer match while the rest slide together. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', position: 'relative' }}>
@@ -388,6 +437,8 @@ export default function ManagerDashboard() {
               const nextOff = absences
                 .filter((a) => a.who === mem.name && a.end >= today())
                 .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
+              // hourly team members have only Sick plus a vacation counter (#300).
+              const bc = isHourly(b);
               /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
               const line = (label: string, v: number, of?: number) => (
                 <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -420,10 +471,24 @@ export default function ManagerDashboard() {
                       <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
                     </Box>
                   </Box>
-                  {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
-                  {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
-                  {line('Make-Up', b.overtime ?? 0)}
-                  {line('Carry Over', b.carryover ?? 0)}
+                  {bc ? (
+                    <>
+                      {/* Vacation is a counter here, not a balance: no "of", with a caption. */}
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{b.vacation_taken ?? 0}</Typography>
+                      </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>This year. Counted, not a balance.</Typography>
+                      {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+                    </>
+                  ) : (
+                    <>
+                      {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
+                      {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+                      {line('Make-Up', b.overtime ?? 0)}
+                      {line('Carry Over', b.carryover ?? 0)}
+                    </>
+                  )}
                   <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>
                     {nextOff ? (
                       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -518,6 +583,17 @@ export default function ManagerDashboard() {
         />
       )}
       </Enter>
+
+      {/* Mounted only where the manager's location is enabled; it picks from the team. */}
+      {canLogSickDays && (
+        <LogSickDayDialog
+          open={sickDialogOpen}
+          members={members}
+          onClose={() => setSickDialogOpen(false)}
+          submitSickDay={logSickDay}
+          onLogged={handleSickDayLogged}
+        />
+      )}
 
       <Snackbar
         open={snack.open}

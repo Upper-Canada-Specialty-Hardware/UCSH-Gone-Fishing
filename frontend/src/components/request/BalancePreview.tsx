@@ -5,10 +5,14 @@ import { Balances, EmployeeSession, RequestPreview, RequestType, previewMyReques
 import { AutoHeight, CountUp, Fold, riseAt } from '../Motion';
 import TakenFrom from '../TakenFrom';
 import { describeTakenFrom, takenFromPreview } from '../../utils/takenFrom';
+import { belowZeroSentence, isHourly } from '../../utils/employment';
 import { today } from '../../utils/dates';
 
+/** The numeric balance pots (Balances also holds the non-numeric hourly / vacation_taken, #300). */
+type NumericBalanceKey = 'vacation_balance' | 'sick_balance' | 'overtime' | 'carryover' | 'payout';
+
 /** The balances shown, in the order spending uses them. */
-const POTS: { key: keyof Balances; label: string }[] = [
+const POTS: { key: NumericBalanceKey; label: string }[] = [
   { key: 'overtime', label: 'Make-Up' },
   { key: 'sick_balance', label: 'Sick' },
   { key: 'carryover', label: 'Carry Over' },
@@ -23,6 +27,8 @@ interface Props {
   type: RequestType;
   /** The form body as it would be sent; null while the form is not ready. */
   body: Record<string, unknown> | null;
+  /** hourly: vacation days taken this year so far (the counter), else null (#300). */
+  vacationTaken?: number | null;
 }
 
 /**
@@ -35,7 +41,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The preview box, or nothing.
  */
-export default function BalancePreview({ session, type, body }: Props) {
+export default function BalancePreview({ session, type, body, vacationTaken = null }: Props) {
   const theme = useTheme();
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const key = body ? JSON.stringify(body) : '';         // a stable value for the effect to watch
@@ -55,12 +61,21 @@ export default function BalancePreview({ session, type, body }: Props) {
   const amountLabel = type === 'leave' ? 'Working days' : type === 'overtime' ? 'Adds (8 hours = 1 day)' : 'Days';
   const current = preview?.current;
   const projected = preview?.projected;
-  const changed = current && projected ? POTS.filter((p) => p.key === 'vacation_balance' || current[p.key] !== projected[p.key]) : [];
+  // hourly staff have only Sick, so their preview lists Sick alone; everyone else keeps Vacation
+  // always on and adds any other pot that moves (#300).
+  const hourlyStaff = isHourly(current);
+  const alwaysKey: NumericBalanceKey = hourlyStaff ? 'sick_balance' : 'vacation_balance';
+  const pots = hourlyStaff ? POTS.filter((p) => p.key === 'sick_balance') : POTS;
+  const changed = current && projected ? pots.filter((p) => p.key === alwaysKey || current[p.key] !== projected[p.key]) : [];
   // The same split the dashboards show, worked out from the preview's current vs projected
   // balances (there is no server taken_from for an unsent request). Shown only when the
   // request actually moves a balance; a no-change case is already covered by `unchanged`.
   const taken = current && projected ? takenFromPreview(current, projected, today()) : null;
   const showTaken = taken ? describeTakenFrom(taken).kind === 'segments' : false;
+  // hourly vacation moves no balance: show the count going up instead. A request in
+  // next year counts toward next year's total, which starts again, so no numbers then.
+  const counted = hourlyStaff && type === 'leave' && body?.leave_type === 'Vacation' && !!preview;
+  const countFrom = counted && !preview!.next_year && vacationTaken !== null ? vacationTaken : null;
 
   // The box folds open once the form is ready and follows its content's height;
   // each balance counts from now to after approval, so the change is felt.
@@ -80,14 +95,22 @@ export default function BalancePreview({ session, type, body }: Props) {
                 <Box sx={{ display: 'flex', justifyContent: 'flex-end', flex: 1, minWidth: 0 }}><TakenFrom value={taken} compact /></Box>
               </Box>
             )}
+            {counted && (
+              <Row
+                i={1} label="Vacation taken this year"
+                value={countFrom === null ? 'counted in next year' : <>{fmt(countFrom)} → <CountUp from={countFrom} value={countFrom + preview.days} format={fmt} delay={0.15} /></>}
+              />
+            )}
             {changed.map((p, i) => (
               <Row
-                key={p.key} i={i + 1} label={p.label} negative={projected![p.key] < 0}
+                key={p.key} i={i + 1} label={hourlyStaff ? 'Sick days left' : p.label} negative={projected![p.key] < 0}
                 value={<>{fmt(current[p.key])} → <CountUp from={current[p.key]} value={projected![p.key]} format={fmt} delay={0.15 + i * 0.06} /></>}
               />
             ))}
             {preview.unchanged && <Typography variant="body2" color="text.secondary">{preview.unchanged}</Typography>}
             {preview.notes.map((n) => <Typography key={n} variant="body2" color="text.secondary">{n}</Typography>)}
+            {/* Approving would take the floor below zero: the shared sentence in red. Sending stays allowed (#300). */}
+            {preview.below_zero && <Typography variant="body2" color="error.main" sx={{ fontWeight: 600 }}>{belowZeroSentence(preview.below_zero)}</Typography>}
             {preview.warning && <Alert severity="warning" sx={{ mt: 0.5 }}>{preview.warning}</Alert>}
           </Box>
         )}

@@ -87,6 +87,13 @@ export const approveRequest = (type: string, id: string) =>
 export const rejectRequest = (type: string, id: string) =>
   api.post(`/team/reject/${type}/${id}`);
 
+// Manager - log a sick day for a team member; the backend creates the "Sick or
+// Personal Day" request in their name and approves it on the spot. Offered only
+// where GET /team/members reports can_log_sick_days (an enabled province).
+export const logSickDay = (payload: {
+  employee_id: string; start_date: string; end_date?: string; notes?: string;
+}) => api.post('/team/sick-days', payload);
+
 // Admin
 export const getAdminBalances = (params?: Record<string, string>) =>
   api.get('/admin/balances', { params });

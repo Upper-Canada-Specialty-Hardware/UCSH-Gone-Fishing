@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { BelowZero } from '../utils/employment';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -313,6 +314,10 @@ export interface Balances {
   overtime: number;
   carryover: number;
   payout: number;
+  /** True for an hourly person: Sick is their only balance (#300). */
+  hourly: boolean;
+  /** hourly vacation taken this calendar year (the counter); null otherwise. */
+  vacation_taken: number | null;
 }
 
 /** What a request would do, from the preview endpoint. Nothing is saved. */
@@ -329,6 +334,8 @@ export interface RequestPreview {
   /** Set when the request would be rejected automatically. */
   warning: string;
   next_year: boolean;
+  /** Set when approving would take the person's floor below zero (#300); never a block. */
+  below_zero: BelowZero | null;
 }
 
 /**

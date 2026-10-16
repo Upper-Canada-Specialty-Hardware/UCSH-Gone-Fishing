@@ -30,10 +30,11 @@
 </table>
 {%- endmacro %}
 
-{% macro row(label, value) -%}
-{#- one detail/balance line: muted label (~40%), ink value, hairline divider -#}
+{% macro row(label, value, value_style='') -%}
+{#- one detail/balance line: muted label (~40%), ink value, hairline divider;
+    value_style overrides the value's look (red for a below-zero floor) -#}
 <tr>
   <td width="40%" style="width:40%;padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#6b6257;vertical-align:top;">{{ label }}</td>
-  <td style="padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1f1a14;vertical-align:top;">{{ value }}</td>
+  <td style="padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1f1a14;vertical-align:top;{{ value_style }}">{{ value }}</td>
 </tr>
 {%- endmacro %}

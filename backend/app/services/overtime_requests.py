@@ -26,6 +26,7 @@ from app.services.balance import (
     simulate_overtime_impact,
 )
 from app.services.concurrency import lock_manager
+from app.services.employment import overtime_costs_balance
 from app.services.idempotency import approval_email_action, claim_action, release_claim
 from app.services.notify_blocked import notify_requests_blocked_by_approval
 from app.services.overlap_detection import (
@@ -45,6 +46,7 @@ from app.services.audit_trail import (
     AuditTrailBuilder,
     snapshot_balances,
     describe_cascade_changes,
+    extract_approval_deltas,
     write_audit_log,
 )
 from app.repositories.request_store import request_store
@@ -483,8 +485,8 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     manager = await get_employee_by_id(manager_id)
     mgr_fields = manager["fields"] if manager else {}
 
-    # Hourly staff — simplified
-    if emp_fields.get("SalaryHourly") == "Hourly":
+    # Hourly staff, Ontario and BC (#300): paid, not banked, so simplified
+    if not overtime_costs_balance(emp_fields):
         await request_store.update_list_item_fields(
             settings.SP_LIST_OVERTIME_REQUESTS, request_id,
             {"Status": "Approved", "ApprovedDate": date.today().isoformat()},
@@ -613,8 +615,11 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
         settings.SP_LIST_OVERTIME_REQUESTS, request_id, {"Status": "Refunded"},
     )
 
-    # Hourly staff — no balance change
-    if emp_fields.get("SalaryHourly") == "Hourly":
+    # Hourly staff (Ontario and BC, #300): nothing was banked, so nothing comes
+    # back. A BC approval from before #300 was run as salaried and has an
+    # audit log; that one falls through and is reversed like a salaried one.
+    banked = extract_approval_deltas(fields.get("BalanceAuditLog", "") or "") is not None
+    if not overtime_costs_balance(emp_fields) and not banked:
         from app.templates_render import render_refund_notification
         html = render_refund_notification("Overtime", request_id, submitter_name, fields, None)
         await send_email_with_dashboard(

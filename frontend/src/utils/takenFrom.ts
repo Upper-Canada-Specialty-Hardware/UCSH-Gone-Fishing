@@ -1,4 +1,5 @@
 import { RequestKind } from '../constants/leaveColors';
+import { BelowZero } from './employment';
 
 /**
  * The pure side of the "Taken from" feature (#296): the wire types the backend
@@ -20,9 +21,10 @@ export type Pot = 'sick' | 'make_up' | 'carry_over' | 'vacation' | 'payout';
  * How a row's taken_from reads: recorded = approved, from its audit log;
  * projected = pending, what approving today would do; none = cost nothing, or
  * rejected/cancelled; unrecorded = approved but no usable log; refunded = the
- * reversed approval's original movements.
+ * reversed approval's original movements; counted = an hourly vacation that
+ * is added to "vacation taken this year", not spent from any balance (#300).
  */
-export type TakenState = 'recorded' | 'projected' | 'none' | 'unrecorded' | 'refunded';
+export type TakenState = 'recorded' | 'projected' | 'none' | 'unrecorded' | 'refunded' | 'counted';
 
 /** One balance movement: signed days (negative = taken out), a year only for carry-over/payout. */
 export interface TakenPiece {
@@ -35,6 +37,10 @@ export interface TakenPiece {
 export interface TakenFromValue {
   state: TakenState;
   pieces: TakenPiece[];
+  /** An hourly vacation's day count, when state is "counted" (#300). */
+  counted_days?: number;
+  /** Set on a projected row when approving would take the floor below zero (#300). */
+  below_zero?: BelowZero | null;
 }
 
 /** The display order pieces read in: the spending cascade, then payout last (mirrors the backend). */
@@ -136,10 +142,11 @@ function segmentsOf(pieces: TakenPiece[]): TakenSegment[] {
   return pieces.filter((p) => p.days < 0).map((p) => ({ type: 'taken', pot: p.pot, days: p.days, year: p.year }));
 }
 
-/** What the component should draw: a muted one-line message, or a set of chip segments. */
+/** What the component should draw: a muted message, a counter chip, or chip segments. */
 export type TakenShape =
   | { kind: 'message'; text: string }
-  | { kind: 'segments'; segments: TakenSegment[]; projected: boolean; refunded: boolean };
+  | { kind: 'counted'; days: number }                                          // hourly vacation counter
+  | { kind: 'segments'; segments: TakenSegment[]; projected: boolean; refunded: boolean; belowZero: BelowZero | null };
 
 /**
  * Turn a taken_from value into something to render. Handles the empty states
@@ -155,13 +162,16 @@ export function describeTakenFrom(value: TakenFromValue | null | undefined): Tak
 
   if (state === 'none') return { kind: 'message', text: 'No balance used' };
   if (state === 'unrecorded') return { kind: 'message', text: 'Not recorded' };
+  // An hourly vacation is counted as "taken this year", not spent: one neutral chip, no pots (#300).
+  if (state === 'counted') return { kind: 'counted', days: value?.counted_days ?? 0 };
   // A pending carry-over/payout that would push vacation below zero returns no pieces: it is auto-refused.
   if (state === 'projected' && pieces.length === 0) return { kind: 'message', text: 'Would be refused: not enough vacation' };
   if (pieces.length === 0) return { kind: 'message', text: 'No balance used' };   // any other empty set moved nothing
 
   const segments = segmentsOf(pieces);
   if (!segments.length) return { kind: 'message', text: 'No balance used' };      // only zero/positive noise left
-  return { kind: 'segments', segments, projected: state === 'projected', refunded: state === 'refunded' };
+  // below_zero rides along on a projected row, so the chips can turn red with the shared sentence (#300).
+  return { kind: 'segments', segments, projected: state === 'projected', refunded: state === 'refunded', belowZero: value?.below_zero ?? null };
 }
 
 /**

@@ -1,5 +1,6 @@
 import api from './client';
 import { adminSessionToken } from './adminSession';
+import { BelowZero } from '../utils/employment';
 
 /**
  * The admin requests screen's own calls (#278): create a request, delete one,
@@ -52,6 +53,8 @@ export interface PreviewResult {
   notes: string[];
   warning: string;
   next_year: boolean;
+  /** Set when approving would take the person's floor below zero (#300); never a block. */
+  below_zero: BelowZero | null;
 }
 
 /** One person the new-request dialog can pick, from the Staff Directory. */

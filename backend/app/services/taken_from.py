@@ -22,6 +22,13 @@ import logging
 from datetime import date
 
 from app.services.audit_trail import extract_approval_deltas
+from app.services.employment import (
+    VACATION,
+    floor_warning,
+    is_hourly,
+    leave_costs_balance,
+    overtime_costs_balance,
+)
 from app.services.balance import (
     is_next_year_request,
     simulate_carryover_payout_impact,
@@ -59,10 +66,6 @@ BALANCE_KEYS = (
     "CarryOver",
     "Payout",
 )
-
-# Leave kinds that never touch a balance, whoever submits them.
-NO_COST_LEAVE = ("Bereavement", "Jury Duty")
-SICK_LEAVE = "Sick or Personal Day"           # the one leave hourly staff still spend on
 
 
 def _num(value) -> float:
@@ -148,16 +151,12 @@ def _costs_balance(item_fields: dict, request_type: str, employee_fields: dict |
     Returns:
         True when a balance pot moves; False for the no-cost cases.
     """
-    hourly = (employee_fields or {}).get("SalaryHourly") == "Hourly"  # unknown -> not hourly
+    # The per-type rules (salaried, hourly) live in
+    # services/employment.py; unknown person -> the salaried rule.
     if request_type == "leave":
-        leave_type = item_fields.get("LeaveType", "")
-        if leave_type in NO_COST_LEAVE:                 # bereavement / jury cost nothing
-            return False
-        if hourly and leave_type != SICK_LEAVE:         # hourly spend only on sick leave
-            return False
-        return True
+        return leave_costs_balance(employee_fields, item_fields.get("LeaveType", ""))
     if request_type == "overtime":
-        return not hourly                               # hourly overtime changes no balance
+        return overtime_costs_balance(employee_fields)  # hourly overtime changes no balance
     return True                                         # carry-over / payout always move balances
 
 
@@ -205,19 +204,23 @@ def _is_next_year(item_fields: dict) -> bool:
     return False
 
 
-def _projected_deltas(item_fields: dict, request_type: str, employee_fields: dict) -> dict[str, float]:
+def _projected_deltas(
+    item_fields: dict, request_type: str, employee_fields: dict, projected: dict | None = None,
+) -> dict[str, float]:
     """Per-pot change a pending request would make: projected minus current.
 
     Args:
         item_fields: The request's SharePoint field values.
         request_type: "leave", "overtime" or "carryover-payout".
         employee_fields: The submitter's current Staff Directory fields.
+        projected: The already simulated balances, when the caller has them.
 
     Returns:
         ``{SharePoint balance key: signed delta}`` (negative = taken out), empty
         when the request would move nothing.
     """
-    projected = _simulate(item_fields, request_type, employee_fields)
+    if projected is None:                               # simulate here unless handed in
+        projected = _simulate(item_fields, request_type, employee_fields)
     if projected is None:                               # no-impact or auto-reject
         return {}
     current = {key: _num(employee_fields.get(key)) for key in BALANCE_KEYS}
@@ -246,6 +249,29 @@ def _pieces_from_deltas(deltas: dict[str, float], change_day: date) -> list[dict
         year = _earned_year(change_day) if pot in YEAR_POTS else None  # only CO/PO name a year
         pieces.append({"pot": pot, "days": days, "year": year})
     return pieces
+
+
+def _is_counted(item_fields: dict, request_type: str, employee_fields: dict | None, status: str) -> bool:
+    """Whether this row is an hourly vacation that only adds to the counter.
+
+    An approval from before #300 (when hourly were run as salaried) still has
+    an audit log of real movements, and keeps showing those instead.
+
+    Args:
+        item_fields: The request's SharePoint field values.
+        request_type: "leave", "overtime" or "carryover-payout".
+        employee_fields: The submitter's Staff Directory fields, or None.
+        status: The request's trimmed Status.
+
+    Returns:
+        True for a pending or approved hourly vacation with no recorded movement.
+    """
+    if request_type != "leave" or not is_hourly(employee_fields):
+        return False
+    if item_fields.get("LeaveType", "") != VACATION or status not in ("Pending", "Approved"):
+        return False
+    recorded = extract_approval_deltas(item_fields.get("BalanceAuditLog", "") or "", BALANCE_KEYS)
+    return recorded is None                            # an old salaried-style approval shows its real deltas
 
 
 def _none() -> dict:
@@ -280,7 +306,15 @@ def taken_from_for(
 
     if status in ("Rejected", "Cancelled"):            # a decision that moved nothing
         return _none()
-    if not _costs_balance(item_fields, request_type, employee_fields):  # no-cost kinds
+    if _is_counted(item_fields, request_type, employee_fields, status):
+        # hourly vacation (#300): added to the days-taken counter, no pot moves.
+        return {"state": "counted", "pieces": [], "counted_days": round(_num(item_fields.get("Days")), 3)}
+    # A no-cost kind moved nothing, unless it was approved under an older rule
+    # that did move balances (hourly before #300): then show what it did.
+    moved_before = status in ("Approved", "Refunded") and extract_approval_deltas(
+        item_fields.get("BalanceAuditLog", "") or "", BALANCE_KEYS,
+    ) is not None
+    if not _costs_balance(item_fields, request_type, employee_fields) and not moved_before:
         return _none()
 
     if status == "Refunded":
@@ -299,8 +333,15 @@ def taken_from_for(
     if status == "Pending":
         if employee_fields is None:                    # cannot project without balances
             return {"state": "unrecorded", "pieces": []}
-        deltas = _projected_deltas(item_fields, request_type, employee_fields)
-        return {"state": "projected", "pieces": _pieces_from_deltas(deltas, today)}
+        projected = _simulate(item_fields, request_type, employee_fields)
+        deltas = _projected_deltas(item_fields, request_type, employee_fields, projected)
+        return {
+            "state": "projected",
+            "pieces": _pieces_from_deltas(deltas, today),
+            # Set when approving takes the floor (sick for hourly, vacation
+            # otherwise) below zero, so the chip can turn red (#300).
+            "below_zero": floor_warning(employee_fields, projected),
+        }
 
     return _none()                                     # unknown/blank status: nothing to attribute
 

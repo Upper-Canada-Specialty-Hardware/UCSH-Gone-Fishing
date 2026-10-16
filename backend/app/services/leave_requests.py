@@ -33,6 +33,14 @@ from app.services.balance import (
     simulate_leave_impact,
 )
 from app.services.concurrency import lock_manager
+from app.services.employment import (
+    NO_COST_LEAVE,
+    floor_warning,
+    floor_warning_text,
+    is_hourly,
+    leave_costs_balance,
+    whole_sick_days,
+)
 from app.services.idempotency import approval_email_action, claim_action, release_claim
 from app.services.notify_blocked import notify_requests_blocked_by_approval
 from app.services.overlap_detection import (
@@ -430,7 +438,15 @@ async def send_approval_email(
                 is_next_year = is_next_year_request(start, end)
         except (ValueError, TypeError):
             pass
-    projected = simulate_leave_impact(emp_fields, leave_type, days, is_next_year)
+    # Only project a change for leave that really moves a balance for this
+    # person (#300): hourly vacation, for one, used to show a deduction here.
+    projected = (
+        simulate_leave_impact(emp_fields, leave_type, days, is_next_year)
+        if leave_costs_balance(emp_fields, leave_type) else None
+    )
+    # Red notice when approving takes the floor below zero (sick for hourly,
+    # vacation for everyone else). The manager may still approve.
+    below_zero = floor_warning(emp_fields, projected)
 
     version = await bump_and_snapshot(
         settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, fields, MATERIAL_FIELDS_LEAVE,
@@ -463,6 +479,7 @@ async def send_approval_email(
                 fields, emp_fields, approve_url, reject_url, submitter_name, projected,
                 previous_snapshot=previous_snapshot,
                 conflict_warning=manager_warning,
+                floor_warning=below_zero,
             )
 
             await send_email_with_dashboard(
@@ -477,15 +494,22 @@ async def send_approval_email(
             # reminders are email-only with fresh links)
             cell = mgr_fields.get("CellNumber", "")
             if cell and not is_reminder:
-                if projected:
+                if projected and is_hourly(emp_fields):
+                    # Hourly staff have one balance; the rest would only confuse.
+                    bal_line = f"If approved: Sick: {projected['CurrentSickDayBalance']:g}.\n"
+                elif projected:
                     bal_line = (
                         f"If approved: Vac: {projected['CurrentVacationBalance']}, "
                         f"Sick: {projected['CurrentSickDayBalance']}, "
                         f"MU: {projected['CurrentOvertimeBalance']}, "
                         f"CO: {projected['CarryOver']}.\n"
                     )
+                elif is_hourly(emp_fields) and leave_type == "Vacation":
+                    bal_line = "Counted as vacation taken, no balance used.\n"
                 else:
                     bal_line = "No balance change.\n"
+                if below_zero:                                 # texts have no colour: say it plainly
+                    bal_line += f"WARNING: {floor_warning_text(below_zero)}\n"
                 _s = _parse_date(start_str)
                 _e = _parse_date(end_str)
                 if _s and _e:
@@ -711,13 +735,16 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     leave_type = fields.get("LeaveType", "")
     days = float(fields.get("Days", 0) or 0)
 
-    # Hourly staff — no balance adjustment (except sick leave)
-    if emp_fields.get("SalaryHourly") == "Hourly" and leave_type != "Sick or Personal Day":
+    # Leave that moves no balance for this person (#300): bereavement and jury
+    # duty for everyone, and hourly vacation (it is
+    # counted from the approved requests, never spent).
+    if not leave_costs_balance(emp_fields, leave_type):
+        if leave_type in NO_COST_LEAVE:                       # same reply as before
+            return {"status": "approved", "no_balance_change": True}
         return {"status": "approved", "hourly": True}
 
-    # Bereavement / Jury Duty — no balance adjustment
-    if leave_type in ("Bereavement", "Jury Duty"):
-        return {"status": "approved", "no_balance_change": True}
+    start_date = _parse_date(fields.get("StartDate"))
+    end_date = _parse_date(fields.get("EndDate"))
 
     # Deduct balance by leave type
     async with lock_manager.lock(employee_id):
@@ -727,7 +754,24 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
         audit = AuditTrailBuilder("approve")
         before = snapshot_balances(ef)
 
-        if leave_type in ("Vacation", "Half Day or Partial Day Off"):
+        if is_hourly(ef):
+            # hourly sick or part day: whole sick days from sick only. No
+            # cascade, so a shortfall leaves sick below zero (the manager was
+            # shown that in red), and vacation is never touched.
+            new_sick = before["CurrentSickDayBalance"] - whole_sick_days(days)
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                {"CurrentSickDayBalance": new_sick},
+            )
+            audit.add_step(
+                f"Deduct {leave_type} from Sick (hourly, whole days)",
+                {"CurrentSickDayBalance": before["CurrentSickDayBalance"]},
+                {"CurrentSickDayBalance": new_sick},
+                f"Deducted {whole_sick_days(days):g} days",
+            )
+            balances = {**before, "CurrentSickDayBalance": new_sick}   # nothing else moved
+
+        elif leave_type in ("Vacation", "Half Day or Partial Day Off"):
             new_overtime = float(ef.get("CurrentOvertimeBalance", 0) or 0) - days
             await sp_client.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
@@ -752,43 +796,42 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
                 f"Deducted {days} days",
             )
 
-        # Construct pre-cascade state
-        pre_cascade = {
-            "CurrentSickDayBalance": before["CurrentSickDayBalance"],
-            "CurrentOvertimeBalance": before["CurrentOvertimeBalance"],
-            "CarryOver": before["CarryOver"],
-            "CurrentVacationBalance": before["CurrentVacationBalance"],
-        }
-        if leave_type in ("Vacation", "Half Day or Partial Day Off"):
-            pre_cascade["CurrentOvertimeBalance"] = new_overtime
-        elif leave_type == "Sick or Personal Day":
-            pre_cascade["CurrentSickDayBalance"] = new_sick
+        if not is_hourly(ef):                               # hourly stops above: no cascade
+            # Construct pre-cascade state
+            pre_cascade = {
+                "CurrentSickDayBalance": before["CurrentSickDayBalance"],
+                "CurrentOvertimeBalance": before["CurrentOvertimeBalance"],
+                "CarryOver": before["CarryOver"],
+                "CurrentVacationBalance": before["CurrentVacationBalance"],
+            }
+            if leave_type in ("Vacation", "Half Day or Partial Day Off"):
+                pre_cascade["CurrentOvertimeBalance"] = new_overtime
+            elif leave_type == "Sick or Personal Day":
+                pre_cascade["CurrentSickDayBalance"] = new_sick
 
-        # Determine cascade sequence
-        start_date = _parse_date(fields.get("StartDate"))
-        end_date = _parse_date(fields.get("EndDate"))
-        if start_date and end_date and is_next_year_request(start_date, end_date):
-            balances = await cascade_next_year(employee_id)
-            cascade_label = "Cascade (next year)"
-        else:
-            balances = await cascade_current_year(employee_id)
-            cascade_label = "Cascade (current year)"
+            # Determine cascade sequence
+            if start_date and end_date and is_next_year_request(start_date, end_date):
+                balances = await cascade_next_year(employee_id)
+                cascade_label = "Cascade (next year)"
+            else:
+                balances = await cascade_current_year(employee_id)
+                cascade_label = "Cascade (current year)"
 
-        cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
-        audit.add_step(
-            cascade_label, pre_cascade, cascade_after,
-            describe_cascade_changes(pre_cascade, cascade_after),
-        )
+            cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
+            audit.add_step(
+                cascade_label, pre_cascade, cascade_after,
+                describe_cascade_changes(pre_cascade, cascade_after),
+            )
 
-        # Recalculate Request Allow Date
-        await recalculate_request_allow_date(
-            employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
-        )
+            # Recalculate Request Allow Date
+            await recalculate_request_allow_date(
+                employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
+            )
 
     # Send balance update email
     is_next_year = start_date and end_date and is_next_year_request(start_date, end_date)
     from app.templates_render import render_leave_balance_update
-    html = render_leave_balance_update(submitter_name, balances, is_next_year)
+    html = render_leave_balance_update(submitter_name, balances, is_next_year, hourly=is_hourly(emp_fields))
 
     recipients = [emp_fields.get("EmailAddress", "")]
     if mgr_fields.get("EmailAddress"):
@@ -881,9 +924,12 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
         settings.SP_LIST_LEAVE_REQUESTS, request_id, {"Status": "Refunded"},
     )
 
-    # Hourly staff (except sick leave) or bereavement/jury duty — no balance change
-    is_hourly = emp_fields.get("SalaryHourly") == "Hourly"
-    if leave_type in ("Bereavement", "Jury Duty") or (is_hourly and leave_type != "Sick or Personal Day"):
+    # Nothing was taken on approval (no-cost kinds, hourly vacation), so
+    # nothing comes back (#300). An approval from before #300 that did move
+    # balances (hourly staff were run as salaried) still has its
+    # audit log, and is reversed from it below.
+    recorded = extract_approval_deltas(fields.get("BalanceAuditLog", "") or "")
+    if not leave_costs_balance(emp_fields, leave_type) and recorded is None:
         from app.templates_render import render_refund_notification
         html = render_refund_notification("Leave", request_id, submitter_name, fields, None)
         await send_email_with_dashboard(
@@ -940,6 +986,21 @@ async def refund_leave_request(request_id: str | int, admin_id: str | int) -> di
                 "CurrentOvertimeBalance": float(uf.get("CurrentOvertimeBalance", 0) or 0),
                 "CarryOver": float(uf.get("CarryOver", 0) or 0),
             }
+
+        elif is_hourly(ef):
+            # Fallback for hourly: put back the whole sick days, no cascade.
+            new_sick = before["CurrentSickDayBalance"] + whole_sick_days(days)
+            await sp_client.update_list_item_fields(
+                settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+                {"CurrentSickDayBalance": new_sick},
+            )
+            audit.add_step(
+                f"Refund {leave_type} to Sick (hourly, fallback)",
+                {"CurrentSickDayBalance": before["CurrentSickDayBalance"]},
+                {"CurrentSickDayBalance": new_sick},
+                f"Restored {whole_sick_days(days):g} days (no audit log available)",
+            )
+            balances = {**before, "CurrentSickDayBalance": new_sick}   # nothing else moved
 
         else:
             # Fallback path: naive reversal for requests without audit data
