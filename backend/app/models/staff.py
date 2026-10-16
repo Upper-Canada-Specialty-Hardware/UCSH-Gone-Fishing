@@ -79,6 +79,12 @@ class Staff(Base, TimestampMixin):
     # SharePoint item id -> the stable identity requests and links point at; unique
     # so an import updates the same person instead of duplicating them.
     sp_item_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    # The real SharePoint item id, filled by the write-back once it creates the
+    # SharePoint item for a Postgres-native person (#269). Null for an imported
+    # row, whose sp_item_id already is the SharePoint id. Both the write-back's
+    # later patches and the pull resolve a person through this id too, so the
+    # SharePoint item a create makes reconciles to this row instead of a duplicate.
+    sp_remote_item_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     # --- identity and contact (Title / EmailAddress / CellNumber / Extension) ---
     name: Mapped[str | None] = mapped_column(String, nullable=True)                 # Title
@@ -192,8 +198,13 @@ class StaffWriteback(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)  # queue row id
     # The SharePoint item the patch is written to; a string like every other id.
     sp_item_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    # The SharePoint-shaped patch (column name -> value) to PATCH onto the item.
+    # The SharePoint-shaped patch (column name -> value) to write onto the item.
     fields: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Whether the replay creates the SharePoint item or patches it. A Postgres-
+    # native person has no SharePoint item yet, so its first replay is a "create"
+    # whose returned id is stored back on the staff row (sp_remote_item_id); every
+    # later replay is an "update" patch. Imported rows only ever use "update".
+    op: Mapped[str] = mapped_column(String, nullable=False, default="update")
     # pending -> not yet tried, sending -> in flight, done -> written, failed ->
     # last try errored (still retried), dropped -> skipped on purpose.
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")

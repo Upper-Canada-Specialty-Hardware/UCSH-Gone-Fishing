@@ -53,6 +53,9 @@ def upgrade() -> None:
         "staff",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("sp_item_id", sa.String(), nullable=False),
+        # The real SharePoint id for a Postgres-native person, filled by the create
+        # write-back; null for an imported row (#269).
+        sa.Column("sp_remote_item_id", sa.String(), nullable=True),
         sa.Column("name", sa.String(), nullable=True),
         sa.Column("email", sa.String(), nullable=True),
         sa.Column("cell_number", sa.String(), nullable=True),
@@ -87,6 +90,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("email", name="uq_staff_email"),
     )
     op.create_index("ix_staff_sp_item_id", "staff", ["sp_item_id"])
+    op.create_index("ix_staff_sp_remote_item_id", "staff", ["sp_remote_item_id"])
     op.create_index("ix_staff_email", "staff", ["email"])
 
     # The manager and supervisor links between people.
@@ -110,6 +114,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("sp_item_id", sa.String(), nullable=False),
         sa.Column("fields", sa.JSON(), nullable=False),
+        # "create" for a Postgres-native person's first replay, "update" otherwise.
+        sa.Column("op", sa.String(), nullable=False, server_default="update"),
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False),
         sa.Column("next_attempt_at", _TS, nullable=True),

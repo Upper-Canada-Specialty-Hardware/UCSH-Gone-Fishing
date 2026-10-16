@@ -1,7 +1,7 @@
 import logging
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store
 from app.services.employee import _get_sp_user_name_map
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def _extract_all_managers(fields: dict) -> list[dict]:
 
 async def get_all_assignments() -> list[dict]:
     """Fetch all Staff Directory employees with their resolved AllManagers."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     sp_user_map = await _get_sp_user_name_map()
 
     assignments = []
@@ -59,7 +59,7 @@ async def get_all_assignments() -> list[dict]:
 
 async def get_staff_as_sp_users() -> list[dict]:
     """Return all staff members with their SP user IDs for autocomplete."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     name_to_id = await _get_sp_name_to_id_map()
 
     users = []
@@ -84,25 +84,48 @@ async def get_staff_as_sp_users() -> list[dict]:
 
 
 async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[int]) -> dict:
-    """Update the AllManagers field on a single Staff Directory record."""
-    update_fields: dict = {}
-    if manager_sp_user_ids:
-        update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
-        update_fields["AllManagersLookupId"] = manager_sp_user_ids
-    else:
-        # Clear AllManagers by setting to empty array
-        update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
-        update_fields["AllManagersLookupId"] = []
+    """Update the AllManagers field on a single Staff Directory record.
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_STAFF_DIRECTORY, employee_id, update_fields
+    Routed through ``staff_store``, so the change lands in Postgres when staff live
+    there (queuing one SharePoint write-back and recording one ``system`` history
+    row) and goes straight to SharePoint otherwise, byte for byte as before.
+
+    Args:
+        employee_id: Staff Directory item id of the person whose managers change.
+        manager_sp_user_ids: The SharePoint user ids of the approving managers; an
+            empty list clears them.
+
+    Returns:
+        ``{"id", "name", "managers"}`` with the managers resolved to names.
+    """
+    # The SharePoint write shape carries the ids; resolve their names once, up
+    # front, so the Postgres store stores the names too and the return reads as
+    # names. One read either way (it is reused for the return below).
+    sp_user_map = await _get_sp_user_name_map()
+    # Always send the collection type plus the id list; an empty list clears them.
+    update_fields: dict = {
+        "AllManagersLookupId@odata.type": "Collection(Edm.Int32)",
+        "AllManagersLookupId": manager_sp_user_ids or [],
+    }
+    # The same managers with names, for the Postgres backend (ignored by SharePoint).
+    links = {
+        "managers": [
+            {"sp_user_id": mid, "name": sp_user_map.get(mid, "")}
+            for mid in (manager_sp_user_ids or [])
+        ]
+    }
+
+    await staff_store.update_list_item_fields(
+        settings.SP_LIST_STAFF_DIRECTORY, employee_id, update_fields,
+        links=links,
+        history_source="system",                         # a manager-assignment change
+        history_reason="Updated from the manager assignment screen.",
     )
     logger.info("Updated AllManagers for employee %s: %s", employee_id, manager_sp_user_ids)
 
-    # Re-read and return updated data
-    item = await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    # Re-read and return updated data (through the store, so it follows the backend).
+    item = await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
     fields = item.get("fields", {})
-    sp_user_map = await _get_sp_user_name_map()
     managers = _extract_all_managers(fields)
     for mgr in managers:
         if not mgr["name"] and mgr["sp_user_id"] in sp_user_map:
@@ -117,7 +140,7 @@ async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[i
 
 async def preview_bulk_operation(operation: str, params: dict) -> dict:
     """Dry-run a bulk operation and return what would change."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     sp_user_map = await _get_sp_user_name_map()
 
     source_id = params.get("source_manager_id")

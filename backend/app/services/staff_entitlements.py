@@ -20,7 +20,7 @@ import logging
 import math
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store
 from app.services import staff_changes
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
@@ -520,6 +520,41 @@ def _current_managers(current_fields: dict, id_to_name: dict[int, str]) -> dict:
     return {"ids": ids, "names": names}
 
 
+def _link_payload(field_changes: list[dict], fields_in: dict) -> dict | None:
+    """The manager/supervisor links to pass the store, with names, for the ones that moved.
+
+    Only links that actually changed are included, so a save that leaves a person
+    column alone does not rewrite it. The names come from the request itself
+    (the picker sends ids and names together), so the Postgres store keeps matching
+    managers by name without a second lookup.
+
+    Args:
+        field_changes: The planned field diffs from ``plan_field_changes``.
+        fields_in: The directory-field part of the request (wire keys).
+
+    Returns:
+        ``{"managers": [...]}`` and/or ``{"supervisor_link": {...}}`` for the links
+        that changed, or None when no person column moved.
+    """
+    payload: dict = {}
+    changed_fields = {c["field"] for c in field_changes}   # only what really moved
+    if MANAGERS_KEY in changed_fields:                     # the AllManagers set changed
+        managers = fields_in.get(MANAGERS_KEY) or {}
+        ids = managers.get("ids") or []
+        names = managers.get("names") or []
+        payload["managers"] = [
+            {"sp_user_id": _as_sp_user_id(uid), "name": _clean_text(name)}
+            for uid, name in zip(ids, names)
+        ]
+    if "supervisor_link" in changed_fields:                # the single SupervisorLink changed
+        link = fields_in.get("supervisor_link") or {}
+        payload["supervisor_link"] = {
+            "sp_user_id": _as_sp_user_id(link.get("sp_user_id")),
+            "name": _clean_text(link.get("name")),
+        }
+    return payload or None                                 # None when no person column moved
+
+
 async def apply_entitlement_changes(
     employee_id: str, requested: dict, reason: str, fields: dict | None = None
 ) -> dict:
@@ -600,9 +635,16 @@ async def apply_entitlement_changes(
         sp_updates: dict = {c["column"]: c["after"] for c in pot_changes}
         for c in field_changes:
             sp_updates.update(c["sp"])
+        # When staff live in Postgres, the manager/supervisor person columns in the
+        # patch carry ids but no names, so pass the names alongside; SharePoint
+        # ignores this and reads the LookupId keys. ``history_source`` stays None:
+        # this service records its own history below, so the store must not log it
+        # a second time.
+        link_payload = _link_payload(field_changes, fields_in)
         try:
-            await sp_client.update_list_item_fields(
+            await staff_store.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id, sp_updates,
+                links=link_payload,
             )
         except Exception as exc:                      # upstream write failed
             logger.exception("Failed to write Staff Directory record for %s", employee_id)

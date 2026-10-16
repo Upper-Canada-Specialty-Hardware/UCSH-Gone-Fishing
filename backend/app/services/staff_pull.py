@@ -22,24 +22,14 @@ from app.models.mixins import utcnow
 from app.models.staff import Staff
 from app.models.staff_change import StaffChange
 from app.repositories.postgres.staff import (
-    _DATE_COLUMNS,
-    _NUMBER_COLUMNS,
-    _TEXT_COLUMNS,
-    _num,
     _parse_dt,
     apply_sp_fields,
+    diff_logged_fields,
     staff_query,
     to_sp_fields,
 )
 
 logger = logging.getLogger(__name__)
-
-# The columns a pulled change is logged against: the fields HR reads in the
-# history. Links are still applied, but not diffed into the change log.
-_LOGGED_COLUMNS = (
-    list(_TEXT_COLUMNS) + list(_NUMBER_COLUMNS) + list(_DATE_COLUMNS) + ["Extension"]
-)
-_NUMBER_COLUMN_SET = set(_NUMBER_COLUMNS) | {"Extension"}
 
 
 def _writes_allowed() -> bool:
@@ -70,43 +60,6 @@ def _aware(moment: datetime | None) -> datetime | None:
     if moment is None:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-def _changed(column: str, old, new) -> bool:
-    """Whether a column's value really moved, comparing numbers as numbers.
-
-    Args:
-        column: The SharePoint column name.
-        old: The current value (from the rebuilt Postgres shape).
-        new: The incoming SharePoint value.
-
-    Returns:
-        True when the two differ meaningfully.
-    """
-    if column in _NUMBER_COLUMN_SET:                       # 2 and "2.0" are the same number
-        return _num(old) != _num(new)
-    return str(old if old is not None else "").strip() != str(new if new is not None else "").strip()
-
-
-def _diff(before_fields: dict, incoming: dict) -> list[tuple[str, object, object]]:
-    """The logged columns that changed between the stored and the incoming record.
-
-    Args:
-        before_fields: The person's current SharePoint shape (rebuilt from Postgres).
-        incoming: The SharePoint fields just read.
-
-    Returns:
-        One ``(column, old, new)`` per changed logged column.
-    """
-    changes: list[tuple[str, object, object]] = []
-    for column in _LOGGED_COLUMNS:
-        if column not in incoming:                         # a partial payload leaves a column alone
-            continue
-        old = before_fields.get(column)
-        new = incoming.get(column)
-        if _changed(column, old, new):
-            changes.append((column, old, new))
-    return changes
 
 
 async def staff_pull_step(session: AsyncSession, sync_run) -> dict:
@@ -142,8 +95,14 @@ async def staff_pull_step(session: AsyncSession, sync_run) -> dict:
         counts["seen"] += 1
         incoming_modified = _parse_dt(fields.get("Modified")) or _parse_dt(item.get("lastModifiedDateTime"))
 
+        # Match on the SharePoint id against either key: an imported person stores
+        # it as sp_item_id, a Postgres-native person (created here) stores it as
+        # sp_remote_item_id once the create write-back ran, so the item a create
+        # made reconciles to that row instead of importing a duplicate.
         row = (await session.execute(
-            staff_query().where(Staff.sp_item_id == sp_id)
+            staff_query().where(
+                (Staff.sp_item_id == sp_id) | (Staff.sp_remote_item_id == sp_id)
+            )
         )).scalars().first()
 
         if row is None:                                    # appeared in SharePoint after the import
@@ -162,7 +121,7 @@ async def staff_pull_step(session: AsyncSession, sync_run) -> dict:
 
         before_fields = to_sp_fields(row)                  # for the change log, before applying
         name_now = (fields.get("Title") or before_fields.get("Title") or "").strip()
-        changes = _diff(before_fields, fields)
+        changes = diff_logged_fields(before_fields, fields)
         await apply_sp_fields(session, row, fields)
         row.sp_modified = incoming_modified or utcnow()
         counts["applied"] += 1

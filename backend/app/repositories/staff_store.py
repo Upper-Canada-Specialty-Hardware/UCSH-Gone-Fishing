@@ -113,9 +113,39 @@ class StaffStore:
         """Add an item; returns it in the SharePoint item shape."""
         return await (await self._backend(list_id)).create_list_item(list_id, fields)
 
-    async def update_list_item_fields(self, list_id: str, item_id, fields: dict) -> dict:
-        """Merge fields into an item; returns its fields."""
-        return await (await self._backend(list_id)).update_list_item_fields(list_id, item_id, fields)
+    async def update_list_item_fields(
+        self, list_id: str, item_id, fields: dict, *,
+        links: dict | None = None, history_source: str | None = None,
+        history_reason: str | None = None,
+    ) -> dict:
+        """Merge fields into an item; returns its fields.
+
+        ``links``, ``history_source`` and ``history_reason`` only apply to a staff
+        write served from Postgres: they carry the manager/supervisor names the
+        Graph write shape lacks and ask the store to record the change in
+        ``staff_changes`` once. SharePoint reads the ``*LookupId`` keys already in
+        ``fields`` and records no history, so it is passed only the plain payload
+        and its behaviour is unchanged.
+
+        Args:
+            list_id: The SharePoint list id the caller passed.
+            item_id: The item id to merge into.
+            fields: The SharePoint column values to change.
+            links: Manager/supervisor links with names, for the Postgres backend.
+            history_source: ``"system"`` / ``"admin_dashboard"`` to record history in
+                Postgres, or None when the caller records its own.
+            history_reason: The reason stored with that history.
+
+        Returns:
+            The item's fields after the change.
+        """
+        backend = await self._backend(list_id)
+        if backend is _postgres_staff:                    # the Postgres staff table takes the extras
+            return await backend.update_list_item_fields(
+                list_id, item_id, fields,
+                links=links, history_source=history_source, history_reason=history_reason,
+            )
+        return await backend.update_list_item_fields(list_id, item_id, fields)
 
     async def delete_list_item(self, list_id: str, item_id) -> None:
         """Remove an item for good."""

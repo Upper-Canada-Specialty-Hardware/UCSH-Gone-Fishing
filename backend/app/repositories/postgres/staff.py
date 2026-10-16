@@ -26,6 +26,7 @@ from app.config import settings
 from app.database import async_session
 from app.models.mixins import utcnow
 from app.models.staff import Department, Location, Staff, StaffSupervisor
+from app.models.staff_change import StaffChange
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ ALL_MANAGERS_COLUMN = "AllManagers"
 SUPERVISOR_LINK_COLUMN = "SupervisorLink"
 RELATION_MANAGER = "manager"             # an AllManagers person-column entry
 RELATION_SUPERVISOR = "supervisor_link"  # the single SupervisorLink person
+# People added in the app take ids from here up; SharePoint ids stay far below,
+# so an app-made id and a SharePoint-made id can never be the same number.
+APP_STAFF_ID_START = 1_000_000
 
 # Text/choice columns: SharePoint column -> Staff model attribute. Emitted as ""
 # when blank so a caller's ``.get(col, "").strip()`` never meets a None.
@@ -81,6 +85,55 @@ KNOWN_COLUMNS = (
     | set(_SP_TIMESTAMP_COLUMNS)
     | {ALL_MANAGERS_COLUMN, "TitleLinkLookupId", "SupervisorLinkLookupId", "id"}
 )
+
+# The columns a field change is logged against: the fields HR reads in the staff
+# history. Links are logged separately (by name), so they are not in this list.
+LOGGED_COLUMNS = (
+    list(_TEXT_COLUMNS) + list(_NUMBER_COLUMNS) + list(_DATE_COLUMNS) + ["Extension"]
+)
+# The logged columns whose values are numbers, compared as numbers so 2 and
+# "2.0" never read as a change.
+NUMBER_COLUMN_SET = set(_NUMBER_COLUMNS) | {"Extension"}
+
+
+def column_changed(column: str, old, new) -> bool:
+    """Whether a logged column's value really moved, comparing numbers as numbers.
+
+    Args:
+        column: The SharePoint column name.
+        old: The current value (from the rebuilt SharePoint shape).
+        new: The incoming value.
+
+    Returns:
+        True when the two differ meaningfully.
+    """
+    if column in NUMBER_COLUMN_SET:                        # numeric compare: 2 == "2.0"
+        return _num(old) != _num(new)
+    return str(old if old is not None else "").strip() != str(new if new is not None else "").strip()
+
+
+def diff_logged_fields(before_fields: dict, incoming: dict) -> list[tuple[str, object, object]]:
+    """The logged columns present in ``incoming`` whose value changed.
+
+    Shared by the write path (the store's own history) and the pull, so both log
+    changes against the same set of columns the same way.
+
+    Args:
+        before_fields: The person's current SharePoint shape (rebuilt from Postgres).
+        incoming: The SharePoint fields being written or read.
+
+    Returns:
+        One ``(column, old, new)`` per changed logged column; empty when nothing moved.
+    """
+    changes: list[tuple[str, object, object]] = []
+    for column in LOGGED_COLUMNS:
+        if column not in incoming:                         # a partial payload leaves a column alone
+            continue
+        old = before_fields.get(column)
+        new = incoming.get(column)
+        if column_changed(column, old, new):
+            changes.append((column, old, new))
+    return changes
 
 
 def _norm_email(value) -> str | None:
@@ -304,6 +357,8 @@ def scalar_updates(fields: dict) -> tuple[dict, list[str]]:
     values: dict = {}
     dropped: list[str] = []
     for column, value in fields.items():
+        if "@odata.type" in column:
+            continue                                      # a Graph type hint, not a column value
         if column in _TEXT_COLUMNS and column not in ("Location", "Department"):
             attr = _TEXT_COLUMNS[column]
             values[attr] = _norm_email(value) if column == "EmailAddress" else (
@@ -385,7 +440,49 @@ async def _get_or_create_lookup(session: AsyncSession, model, name):
     return obj
 
 
-async def apply_sp_fields(session: AsyncSession, row: Staff, fields: dict) -> list[str]:
+def _apply_person_links(row: Staff, links: dict) -> None:
+    """Replace only the manager/supervisor relations named in ``links``, with names.
+
+    An app write sends the Graph write shape (``AllManagersLookupId`` / a person
+    ``*LookupId``), which carries ids but no names, so the names come through this
+    ``links`` structure instead. Only the relations present are replaced: a change
+    to managers alone leaves the supervisor link untouched, and vice versa.
+
+    Args:
+        row: The staff row (its links already loaded, or pending and empty).
+        links: ``{"managers": [{"sp_user_id", "name"}, ...]}`` and/or
+            ``{"supervisor_link": {"sp_user_id", "name"}}``. A key present replaces
+            that relation; an empty managers list clears the managers.
+    """
+    replace_managers = "managers" in links                # the AllManagers set is being set
+    replace_supervisor = "supervisor_link" in links       # the single SupervisorLink is being set
+    kept = [                                              # keep the links not being replaced
+        link for link in row.supervisors
+        if not (link.relation == RELATION_MANAGER and replace_managers)
+        and not (link.relation == RELATION_SUPERVISOR and replace_supervisor)
+    ]
+    new_links = list(kept)                                # start from what survives
+    if replace_managers:                                  # add the new approving managers
+        for manager in links.get("managers") or []:
+            new_links.append(StaffSupervisor(
+                relation=RELATION_MANAGER,
+                manager_sp_user_id=manager.get("sp_user_id"),
+                manager_name=manager.get("name") or "",   # name kept so matching stays by name
+            ))
+    if replace_supervisor:                                # add the new supervisor link
+        supervisor = links.get("supervisor_link")
+        if supervisor:
+            new_links.append(StaffSupervisor(
+                relation=RELATION_SUPERVISOR,
+                manager_sp_user_id=supervisor.get("sp_user_id"),
+                manager_name=supervisor.get("name") or "",
+            ))
+    row.supervisors = new_links                           # reassign: orphaned links delete on flush
+
+
+async def apply_sp_fields(
+    session: AsyncSession, row: Staff, fields: dict, links: dict | None = None
+) -> list[str]:
     """Write a SharePoint payload onto a staff row: scalars, links and lookups.
 
     The row's manager/supervisor links are replaced to match the payload, so a
@@ -402,6 +499,10 @@ async def apply_sp_fields(session: AsyncSession, row: Staff, fields: dict) -> li
         row: The staff row to write onto (already added to the session). For an
             update it must have been loaded with its links (see ``staff_query``).
         fields: SharePoint column names -> values.
+        links: When given (an app write through the store), the manager/supervisor
+            links to set, with names; the person columns in ``fields`` are then
+            ignored for link building. When None (a pull or import), the links are
+            read from the SharePoint item's person-column blob in ``fields``.
 
     Returns:
         The SharePoint column names that could not be copied (unmapped columns).
@@ -410,11 +511,13 @@ async def apply_sp_fields(session: AsyncSession, row: Staff, fields: dict) -> li
     for attr, value in values.items():
         setattr(row, attr, value)
 
-    # Replace the links first, while the row may still be pending. Only touch
-    # them when the payload carries the person columns, so a partial PATCH that
-    # names no people leaves the existing links alone; reassigning the collection
-    # orphans the old links, which delete-orphan removes on flush.
-    if ALL_MANAGERS_COLUMN in fields or "SupervisorLinkLookupId" in fields or SUPERVISOR_LINK_COLUMN in fields:
+    # Replace the links first, while the row may still be pending. An app write
+    # passes ``links`` (ids with names); a pull/import passes None and the links
+    # come from the person-column blob, but only when the payload names them, so a
+    # partial PATCH that names no people leaves the existing links alone.
+    if links is not None:
+        _apply_person_links(row, links)
+    elif ALL_MANAGERS_COLUMN in fields or "SupervisorLinkLookupId" in fields or SUPERVISOR_LINK_COLUMN in fields:
         row.supervisors = [
             StaffSupervisor(
                 relation=link["relation"],
@@ -431,6 +534,48 @@ async def apply_sp_fields(session: AsyncSession, row: Staff, fields: dict) -> li
     if "Department" in fields:
         row.department = await _get_or_create_lookup(session, Department, fields.get("Department"))
     return dropped
+
+
+def _manager_names(row: Staff) -> list[str]:
+    """The current manager display names on a staff row, for the change history.
+
+    Args:
+        row: A staff row with its links loaded.
+
+    Returns:
+        The ``manager``-relation names in link order; blank names are kept so the
+        before/after comparison lines up with what was stored.
+    """
+    return [
+        (link.manager_name or "")
+        for link in sorted(row.supervisors, key=lambda link_row: link_row.id)
+        if link.relation == RELATION_MANAGER
+    ]
+
+
+def _write_history_rows(
+    before_fields: dict, incoming: dict, links: dict | None, before_managers: list[str]
+) -> list[tuple[str, object, object]]:
+    """The staff-history rows an app write should record, scalars plus managers.
+
+    Args:
+        before_fields: The record's SharePoint shape before the write.
+        incoming: The SharePoint fields being written.
+        links: The link structure the write carried (see ``apply_sp_fields``), or None.
+        before_managers: The manager names before the write (for the AllManagers row).
+
+    Returns:
+        One ``(column, old, new)`` per changed logged column, plus one
+        ``("AllManagers", before, after)`` row when the manager set changed.
+    """
+    rows = list(diff_logged_fields(before_fields, incoming))   # scalar columns that moved
+    if links and "managers" in links:                          # the manager set was set
+        after_names = [(m.get("name") or "") for m in (links.get("managers") or [])]
+        before_str = ", ".join(name for name in (before_managers or []) if name)
+        after_str = ", ".join(name for name in after_names if name)
+        if before_str != after_str:                            # only when it really changed
+            rows.append(("AllManagers", before_str or None, after_str or None))
+    return rows
 
 
 def _not_found(item_id) -> httpx.HTTPStatusError:
@@ -531,8 +676,11 @@ class PostgresStaffList:
         """Add a staff row from a SharePoint payload and queue the write-back.
 
         A Postgres-native person has no SharePoint item backing them yet, so a
-        fresh sp_item_id is minted above every existing one; the write-back then
-        creates the matching SharePoint item in the background.
+        fresh id is minted in its own range, from APP_STAFF_ID_START up. SharePoint
+        hands out its ids from the low end, so an id minted here can never equal
+        one SharePoint gives a person HR adds there at the same moment, and the
+        pull cannot merge two people. The write-back then creates the matching
+        SharePoint item in the background and keeps its id in sp_remote_item_id.
 
         Args:
             list_id: The Staff Directory list id.
@@ -546,22 +694,38 @@ class PostgresStaffList:
         async with async_session() as session:
             existing = (await session.execute(select(Staff.sp_item_id))).scalars()
             numeric = [int(s) for s in existing if s is not None and str(s).isdigit()]
-            new_id = str(max(numeric, default=0) + 1)     # strictly above the current max
+            minted = [n for n in numeric if n >= APP_STAFF_ID_START]   # ids this app made before
+            new_id = str(max(minted, default=APP_STAFF_ID_START - 1) + 1)   # next in the app's own range
             row = Staff(sp_item_id=new_id)
             session.add(row)
             await apply_sp_fields(session, row, fields)
             row.sp_modified = row.sp_modified or utcnow()  # a fresh row is modified now
-            enqueue_writeback(session, new_id, dict(fields))  # a create is an app change -> replay it
+            # A create replay makes the SharePoint item (op="create"); the drain
+            # stores the returned SharePoint id back on this row (sp_remote_item_id).
+            enqueue_writeback(session, new_id, dict(fields), op="create")
             await session.commit()
         return await self.get_list_item(list_id, new_id)
 
-    async def update_list_item_fields(self, list_id: str, item_id, fields: dict) -> dict:
+    async def update_list_item_fields(
+        self, list_id: str, item_id, fields: dict, *,
+        links: dict | None = None, history_source: str | None = None,
+        history_reason: str | None = None,
+    ) -> dict:
         """Merge fields into a staff row, queue the write-back, return its fields.
 
         Args:
             list_id: The Staff Directory list id.
             item_id: The SharePoint item id.
             fields: The SharePoint column values to change.
+            links: The manager/supervisor links to set, with names (see
+                ``apply_sp_fields``); None when the write touches no person columns.
+            history_source: When given, record one ``staff_changes`` row per changed
+                column with this source (``"system"`` or ``"admin_dashboard"``), in
+                this same transaction. None means the caller records its own history
+                (``staff_entitlements`` / the #233 edit path), so the store records
+                nothing and the save is never logged twice.
+            history_reason: The reason stored on those rows; required when
+                ``history_source`` is given.
 
         Returns:
             The row's SharePoint fields after the change.
@@ -575,9 +739,26 @@ class PostgresStaffList:
             row = await _load_one(session, item_id)
             if row is None:
                 raise _not_found(item_id)
-            await apply_sp_fields(session, row, fields)
+            if history_source:                            # capture the "before" for the diff
+                before_fields = to_sp_fields(row)         # the record as it stands
+                before_managers = _manager_names(row)     # current manager names
+                name_now = row.name or ""                 # name at the time of the change
+            await apply_sp_fields(session, row, fields, links=links)
             row.sp_modified = utcnow()                    # an app edit is modified now
             enqueue_writeback(session, str(item_id), dict(fields))
+            if history_source:                            # record history in the same transaction
+                for column, old, new in _write_history_rows(
+                    before_fields, fields, links, before_managers
+                ):
+                    session.add(StaffChange(
+                        employee_id=str(item_id),
+                        employee_name=name_now,
+                        field=column,
+                        old_value=old,
+                        new_value=new,
+                        reason=history_reason or "Changed by the system.",
+                        source=history_source,
+                    ))
             await session.commit()
         return (await self.get_list_item(list_id, item_id))["fields"]
 

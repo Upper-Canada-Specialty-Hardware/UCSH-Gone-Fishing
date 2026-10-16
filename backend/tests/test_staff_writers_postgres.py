@@ -1,0 +1,294 @@
+"""Staff Directory writers land in Postgres when staff live there (#269).
+
+These cover the write paths that used to go straight to the SharePoint list and
+now route through ``staff_store``: HR's entitlement and balance edits, the admin
+set-balances handler, add employee, the manager assignment links, and the April-1
+carry-over reset. For each one, in Postgres mode, the change must land in the
+``staff`` table, queue exactly one SharePoint write-back, and record exactly one
+``staff_changes`` row with the right source. Add employee also round-trips the
+SharePoint item id its write-back creates back onto the row.
+
+They run on SQLite with ``sp_client`` faked, like ``test_staff_directory_postgres``.
+SharePoint-mode behaviour is covered by the writers' own existing tests.
+"""
+import asyncio
+
+import pytest
+from sqlalchemy import delete, select
+
+from app.config import settings
+from app.graph import sharepoint as sharepoint_module
+from app.database import async_session
+from app.models.legacy_finding import LegacyFinding
+from app.models.staff import Staff, StaffSupervisor, StaffWriteback
+from app.models.staff_change import StaffChange
+from app.services import (
+    employee_creation as ec,
+    manager_assignments,
+    staff_entitlements as se,
+    staff_import,
+    staff_writeback,
+)
+from app.tasks import carryover_reset
+
+STAFF = settings.SP_LIST_STAFF_DIRECTORY
+
+
+def run(coro):
+    """Run one coroutine to completion."""
+    return asyncio.run(coro)
+
+
+def _sp_item(item_id, **overrides):
+    """A sample SharePoint Staff Directory item, with field overrides."""
+    fields = {
+        "Title": "Ada Lovelace",
+        "EmailAddress": "ada@ucsh.com",
+        "SalaryHourly": "Salary",
+        "Location": "Barrie",
+        "Department": "Engineering",
+        "DefaultYearlyVacationDays": 15,
+        "SickDayEntitlement": 8,
+        "CurrentVacationBalance": 10.0,
+        "CurrentSickDayBalance": 3,
+        "CurrentOvertimeBalance": 1.0,
+        "CarryOver": 2,
+        "Payout": 0,
+        "TitleLinkLookupId": 55,
+        "Modified": "2026-10-10T12:00:00Z",
+        "Created": "2020-01-01T00:00:00Z",
+        "AllManagers": [],
+        "SupervisorLinkLookupId": None,
+    }
+    fields.update(overrides)
+    return {"id": str(item_id), "fields": fields}
+
+
+@pytest.fixture
+def clean_db():
+    """Empty every staff table before and after a test."""
+    async def wipe():
+        async with async_session() as session:
+            for model in (StaffWriteback, StaffSupervisor, StaffChange, LegacyFinding, Staff):
+                await session.execute(delete(model))
+            await session.commit()
+    run(wipe())
+    yield
+    run(wipe())
+
+
+def _seed(monkeypatch, item):
+    """Import one SharePoint item into Postgres so the writers have a row to edit."""
+    async def fake_get_list_items(list_id, **kwargs):
+        return [item]
+    monkeypatch.setattr(sharepoint_module.sp_client, "get_list_items", fake_get_list_items)
+
+    async def inner():
+        async with async_session() as session:
+            await staff_import.staff_sync_step(session, None)
+            await session.commit()
+    run(inner())
+
+
+async def _links_wb_changes(sp_id):
+    """The links, write-backs and change rows for one person, for assertions."""
+    async with async_session() as session:
+        row = (await session.execute(select(Staff).where(Staff.sp_item_id == sp_id))).scalars().first()
+        links = (await session.execute(
+            select(StaffSupervisor).where(StaffSupervisor.staff_id == row.id)
+        )).scalars().all()
+        wb = (await session.execute(select(StaffWriteback))).scalars().all()
+        changes = (await session.execute(
+            select(StaffChange).where(StaffChange.employee_id == sp_id)
+        )).scalars().all()
+        return row, links, wb, changes
+
+
+# --- HR entitlement / balance edits (staff_entitlements) ----------------------
+
+def test_entitlements_land_in_postgres_without_double_history(clean_db, monkeypatch):
+    # A balance edit lands in Postgres, queues one write-back, and is logged once
+    # (by the service itself), not twice: the store must not add a second row.
+    _seed(monkeypatch, _sp_item("101", CurrentVacationBalance=10))
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+
+    async def fake_rad(emp_id, vacation, carryover):
+        return ""                                          # no derived-date change -> no extra row
+    monkeypatch.setattr(se, "recalculate_request_allow_date", fake_rad)
+
+    result = run(se.apply_entitlement_changes("101", {"vacation": 4}, "correction"))
+    assert {c["field"] for c in result["changed"]} == {"vacation"}
+
+    row, _links, wb, changes = run(_links_wb_changes("101"))
+    assert float(row.vacation_balance) == 4.0             # the move landed in Postgres
+    assert len(wb) == 1 and wb[0].op == "update"          # exactly one write-back
+    assert wb[0].fields["CurrentVacationBalance"] == 4.0
+    vac = [c for c in changes if c.field == "CurrentVacationBalance"]
+    assert len(vac) == 1 and vac[0].source == "admin_dashboard"   # logged once, by the service
+
+
+def test_entitlements_managers_round_trip_names_into_postgres(clean_db, monkeypatch):
+    # The Graph write shape carries manager ids but no names; the names must still
+    # reach the Postgres link so matching stays by name.
+    _seed(monkeypatch, _sp_item("101"))
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+
+    async def fake_map():
+        return {77: "Grace Hopper"}
+    monkeypatch.setattr(se, "_get_sp_user_name_map", fake_map)
+
+    async def fake_rad(*a, **k):
+        return ""
+    monkeypatch.setattr(se, "recalculate_request_allow_date", fake_rad)
+
+    run(se.apply_entitlement_changes(
+        "101", {}, "assign a manager",
+        {"managers": {"ids": [77], "names": ["Grace Hopper"]}},
+    ))
+
+    _row, links, wb, changes = run(_links_wb_changes("101"))
+    managers = [link for link in links if link.relation == "manager"]
+    assert len(managers) == 1
+    assert managers[0].manager_sp_user_id == 77 and managers[0].manager_name == "Grace Hopper"
+    assert len(wb) == 1                                    # one write-back for the one save
+    assert len([c for c in changes if c.field == "AllManagers"]) == 1
+
+
+# --- Admin set-balances (routes/dashboard.py) ---------------------------------
+
+def test_set_balances_lands_in_postgres(clean_db, monkeypatch):
+    # The older set-balances handler routes through the store too, so a correction
+    # lands in Postgres with one write-back and one admin_dashboard history row.
+    from app.routes.dashboard import admin_set_balances
+    from app.services import balance as balance_module
+
+    _seed(monkeypatch, _sp_item("101", CurrentVacationBalance=10))
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
+
+    async def fake_rad(emp_id, vacation, carryover):
+        return None
+    monkeypatch.setattr(balance_module, "recalculate_request_allow_date", fake_rad)
+
+    report = run(admin_set_balances({"corrections": [{"employee_id": "101", "vacation": 3.0}]}))
+    assert report["applied"] and report["applied"][0]["after"] == {"vacation": 3.0}
+
+    row, _links, wb, changes = run(_links_wb_changes("101"))
+    assert float(row.vacation_balance) == 3.0
+    assert len(wb) == 1 and wb[0].op == "update"
+    vac = [c for c in changes if c.field == "CurrentVacationBalance"]
+    assert len(vac) == 1 and vac[0].source == "admin_dashboard"
+
+
+# --- Manager assignment links (manager_assignments) ---------------------------
+
+def test_manager_assignment_lands_in_postgres(clean_db, monkeypatch):
+    # Setting a person's managers lands the link (with name) in Postgres, queues
+    # one write-back carrying the id collection, and records one system history row.
+    _seed(monkeypatch, _sp_item("101"))
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+
+    async def fake_map():
+        return {77: "Grace Hopper"}
+    monkeypatch.setattr(manager_assignments, "_get_sp_user_name_map", fake_map)
+
+    result = run(manager_assignments.update_employee_managers(101, [77]))
+    assert any(m["sp_user_id"] == 77 and m["name"] == "Grace Hopper" for m in result["managers"])
+
+    _row, links, wb, changes = run(_links_wb_changes("101"))
+    managers = [link for link in links if link.relation == "manager"]
+    assert len(managers) == 1 and managers[0].manager_name == "Grace Hopper"
+    assert len(wb) == 1 and wb[0].op == "update"
+    assert wb[0].fields["AllManagersLookupId"] == [77]
+    mgr_changes = [c for c in changes if c.field == "AllManagers"]
+    assert len(mgr_changes) == 1 and mgr_changes[0].source == "system"
+
+
+# --- April-1 carry-over reset (tasks/carryover_reset) -------------------------
+
+def test_carryover_reset_lands_in_postgres(clean_db, monkeypatch):
+    # Zeroing one person's carry-over lands in Postgres, queues one write-back, and
+    # records one system history row.
+    _seed(monkeypatch, _sp_item("101", CarryOver=5, CurrentVacationBalance=10))
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+
+    async def fake_rad(emp_id, vacation, carryover):
+        return None
+    monkeypatch.setattr(carryover_reset, "recalculate_request_allow_date", fake_rad)
+
+    emp_info = {"id": "101", "name": "Ada Lovelace", "email": "ada@ucsh.com",
+                "carryover": 5.0, "vacation": 10.0}
+    run(carryover_reset._reset_single_employee(emp_info))
+
+    row, _links, wb, changes = run(_links_wb_changes("101"))
+    assert float(row.carry_over) == 0.0
+    assert len(wb) == 1 and wb[0].op == "update" and wb[0].fields["CarryOver"] == 0
+    co = [c for c in changes if c.field == "CarryOver"]
+    assert len(co) == 1 and co[0].source == "system"
+
+
+# --- Add employee (employee_creation) -----------------------------------------
+
+GOOD_FORM = {
+    "title": "New Hire",
+    "email_address": "newhire@ucsh.com",
+    "location": "Toronto Warden",
+    "department": "Warehouse",
+    "salary_hourly": "Salary",
+    "vacation_entitlement": 15,
+    "sick_entitlement": 8,
+}
+
+
+def test_add_employee_round_trips_its_sharepoint_item_id(clean_db, monkeypatch):
+    # In Postgres mode add-employee mints a staff id and queues a "create"
+    # write-back; draining it creates the SharePoint item and stores the returned
+    # id back on the row, so later patches and the pull resolve the same person.
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+
+    async def none_(*a, **k):
+        return None
+    monkeypatch.setattr(ec, "get_employee_by_name", none_)
+    monkeypatch.setattr(ec, "get_employee_by_email", none_)
+
+    async def fake_resolve(email):
+        return 501                                         # linked to the site -> no notice
+    monkeypatch.setattr(ec, "_resolve_user_lookup_id", fake_resolve)
+
+    async def fake_rad(*a, **k):
+        return None                                        # the derived date is balance.py's job
+    monkeypatch.setattr(ec, "recalculate_request_allow_date", fake_rad)
+
+    async def fake_map():
+        return {501: "The Boss"}
+    monkeypatch.setattr(manager_assignments, "_get_sp_user_name_map", fake_map)
+
+    async def fake_create(list_id, fields):
+        return {"id": "900", "fields": fields}             # SharePoint assigns id 900
+    async def fake_update(list_id, item_id, fields):
+        return {}
+    monkeypatch.setattr(sharepoint_module.sp_client, "create_list_item", fake_create)
+    monkeypatch.setattr(sharepoint_module.sp_client, "update_list_item_fields", fake_update)
+    monkeypatch.setattr(staff_writeback, "_backoff_seconds", lambda attempts: 0)
+
+    record = run(ec.create_employee(GOOD_FORM, [501]))
+    new_id = record["id"]
+    # App-made ids live in their own range, never one SharePoint could hand out.
+    from app.repositories.postgres.staff import APP_STAFF_ID_START
+    assert int(new_id) >= APP_STAFF_ID_START
+
+    async def writebacks():
+        async with async_session() as session:
+            return (await session.execute(select(StaffWriteback))).scalars().all()
+    created = [w for w in run(writebacks()) if w.op == "create"]
+    assert len(created) == 1 and created[0].sp_item_id == new_id   # a create replay is queued
+
+    run(staff_writeback.drain_writebacks())                # create the SharePoint item and map its id
+
+    async def read_row():
+        async with async_session() as session:
+            return (await session.execute(
+                select(Staff).where(Staff.sp_item_id == new_id)
+            )).scalars().first()
+    row = run(read_row())
+    assert row.sp_remote_item_id == "900"                  # the returned id is stored on the row

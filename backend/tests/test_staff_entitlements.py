@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.graph import sharepoint as sharepoint_module
 from app.routes.dashboard import router as dashboard_router
 from app.services import staff_entitlements as se
 
@@ -150,7 +151,9 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(se, "get_employee_by_id", fake_get)
     monkeypatch.setattr(se, "recalculate_request_allow_date", fake_recalc)
-    monkeypatch.setattr(se.sp_client, "update_list_item_fields", fake_update)
+    # Default storage is SharePoint, so the store delegates to the shared sp_client
+    # object; patch the write there so this stays the SharePoint-mode path.
+    monkeypatch.setattr(sharepoint_module.sp_client, "update_list_item_fields", fake_update)
     monkeypatch.setattr(se.staff_changes, "record_changes", fake_record)
     return calls
 
@@ -300,7 +303,7 @@ def test_patch_route_sp_write_failure_is_502(client, wired, monkeypatch):
     async def boom(list_id, item_id, fields):
         raise RuntimeError("sharepoint down")
 
-    monkeypatch.setattr(se.sp_client, "update_list_item_fields", boom)
+    monkeypatch.setattr(sharepoint_module.sp_client, "update_list_item_fields", boom)
     resp = client.patch(
         "/admin/employees/480/entitlements",
         json={"changes": {"vacation": 12}, "reason": "x"},

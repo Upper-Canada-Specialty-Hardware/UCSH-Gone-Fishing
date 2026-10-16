@@ -35,10 +35,10 @@ columns it writes, and how the move covers it.
 | `services/leave_requests.py` approval and refund (sick / make-up / sick deductions, reversals) | the five balance pots | Same as `balance.py`: `StaffBalances.write_pots` in the Postgres path; direct writes are the SharePoint-era path. |
 | `services/overtime_requests.py` approval and reversal | `CurrentOvertimeBalance` (and offsets) | Same as above. |
 | `services/carryover_payout.py` approval and reversal | `CurrentVacationBalance`, `CarryOver`, `Payout` | Same as above. |
-| `tasks/carryover_reset.py` (the April-1 reset) | `CurrentVacationBalance`, `CarryOver`, `Payout` | A scheduled balance write. Not yet routed through the store. While staff are on SharePoint it is unchanged. Once staff are in Postgres it should write through `staff_store`/`StaffBalances` so the reset lands in Postgres and replays to SharePoint. Open follow-up. |
-| `services/staff_entitlements.py` `apply_entitlement_changes` and `routes/dashboard.py` admin set-balances | entitlements, the five pots, text/choice fields, person links, `AllManagers` | HR person-panel edits. Not yet routed through the store. Interim coverage: the edit writes to SharePoint; the pull reconciles it into Postgres (newer-wins) and records it in `staff_changes`. Open follow-up: route this through `staff_store` so the edit lands in Postgres directly and the write-back replays it, removing the round-trip and the double history record. |
-| `services/employee_creation.py` `create_employee` | a new Staff Directory item, then `AllManagers` and `RequestAllowDate` | Creating a person. Not yet routed. Interim coverage: created in SharePoint, imported into Postgres by the pull. Open follow-up: route creation through `staff_store.create_list_item`, which mints the id and queues the write-back. |
-| `services/manager_assignments.py` `update_employee_managers` and the bulk operations | `AllManagers` | Manager links. Not yet routed. Interim coverage: written to SharePoint, pulled into Postgres (the links rebuild from the `AllManagers` blob). Open follow-up: route through `staff_store`. |
+| `tasks/carryover_reset.py` (the April-1 reset) | `CurrentVacationBalance`, `CarryOver`, `Payout` | A scheduled balance write. **Now routed through `staff_store` (#269):** it reads the staff list and writes `CarryOver` through the store, so on Postgres the reset lands there, queues one write-back and records one `system` history row; on SharePoint it is unchanged. `RequestAllowDate` is still written by `balance.py`'s `recalculate_request_allow_date`, which moves onto the balance interface at the approval-path cutover. |
+| `services/staff_entitlements.py` `apply_entitlement_changes` and `routes/dashboard.py` admin set-balances | entitlements, the five pots, text/choice fields, person links, `AllManagers` | HR person-panel edits. **Now routed through `staff_store` (#269).** `apply_entitlement_changes` records its own history, so the store is told not to log it a second time (`history_source` left unset), and it passes the manager/supervisor names alongside the id-only Graph payload so the Postgres links keep their names. The older `set-balances` handler does not self-record, so it asks the store to log the correction (`admin_dashboard`). On Postgres each edit lands there, queues one write-back and records history once; on SharePoint it is unchanged. |
+| `services/employee_creation.py` `create_employee` | a new Staff Directory item, then `AllManagers` and `RequestAllowDate` | Creating a person. **Now routed through `staff_store.create_list_item` (#269):** on Postgres it mints the new staff id and queues a `create` write-back, which later creates the SharePoint item and stores its returned id on the row (`sp_remote_item_id`) so later patches and the pull resolve the same person; on SharePoint it creates the item directly. The managers are set through `update_employee_managers` (also routed); `RequestAllowDate` is still `balance.py`'s to write. |
+| `services/manager_assignments.py` `update_employee_managers` and the bulk operations | `AllManagers` | Manager links. **Now routed through `staff_store` (#269):** reads and the write go through the store, the manager names are passed alongside the id collection so the Postgres links keep their names, and the store records one `system` history row. The bulk operations call `update_employee_managers`, so they are covered too. On SharePoint it is unchanged. |
 
 Notes:
 - `tasks/setup_nudges.py` uses the Staff Directory list id only as an idempotency
@@ -54,17 +54,32 @@ Covered by this work:
 - Balance pot reads and writes on the Postgres approval path go through
   `StaffBalances`, which keeps the move in one transaction and queues a
   write-back.
+- The HR person-panel edit, the admin set-balances handler, add employee, the
+  manager assignment links and the April-1 carry-over reset all route through
+  `staff_store` (#269), so on Postgres each write lands there, queues exactly one
+  write-back, and records its change in `staff_changes` once (with source
+  `admin_dashboard` or `system`); on SharePoint each is byte-for-byte unchanged.
+  History is never doubled: where a writer records its own history
+  (`staff_entitlements` and the #233 edit path) the store is told not to log it
+  again.
+- Add employee on Postgres mints a new staff id and queues a `create` write-back;
+  the write-back creates the SharePoint item and stores its returned id back on
+  the row (`sp_remote_item_id`), and both later patches and the pull resolve a
+  person through that id too, so a created SharePoint item reconciles to the same
+  row instead of a duplicate.
 - Changes made directly in SharePoint are pulled into Postgres, newer-wins, with
   a `staff_changes` record and no echo.
 - The write-back drains to SharePoint with retries so other systems stay current.
 
-Open follow-ups (each is small, and each writer above names its own):
-- Route the HR person-panel edit, employee creation, manager assignment and the
-  carryover reset through `staff_store` so their writes land in Postgres and the
-  write-back replays them, rather than relying on the pull to reconcile.
-- The legacy direct balance writes are replaced at the approval-path cutover; the
-  owner's rule that staff and requests switch to Postgres together is what keeps
-  this safe in the meantime.
+Open follow-ups:
+- The legacy direct balance writes (`balance.py`, `leave_requests.py`,
+  `overtime_requests.py`, `carryover_payout.py`), including
+  `recalculate_request_allow_date`, are replaced at the approval-path cutover
+  where they move onto the `StaffBalances` interface. Until then, on Postgres
+  those writes still target SharePoint directly. For add employee and the
+  carry-over reset this means the derived `RequestAllowDate` is the one field not
+  yet routed. The owner's rule that staff and requests switch to Postgres together
+  is what keeps this safe in the meantime.
 
 ## Questions for the product owner about the Power Automate flows
 

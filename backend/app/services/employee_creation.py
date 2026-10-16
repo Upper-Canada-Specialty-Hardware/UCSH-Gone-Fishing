@@ -18,7 +18,7 @@ Comments, Extension, Birthday) are deliberately left unset.
 import logging
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     get_employee_by_email,
@@ -196,7 +196,10 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     if not manager_sp_user_ids:
         raise EmployeeValidationError("At least one supervisor must be assigned.")
 
-    item = await sp_client.create_list_item(settings.SP_LIST_STAFF_DIRECTORY, fields)
+    # Create through the store: on Postgres this mints the new staff id and queues
+    # a "create" write-back (which later makes the SharePoint item and stores its
+    # returned id on the row); on SharePoint it creates the item directly as before.
+    item = await staff_store.create_list_item(settings.SP_LIST_STAFF_DIRECTORY, fields)
     employee_id = item["id"]
     logger.info("Created Staff Directory record #%s (%s)", employee_id, fields["Title"])
 
@@ -211,6 +214,7 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     )
 
     # Return the record as written, re-read so the caller sees the person and
-    # computed fields the two calls above added.
-    record = await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    # computed fields the two calls above added (through the store, so it reads the
+    # backend the create landed in).
+    record = await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
     return {**record, "notices": notices}
