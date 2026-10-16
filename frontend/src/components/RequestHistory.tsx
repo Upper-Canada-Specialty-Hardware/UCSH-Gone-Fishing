@@ -4,7 +4,10 @@ import { useTheme } from '@mui/material/styles';
 import { DataGrid, GridColDef, GridActionsCellItem, GridActionsCellItemProps, GridColumnVisibilityModel } from '@mui/x-data-grid';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import UndoIcon from '@mui/icons-material/Undo';
+import HistoryIcon from '@mui/icons-material/History';
 import AuditTrailDialog from './AuditTrailDialog';
+import RequestTimelineDialog from './RequestTimelineDialog';
+import { LiveScope } from '../api/events';
 import TakenFrom from './TakenFrom';
 import {
   SHARED_DATA_GRID_PROPS,
@@ -25,6 +28,8 @@ interface Props {
   onRefund?: (type: string, id: string) => void;
   processingEnabled?: boolean;
   actionLoading?: string | null;
+  /** Which timeline endpoint the per-row timeline reads ('me' by default). */
+  timelineScope?: LiveScope;
 }
 
 /** Columns worth hiding on a phone, where the full set would force a wide scroll. */
@@ -33,8 +38,10 @@ const HIDDEN_ON_NARROW: GridColumnVisibilityModel = {
   managers: false, LeaveType: false, description: false, taken_from: false, EndDate: false, Hours: false, Created: false, ApprovedDate: false,
 };
 
-export default function RequestHistory({ requests, loading, showEmployee, onRefund, processingEnabled, actionLoading }: Props) {
+export default function RequestHistory({ requests, loading, showEmployee, onRefund, processingEnabled, actionLoading, timelineScope = 'me' }: Props) {
   const [auditDialogLog, setAuditDialogLog] = useState<string | null>(null);
+  // The request whose timeline is open, or null when the dialog is closed.
+  const [timelineFor, setTimelineFor] = useState<{ type: string; id: string } | null>(null);
   const theme = useTheme();
   // True on phone-width screens; drives which columns start hidden.
   const narrow = useMediaQuery(theme.breakpoints.down('sm'));
@@ -65,6 +72,8 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         Days: r.Days ?? null,
         Hours: r.Hours ?? null,
         Status: r.Status || '',
+        // The live stage words (Postgres mode); blank in SharePoint mode.
+        stage: r.stage || '',
         // Keep the full ISO so the grid still sorts by the true instant; the
         // column's valueFormatter renders the reader's local day (no UTC shift).
         Created: r.Created || '',
@@ -101,6 +110,8 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
           />
         ),
       },
+      // The live stage, right after status, so progress is visible without scrolling.
+      { field: 'stage', headerName: 'Stage', width: 180 },
       { field: 'managers', headerName: 'Manager(s)', width: 200 },
       { field: 'LeaveType', headerName: 'Leave Type', width: 160 },
       { field: 'description', headerName: 'Description', width: 200 },
@@ -124,16 +135,26 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
       { field: 'ApprovedDate', headerName: 'Approved Date', width: 130, valueFormatter: (value) => formatInstantDay(value as string) },
     ];
 
-    const needsActions = requests.some(hasAuditLog) || !!onRefund;
-    if (needsActions) {
+    // Always shown: every row offers its timeline; audit and refund add to it.
+    {
       cols.push({
         field: 'actions',
         headerName: 'Actions',
         type: 'actions',
-        width: 120,
+        width: 140,
         getActions: (params) => {
           const raw = params.row._raw;
           const actions: React.ReactElement<GridActionsCellItemProps>[] = [];
+
+          // Opening a request shows its timeline (#329).
+          actions.push(
+            <GridActionsCellItem
+              key="timeline"
+              icon={<HistoryIcon />}
+              label="Timeline"
+              onClick={() => setTimelineFor({ type: raw.request_type, id: String(raw.id) })}
+            />,
+          );
 
           if (hasAuditLog(raw)) {
             actions.push(
@@ -191,6 +212,13 @@ export default function RequestHistory({ requests, loading, showEmployee, onRefu
         open={auditDialogLog !== null}
         onClose={() => setAuditDialogLog(null)}
         auditLog={auditDialogLog || ''}
+      />
+      <RequestTimelineDialog
+        open={timelineFor !== null}
+        onClose={() => setTimelineFor(null)}
+        scope={timelineScope}
+        requestType={timelineFor?.type ?? null}
+        itemId={timelineFor?.id ?? null}
       />
     </Box>
   );

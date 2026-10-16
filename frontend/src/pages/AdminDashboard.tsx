@@ -1,7 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Typography, Paper, Alert, Snackbar, Stack } from '@mui/material';
 import TopBar from '../components/TopBar';
+import LiveNotice from '../components/LiveNotice';
+import { useLiveRequests } from '../hooks/useLiveRequests';
+import { LiveEvent } from '../api/events';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
 import AdminHome from '../components/admin/AdminHome';
 import ManagerAssignments from '../components/ManagerAssignments';
@@ -16,6 +19,7 @@ import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
 import AdminPasswordCard from '../components/admin/AdminPasswordCard';
+import LegacyDataScreen from '../components/admin/LegacyDataScreen';
 import { Enter, leaveDelay } from '../components/Motion';
 import { AdminSkeleton } from '../components/Skeletons';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
@@ -60,6 +64,7 @@ const SCREEN_TITLES: Record<string, string> = {
   stuck: 'Stuck requests',
   emails: 'Email log',
   checks: 'Data checks',
+  legacy: 'Legacy data',
   password: 'Admin password',
 };
 
@@ -390,6 +395,18 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  // Live updates: merge each timeline event into the requests table, and refresh
+  // the pending, stuck and totals views (debounced) when a decision lands from
+  // another channel so every admin view stays current without a reload (#328).
+  const liveRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLiveEvent = useCallback((ev: LiveEvent) => {
+    const refreshTypes = ['approved', 'rejected', 'cancelled', 'submitted', 'sent_to_manager', 'refunded'];
+    if (!refreshTypes.includes(ev.type)) return;
+    if (liveRefresh.current) clearTimeout(liveRefresh.current);
+    liveRefresh.current = setTimeout(() => void reloadRequests(), 700);
+  }, [reloadRequests]);
+  const { status: liveStatus } = useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
     try {
@@ -436,6 +453,7 @@ export default function AdminDashboard() {
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
       { key: 'checks', label: 'Data checks' },
+      { key: 'legacy', label: 'Legacy data' },
       { key: 'password', label: 'Admin password' },
     ] },
   ];
@@ -455,6 +473,7 @@ export default function AdminDashboard() {
           component="main"
           sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
         >
+          <LiveNotice status={liveStatus} />
           {loading ? (
             <AdminSkeleton screen={tab} table={!!REQUEST_VIEWS[tab]} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
           ) : (
@@ -560,6 +579,12 @@ export default function AdminDashboard() {
               )}
 
               {tab === 'holidays' && <HolidaysManager />}
+
+              {tab === 'legacy' && (
+                <LegacyDataScreen
+                  onNotify={(message, severity) => setSnack({ open: true, message, severity })}
+                />
+              )}
 
               {tab === 'password' && <AdminPasswordCard />}
               </Enter>

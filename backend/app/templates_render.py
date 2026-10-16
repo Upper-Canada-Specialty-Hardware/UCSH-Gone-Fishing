@@ -127,6 +127,25 @@ def render_leave_hourly_approved(fields: dict, manager_name: str) -> str:
     return _render("leave_hourly_approved.html", fields=fields, manager_name=manager_name)
 
 
+def render_request_result(heading: str, intro: str, rows: list[dict], note: str = "") -> str:
+    """The one decision-result email body, built from a request's ledger step (#325).
+
+    One shell for every outcome: a before/after table for the pots that moved
+    (salaried and hourly sick), the vacation-taken counter for hourly vacation,
+    or just a note when nothing was used; a rejection passes no rows.
+
+    Args:
+        heading: The title line, e.g. "Leave Request: Approved".
+        intro: The opening sentence naming the request and who decided it.
+        rows: ``[{"label", "value"}]`` lines for the balance table, or empty.
+        note: A closing sentence (why nothing moved, or a rejection note), or "".
+
+    Returns:
+        The email body HTML; the shared layout is applied by the sender.
+    """
+    return _render("request_result.html", heading=heading, intro=intro, rows=rows, note=note)
+
+
 def render_partial_day_holiday_rejected(fields: dict, holiday_name: str, reason: str) -> str:
     return _render(
         "partial_day_holiday_rejected.html",

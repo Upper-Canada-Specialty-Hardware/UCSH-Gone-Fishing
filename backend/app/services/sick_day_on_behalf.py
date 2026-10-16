@@ -30,7 +30,7 @@ grids and the audit dialog.
 import logging
 
 from app.config import settings
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.business_days import calculate_business_days
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
@@ -287,6 +287,12 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
             manager_name, employee_name,
         )
 
+    # Once requests live in Postgres the typed row needs the employee's staff id
+    # (employee_id is not null); the employee is already resolved above, so stamp it
+    # before the write. SharePoint mode is unchanged (EmployeeID is not on the list).
+    if await requests_in_postgres():
+        fields["EmployeeID"] = str(employee_id)
+
     # request_store, not SharePoint directly: request lists may live in Postgres.
     item = await request_store.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, fields)
     request_id = item["id"]
@@ -300,7 +306,16 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         settings.SP_LIST_LEAVE_REQUESTS, request_id, _manager_stamp(emp_fields, manager_lookup_id),
     )
 
-    result = await approve_leave_request(request_id, manager_id)  # the shared, exactly-once path
+    # In Postgres mode record the submission (the submitted event and the
+    # employment type the approval reads) before approving it on the spot. notify
+    # is False: the manager is logging it, so no approval email or text is queued;
+    # the approval itself queues the employee's result (#324).
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("leave", request_id, channel="manager_dashboard", notify=False, actor=manager_name)
+
+    # channel="manager_logs_sick_day"; the shared, exactly-once approval path.
+    result = await approve_leave_request(request_id, manager_id, "manager_logs_sick_day")
     if "error" in result:
         # The request exists, Pending, with days and a manager, so it shows in
         # the manager's Pending list and can be approved from there.

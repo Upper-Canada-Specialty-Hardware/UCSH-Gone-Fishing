@@ -23,12 +23,12 @@ from app.services.approval_versions import (
     MATERIAL_FIELDS_CARRYOVER_PAYOUT,
 )
 from app.services.leave_requests import _resolve_user_lookup_id
-from app.services.request_submitter import submitter_columns
+from app.services.request_submitter import UnknownSubmitter, submitter_columns
 from app.services.audit_trail import (
     AuditTrailBuilder,
     write_audit_log,
 )
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,18 @@ async def process_new_carryover_payout(
     # SubmitterEmail and RequestSource (carryover already matches by email below).
     fields.update(submitter_columns(submitter_email, source))
 
+    # Once requests live in Postgres the typed row needs the submitter's staff id
+    # (employee_id is not null), so resolve by email now and refuse a request that
+    # matches nobody rather than writing a half-formed row (#324). SharePoint mode
+    # is unchanged: there EmployeeID is written later by auto_assign_manager.
+    if await requests_in_postgres():
+        submitter = await get_employee_by_email(submitter_email)
+        if not submitter:
+            raise UnknownSubmitter(
+                f"No staff record was found for {submitter_email}, so the request was not created."
+            )
+        fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
+
     item = await request_store.create_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, fields)
     item_id = item["id"]
     logger.info("Created carryover/payout request #%s", item_id)
@@ -86,6 +98,16 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str, notif
         notify: True runs the approval pipeline at the end; False stops after
             the manager and ids are set, for an admin-created-and-approved one.
     """
+    # Once requests and staff both live in Postgres, the submission module records
+    # the request and QUEUES the manager email, text and the receipt, instead of
+    # running the SharePoint approval pipeline and sending here (#324, #326). The
+    # payout-cap and hourly auto-rejections the pipeline does at submit are not
+    # replayed here; a payout past the vacation floor is still refused at approval.
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("carryover_payout", request_id, notify=notify)
+        return
+
     employee = await get_employee_by_email(submitter_email)
     if not employee:
         logger.warning("Cannot assign manager — employee not found for CO/PO #%s", request_id)
@@ -479,6 +501,14 @@ async def admin_edit_carryover_payout(
         "Days": new_days,
     }
 
+    # Once requests and staff live in Postgres the edit is applied in one
+    # transaction: bump the approval version (old links go stale), record the field
+    # changes, append an "edited" event and queue fresh manager links through the
+    # outbox (#324). SharePoint mode keeps the send path below.
+    from app.services.request_submission import apply_admin_edit, submission_active
+    if await submission_active():
+        return await apply_admin_edit("carryover_payout", request_id, before, after, reason)
+
     async with lock_manager.lock(employee_id):
         fresh = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
         ff = fresh["fields"]
@@ -507,8 +537,13 @@ async def admin_edit_carryover_payout(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
-async def approve_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
+async def approve_carryover_payout(
+    request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
+) -> dict:
     """Process approval — re-validate, apply balance transfer, recalc RAD."""
+    from app.services.request_decisions import approve as _pg_approve, decisions_active
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_approve("carryover_payout", request_id, manager_id, channel, link_version)
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "approve"):
         return {"error": "Already processed"}
 
@@ -649,8 +684,13 @@ async def approve_carryover_payout(request_id: str | int, manager_id: str | int)
     return {"status": "approved", "balances": balances}
 
 
-async def refund_carryover_payout(request_id: str | int, admin_id: str | int) -> dict:
+async def refund_carryover_payout(
+    request_id: str | int, admin_id: str | int, channel: str = "system",
+) -> dict:
     """Reverse an approved carryover/payout — restore vacation, subtract from CO/Payout, recalc RAD."""
+    from app.services.request_decisions import decisions_active, refund as _pg_refund
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_refund("carryover_payout", request_id, admin_id, channel)
     item = await request_store.get_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     fields = item["fields"]
 
@@ -734,8 +774,14 @@ async def refund_carryover_payout(request_id: str | int, admin_id: str | int) ->
     return {"status": "refunded", "balances": balances}
 
 
-async def reject_carryover_payout(request_id: str | int, manager_id: str | int) -> dict:
+async def reject_carryover_payout(
+    request_id: str | int, manager_id: str | int, channel: str = "system",
+    link_version: int | None = None, reason: str | None = None,
+) -> dict:
     """Process rejection."""
+    from app.services.request_decisions import decisions_active, reject as _pg_reject
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_reject("carryover_payout", request_id, manager_id, channel, link_version, reason)
     if not await claim_action(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, "reject"):
         return {"error": "Already processed"}
 

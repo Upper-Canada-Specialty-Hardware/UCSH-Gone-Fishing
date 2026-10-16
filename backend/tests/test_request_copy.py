@@ -12,8 +12,12 @@ from sqlalchemy import delete
 
 from app.config import settings
 from app.database import async_session
+from app.models.request_change import RequestChange
+from app.models.request_counter import RequestCounter
 from app.models.request_item import CarryoverPayoutRequestItem, LeaveRequestItem, OvertimeRequestItem
+from app.models.request_record import RequestRecord
 from app.repositories.request_store import request_list_tables
+from app.services.request_copy import _json_copy_tables
 from app.services import request_copy
 
 LEAVE = settings.SP_LIST_LEAVE_REQUESTS
@@ -48,8 +52,11 @@ def sharepoint_lists(monkeypatch):
         return lists[list_id]
 
     async def wipe():
+        # The bulk copy writes the JSON tables; the Form fallback writes the live
+        # typed requests table. Clear both (typed change rows and counters too).
         async with async_session() as session:
-            for model in (LeaveRequestItem, OvertimeRequestItem, CarryoverPayoutRequestItem):
+            for model in (LeaveRequestItem, OvertimeRequestItem, CarryoverPayoutRequestItem,
+                          RequestChange, RequestRecord, RequestCounter):
                 await session.execute(delete(model))
             await session.commit()
 
@@ -62,11 +69,11 @@ def sharepoint_lists(monkeypatch):
 def test_the_copy_keeps_ids_times_and_fills_the_email(sharepoint_lists):
     report = run(request_copy.copy_requests_from_sharepoint())
     assert report["lists"]["leave"] == {"source_count": 1, "created": 1, "updated": 0}
-    leave = run(request_list_tables()[LEAVE].get_list_item(LEAVE, "412"))
+    leave = run(_json_copy_tables()[LEAVE].get_list_item(LEAVE, "412"))
     assert leave["createdDateTime"] == "2026-03-01T15:00:00Z"
     assert leave["fields"]["SubmitterEmail"] == "pat@ucsh.com"     # from the person column
     assert "@odata.etag" not in leave["fields"]
-    overtime = run(request_list_tables()[OVERTIME].get_list_item(OVERTIME, "88"))
+    overtime = run(_json_copy_tables()[OVERTIME].get_list_item(OVERTIME, "88"))
     assert overtime["fields"]["SubmitterEmail"] == "lee@gmail.com"  # an existing email is kept
 
 
@@ -75,7 +82,7 @@ def test_running_again_overwrites_with_sharepoints_values(sharepoint_lists):
     sharepoint_lists[LEAVE][0]["fields"]["Status"] = "Cancelled"
     report = run(request_copy.copy_requests_from_sharepoint())
     assert report["lists"]["leave"] == {"source_count": 1, "created": 0, "updated": 1}
-    leave = run(request_list_tables()[LEAVE].get_list_item(LEAVE, "412"))
+    leave = run(_json_copy_tables()[LEAVE].get_list_item(LEAVE, "412"))
     assert leave["fields"]["Status"] == "Cancelled"
 
 
@@ -97,10 +104,13 @@ def test_the_report_counts_what_is_left_to_copy(sharepoint_lists):
 # The Microsoft Form fallback (#195): once requests live in Postgres, a new item
 # the Form writes to a SharePoint list is moved into Postgres and processed there.
 
+# EmployeeID is set because the live typed requests table requires it; the
+# Microsoft Form carries the submitter's Staff Directory id alongside the person
+# lookup, so a real Form item has it too.
 FORM_ITEM = {
     "id": "950", "createdDateTime": "2026-10-10T13:00:00Z",
     "fields": {"LeaveType": "Vacation", "Status": "Pending", "StartDate": "2026-11-02",
-               "EndDate": "2026-11-02", "SubmittedTestLookupId": "21"},
+               "EndDate": "2026-11-02", "EmployeeID": "21", "SubmittedTestLookupId": "21"},
 }
 
 
@@ -130,18 +140,16 @@ def test_a_deleted_form_item_is_skipped(form_item):
     assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None
 
 
-def test_the_dispatcher_processes_the_postgres_copy(form_item, monkeypatch):
-    from app.services import leave_requests
+def test_the_dispatcher_runs_the_per_item_sharepoint_check(form_item, sharepoint_lists, monkeypatch):
+    # Since #336 the webhook path no longer ignores a request-list change once
+    # requests live in Postgres: it runs the post-switch SharePoint check for that
+    # one item at once (services/sharepoint_check.run_sharepoint_check_for_item),
+    # so a Microsoft Form submission is imported into Postgres without waiting for
+    # the scheduled sweep. Staff is still in SharePoint here, so no manager
+    # notification is queued (that needs staff in Postgres too); the item is moved.
     from app.tasks import dispatcher
-    handled = []
-
-    async def record(item_id):
-        handled.append(str(item_id))
-
-    for name in ("auto_calculate_days", "auto_assign_manager", "send_bereavement_alert"):
-        monkeypatch.setattr(leave_requests, name, record)
+    # The staff index the check reads; empty is fine, the item imports with a
+    # fallback employee id when its submitter does not match a staff record.
+    sharepoint_lists[settings.SP_LIST_STAFF_DIRECTORY] = []
     run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    moved = run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))
-    assert handled == [moved["id"]] * 3                         # processed under its Postgres id
-    run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    assert len(handled) == 3                                    # a second notice changes nothing
+    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is not None   # imported at once

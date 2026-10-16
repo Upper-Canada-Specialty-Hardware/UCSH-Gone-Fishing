@@ -140,6 +140,53 @@ def session_is_valid(token: str, stored: str | None, now: float | None = None) -
     return hmac.compare_digest(signature, _sign(expiry, stored))
 
 
+STREAM_TICKET_SECONDS = 120              # a live-feed ticket only has to survive the connect
+
+
+def _sign_ticket(expiry: str, stored: str) -> str:
+    """HMAC of a live-feed ticket's expiry, kept apart from sessions by its prefix."""
+    message = f"events-ticket:{expiry}:{_fingerprint(stored)}"
+    return hmac.new(settings.APPROVAL_LINK_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+
+def make_stream_ticket(stored: str, now: float | None = None) -> str:
+    """A short-lived ticket that opens the admin live feed (#328).
+
+    A browser's EventSource cannot send the X-Admin-Session header, so the feed
+    takes a credential in its url, and urls end up in proxy logs. A ticket that
+    dies in two minutes, and cannot be used as a session, keeps the 30-day
+    session out of those logs.
+
+    Args:
+        stored: The table's password value (ties the ticket to it).
+        now: Current time for tests.
+
+    Returns:
+        "<expiry>.<signature>".
+    """
+    expiry = str(int((now or time.time()) + STREAM_TICKET_SECONDS))
+    return f"{expiry}.{_sign_ticket(expiry, stored)}"
+
+
+def stream_ticket_is_valid(ticket: str, stored: str | None, now: float | None = None) -> bool:
+    """Whether a live-feed ticket is unexpired and signed for the current password.
+
+    Args:
+        ticket: "<expiry>.<signature>" from the feed url.
+        stored: The table's value, or None when there is no row.
+        now: Current time for tests.
+
+    Returns:
+        False for a missing, expired, forged or outdated ticket.
+    """
+    if not ticket or stored is None or "." not in ticket:
+        return False
+    expiry, signature = ticket.split(".", 1)
+    if not expiry.isdigit() or int(expiry) < (now or time.time()):
+        return False                                           # expired or malformed
+    return hmac.compare_digest(signature, _sign_ticket(expiry, stored))
+
+
 async def _load_row(session) -> AdminPassword | None:
     """The password row, or None. The lowest id wins if a developer added more."""
     result = await session.execute(select(AdminPassword).order_by(AdminPassword.id).limit(1))

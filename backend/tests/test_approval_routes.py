@@ -114,7 +114,8 @@ def test_unknown_request_type_renders_error_page(client, processing_on):
 @pytest.mark.parametrize("action", ["approve", "reject"])
 def test_action_result_page_renders(client, monkeypatch, processing_on, version_matches, request_type, action):
     """approval_success.html / approval_rejected.html - the highest-value pages."""
-    async def _handler(request_id, mgr):
+    # The route now passes channel + link version; accept and ignore them here.
+    async def _handler(request_id, mgr, *args, **kwargs):
         return {"status": "approved" if action == "approve" else "rejected"}
 
     monkeypatch.setitem(approval_route.HANDLERS, (request_type, action), _handler)
@@ -127,7 +128,7 @@ def test_action_result_page_renders(client, monkeypatch, processing_on, version_
 
 
 def test_handler_error_renders_error_page(client, monkeypatch, processing_on, version_matches):
-    async def _handler(request_id, mgr):
+    async def _handler(request_id, mgr, *args, **kwargs):
         return {"error": "Already processed"}
 
     monkeypatch.setitem(approval_route.HANDLERS, ("leave", "approve"), _handler)
@@ -139,7 +140,7 @@ def test_handler_error_renders_error_page(client, monkeypatch, processing_on, ve
 
 
 def test_handler_exception_renders_error_page(client, monkeypatch, processing_on, version_matches):
-    async def _handler(request_id, mgr):
+    async def _handler(request_id, mgr, *args, **kwargs):
         raise RuntimeError("SharePoint exploded")
 
     monkeypatch.setitem(approval_route.HANDLERS, ("leave", "approve"), _handler)

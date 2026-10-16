@@ -274,6 +274,20 @@ async def send_email(
     valid_to = [addr for addr in to if addr]                       # drop blanks/None
     valid_cc = [addr for addr in (cc or []) if addr]
 
+    # Rehearsal mode keeps only allow-listed recipients, so a rehearsal never
+    # emails real staff. Gated here, the one point every email passes through,
+    # so both SMTP2GO and the UCSH mailer are covered; a dropped address is
+    # logged and the send continues with whoever remains (#339).
+    from app.services.rehearsal import allow_recipient, rehearsal_enabled
+
+    if rehearsal_enabled():
+        kept_to = [addr for addr in valid_to if allow_recipient(addr)]
+        kept_cc = [addr for addr in valid_cc if allow_recipient(addr)]
+        dropped = (len(valid_to) - len(kept_to)) + (len(valid_cc) - len(kept_cc))
+        if dropped:
+            logger.info("Rehearsal: %d email recipient(s) not on the allow list were dropped", dropped)
+        valid_to, valid_cc = kept_to, kept_cc
+
     smtp2go, mailer = _route_recipients(valid_to, valid_cc)
     # A group can end up with CC addresses but no To (the To went to another
     # service). SMTP2GO treats "no To" as nothing to send, so promote the CC

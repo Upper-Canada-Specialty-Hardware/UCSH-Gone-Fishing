@@ -33,6 +33,7 @@ export interface Row {
   manager: string;                   // first/primary manager
   managers: string[];                // all managers named
   status: string;                    // Pending/Approved/Rejected/Refunded/Stuck
+  stage: string;                     // the live stage words (Postgres mode), or ''
   created: string;                   // ISO date (date part)
   approved: string;                  // ISO date, or ''
   start: string;                     // leave start, or ''
@@ -43,6 +44,7 @@ export interface Row {
   amountDays: number;                // days, or hours/8 for make-up, for sort/stats
   title: string;                     // the person's own words
   submittedBy: string;
+  employment_type: string;           // 'Salary' | 'Hourly' | 'Hourly BC' | '' (person's current type) (#338)
   sysState: string;                  // SystemState (carry-over), or a derived state
   newBalance: string;                // carry-over NewBalance, raw
   waiting: number | null;            // days since created, or null for decided
@@ -100,6 +102,7 @@ export function toRow(raw: any, source: RowSource): Row {
     manager: managers[0] || '',
     managers,
     status,
+    stage: item.stage || '',               // present in Postgres mode, blank in SharePoint mode
     created,
     approved: (item.ApprovedDate || '').slice(0, 10),
     start: (item.StartDate || '').slice(0, 10),
@@ -110,6 +113,7 @@ export function toRow(raw: any, source: RowSource): Row {
     amountDays: src === 'mu' ? (hours || 0) / 8 : (days || 0),
     title: getDescription(item),
     submittedBy: item.employee_name || item.SubmitterName || '',
+    employment_type: item.employment_type || '',           // backend-stamped; '' when unresolved (#338)
     sysState: item.SystemState || (status === 'Pending' ? 'Waiting on manager' : 'Processed'),
     newBalance: item.NewBalance || '',
     waiting: source === 'history' ? null : daysWaiting(item),
@@ -147,6 +151,7 @@ export const COLUMNS: Record<string, ColumnDef> = {
   // Which balances a request's days came from (approved) or would (pending); chips wrap, so it narrows before dropping.
   taken: { label: 'Taken from', wrap: true, width: 200, noSort: true },
   status: { label: 'Status', wrap: true, width: 140 },
+  stage: { label: 'Stage', wrap: true, width: 170 },
   mgr: { label: 'Manager', width: 150 },
   created: { label: 'Created', width: 110 },
   approved: { label: 'Approved', width: 110 },
@@ -163,17 +168,17 @@ export const COLUMNS: Record<string, ColumnDef> = {
 
 /** The columns each list shows, in display order. All lists shares one set. */
 export const COLUMN_SETS: Record<Src | 'all', string[]> = {
-  all: ['id', 'kind', 'person', 'what', 'when', 'amount', 'taken', 'status', 'mgr', 'created', 'quick'],
-  leave: ['id', 'kind', 'person', 'what', 'start', 'end', 'days', 'taken', 'status', 'mgr', 'approved', 'created', 'quick'],
-  mu: ['id', 'person', 'what', 'date', 'hours', 'hdays', 'taken', 'status', 'mgr', 'approved', 'created', 'quick'],
-  co: ['id', 'kind', 'person', 'days', 'taken', 'status', 'mgr', 'newbal', 'sysstate', 'approved', 'created', 'quick'],
+  all: ['id', 'kind', 'person', 'what', 'when', 'amount', 'taken', 'status', 'stage', 'mgr', 'created', 'quick'],
+  leave: ['id', 'kind', 'person', 'what', 'start', 'end', 'days', 'taken', 'status', 'stage', 'mgr', 'approved', 'created', 'quick'],
+  mu: ['id', 'person', 'what', 'date', 'hours', 'hdays', 'taken', 'status', 'stage', 'mgr', 'approved', 'created', 'quick'],
+  co: ['id', 'kind', 'person', 'days', 'taken', 'status', 'stage', 'mgr', 'newbal', 'sysstate', 'approved', 'created', 'quick'],
 };
 
 // Most important first: when space runs out the LAST of these present in the
 // set drops first. Person, status, type, amount and the actions are kept; ids,
 // dates and system fields step aside (their values stay in the opened row).
 const PRIORITY = [
-  'person', 'status', 'quick', 'kind', 'amount', 'days', 'hours', 'when', 'taken',
+  'person', 'status', 'quick', 'kind', 'amount', 'days', 'hours', 'when', 'taken', 'stage',
   'start', 'date', 'what', 'end', 'mgr', 'newbal', 'created', 'approved', 'hdays', 'sysstate', 'id',
 ];
 
@@ -229,6 +234,7 @@ export function columnValue(r: Row, key: string): string | number {
     case 'when': return refDate(r);
     case 'amount': return r.amountDays || 0;
     case 'status': return r.status;
+    case 'stage': return r.stage;
     case 'mgr': return r.manager;
     case 'created': return r.created;
     case 'approved': return r.approved;

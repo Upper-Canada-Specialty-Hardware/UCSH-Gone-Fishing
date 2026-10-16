@@ -81,12 +81,22 @@ class SharePointClient:
             raise
 
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
+        # Rehearsal mode must not change SharePoint; reads stay open, writes skip
+        # with a log line and a harmless empty result (#339).
+        from app.services.rehearsal import sharepoint_writes_allowed
+        if not sharepoint_writes_allowed():
+            logger.warning("Rehearsal: skipped creating an item on list %s", list_id)
+            return {}
         path = f"{self._list_path(list_id)}/items"
         return await graph_client.post(path, json={"fields": fields})
 
     async def update_list_item_fields(
         self, list_id: str, item_id: str | int, fields: dict
     ) -> dict:
+        from app.services.rehearsal import sharepoint_writes_allowed
+        if not sharepoint_writes_allowed():
+            logger.warning("Rehearsal: skipped updating item %s on list %s", item_id, list_id)
+            return {}
         path = f"{self._list_path(list_id)}/items/{item_id}/fields"
         return await graph_client.patch(path, json=fields)
 
@@ -97,6 +107,10 @@ class SharePointClient:
             list_id: The SharePoint list the item lives in.
             item_id: The item to delete.
         """
+        from app.services.rehearsal import sharepoint_writes_allowed
+        if not sharepoint_writes_allowed():
+            logger.warning("Rehearsal: skipped deleting item %s on list %s", item_id, list_id)
+            return
         path = f"{self._list_path(list_id)}/items/{item_id}"
         await graph_client.delete(path)  # Graph returns 204 No Content
 

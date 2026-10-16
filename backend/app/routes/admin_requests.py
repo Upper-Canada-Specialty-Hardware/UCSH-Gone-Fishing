@@ -248,7 +248,8 @@ async def _approve_admin_request(request_type: str, item_id) -> dict:
         ff = fresh["fields"] if fresh else {}                  # the item as created, with its days
         if ff.get("LeaveType") in DAY_COSTING_LEAVE_TYPES and float(ff.get("Days", 0) or 0) <= 0:
             return {"error": "The number of days could not be worked out, so this was not approved."}
-    return await APPROVE_HANDLERS[request_type](item_id, ADMIN_ID)
+    # channel="admin_dashboard"; admin creates and approves in one step here.
+    return await APPROVE_HANDLERS[request_type](item_id, ADMIN_ID, "admin_dashboard")
 
 
 @router.post("/admin/requests/preview")
@@ -339,7 +340,8 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
     # refund stops here, so nothing is deleted and no record is kept.
     refunded = False
     if body.refund and fields.get("Status") == "Approved":
-        result = await REFUND_HANDLERS[request_type](request_id, ADMIN_ID)
+        # channel="admin_dashboard"; refund-then-delete is an admin-only path.
+        result = await REFUND_HANDLERS[request_type](request_id, ADMIN_ID, "admin_dashboard")
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         refunded = True

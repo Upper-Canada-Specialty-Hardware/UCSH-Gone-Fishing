@@ -170,6 +170,16 @@ async def _process_row(row: RequestApprovalState) -> None:
 
 
 async def send_due_reminders() -> None:
+    # Once requests and staff both live in Postgres, reminders go through the
+    # outbox like every other message: the submission module finds the pending
+    # requests that are due and queues a reminder (once a day) for each (#326).
+    from app.services.request_submission import submission_active, queue_due_reminders
+    if await submission_active():
+        queued = await queue_due_reminders()
+        if queued:
+            logger.info("Reminder scan (Postgres) - %d request(s) queued", queued)
+        return
+
     now = datetime.utcnow()
     async with async_session() as session:
         result = await session.execute(

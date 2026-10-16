@@ -9,7 +9,7 @@ from app.services.leave_requests import process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.request_intake import RequestTypeClosed, ensure_request_type_open
-from app.services.request_submitter import SOURCE_API
+from app.services.request_submitter import SOURCE_API, UnknownSubmitter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -65,6 +65,8 @@ async def receive_leave_form(data: LeaveFormData):
     try:
         item = await process_new_leave_request(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
+    except UnknownSubmitter as e:
+        raise HTTPException(status_code=400, detail=str(e))     # no staff record: refused, no row
     except Exception as e:
         logger.exception("Error processing leave form")
         raise HTTPException(status_code=500, detail=str(e))
@@ -77,6 +79,8 @@ async def receive_overtime_form(data: OvertimeFormData):
     try:
         item = await process_new_overtime_request(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
+    except UnknownSubmitter as e:
+        raise HTTPException(status_code=400, detail=str(e))     # no staff record: refused, no row
     except Exception as e:
         logger.exception("Error processing overtime form")
         raise HTTPException(status_code=500, detail=str(e))
@@ -93,6 +97,8 @@ async def receive_carryover_payout_form(data: CarryoverPayoutFormData):
     try:
         item = await process_new_carryover_payout(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
+    except UnknownSubmitter as e:
+        raise HTTPException(status_code=400, detail=str(e))     # no staff record: refused, no row
     except Exception as e:
         logger.exception("Error processing carryover/payout form")
         raise HTTPException(status_code=500, detail=str(e))
