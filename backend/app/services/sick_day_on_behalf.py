@@ -300,7 +300,8 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         settings.SP_LIST_LEAVE_REQUESTS, request_id, _manager_stamp(emp_fields, manager_lookup_id),
     )
 
-    result = await approve_leave_request(request_id, manager_id)  # the shared, exactly-once path
+    # channel="manager_logs_sick_day"; the shared, exactly-once approval path.
+    result = await approve_leave_request(request_id, manager_id, "manager_logs_sick_day")
     if "error" in result:
         # The request exists, Pending, with days and a manager, so it shows in
         # the manager's Pending list and can be approved from there.

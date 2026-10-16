@@ -881,7 +881,9 @@ async def team_approve(user: AuthUser, request_type: str, request_id: str):
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    result = await handler(request_id, user.user_id)
+    # channel="manager_dashboard"; no link version comes through the dashboard,
+    # so the stale-link check does not apply (link_version stays default None).
+    result = await handler(request_id, user.user_id, "manager_dashboard")
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -897,7 +899,8 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    result = await handler(request_id, user.user_id)
+    # channel="manager_dashboard" for the reject path too.
+    result = await handler(request_id, user.user_id, "manager_dashboard")
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -1704,7 +1707,8 @@ async def admin_approve(request_type: str, request_id: str):
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
+    # channel="admin_dashboard"; passed through _run_request_action to the handler.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
 
 
 @router.post("/admin/reject/{request_type}/{request_id}")
@@ -1714,7 +1718,8 @@ async def admin_reject(request_type: str, request_id: str):
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
+    # channel="admin_dashboard" for the reject path too.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
 
 
 @router.post("/admin/refund/{request_type}/{request_id}")
@@ -1735,7 +1740,8 @@ async def admin_refund(request_type: str, request_id: str):
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
+    # channel="admin_dashboard"; refund is admin-only, so this is the one source.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
 
 
 @router.post("/admin/send-reminder/{request_type}/{request_id}")

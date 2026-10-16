@@ -18,6 +18,7 @@ from app.tasks.reminders import start_reminder_task
 from app.tasks.setup_nudges import start_setup_nudge_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
 from app.tasks.sync_tasks import start_shadow_sync_task, start_sharepoint_check_task
+from app.tasks.outbox_worker import start_outbox_worker  # drains queued result emails/texts (#326)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +53,9 @@ async def lifespan(app: FastAPI):
     # polls on SQLite, and fans request events out to open dashboards (#328).
     from app.services.event_bus import event_bus
     await event_bus.start()
+    # Start the outbox worker before the SharePoint step, and outside its try, so
+    # queued result emails/texts drain even when Graph/SharePoint is unavailable.
+    outbox_task = start_outbox_worker()
 
     # 2. Connect to Graph API and SharePoint
     renewal_task = None
@@ -132,6 +136,7 @@ async def lifespan(app: FastAPI):
         sharepoint_check_task.cancel()
     from app.services.event_bus import event_bus
     await event_bus.stop()                                   # stop the live feed listener/poller
+    outbox_task.cancel()                                            # stop draining the outbox on shutdown
     await sp_client.close()
     logger.info("Shutdown complete")
 

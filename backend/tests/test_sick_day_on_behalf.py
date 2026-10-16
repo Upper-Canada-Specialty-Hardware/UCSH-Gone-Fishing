@@ -170,7 +170,8 @@ def _patch(monkeypatch, *, manager=BC_MANAGER, employee=EMPLOYEE, conflict=None,
         calls["order"].append("stamp")
         return {"id": str(item_id), "fields": fields}
 
-    async def _approve(request_id, manager_id):
+    # The sick-day path now passes channel="manager_logs_sick_day"; capture it.
+    async def _approve(request_id, manager_id, *args, **kwargs):
         calls["approved"] = (str(request_id), str(manager_id))
         calls["order"].append("approve")
         return approve_result or {"status": "approved", "balances": {"CurrentSickDayBalance": 3}}

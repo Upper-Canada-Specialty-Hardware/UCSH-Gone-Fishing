@@ -66,11 +66,12 @@ def client(monkeypatch):
         test_client.created.append({"type": request_type, "source": source, "notify": notify, "employee": employee["id"]})
         return {"id": "500"}
 
-    async def approve_spy(request_id, approver):
+    # The admin route now passes channel="admin_dashboard"; accept and ignore it.
+    async def approve_spy(request_id, approver, *args, **kwargs):
         test_client.approved.append((request_id, approver))
         return {"status": "approved"}
 
-    async def refund_spy(request_id, approver):
+    async def refund_spy(request_id, approver, *args, **kwargs):
         test_client.refunded.append((request_id, approver))
         return {"status": "refunded"}
 
@@ -123,7 +124,7 @@ def test_an_approval_that_is_refused_falls_back_to_pending(client, monkeypatch):
     # The admin's own approval was refused (a clash). Rather than leave the
     # request silently Pending with its manager email suppressed, hand it to the
     # manager the normal way and tell the admin (#294 S3). It is not an error.
-    async def blocked(request_id, approver):
+    async def blocked(request_id, approver, *args, **kwargs):
         return {"error": "Blocked by approved leave."}
     monkeypatch.setitem(admin_requests.APPROVE_HANDLERS, "leave", blocked)
     resp = client.post("/admin/requests/new", json={"request_type": "leave", "employee_id": "7", "status": "Approved", "form": VACATION_FORM})
@@ -139,7 +140,7 @@ def test_a_carryover_system_override_is_not_reported_as_approved(client, monkeyp
     # approve_carryover_payout can end a request by returning
     # {"status": "system_override_rejected"} (a terminal rejection), which must
     # not read as a success (#294 S2). Recovery returns False (it is terminal).
-    async def overridden(request_id, approver):
+    async def overridden(request_id, approver, *args, **kwargs):
         return {"status": "system_override_rejected"}
 
     async def recover_terminal(request_id):
@@ -258,7 +259,7 @@ def test_a_refused_refund_stops_the_delete(client, monkeypatch):
     # kept: the request is left exactly as it was (#294 S5).
     _clear_deletions("500")
 
-    async def refuse(request_id, approver):
+    async def refuse(request_id, approver, *args, **kwargs):
         return {"error": "Not enough balance to refund."}
     monkeypatch.setitem(admin_requests.REFUND_HANDLERS, "leave", refuse)
     resp = client.post("/admin/requests/leave/500/delete", json={"reason": "oops", "refund": True})
@@ -380,7 +381,7 @@ def dash_client(monkeypatch):
 def test_approving_a_deleted_request_is_a_404_not_a_500(dash_client, monkeypatch):
     # Approving by an old link after the item was deleted: the handler reads the
     # item and SharePoint answers 404; the route must turn that into a 404.
-    async def gone(request_id, manager_id):
+    async def gone(request_id, manager_id, *args, **kwargs):
         raise httpx.HTTPStatusError("not found", request=httpx.Request("GET", "http://x"),
                                     response=httpx.Response(404))
     monkeypatch.setitem(dashboard.HANDLERS, ("leave", "approve"), gone)

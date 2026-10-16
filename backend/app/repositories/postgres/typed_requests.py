@@ -275,9 +275,12 @@ class TypedRequestList:
         async with async_session() as session:
             if item_id is None:
                 item_id = await next_item_id(session, self.kind)   # the next number for this kind
+            else:
+                await self._raise_counter(session, item_id)        # kept item (copy/import): counter stays ahead
             record = RequestRecord(kind=self.kind, item_id=item_id, sp_item_id=sp_item_id)
             record.created_at = created_at or now
             record.updated_at = modified_at or created_at or now
+            await self._resolve_people(record, stored)          # name/email first, so the Title split sees them
             self._apply_fields(record, stored)
             session.add(record)
             await session.flush()                               # assign id and enforce the CHECK constraints
@@ -314,6 +317,7 @@ class TypedRequestList:
             if record is None:
                 raise _not_found(list_id, item_id)
             before = self._item_shape(record)["fields"]         # the SharePoint-shaped values before
+            await self._resolve_people(record, stored)          # fill any newly-named person before the Title split
             self._apply_fields(record, stored)
             record.updated_at = utcnow()
             await session.flush()                               # enforce CHECKs before recording changes
@@ -343,6 +347,25 @@ class TypedRequestList:
 
     # ----- translation -----
 
+    async def _raise_counter(self, session, item_id: int) -> None:
+        """Keep this kind's id counter at or above a kept item_id (copy/import).
+
+        A copied or imported item keeps its own item_id instead of drawing the
+        next number, so the counter would still hand that number out to a new
+        request and clash. This lifts the counter to at least ``item_id`` (the
+        importer's "raise the counter above the largest imported id" rule).
+
+        Args:
+            session: An open session; not committed here.
+            item_id: The kept item_id this row is stored under.
+        """
+        from app.models.request_counter import RequestCounter       # local import: keep the module's top light
+        counter = await session.get(RequestCounter, self.kind)
+        if counter is None:                                         # first kept item of this kind
+            session.add(RequestCounter(kind=self.kind, last_item_id=item_id))
+        elif counter.last_item_id < item_id:                        # a higher id than seen so far
+            counter.last_item_id = item_id
+
     async def _row(self, session, item_id) -> RequestRecord | None:
         """The record for an item_id of this kind, or None.
 
@@ -359,6 +382,39 @@ class TypedRequestList:
         return (await session.execute(
             select(RequestRecord).where(RequestRecord.kind == self.kind, RequestRecord.item_id == key)
         )).scalars().first()
+
+    async def _resolve_people(self, record: RequestRecord, stored: dict) -> None:
+        """Fill the employee's and manager's names (and the employee's email) from staff.
+
+        The leave Title split and the result email both need the employee name,
+        and app-made requests arrive with an id but no name. The name is looked
+        up from the Staff Directory through the employee service, keyed by the
+        EmployeeID / ManagerID the caller passed. This runs only when SharePoint
+        is connected (``sp_client.site_id`` set), which is true in production and
+        false in every test, so tests make no network call and this is a no-op
+        there. An explicit SubmitterEmail always wins over the looked-up address.
+
+        Args:
+            record: The record being written; its name fields are filled in place.
+            stored: The incoming SharePoint-named fields (system fields removed).
+        """
+        from app.graph.sharepoint import sp_client                 # local import: avoid a load-time cycle
+        if getattr(sp_client, "site_id", None) is None:            # SharePoint not reachable (every test)
+            return                                                 # staff record is not knowable: skip, no call
+        from app.services.employee import get_employee_by_id       # the existing Staff Directory read
+        emp_id = stored.get("EmployeeID") if "EmployeeID" in stored else record.employee_id
+        if emp_id and not record.employee_name:                    # only when we still lack the name
+            employee = await get_employee_by_id(emp_id)            # None when the id is unknown or SP is down
+            if employee:
+                emp_fields = employee.get("fields", {})
+                record.employee_name = emp_fields.get("Title") or record.employee_name  # their name at the time
+                if not stored.get("SubmitterEmail") and not record.employee_email:       # SubmitterEmail wins
+                    record.employee_email = (emp_fields.get("EmailAddress") or "").strip().lower() or None
+        mgr_id = stored.get("ManagerID") if "ManagerID" in stored else record.manager_id
+        if mgr_id and not record.manager_name:                     # name the deciding manager when we can
+            manager = await get_employee_by_id(mgr_id)
+            if manager:
+                record.manager_name = manager.get("fields", {}).get("Title") or record.manager_name
 
     def _apply_fields(self, record: RequestRecord, stored: dict) -> None:
         """Write SharePoint-named fields onto a record's typed columns.

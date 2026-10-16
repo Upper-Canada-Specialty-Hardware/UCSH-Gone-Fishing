@@ -56,6 +56,14 @@ STAGE_WORDS = {
 # The NOTIFY channel a live-events reader listens on; Postgres delivers at commit.
 NOTIFY_CHANNEL = "request_events"
 
+# A request is "decided" once a manager or admin has approved, rejected or
+# refunded it; its stage then names that outcome.
+DECIDED_STATUSES = ("approved", "rejected", "refunded")
+# Events that are only noise after a decision: a late link open, a stale-link
+# refusal, a failed re-send or a reminder must not relabel a decided request's
+# stage (e.g. turn "Approved" back into "Manager opened the link") (#323).
+NON_OVERRIDING_EVENTS = ("refused", "link_opened", "send_failed", "reminder_sent")
+
 
 def step_key(kind: str, item_id: int, step: str, version: int, suffix: str | None = None) -> str:
     """Build the idempotency key for one step of one request.
@@ -187,7 +195,11 @@ async def append_event(
     if not await _insert_or_skip(session, event):
         return None                                            # already recorded: leave the stage as it is
     stage = STAGE_WORDS.get(type)
-    if stage:
+    # A noise event (a late open, a stale-link refusal, a failed send, a
+    # reminder) never rewrites the stage of an already-decided request, so an
+    # "Approved" request keeps reading "Approved" (#323).
+    decided = request.status in DECIDED_STATUSES
+    if stage and not (decided and type in NON_OVERRIDING_EVENTS):
         request.stage = stage                                  # keep the stage line in step with the event
     if session.bind.dialect.name == "postgresql":
         # Tell any live reader a new event landed; Postgres delivers at commit.
