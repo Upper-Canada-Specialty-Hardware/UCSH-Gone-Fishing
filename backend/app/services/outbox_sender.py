@@ -25,6 +25,30 @@ logger = logging.getLogger(__name__)
 _BACKOFF_BASE_SECONDS = 60
 _BACKOFF_CAP_SECONDS = 3600
 
+# A delivered message's type -> the timeline event a successful send records, so
+# the stage reads right: a queued manager ask becomes "Waiting on manager", the
+# employee receipt "Submitted, receipt sent", a reminder "Reminder sent", and a
+# decision's result or rejection "Result sent". Anything else records result_sent.
+_SENT_EVENT_FOR_TYPE = {
+    "manager_approval": "sent_to_manager",
+    "receipt": "receipt_sent",
+    "reminder": "reminder_sent",
+    "result": "result_sent",
+    "rejection": "result_sent",
+}
+
+
+def _sent_event(message_type: str) -> str:
+    """The event type a successful send of this message records.
+
+    Args:
+        message_type: The outbox row's message_type.
+
+    Returns:
+        The request_events type to append; ``result_sent`` for anything unmapped.
+    """
+    return _SENT_EVENT_FOR_TYPE.get(message_type, "result_sent")
+
 
 def _backoff_seconds(attempts: int) -> int:
     """How long to wait before the next try after ``attempts`` failures.
@@ -94,12 +118,18 @@ async def send_outbox_row(session, row: Outbox) -> None:
         row.sent_at = utcnow()
         row.last_error = None
         if request is not None:                                    # tie the send to the request's timeline
+            event_type = _sent_event(row.message_type)            # the event that matches this message
+            # A manager-approval send names the channel and manager; every other
+            # send records who it reached, so the timeline reads from the detail.
+            if event_type == "sent_to_manager":
+                detail = {"to": row.channel, "manager": request.manager_name}
+            else:
+                detail = {"channel": row.channel, "to": row.recipient}
             await append_event(
-                session, request, "result_sent", "system", None,
-                {"channel": row.channel, "to": row.recipient},
-                f"{row.idempotency_key}:result_sent",
+                session, request, event_type, "system", None, detail,
+                f"{row.idempotency_key}:{event_type}",
             )
-            log_step(request, "result_sent", channel=row.channel, to=row.recipient)
+            log_step(request, event_type, channel=row.channel, to=row.recipient)
     except Exception as e:                                         # a provider error: schedule a retry
         row.status = "failed"
         row.last_error = f"{type(e).__name__}: {e}"

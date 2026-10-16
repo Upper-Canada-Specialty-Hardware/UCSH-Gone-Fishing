@@ -148,6 +148,13 @@ async def _check_item(session, kind, sp_item, index, run_id, counts) -> None:
         if _is_form_item(fields):
             await _import_item(session, kind, sp_item, index, run_id,
                                event_type="submitted", event_channel="form")
+            # Treat a stray Form request like an app request: assign its manager
+            # and queue the notifications, once staff and requests are in Postgres.
+            # Shares this session, so the import and the queued messages land
+            # together; the submitted key means a rerun queues nothing again (#326).
+            from app.services.request_submission import submission_active, submit
+            if await submission_active():
+                await submit(kind, int(sp_item_id), channel="form", notify=True, session=session)
             outcome, counter = "imported", "imported_form"
         else:
             await _import_item(session, kind, sp_item, index, run_id,
@@ -204,6 +211,72 @@ async def _check_deletes(session, kind, current_ids, run_id, counts) -> None:
         counts["flagged_delete"] = counts.get("flagged_delete", 0) + 1
 
 
+def _kind_for_list(list_id: str) -> str | None:
+    """The request kind a SharePoint list id belongs to, or None.
+
+    Args:
+        list_id: A SharePoint list id.
+
+    Returns:
+        "leave", "overtime" or "carryover_payout", or None for any other list.
+    """
+    for kind, setting_name in KIND_LIST_SETTING.items():
+        if getattr(settings, setting_name) == list_id:
+            return kind
+    return None
+
+
+async def run_sharepoint_check_for_item(list_id: str, item_id) -> dict:
+    """Run the post-switch check for one SharePoint item at once (the webhook path).
+
+    Once requests live in Postgres the request-list webhook is otherwise ignored,
+    and a Form submission would wait for the next scheduled sweep. This handles the
+    one changed item now, through the same ``_check_item`` and ``sharepoint_seen``
+    logic, so a Form request reaches its manager without delay and a rerun (or the
+    later scheduled sweep) does nothing. A deleted item is left to the scheduled
+    sweep, which flags deletes.
+
+    Args:
+        list_id: The request list the change came from.
+        item_id: The changed item's SharePoint id.
+
+    Returns:
+        The per-outcome counts for this one item.
+    """
+    kind = _kind_for_list(list_id)
+    if kind is None:
+        return {}                                              # not a request list
+    sp_item = await sp_client.get_list_item_or_none(list_id, item_id)
+    if sp_item is None:
+        return {}                                              # gone: the scheduled sweep flags deletes
+    counts: dict = {}
+    async with async_session() as session:
+        run = SyncRun(job="sharepoint_check")
+        session.add(run)
+        await session.flush()
+        index = await build_staff_index()
+        try:
+            async with session.begin_nested():                 # isolate this one item
+                await _check_item(session, kind, sp_item, index, run.id, counts)
+        except Exception:
+            counts["errors"] = counts.get("errors", 0) + 1
+            logger.exception("SharePoint check (one item): failed on %s item %s", kind, item_id)
+        run.counts = counts
+        run.finished_at = utcnow()
+        await session.commit()
+    _wake_outbox()                                             # deliver anything the import queued
+    return counts
+
+
+def _wake_outbox() -> None:
+    """Nudge the outbox worker after a check may have queued messages (best-effort)."""
+    try:
+        from app.tasks.outbox_worker import kick_outbox
+        kick_outbox()
+    except Exception:                                          # a missing worker (tests) is harmless
+        pass
+
+
 async def run_sharepoint_check() -> dict:
     """Sweep the three SharePoint request lists once, recording a SyncRun.
 
@@ -239,4 +312,5 @@ async def run_sharepoint_check() -> dict:
             await session.commit()
             logger.exception("SharePoint check failed")
             counts = {"error": str(e)}
+    _wake_outbox()                                              # deliver any notifications the sweep queued
     return counts

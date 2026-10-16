@@ -20,8 +20,14 @@ async def dispatch_change(list_id: str, item: dict):
         item: The changed item as SharePoint sent it.
     """
     if await requests_in_postgres() and is_request_list(list_id):
-        logger.debug("Requests are in Postgres; the SharePoint check handles list %s changes", list_id)
-        return                                                  # the scheduled sweep owns these now
+        # The request list is no longer the live source, but a Microsoft Form can
+        # still write to it. Run the post-switch check for this one item now, so a
+        # Form request is imported and its manager asked at once instead of waiting
+        # for the scheduled sweep. Idempotent: a rerun or the sweep does nothing.
+        from app.services.sharepoint_check import run_sharepoint_check_for_item
+        logger.info("Requests are in Postgres; checking SharePoint %s item %s now", list_id, item.get("id"))
+        await run_sharepoint_check_for_item(list_id, item.get("id"))
+        return
     fields = item.get("fields", {})
     item_id = item.get("id")
 

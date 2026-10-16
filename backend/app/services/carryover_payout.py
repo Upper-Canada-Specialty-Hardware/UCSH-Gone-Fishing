@@ -86,6 +86,16 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str, notif
         notify: True runs the approval pipeline at the end; False stops after
             the manager and ids are set, for an admin-created-and-approved one.
     """
+    # Once requests and staff both live in Postgres, the submission module records
+    # the request and QUEUES the manager email, text and the receipt, instead of
+    # running the SharePoint approval pipeline and sending here (#324, #326). The
+    # payout-cap and hourly auto-rejections the pipeline does at submit are not
+    # replayed here; a payout past the vacation floor is still refused at approval.
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("carryover_payout", request_id, notify=notify)
+        return
+
     employee = await get_employee_by_email(submitter_email)
     if not employee:
         logger.warning("Cannot assign manager — employee not found for CO/PO #%s", request_id)

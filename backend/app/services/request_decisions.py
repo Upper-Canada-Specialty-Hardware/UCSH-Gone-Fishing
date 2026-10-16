@@ -357,9 +357,11 @@ async def _enqueue_result(session, request, event, version, subject, html, sms_t
 async def _employee_phone(employee_id: str) -> str | None:
     """The employee's cell number, best-effort, for the result text.
 
-    Looks the number up through the employee service, but only when SharePoint
-    is connected (``sp_client.site_id`` set), which is true in production and
-    false in every test, so tests make no call and get no text.
+    When staff lives in Postgres the number comes from the staff store, so the
+    result text works without any SharePoint connection. Otherwise it keeps the
+    SharePoint path, read only when SharePoint is connected (``sp_client.site_id``
+    set), which is true in production and false in every SharePoint-mode test, so
+    those tests make no call and get no text.
 
     Args:
         employee_id: Whose number to read.
@@ -367,11 +369,14 @@ async def _employee_phone(employee_id: str) -> str | None:
     Returns:
         The number, or None when it cannot be found.
     """
-    from app.graph.sharepoint import sp_client
-    if getattr(sp_client, "site_id", None) is None:               # not reachable (every test): no text
-        return None
     from app.services.employee import get_employee_by_id
-    employee = await get_employee_by_id(employee_id)
+    if await staff_in_postgres():                                 # staff store serves this without SharePoint
+        employee = await get_employee_by_id(employee_id)
+    else:
+        from app.graph.sharepoint import sp_client
+        if getattr(sp_client, "site_id", None) is None:          # not reachable (SharePoint-mode tests): no text
+            return None
+        employee = await get_employee_by_id(employee_id)
     cell = (employee or {}).get("fields", {}).get("CellNumber") if employee else None
     return (str(cell).strip() or None) if cell else None
 

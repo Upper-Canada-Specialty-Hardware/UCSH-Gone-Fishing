@@ -247,6 +247,14 @@ async def auto_assign_manager(leave_request_id: str | int, notify: bool = True):
         notify: True triggers the approval email at the end; False stops after
             the manager is assigned, for an admin-created-and-approved request.
     """
+    # Once requests and staff both live in Postgres, the submission module records
+    # the request and QUEUES its manager email, text and the receipt, instead of
+    # resolving the SharePoint person columns and sending here (#324, #326).
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("leave", leave_request_id, notify=notify)
+        return
+
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 

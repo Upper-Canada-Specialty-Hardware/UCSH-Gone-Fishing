@@ -300,6 +300,14 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         settings.SP_LIST_LEAVE_REQUESTS, request_id, _manager_stamp(emp_fields, manager_lookup_id),
     )
 
+    # In Postgres mode record the submission (the submitted event and the
+    # employment type the approval reads) before approving it on the spot. notify
+    # is False: the manager is logging it, so no approval email or text is queued;
+    # the approval itself queues the employee's result (#324).
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("leave", request_id, channel="manager_dashboard", notify=False, actor=manager_name)
+
     # channel="manager_logs_sick_day"; the shared, exactly-once approval path.
     result = await approve_leave_request(request_id, manager_id, "manager_logs_sick_day")
     if "error" in result:

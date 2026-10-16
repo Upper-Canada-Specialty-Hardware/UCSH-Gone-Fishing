@@ -140,20 +140,16 @@ def test_a_deleted_form_item_is_skipped(form_item):
     assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None
 
 
-def test_the_dispatcher_leaves_request_changes_to_the_sharepoint_check(form_item, monkeypatch):
-    # Since #335 the webhook path no longer processes a request-list change once
-    # requests live in Postgres: it defers to the scheduled SharePoint check
-    # (services/sharepoint_check.py), so the dispatcher neither moves nor
-    # processes the item here.
-    from app.services import leave_requests
+def test_the_dispatcher_runs_the_per_item_sharepoint_check(form_item, sharepoint_lists, monkeypatch):
+    # Since #336 the webhook path no longer ignores a request-list change once
+    # requests live in Postgres: it runs the post-switch SharePoint check for that
+    # one item at once (services/sharepoint_check.run_sharepoint_check_for_item),
+    # so a Microsoft Form submission is imported into Postgres without waiting for
+    # the scheduled sweep. Staff is still in SharePoint here, so no manager
+    # notification is queued (that needs staff in Postgres too); the item is moved.
     from app.tasks import dispatcher
-    handled = []
-
-    async def record(item_id):
-        handled.append(str(item_id))
-
-    for name in ("auto_calculate_days", "auto_assign_manager", "send_bereavement_alert"):
-        monkeypatch.setattr(leave_requests, name, record)
+    # The staff index the check reads; empty is fine, the item imports with a
+    # fallback employee id when its submitter does not match a staff record.
+    sharepoint_lists[settings.SP_LIST_STAFF_DIRECTORY] = []
     run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    assert handled == []                                        # nothing was processed live
-    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is None   # nor moved here
+    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is not None   # imported at once
