@@ -24,9 +24,9 @@ What one run does, per item:
   for HR and never change anything.
 
 It writes a ``SyncRun`` row with its counts when run on its own, and returns the
-same counts when the shadow sync calls it as a step. ``record_finding`` is a
-local writer here until the legacy work is joined and the shared
-``app/services/legacy_findings.py`` replaces it.
+same counts when the shadow sync calls it as a step. Findings go through the
+shared ``record_finding`` in ``app/services/legacy_findings.py``, the same
+writer the staff import and the admin legacy screen use.
 """
 import json
 import logging
@@ -41,7 +41,6 @@ from app.config import settings
 from app.database import async_session
 from app.graph.sharepoint import sp_client
 from app.models import request_vocab as vocab
-from app.models.legacy_finding import LegacyFinding
 from app.models.mixins import utcnow
 from app.models.request_counter import RequestCounter
 from app.models.request_record import RequestRecord
@@ -50,6 +49,7 @@ from app.models.sync_run import SyncRun
 from app.repositories.postgres.requests import _stored
 from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.employment import HOURLY_TYPES, SALARY, employment_type
+from app.services.legacy_findings import record_finding  # shared writer: one row per fingerprint
 from app.services.request_journal import append_event, post_ledger, step_key
 
 logger = logging.getLogger(__name__)
@@ -84,65 +84,6 @@ NO_COST_LEAVE = ("Bereavement", "Jury Duty")
 
 IMPORT_CHANNEL = "import"       # the channel every imported event and ledger row carries
 IMPORT_ACTOR = "import"         # the actor recorded on imported rows
-
-
-# ----- legacy findings writer (local until the shared one is joined, #337) -----
-
-
-async def record_finding(
-    session: AsyncSession,
-    case: str,
-    subject: str,
-    kind: str | None,
-    subject_id: str,
-    reason: str,
-    evidence: dict,
-    run_id: int | None,
-) -> LegacyFinding | None:
-    """Record one reconciliation finding, at most once per fingerprint.
-
-    The fingerprint ``case:subject:kind:subject_id`` is unique, so a rerun of the
-    same check never files a duplicate. This matches the signature of the shared
-    ``app/services/legacy_findings.py`` the legacy builder owns; the main session
-    swaps this local copy for that one at the join.
-
-    Args:
-        session: An open session; not committed here.
-        case: One of request_vocab.FINDING_CASES.
-        subject: "request" or "staff".
-        kind: The request kind, or None for a staff finding.
-        subject_id: The item id or staff id, as a string.
-        reason: One plain sentence for HR.
-        evidence: The JSON backing the finding.
-        run_id: The sync_runs row that found it, or None.
-
-    Returns:
-        The inserted LegacyFinding, or None when the fingerprint already existed.
-    """
-    fingerprint = f"{case}:{subject}:{kind}:{subject_id}"       # the dedupe key
-    row = LegacyFinding(
-        subject=subject,
-        kind=kind,
-        subject_id=subject_id,
-        case=case,
-        reason=reason,
-        evidence=evidence,
-        fingerprint=fingerprint,
-        run_id=run_id,
-    )
-    try:
-        async with session.begin_nested():                     # a SAVEPOINT around just this insert
-            session.add(row)
-            await session.flush()                              # force the INSERT so a clash raises now
-        return row
-    except IntegrityError:
-        # A clash on the fingerprint is a no-op; the caller's other writes stand.
-        exists = await session.execute(
-            select(LegacyFinding.id).where(LegacyFinding.fingerprint == fingerprint)
-        )
-        if exists.first() is None:
-            raise                                              # not a duplicate: a real error
-        return None
 
 
 # ----- small parsers -----
