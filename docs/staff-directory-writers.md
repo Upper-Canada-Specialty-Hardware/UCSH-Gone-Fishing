@@ -71,15 +71,12 @@ Covered by this work:
   a `staff_changes` record and no echo.
 - The write-back drains to SharePoint with retries so other systems stay current.
 
-Open follow-ups:
-- The legacy direct balance writes (`balance.py`, `leave_requests.py`,
-  `overtime_requests.py`, `carryover_payout.py`), including
-  `recalculate_request_allow_date`, are replaced at the approval-path cutover
-  where they move onto the `StaffBalances` interface. Until then, on Postgres
-  those writes still target SharePoint directly. For add employee and the
-  carry-over reset this means the derived `RequestAllowDate` is the one field not
-  yet routed. The owner's rule that staff and requests switch to Postgres together
-  is what keeps this safe in the meantime.
+The older balance writes in `balance.py` and `carryover_payout.py` (including
+`recalculate_request_allow_date`, which writes `RequestAllowDate`) also go
+through `staff_store`, so on Postgres they land in the `staff` table and reach
+SharePoint through the write-back like every other change. Once requests and staff
+are both in Postgres, approvals use the ledger path (`request_decisions`) instead,
+and these older functions only serve the SharePoint mode.
 
 ## Questions for the product owner about the Power Automate flows
 
