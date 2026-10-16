@@ -629,6 +629,22 @@ def conflict_warning(conflict: dict | None, kind: str, audience: str) -> dict | 
     }
 
 
+def approval_refusal(conflict: dict, kind: str) -> str:
+    """The refusal a manager sees when approving a request that clashes.
+
+    Shared by the SharePoint approval and the Postgres one, so both say the
+    same thing.
+
+    Args:
+        conflict: A conflict from the leave or overtime finder.
+        kind: "leave" or "overtime", picking how the fact is worded.
+
+    Returns:
+        Fact and action as one sentence pair.
+    """
+    return f"{_DESCRIBE[kind](conflict)} {_manager_action(conflict)}"
+
+
 async def find_leave_approval_conflict(request_id: str | int, fields: dict) -> str | None:
     """The refusal a manager sees when approving a clashing leave request.
 
@@ -642,7 +658,7 @@ async def find_leave_approval_conflict(request_id: str | int, fields: dict) -> s
     conflict = await find_leave_conflict_for_request(request_id, fields)
     if not conflict:
         return None
-    return f"{describe_leave_conflict(conflict)} {_manager_action(conflict)}"
+    return approval_refusal(conflict, "leave")
 
 
 async def find_overtime_approval_conflict(request_id: str | int, fields: dict) -> str | None:
@@ -658,4 +674,4 @@ async def find_overtime_approval_conflict(request_id: str | int, fields: dict) -
     conflict = await find_overtime_conflict_for_request(request_id, fields)
     if not conflict:
         return None
-    return f"{describe_overtime_conflict(conflict)} {_manager_action(conflict)}"
+    return approval_refusal(conflict, "overtime")

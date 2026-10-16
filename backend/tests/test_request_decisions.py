@@ -266,6 +266,54 @@ def test_a_payout_that_would_go_below_zero_is_refused_and_writes_no_balance(monk
     assert outbox == []                                          # no result message
 
 
+# ----- approve: a clash with an approved request is refused -----
+
+
+def test_a_leave_that_overlaps_an_approved_leave_is_refused(monkeypatch):
+    fake = _use(monkeypatch, _all_pots(sick=5))
+    approved = _leave(status="approved", start_date=date(2026, 11, 2), end_date=date(2026, 11, 4), days=3)
+    record = _leave(employee_id=approved.employee_id, start_date=date(2026, 11, 3), days=1)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["refused"] == "conflict"
+    assert f"#{approved.item_id}" in result["error"]              # names the approved request
+    fresh, ledger, events, outbox = run(_inspect(record))
+    assert fresh.status == "pending"                              # stays for the manager to decide
+    assert fake.write_calls == [] and ledger == [] and outbox == []
+    assert any(event.type == "refused" for event in events)
+
+
+def test_half_days_that_fit_on_one_date_are_both_approved(monkeypatch):
+    _use(monkeypatch, _all_pots(sick=5))
+    approved = _leave(status="approved", start_date=date(2026, 11, 2), days=0.5)
+    record = _leave(employee_id=approved.employee_id, start_date=date(2026, 11, 2), days=0.5)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["status"] == "approved"                         # two halves make one full day
+
+
+def test_another_persons_approved_leave_is_not_a_clash(monkeypatch):
+    _use(monkeypatch, _all_pots(sick=5))
+    _leave(status="approved", start_date=date(2026, 11, 2), days=1)  # a different employee id
+    record = _leave(start_date=date(2026, 11, 2), days=1)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["status"] == "approved"
+
+
+def test_overtime_on_an_already_approved_date_is_refused(monkeypatch):
+    fake = _use(monkeypatch, _all_pots())
+    approved = _overtime(status="approved", start_date=date(2026, 11, 2))
+    record = _overtime(employee_id=approved.employee_id, start_date=date(2026, 11, 2))
+
+    result = run(rd.approve("overtime", record.item_id, "Boss", "sms"))
+
+    assert result["refused"] == "conflict" and fake.write_calls == []
+
+
 def test_no_cost_leave_approves_without_touching_any_balance(monkeypatch):
     fake = _use(monkeypatch, _all_pots(sick=5, vacation=10))
     record = _leave(leave_type="Bereavement", days=2)

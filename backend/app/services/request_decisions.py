@@ -46,6 +46,7 @@ from app.services.employment import (
     leave_costs_balance,
     overtime_costs_balance,
 )
+from app.services.overlap_detection import approval_refusal, find_leave_conflict, find_overtime_conflict
 from app.services.request_journal import append_event, enqueue_message, log_step, post_ledger, step_key
 from app.templates_render import render_request_result
 
@@ -280,6 +281,77 @@ async def _key_committed(session, model, key: str) -> bool:
     )).first() is not None
 
 
+# The overlap finders match rows to a person by lookup id or email. The rows
+# handed to them here are already filtered to the one employee by staff id, so
+# each carries this same marker and the finder's own person match always passes.
+_SAME_PERSON = "same-staff-id"
+
+
+def _overlap_row(row: RequestRecord) -> dict:
+    """Shape an approved request the way the overlap finders read rows.
+
+    Args:
+        row: An approved request of the same employee and kind.
+
+    Returns:
+        ``{"id", "fields"}`` with the status, dates, days and the person marker.
+    """
+    start = row.start_date.isoformat() if row.start_date else None
+    end = row.end_date.isoformat() if row.end_date else start      # a one-day leave may carry no end date
+    return {
+        "id": str(row.item_id),                                    # the number a manager sees
+        "fields": {
+            "Status": "Approved",                                  # only approved rows are passed in
+            "StartDate": start,
+            "EndDate": end,
+            "Days": row.days,                                      # part-days may share a date
+            "SubmitterEmail": _SAME_PERSON,                        # already matched by staff id
+        },
+    }
+
+
+async def _approval_conflict(session, request: RequestRecord) -> str | None:
+    """The refusal when approving would clash with an already-approved request.
+
+    Mirrors the SharePoint approval's check: a leave may not overlap an approved
+    leave (part-days may share a date up to a full day), and an overtime entry
+    may not share its date with an approved one. The approved rows are read in
+    this transaction, after the employee's balance lock, so two clashing
+    requests approved at the same moment cannot both pass.
+
+    Args:
+        session: The open decision session.
+        request: The pending request being approved.
+
+    Returns:
+        The plain-words refusal, or None when the dates are free, the kind has
+        no clash rule (carry-over/payout), or the employee is unknown.
+    """
+    if request.kind not in ("leave", "overtime") or request.start_date is None:
+        return None                                                # nothing to compare
+    if not request.employee_id:
+        # Same choice as the SharePoint path: let it through, but say so.
+        logger.warning("request %s:%s clash check skipped: no employee id", request.kind, request.item_id)
+        return None
+    rows = (await session.execute(
+        select(RequestRecord).where(
+            RequestRecord.kind == request.kind,
+            RequestRecord.employee_id == request.employee_id,      # the same person, by staff id
+            RequestRecord.status == "approved",                    # only approved time blocks
+            RequestRecord.id != request.id,                        # never itself
+        )
+    )).scalars().all()
+    items = [_overlap_row(row) for row in rows]
+    start = request.start_date.isoformat()
+    if request.kind == "leave":
+        end = request.end_date.isoformat() if request.end_date else start
+        conflict = find_leave_conflict(items, None, start, end,
+                                       days=float(request.days or 0), submitter_email=_SAME_PERSON)
+    else:
+        conflict = find_overtime_conflict(items, None, start, submitter_email=_SAME_PERSON)
+    return approval_refusal(conflict, request.kind) if conflict else None
+
+
 async def _refuse(session, request, channel, actor, version, why, reason) -> None:
     """Record that an attempted decision was turned down, and log it.
 
@@ -419,8 +491,8 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
 
     Returns:
         ``{"status": "approved", ...}`` on success, or ``{"error": ...}`` when
-        nothing was written (gone, stale, already decided, or a carry-over that
-        would go below zero).
+        nothing was written (gone, stale, already decided, a clash with an
+        approved request, or a carry-over that would go below zero).
     """
     async with async_session() as session:
         request = await _load(session, kind, item_id)
@@ -447,6 +519,13 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
 
             balances = await get_staff_balances()                  # SharePoint or Postgres, per the setting
             before_pots = await balances.lock_pots(session, request.employee_id)
+            # Checked after the balance lock so a clashing approval committed a
+            # moment ago (on any server) is seen; nothing is written on a clash.
+            clash = await _approval_conflict(session, request)
+            if clash:                                              # the manager rejects or cancels the other one
+                await _refuse(session, request, channel, actor, version, "conflict", clash)
+                await session.commit()
+                return {"error": clash, "refused": "conflict"}
             outcome, moved, note = _plan_balance(request, before_pots)
             if outcome == "refused_negative":                      # carry-over/payout past zero: refuse, write nothing
                 await _refuse(session, request, channel, actor, version, "negative", CARRYOVER_NEGATIVE_MESSAGE)

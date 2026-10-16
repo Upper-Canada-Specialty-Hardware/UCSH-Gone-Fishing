@@ -433,7 +433,7 @@ class TypedRequestList:
                 title = value                                   # handled after the loop
             elif col in SIMPLE_MAP:
                 self._set_simple(record, SIMPLE_MAP[col], value)
-            elif col in ("StartDate", "Date"):                  # leave uses StartDate, overtime uses Date
+            elif col in ("StartDate", "Date"):                  # both lists use StartDate; "Date" accepted for older rows
                 record.start_date = _to_date(value)
             elif col == "Status":
                 if value:
@@ -517,9 +517,10 @@ class TypedRequestList:
             fields["Status"] = record.status.capitalize()      # title case on the wire
         if record.leave_type is not None:
             fields["LeaveType"] = record.leave_type
-        start_col = "Date" if self.kind == "overtime" else "StartDate"
         if record.start_date is not None:
-            fields[start_col] = record.start_date.isoformat()
+            # Leave and overtime both read their date from StartDate (the column
+            # the overtime form writes and every overtime reader uses).
+            fields["StartDate"] = record.start_date.isoformat()
         if record.end_date is not None:
             fields["EndDate"] = record.end_date.isoformat()
         if record.days is not None:

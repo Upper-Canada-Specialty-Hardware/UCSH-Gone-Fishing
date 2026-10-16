@@ -189,7 +189,7 @@ def test_carryover_and_overtime_round_trip(clean):
         "Date": "2026-11-02", "Hours": 4.0, "Status": "Pending", "EmployeeID": "7", "Title": "Late shift",
     }))
     ot_fields = run(overtime.get_list_item(LEAVE, ot["id"]))["fields"]
-    assert ot_fields["Date"] == "2026-11-02" and ot_fields["Hours"] == 4.0
+    assert ot_fields["StartDate"] == "2026-11-02" and ot_fields["Hours"] == 4.0
     assert ot_fields["Title"] == "Late shift"                   # overtime Title is the description as-is
 
 
