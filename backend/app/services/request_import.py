@@ -45,6 +45,7 @@ from app.models.legacy_finding import LegacyFinding
 from app.models.mixins import utcnow
 from app.models.request_counter import RequestCounter
 from app.models.request_record import RequestRecord
+from app.models.sharepoint_seen import SharepointSeen
 from app.models.sync_run import SyncRun
 from app.repositories.postgres.requests import _stored
 from app.repositories.postgres.typed_requests import TypedRequestList
@@ -854,6 +855,52 @@ async def _raise_counters(session: AsyncSession, kind: str) -> None:
         counter.last_item_id = int(largest)                    # never lower it
 
 
+def item_version(sp_item: dict) -> str:
+    """The version string for a SharePoint item: its eTag, else last-modified.
+
+    Args:
+        sp_item: The item as Graph returned it.
+
+    Returns:
+        A non-empty version string (``"unknown"`` when Graph gave neither).
+    """
+    return str(
+        sp_item.get("eTag")
+        or sp_item.get("@odata.etag")
+        or sp_item.get("lastModifiedDateTime")
+        or "unknown"
+    )
+
+
+async def record_seen_version(
+    session: AsyncSession, kind: str, sp_item_id: str, sp_version: str, outcome: str, run_id: int | None
+) -> None:
+    """Record one SharePoint item version, at most once per version (#336).
+
+    The importer records every version it copies, so the check after the switch
+    knows exactly what Postgres holds: any later version of a known item is an
+    edit made in SharePoint after the switch, even one made in the minutes
+    between the final sync and the first check.
+
+    Args:
+        session: An open session; not committed here.
+        kind: The request kind.
+        sp_item_id: The SharePoint item id.
+        sp_version: The version seen.
+        outcome: One of request_vocab.SEEN_OUTCOMES ("unchanged" for an import).
+        run_id: The sync_runs row this belongs to.
+    """
+    row = SharepointSeen(
+        kind=kind, sp_item_id=str(sp_item_id), sp_version=sp_version, outcome=outcome, run_id=run_id
+    )
+    try:
+        async with session.begin_nested():                     # a SAVEPOINT around just this insert
+            session.add(row)
+            await session.flush()
+    except IntegrityError:
+        pass                                                   # this version was already recorded
+
+
 async def _import_all(session: AsyncSession, run_id: int | None) -> dict:
     """Import every item of all three kinds into the typed table.
 
@@ -875,6 +922,10 @@ async def _import_all(session: AsyncSession, run_id: int | None) -> dict:
             try:
                 async with session.begin_nested():             # isolate one bad item from the rest
                     outcome = await _import_item(session, kind, sp_item, index, run_id)
+                    # Remember the version copied: the post-switch check's baseline.
+                    await record_seen_version(
+                        session, kind, str(sp_item.get("id")), item_version(sp_item), "unchanged", run_id,
+                    )
                 created += outcome == "created"
                 updated += outcome == "updated"
             except Exception:

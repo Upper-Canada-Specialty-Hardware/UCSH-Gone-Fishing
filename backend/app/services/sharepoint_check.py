@@ -24,7 +24,6 @@ sources, and the Form never does.
 import logging
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -38,6 +37,8 @@ from app.services.request_import import (
     KIND_LIST_SETTING,
     _import_item,
     build_staff_index,
+    item_version,
+    record_seen_version,
     record_finding,
 )
 
@@ -64,20 +65,8 @@ def _is_form_item(fields: dict) -> bool:
 
 
 def _version(sp_item: dict) -> str:
-    """The version string for a SharePoint item: its eTag, else last-modified.
-
-    Args:
-        sp_item: The item as Graph returned it.
-
-    Returns:
-        A non-empty version string (``"unknown"`` when Graph gave neither).
-    """
-    return str(
-        sp_item.get("eTag")
-        or sp_item.get("@odata.etag")
-        or sp_item.get("lastModifiedDateTime")
-        or "unknown"
-    )
+    """The version string for a SharePoint item (shared with the importer)."""
+    return item_version(sp_item)
 
 
 async def _seen_versions(session: AsyncSession, kind: str, sp_item_id: str) -> set[str]:
@@ -112,15 +101,7 @@ async def _record_seen(
         outcome: One of request_vocab.SEEN_OUTCOMES.
         run_id: The sync_runs row this belongs to.
     """
-    row = SharepointSeen(
-        kind=kind, sp_item_id=str(sp_item_id), sp_version=sp_version, outcome=outcome, run_id=run_id
-    )
-    try:
-        async with session.begin_nested():                     # a SAVEPOINT around just this insert
-            session.add(row)
-            await session.flush()
-    except IntegrityError:
-        pass                                                   # this version was already recorded
+    await record_seen_version(session, kind, sp_item_id, sp_version, outcome, run_id)
 
 
 async def _known(session: AsyncSession, kind: str, sp_item_id: str) -> bool:
@@ -178,7 +159,8 @@ async def _check_item(session, kind, sp_item, index, run_id, counts) -> None:
             )
             outcome, counter = "flagged_new", "flagged_new"
     elif not seen:
-        # Known and seen for the first time since the flip: the import baseline.
+        # Known but no version on record: imported before versions were kept.
+        # Take this one as the baseline; a later version is an edit.
         outcome, counter = "unchanged", "unchanged"
     else:
         # Known and seen before at another version: an edit. Never applied.

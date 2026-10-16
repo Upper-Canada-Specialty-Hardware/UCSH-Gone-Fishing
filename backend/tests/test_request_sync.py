@@ -401,6 +401,16 @@ def test_check_flags_an_edit_once_and_never_applies_it(sp):
     assert run(_record("leave", 600)).days == 5                 # the edit was not applied
 
 
+def test_an_edit_right_after_the_switch_is_still_flagged(sp):
+    """An edit between the final sync and the first check is not taken as the baseline."""
+    sp.lists[LEAVE] = [sp_item(650, leave_fields(lookup=101, days=5), modified="2026-05-01T10:00:00Z")]
+    run(flip_to_postgres())                                     # the final sync records this version
+    sp.lists[LEAVE] = [sp_item(650, leave_fields(lookup=101, days=9), modified="2026-05-01T10:05:00Z")]
+    run(run_sharepoint_check())                                 # the very first check sees the edit
+    assert len(run(_findings("sharepoint_edit_after_switch"))) == 1
+    assert run(_record("leave", 650)).days == 5                 # and never applies it
+
+
 def test_check_flags_a_delete_once_and_never_applies_it(sp):
     sp.lists[LEAVE] = [sp_item(700, leave_fields(lookup=101))]
     run(import_requests())
