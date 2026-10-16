@@ -9,20 +9,19 @@ logger = logging.getLogger(__name__)
 async def dispatch_change(list_id: str, item: dict):
     """Route SP list changes to the correct service pipeline.
 
-    Once requests live in Postgres, a change on a SharePoint request list can
-    only be a Microsoft Form item (the app no longer writes there). The item is
-    first moved into Postgres, and the Postgres copy, under its new id, is what
-    gets processed. An item moved before is skipped.
+    Once requests live in Postgres (#335), a SharePoint request list is no longer
+    a live source: the webhook path stops treating its changes as requests and
+    leaves them to the scheduled SharePoint check (services/sharepoint_check.py),
+    which imports a new Form submission, and flags any other new item, edit or
+    delete for review. So a request-list change here is ignored after the switch.
 
     Args:
         list_id: The SharePoint list the change came from.
         item: The changed item as SharePoint sent it.
     """
     if await requests_in_postgres() and is_request_list(list_id):
-        from app.services.request_copy import move_form_item_into_postgres
-        item = await move_form_item_into_postgres(list_id, str(item.get("id", "")))
-        if item is None:
-            return                                              # already in Postgres, or gone
+        logger.debug("Requests are in Postgres; the SharePoint check handles list %s changes", list_id)
+        return                                                  # the scheduled sweep owns these now
     fields = item.get("fields", {})
     item_id = item.get("id")
 

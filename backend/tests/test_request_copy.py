@@ -130,7 +130,11 @@ def test_a_deleted_form_item_is_skipped(form_item):
     assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None
 
 
-def test_the_dispatcher_processes_the_postgres_copy(form_item, monkeypatch):
+def test_the_dispatcher_leaves_request_changes_to_the_sharepoint_check(form_item, monkeypatch):
+    # Since #335 the webhook path no longer processes a request-list change once
+    # requests live in Postgres: it defers to the scheduled SharePoint check
+    # (services/sharepoint_check.py), so the dispatcher neither moves nor
+    # processes the item here.
     from app.services import leave_requests
     from app.tasks import dispatcher
     handled = []
@@ -141,7 +145,5 @@ def test_the_dispatcher_processes_the_postgres_copy(form_item, monkeypatch):
     for name in ("auto_calculate_days", "auto_assign_manager", "send_bereavement_alert"):
         monkeypatch.setattr(leave_requests, name, record)
     run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    moved = run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))
-    assert handled == [moved["id"]] * 3                         # processed under its Postgres id
-    run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    assert len(handled) == 3                                    # a second notice changes nothing
+    assert handled == []                                        # nothing was processed live
+    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is None   # nor moved here

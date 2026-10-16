@@ -23,6 +23,12 @@ RENEWAL_THRESHOLD_DAYS = 5
 
 async def register_all_subscriptions():
     """Register or renew webhook subscriptions for all monitored lists."""
+    # Rehearsal mode registers no Graph webhooks, so a rehearsal never makes the
+    # real SharePoint lists call this deployment (#339).
+    from app.services.rehearsal import rehearsal_enabled
+    if rehearsal_enabled():
+        logger.info("Rehearsal: skipping Graph webhook subscription registration")
+        return
     for list_id in MONITORED_LISTS:
         try:
             await _ensure_subscription(list_id)

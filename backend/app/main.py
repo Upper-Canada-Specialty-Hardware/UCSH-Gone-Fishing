@@ -17,6 +17,7 @@ from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
 from app.tasks.setup_nudges import start_setup_nudge_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
+from app.tasks.sync_tasks import start_shadow_sync_task, start_sharepoint_check_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +53,8 @@ async def lifespan(app: FastAPI):
     reminder_task = None
     setup_nudge_task = None
     held_request_task = None
+    shadow_sync_task = None
+    sharepoint_check_task = None
     try:
         await token_manager.get_token()
         logger.info("Graph API token acquired")
@@ -72,6 +75,10 @@ async def lifespan(app: FastAPI):
         reminder_task = start_reminder_task()
         setup_nudge_task = start_setup_nudge_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
+        # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
+        # before the switch, and sweep SharePoint for stragglers after it (#334, #336).
+        shadow_sync_task = start_shadow_sync_task()
+        sharepoint_check_task = start_sharepoint_check_task()
 
         # Defer catch-up and subscription registration — both can be slow under
         # backlog/rate-limit conditions, and Graph webhook validation needs the
@@ -113,6 +120,10 @@ async def lifespan(app: FastAPI):
         setup_nudge_task.cancel()
     if held_request_task:
         held_request_task.cancel()
+    if shadow_sync_task:
+        shadow_sync_task.cancel()
+    if sharepoint_check_task:
+        sharepoint_check_task.cancel()
     await sp_client.close()
     logger.info("Shutdown complete")
 
@@ -145,6 +156,7 @@ from app.routes.webhooks import router as webhooks_router
 from app.routes.twilio import router as twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.admin_requests import router as admin_requests_router
+from app.routes.admin_storage import router as admin_storage_router
 from app.routes.email_api_log import router as email_api_log_router
 from app.routes.intake import router as intake_router
 from app.routes.self_service import router as self_service_router
@@ -163,6 +175,9 @@ app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"]
 # The admin requests screen's new, delete, preview and export endpoints (#278),
 # in their own module but behind the same admin password at the same prefix.
 app.include_router(admin_requests_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# Where requests are stored, and the switch to Postgres (#335): same prefix and
+# admin password as the other admin write endpoints.
+app.include_router(admin_storage_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # Same prefix as the dashboard router so the admin email-log lookup sits next
 # to the other /admin/* endpoints; kept in its own module to stay small.
 app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
