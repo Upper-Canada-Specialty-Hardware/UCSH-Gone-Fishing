@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # new items are moved into Postgres as they arrive.
     STORAGE_REQUESTS: str = "sharepoint"
 
+    # Rehearsal mode (#339): exercise the Postgres switch on real data without
+    # acting on the world. On, the app registers no Graph webhooks, writes
+    # nothing back to SharePoint (reads stay, for the importer), and sends email
+    # and SMS only to REHEARSAL_ALLOWLIST (comma-separated emails and phone
+    # numbers); everyone else is logged and dropped. Its site address and admin
+    # password are the ones already configured, so nothing else is needed here.
+    REHEARSAL_MODE: bool = False
+    REHEARSAL_ALLOWLIST: str = ""
+
     # Dashboard
     DASHBOARD_FRONTEND_URL: str = ""
 
