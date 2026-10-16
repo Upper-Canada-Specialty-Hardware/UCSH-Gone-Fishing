@@ -93,13 +93,22 @@ export function statusLabel(status: string | null): string {
 /**
  * The sign-in query parameters for a scope, read fresh each time.
  *
+ * An admin's 30-day session never goes in a url (urls reach proxy logs): the
+ * stream gets a two-minute ticket from /admin/events-ticket instead, asked for
+ * with the session header the api client already sends on /admin calls.
+ *
  * @param scope - The feed scope.
  * @returns The parameters, or null when nobody is signed in for that scope.
  */
-function authParams(scope: LiveScope): Record<string, string> | null {
+async function authParams(scope: LiveScope): Promise<Record<string, string> | null> {
   if (scope === 'admin') {
-    const token = adminSessionToken();
-    return token ? { admin_session: token } : null;
+    if (!adminSessionToken()) return null;                 // not signed in to the admin dashboard
+    try {
+      const resp = await api.post('/admin/events-ticket');
+      return { ticket: resp.data.ticket };
+    } catch {
+      return null;                                         // no ticket: the caller polls instead
+    }
   }
   const session = loadSession();
   if (!session) return null;
@@ -138,13 +147,14 @@ export function eventToRow(ev: LiveEvent): Record<string, unknown> {
  * The server-sent-events URL for a scope, resuming after an event id.
  *
  * @param scope - The feed scope.
- * @param afterId - Replay events newer than this (0 for from-now).
+ * @param afterId - Replay events newer than this; null starts from now, so a
+ *   fresh page never replays the whole history.
  * @returns The absolute stream URL, or null when the scope is not signed in.
  */
-export function streamUrl(scope: LiveScope, afterId: number): string | null {
-  const params = authParams(scope);
+export async function streamUrl(scope: LiveScope, afterId: number | null): Promise<string | null> {
+  const params = await authParams(scope);
   if (!params) return null;
-  const query = new URLSearchParams({ ...params, after: String(afterId) });
+  const query = new URLSearchParams(afterId === null ? params : { ...params, after: String(afterId) });
   return `${API_URL}/api/dashboard/events/stream?${query.toString()}`;
 }
 
@@ -156,28 +166,35 @@ export function streamUrl(scope: LiveScope, afterId: number): string | null {
  * up from the same place.
  *
  * @param scope - The feed scope.
- * @param afterId - Replay events newer than this.
+ * @param afterId - Replay events newer than this; null starts from now.
  * @returns An open EventSource, or null when the scope is not signed in.
  */
-export function openEventStream(scope: LiveScope, afterId: number): EventSource | null {
-  const url = streamUrl(scope, afterId);
+export async function openEventStream(scope: LiveScope, afterId: number | null): Promise<EventSource | null> {
+  const url = await streamUrl(scope, afterId);
   return url ? new EventSource(url) : null;
 }
 
 /**
  * The polling fallback: every event the viewer may see after an id.
  *
+ * An admin's session goes as a header, never in the url.
+ *
  * @param scope - The feed scope.
- * @param afterId - Return events newer than this.
- * @returns The events, newest-applied-last, and the running build version.
+ * @param afterId - Return events newer than this; null asks only where "now" is.
+ * @returns The events (oldest first), the next resume point, and the build version.
  */
 export async function fetchEventsAfter(
   scope: LiveScope,
-  afterId: number,
-): Promise<{ events: LiveEvent[]; version: string }> {
-  const params = scope === 'admin' ? { admin_session: adminSessionToken() } : undefined;
-  const resp = await api.get('/events', { params: { ...(params || {}), after: afterId } });
-  return { events: resp.data.events || [], version: resp.data.version || '' };
+  afterId: number | null,
+): Promise<{ events: LiveEvent[]; lastId: number; version: string }> {
+  const headers = scope === 'admin' ? { 'X-Admin-Session': adminSessionToken() } : undefined;
+  const params = afterId === null ? {} : { after: afterId };
+  const resp = await api.get('/events', { params, headers });
+  return {
+    events: resp.data.events || [],
+    lastId: Number(resp.data.last_id ?? afterId ?? 0),
+    version: resp.data.version || '',
+  };
 }
 
 /**

@@ -16,6 +16,9 @@ export type LiveStatus = 'connecting' | 'live' | 'reconnecting' | 'polling';
 const DEAD_MS = 45000;
 // How often the polling fallback asks for events it missed.
 const POLL_MS = 15000;
+// While polling, how often to try the stream again (an admin ticket expires,
+// so a stream the browser could not resume is reopened with a fresh one).
+const RETRY_STREAM_MS = 60000;
 
 /**
  * Merge one event's row into the loaded rows by (request_type, item_id).
@@ -79,11 +82,12 @@ export function useLiveRequests(options: {
     let source: EventSource | null = null;
     let deadTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
-    let lastId = 0;                                        // highest event id applied, for resume
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastId: number | null = null;                      // resume point; null = start from now
 
     /** Apply one event: advance the resume point, merge it, tell the page. */
     const apply = (ev: LiveEvent) => {
-      lastId = Math.max(lastId, ev.id);
+      lastId = Math.max(lastId ?? 0, ev.id);
       setRowsRef.current((rows) => mergeEvent(rows, ev));
       onEventRef.current?.(ev);
     };
@@ -98,13 +102,25 @@ export function useLiveRequests(options: {
       if (deadTimer) { clearTimeout(deadTimer); deadTimer = null; }
     };
 
+    /** Stop the polling fallback once the stream is back. */
+    const stopPolling = () => {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    };
+
     /** Open the stream and wire its events; the browser auto-reconnects drops. */
-    const startStream = () => {
+    const startStream = async () => {
       if (closed) return;
-      source = openEventStream(scope, lastId);
+      const opened = await openEventStream(scope, lastId);
+      if (closed) { opened?.close(); return; }             // unmounted while the ticket was fetched
+      source = opened;
       if (!source) { startPolling(); return; }             // not signed in for this scope
       setStatus('connecting');
-      source.onopen = () => { if (!closed) { setStatus('live'); armDead(); } };
+      source.onopen = () => { if (!closed) { stopPolling(); setStatus('live'); armDead(); } };
+      // The server's first message says where "now" is, so a later resume starts there.
+      source.addEventListener('ready', (e) => {
+        const id = Number((e as MessageEvent).lastEventId);
+        if (!Number.isNaN(id)) lastId = Math.max(lastId ?? 0, id);
+      });
       source.addEventListener('request_event', (e) => {
         if (closed) return;
         armDead();                                         // a message means the stream is alive
@@ -128,9 +144,10 @@ export function useLiveRequests(options: {
     /** One catch-up read, applying every event the poll returns. */
     const pollOnce = async () => {
       try {
-        const { events } = await fetchEventsAfter(scope, lastId);
+        const { events, lastId: next } = await fetchEventsAfter(scope, lastId);
         if (closed) return;
         events.forEach(apply);
+        lastId = Math.max(lastId ?? 0, next);              // also skips events this viewer cannot see
       } catch {
         /* a failed poll is retried on the next tick */
       }
@@ -144,15 +161,19 @@ export function useLiveRequests(options: {
       setStatus('polling');
       void pollOnce();
       pollTimer = setInterval(() => void pollOnce(), POLL_MS);
+      // Keep trying the stream; polling is the fallback, not the goal.
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => { retryTimer = null; void startStream(); }, RETRY_STREAM_MS);
     };
 
-    startStream();
+    void startStream();
 
     return () => {
       closed = true;
       if (source) source.close();
       clearDead();
       if (pollTimer) clearInterval(pollTimer);
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [scope, enabled]);
 

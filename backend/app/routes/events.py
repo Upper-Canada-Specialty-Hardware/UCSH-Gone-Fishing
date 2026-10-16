@@ -13,9 +13,14 @@ Three things ride on the one timeline table:
 Who sees what is decided by role, the same way the read endpoints decide it: an
 employee sees only their own request's events, a manager their team's, an admin
 every one. Employees and managers prove themselves with the signed dashboard
-token they already pass; an admin with the admin-dashboard session, as a header
-on a normal request or, because an EventSource cannot set headers, as a query
-parameter on the stream.
+token they already pass. An admin sends the admin-dashboard session as the
+X-Admin-Session header on a normal request; the stream, because an EventSource
+cannot set headers, takes a two-minute ticket from ``/admin/events-ticket``
+instead, so the 30-day session never appears in a url (urls reach proxy logs).
+
+A reader with no resume point starts from now: the table holds every request's
+history (an ``imported`` event per request after the import), and a fresh page
+must not replay it.
 """
 import asyncio
 import logging
@@ -31,9 +36,15 @@ from app.routes.dashboard import (
     _require_role,
     get_employee_by_id,
 )
-from app.services.admin_auth import SESSION_HEADER, session_is_valid, stored_password
+from app.services.admin_auth import (
+    SESSION_HEADER,
+    make_stream_ticket,
+    session_is_valid,
+    stream_ticket_is_valid,
+    stored_password,
+)
 from app.services.dashboard_tokens import validate_dashboard_token
-from app.services.event_bus import event_bus, fetch_events, sse_message
+from app.services.event_bus import _current_max_id, event_bus, fetch_events, sse_message
 from app.services.request_live_reads import WIRE_TO_STORED
 
 logger = logging.getLogger(__name__)
@@ -161,13 +172,13 @@ async def _resolve_viewer(
     role: str | None,
     uid: str | None,
     exp: str | None,
-    admin_session: str | None,
+    ticket: str | None = None,
 ) -> _Viewer:
     """Authenticate a stream or catch-up request and return its viewer.
 
     Employees and managers use the signed dashboard token (query parameters);
-    an admin uses the admin-dashboard session, as the ``X-Admin-Session`` header
-    or, for an EventSource that cannot set one, an ``admin_session`` query value.
+    an admin uses the admin-dashboard session as the ``X-Admin-Session`` header,
+    or, on the stream, a short-lived ticket from ``/admin/events-ticket``.
 
     Args:
         request: The incoming request (for the admin session header).
@@ -175,7 +186,7 @@ async def _resolve_viewer(
         role: The token's role, or None.
         uid: The token's user id, or None.
         exp: The token's expiry, or None.
-        admin_session: The admin session passed as a query value, or None.
+        ticket: A live-feed ticket (admin stream only), or None.
 
     Returns:
         The resolved viewer.
@@ -192,9 +203,12 @@ async def _resolve_viewer(
             return _Viewer("manager", manager_id=manager_id, team_ids=team_ids)
         if valid and role == "admin":
             return _Viewer("admin")
-    candidate = request.headers.get(SESSION_HEADER, "") or (admin_session or "")
-    if candidate and session_is_valid(candidate, await stored_password()):
-        return _Viewer("admin")
+    stored = await stored_password()
+    header = request.headers.get(SESSION_HEADER, "")
+    if header and session_is_valid(header, stored):
+        return _Viewer("admin")                                # a normal admin call: the session header
+    if ticket and stream_ticket_is_valid(ticket, stored):
+        return _Viewer("admin")                                # the stream: a two-minute ticket
     raise HTTPException(status_code=401, detail="Sign in to see live updates.")
 
 
@@ -211,6 +225,8 @@ async def _stream(viewer: _Viewer, start_after: int):
     queue = event_bus.subscribe()                              # start buffering live events at once
     try:
         last_sent = start_after
+        # Tell the reader where it stands, so a later reconnect resumes from here.
+        yield f"id: {start_after}\nevent: ready\ndata: {{}}\n\n"
         for payload in await fetch_events(start_after):        # replay what the reader missed
             if _event_visible(payload, viewer):
                 yield sse_message(payload)
@@ -237,8 +253,8 @@ async def events_stream(
     role: str | None = Query(None),
     uid: str | None = Query(None),
     exp: str | None = Query(None),
-    admin_session: str | None = Query(None),
-    after: int = Query(0),
+    ticket: str | None = Query(None),
+    after: int | None = Query(None),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
     """Open the live server-sent-events feed of request timeline events.
@@ -246,17 +262,20 @@ async def events_stream(
     Args:
         request: The incoming request.
         token, role, uid, exp: The signed dashboard token (employee/manager).
-        admin_session: The admin session, for an EventSource that cannot set a header.
-        after: Replay from this event id when there is no Last-Event-ID.
+        ticket: The admin's two-minute ticket from /admin/events-ticket.
+        after: Replay from this event id; omitted means start from now.
         last_event_id: The browser's resume point after a dropped connection.
 
     Returns:
         A streaming ``text/event-stream`` response.
     """
-    viewer = await _resolve_viewer(request, token, role, uid, exp, admin_session)
-    start_after = after
+    viewer = await _resolve_viewer(request, token, role, uid, exp, ticket)
     if last_event_id and last_event_id.isdigit():
         start_after = int(last_event_id)                       # the browser's resume wins over ?after
+    elif after is not None:
+        start_after = after                                    # the page's own resume point
+    else:
+        start_after = await _current_max_id()                  # a fresh reader: from now, no history
     return StreamingResponse(
         _stream(viewer, start_after),
         media_type="text/event-stream",
@@ -271,23 +290,44 @@ async def events_catch_up(
     role: str | None = Query(None),
     uid: str | None = Query(None),
     exp: str | None = Query(None),
-    admin_session: str | None = Query(None),
-    after: int = Query(0),
+    after: int | None = Query(None),
 ):
     """The polling fallback: every event the viewer may see after an id.
 
     Args:
-        request: The incoming request.
+        request: The incoming request (an admin sends the session header).
         token, role, uid, exp: The signed dashboard token (employee/manager).
-        admin_session: The admin session as a query value.
-        after: Return events with an id greater than this.
+        after: Return events with an id greater than this; omitted means
+            "nothing yet, just tell me where now is".
 
     Returns:
-        {"events": [...], "version": "<build>"}.
+        {"events": [...], "last_id": <resume point>, "version": "<build>"}.
     """
-    viewer = await _resolve_viewer(request, token, role, uid, exp, admin_session)
+    viewer = await _resolve_viewer(request, token, role, uid, exp)
+    if after is None:
+        # A fresh reader: no history, only the point to poll from next time.
+        return {"events": [], "last_id": await _current_max_id(), "version": app_version()}
     payloads = await fetch_events(int(after))
-    return {"events": [p for p in payloads if _event_visible(p, viewer)], "version": app_version()}
+    # Resume from the newest event read, seen or not, so hidden ones are not re-read.
+    last_id = max([int(after)] + [int(p["id"]) for p in payloads])
+    return {
+        "events": [p for p in payloads if _event_visible(p, viewer)],
+        "last_id": last_id,
+        "version": app_version(),
+    }
+
+
+@router.post("/admin/events-ticket")
+async def admin_events_ticket():
+    """A two-minute ticket that opens the admin live feed.
+
+    Behind the admin guard in main.py (an /admin path), so only a signed-in
+    admin gets one; the stream checks it only when it connects.
+
+    Returns:
+        {"ticket": "<expiry>.<signature>"}.
+    """
+    return {"ticket": make_stream_ticket(await stored_password() or "")}
 
 
 @router.get("/version")

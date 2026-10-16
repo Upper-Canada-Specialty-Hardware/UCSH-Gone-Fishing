@@ -240,6 +240,42 @@ def test_catch_up_refuses_an_unauthenticated_caller(events_client):
     assert resp.status_code == 401
 
 
+def test_a_fresh_reader_starts_from_now_not_the_whole_history(events_client):
+    """No resume point means no replay: only where "now" is, to poll from."""
+    run(_reset())
+    run(_add_request(item_id=331, employee_id="7"))
+    run(_append(331, "imported", "import", None, "import:leave:331"))
+    run(_append(331, "approved", "email_link", "Dave", "leave:331:approved:v1"))
+
+    resp = events_client.get("/api/dashboard/events", params=_token("admin", "1"))
+    body = resp.json()
+    assert resp.status_code == 200 and body["events"] == []    # history is not replayed
+    assert body["last_id"] >= 2                                 # but the resume point is now
+
+
+def test_the_admin_stream_takes_a_short_ticket_never_the_session(monkeypatch):
+    """A ticket opens the feed; the 30-day session in a url does not; tickets expire."""
+    from app.services import admin_auth
+
+    stored = "hashed-password-value"
+    ticket = admin_auth.make_stream_ticket(stored, now=1_000_000)
+    assert admin_auth.stream_ticket_is_valid(ticket, stored, now=1_000_060)       # inside two minutes
+    assert not admin_auth.stream_ticket_is_valid(ticket, stored, now=1_000_200)   # expired
+    assert not admin_auth.stream_ticket_is_valid(ticket, "changed-password")      # password changed
+    session = admin_auth.make_session(stored, now=1_000_000)["token"]
+    assert not admin_auth.stream_ticket_is_valid(session, stored, now=1_000_060)  # a session is not a ticket
+
+    async def fake_stored():
+        return stored
+    monkeypatch.setattr(events, "stored_password", fake_stored)
+    app = FastAPI()
+    app.include_router(events.router, prefix="/api/dashboard")
+    client = TestClient(app, raise_server_exceptions=False)
+    # The old query-string session no longer opens anything.
+    resp = client.get("/api/dashboard/events/stream", params={"admin_session": session})
+    assert resp.status_code == 401
+
+
 # ----- the indexed reads (Postgres mode) return the SharePoint shape -----
 
 @pytest.fixture
