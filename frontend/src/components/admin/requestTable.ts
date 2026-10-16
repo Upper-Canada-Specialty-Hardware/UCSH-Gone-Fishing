@@ -43,6 +43,7 @@ export interface Row {
   amountDays: number;                // days, or hours/8 for make-up, for sort/stats
   title: string;                     // the person's own words
   submittedBy: string;
+  employment_type: string;           // 'Salary' | 'Hourly' | 'Hourly BC' | '' (person's current type) (#338)
   sysState: string;                  // SystemState (carry-over), or a derived state
   newBalance: string;                // carry-over NewBalance, raw
   waiting: number | null;            // days since created, or null for decided
@@ -110,6 +111,7 @@ export function toRow(raw: any, source: RowSource): Row {
     amountDays: src === 'mu' ? (hours || 0) / 8 : (days || 0),
     title: getDescription(item),
     submittedBy: item.employee_name || item.SubmitterName || '',
+    employment_type: item.employment_type || '',           // backend-stamped; '' when unresolved (#338)
     sysState: item.SystemState || (status === 'Pending' ? 'Waiting on manager' : 'Processed'),
     newBalance: item.NewBalance || '',
     waiting: source === 'history' ? null : daysWaiting(item),

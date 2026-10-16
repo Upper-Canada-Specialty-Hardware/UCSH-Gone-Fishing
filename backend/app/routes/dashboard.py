@@ -163,6 +163,24 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
+def _employment_type_of(staff_item: dict | None) -> str:
+    """The submitter's SalaryHourly value, for splitting rows by type (#338).
+
+    The SharePoint request lists carry no employment type, so a request row takes
+    the person's current Staff Directory value; the typed Postgres requests table
+    will carry its own recorded type, which the adapter maps here later.
+
+    Args:
+        staff_item: The person's Staff Directory record, or None when unresolved.
+
+    Returns:
+        "Salary", "Hourly", "Hourly BC", or "" when the person is unknown.
+    """
+    if not staff_item:
+        return ""                                              # unresolved person: left blank
+    return staff_item.get("fields", {}).get("SalaryHourly", "") or ""
+
+
 class _PersonNames(dict):
     """{SharePoint user id: display name}, plus staff names by email.
 
@@ -366,6 +384,7 @@ def _enrich_pending_item(
 
     item_data["employee_name"] = emp_name
     item_data["managers"] = _resolve_managers(staff)
+    item_data["employment_type"] = _employment_type_of(staff)   # salaried/hourly split (#338)
 
     if not staff:
         item_data["current_balances"] = None
@@ -715,6 +734,7 @@ async def team_requests(
                 emp_name = _resolve_employee_name(f, "leave", sp_user_to_name, staff_by_id)
                 r["employee_name"] = emp_name
                 r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+                r["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None)  # (#338)
                 results.append(r)
 
     # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
@@ -737,6 +757,7 @@ async def team_requests(
                 emp_name = _resolve_employee_name(f, "overtime", sp_user_to_name, staff_by_id)
                 r["employee_name"] = emp_name
                 r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+                r["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None)  # (#338)
                 results.append(r)
 
     # Carryover/Payout — check submitter in my_employees
@@ -766,6 +787,7 @@ async def team_requests(
                 emp_name = _resolve_employee_name(f, "carryover-payout", sp_user_to_name, staff_by_id)
                 r["employee_name"] = emp_name
                 r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+                r["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None)  # (#338)
                 results.append(r)
 
     # Reuse the staff map already built above to compute each row's pots.
@@ -1202,6 +1224,7 @@ async def admin_requests(
             emp_name = _resolve_employee_name(item, "leave", sp_user_to_name, staff_by_id)
             item["employee_name"] = emp_name
             item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+            item["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None)  # (#338)
             results.append(item)
 
     if not type or type == "overtime":
@@ -1213,6 +1236,7 @@ async def admin_requests(
             emp_name = _resolve_employee_name(item, "overtime", sp_user_to_name, staff_by_id)
             item["employee_name"] = emp_name
             item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+            item["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None)  # (#338)
             results.append(item)
 
     if not type or type == "carryover-payout":
@@ -1224,6 +1248,7 @@ async def admin_requests(
             emp_name = _resolve_employee_name(item, "carryover-payout", sp_user_to_name, staff_by_id)
             item["employee_name"] = emp_name
             item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+            item["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None)  # (#338)
             results.append(item)
 
     # Reuse the staff map already built above; this list also feeds the staff
@@ -1423,6 +1448,7 @@ async def admin_stuck_requests():
         stuck.append({
             "id": item.get("id"),
             "employee_name": emp_name,
+            "employment_type": _employment_type_of(staff),    # salaried/hourly split (#338)
             "LeaveType": f.get("LeaveType"),
             "Title": f.get("Title"),
             "StartDate": f.get("StartDate"),

@@ -149,6 +149,7 @@ from app.routes.email_api_log import router as email_api_log_router
 from app.routes.intake import router as intake_router
 from app.routes.self_service import router as self_service_router
 from app.routes.admin_auth import public_router as admin_sign_in_router, router as admin_password_router
+from app.routes.admin_legacy import router as admin_legacy_router
 from app.services.admin_auth import admin_guard
 
 # Every /api/dashboard/admin/* call needs an admin session (#228). The guard
@@ -171,6 +172,9 @@ app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboar
 # The admin password: sign in (public) and change it (behind the guard).
 app.include_router(admin_sign_in_router, prefix="/api/admin-auth", tags=["admin-auth"])
 app.include_router(admin_password_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The admin legacy data handler (#337): list and resolve reconciliation findings,
+# behind the same admin password at the same prefix as the other /admin/* routers.
+app.include_router(admin_legacy_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])
