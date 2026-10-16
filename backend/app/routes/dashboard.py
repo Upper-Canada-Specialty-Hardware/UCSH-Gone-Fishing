@@ -37,6 +37,7 @@ from app.services.employment import (
 from app.routes.approval import HANDLERS
 from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.request_live_reads import indexed_request_items
+from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -204,7 +205,7 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts;
     sp_user_to_name also carries ``by_email`` (see _PersonNames).
     """
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
     mgr_to_emp_names: dict[str, set[str]] = {}
@@ -589,7 +590,7 @@ async def team_members(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
@@ -614,7 +615,7 @@ async def team_balances(user: AuthUser):
         raise HTTPException(status_code=404, detail="Manager not found")
     manager_name = manager["fields"].get("Title", "")
 
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
@@ -1207,7 +1208,7 @@ async def _after_employee_created(record: dict) -> dict:
 
 @router.get("/admin/balances")
 async def admin_balances(group_by: str | None = Query(None)):
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
     # Build set of all manager names from AllManagers fields
     manager_names: set[str] = set()
@@ -1638,7 +1639,7 @@ async def admin_stats():
         return counts
 
     # Department breakdown from staff directory
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     dept_summary = {}
     for item in staff:
         f = item.get("fields", {})
@@ -2100,7 +2101,7 @@ async def admin_export_carryover_payout():
     from fastapi.responses import Response
     from app.services.app_settings import carryover_payout_window, toronto_today
     from app.services.carryover_export import build_workbook, export_filename
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)    # every employee
+    staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)    # every employee
     requests = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     window, today = await carryover_payout_window(), toronto_today()
     data = build_workbook(staff, requests, window)
@@ -2396,7 +2397,7 @@ async def admin_export_staff(body: StaffExportRequest):
     from app.services.manager_assignments import _extract_all_managers
     from app.services.staff_export import build_workbook, export_filename
 
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # every employee
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # every employee
     by_id = {str(item.get("id")): item for item in items}
 
     # Keep the order the table sent. None means "everyone" (in name order); an

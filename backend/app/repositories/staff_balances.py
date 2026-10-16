@@ -12,17 +12,19 @@ it asks this module for a ``StaffBalances`` and calls ``lock_pots`` then
   work): a ``SELECT ... FOR UPDATE`` on the staff row inside the caller's
   session, the real one-transaction path.
 
-``get_staff_balances`` picks one per call from the ``staff_storage`` setting, so
-the switch flips without a redeploy. Until the staff work is joined the setting
-does not exist and this returns the SharePoint implementation.
+``get_staff_balances`` picks one per call from the staff store's
+``staff_in_postgres`` (the ``staff_storage`` setting, or the
+``STORAGE_EMPLOYEES=postgres`` override), so the switch flips without a
+redeploy.
 """
 import logging
 from typing import Protocol
 
 from app.config import settings
-from app.database import async_session
 from app.graph.sharepoint import sp_client
-from app.models.app_setting import AppSetting
+from app.repositories.postgres.staff_balances import PostgresStaffBalances
+# The one definition of "staff lives in Postgres", re-exported for callers here.
+from app.repositories.staff_store import staff_in_postgres  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -109,43 +111,14 @@ class SharePointStaffBalances:
             await sp_client.update_list_item_fields(settings.SP_LIST_STAFF_DIRECTORY, employee_id, updates)
 
 
-async def staff_in_postgres() -> bool:
-    """Whether the Staff Directory's balances live in Postgres now.
-
-    The ``STORAGE_EMPLOYEES`` config value is an override (tests and operators
-    pin it); otherwise the ``staff_storage`` app setting decides. The setting
-    does not exist until the staff work adds it, and then the default is
-    SharePoint, so this reads it defensively rather than through
-    ``app_settings.get_setting`` (which only knows registered keys).
-
-    Returns:
-        True once staff balances should be read and written in Postgres.
-    """
-    override = (getattr(settings, "STORAGE_EMPLOYEES", "") or "").strip().lower()
-    if override == "postgres":
-        return True                                            # the environment pins Postgres
-    if override == "sharepoint":
-        return False                                           # the environment pins SharePoint
-    async with async_session() as session:                     # otherwise the live app setting decides
-        row = await session.get(AppSetting, "staff_storage")
-    return bool(row) and str(row.value).strip().lower() == "postgres"
-
-
 async def get_staff_balances() -> StaffBalances:
     """The balance backend to use now: SharePoint or Postgres.
 
     Chosen per call so a flip of the switch takes effect without a redeploy.
-    Falls back to SharePoint when staff is not in Postgres, or when the Postgres
-    implementation is not present yet (the staff work has not been joined).
 
     Returns:
         A ``StaffBalances`` implementation.
     """
-    if await staff_in_postgres():
-        try:
-            from app.repositories.postgres.staff_balances import PostgresStaffBalances
-            return PostgresStaffBalances()                     # the real one-transaction path
-        except ImportError:
-            # The staff work has not landed its Postgres implementation yet.
-            logger.warning("staff_storage is postgres but the Postgres staff balances are missing; using SharePoint")
+    if await staff_in_postgres():                              # same answer the staff store gives
+        return PostgresStaffBalances()                         # the real one-transaction path
     return SharePointStaffBalances()

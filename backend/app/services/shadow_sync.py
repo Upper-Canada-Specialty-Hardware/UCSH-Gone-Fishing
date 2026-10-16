@@ -23,13 +23,14 @@ from app.models.mixins import utcnow
 from app.models.sync_run import SyncRun
 from app.repositories.request_store import requests_in_postgres
 from app.services.request_import import request_import_step
+from app.services.staff_import import staff_sync_step
 
 logger = logging.getLogger(__name__)
 
 # The steps a sync runs, in order. Each takes (session, sync_run) and returns a
-# dict of counts for SyncRun.counts. The staff store builder appends its
-# staff_sync_step at the join; the request import is registered here (#333).
-SYNC_STEPS = [request_import_step]
+# dict of counts for SyncRun.counts. Staff first (#261), so a person added in
+# SharePoint since the last run exists before the requests that name them (#333).
+SYNC_STEPS = [staff_sync_step, request_import_step]
 
 # A fixed key for the advisory lock, so every instance contends on the same one.
 SYNC_LOCK_KEY = 0x55435348              # "UCSH" as an int; arbitrary but stable

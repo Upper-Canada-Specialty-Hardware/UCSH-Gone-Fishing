@@ -33,6 +33,7 @@ from app.models.sharepoint_seen import SharepointSeen
 from app.models.sync_run import SyncRun
 from app.services import request_submission as rs
 from app.tasks import outbox_worker
+from staff_seed import import_staff, wipe_staff
 
 LEAVE = settings.SP_LIST_LEAVE_REQUESTS
 STAFF = settings.SP_LIST_STAFF_DIRECTORY
@@ -102,8 +103,11 @@ def sp(monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")   # requests live in Postgres
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")  # and so do staff, so decisions_active is true
     run(_wipe())
+    run(wipe_staff())
+    run(import_staff())                                             # staff live in Postgres: copy the fake in
     yield fake
     run(_wipe())
+    run(wipe_staff())
 
 
 async def _wipe():

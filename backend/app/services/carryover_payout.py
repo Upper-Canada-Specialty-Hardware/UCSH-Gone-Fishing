@@ -2,7 +2,6 @@ import logging
 from datetime import date
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
@@ -29,6 +28,7 @@ from app.services.audit_trail import (
     write_audit_log,
 )
 from app.repositories.request_store import request_store, requests_in_postgres
+from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -615,7 +615,7 @@ async def approve_carryover_payout(
         if request_type == "Carry Over":
             final_carryover = fresh_carryover + days
             final_payout = fresh_payout
-            await sp_client.update_list_item_fields(
+            await staff_store.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
             )
@@ -628,7 +628,7 @@ async def approve_carryover_payout(
         else:
             final_carryover = fresh_carryover
             final_payout = fresh_payout + days
-            await sp_client.update_list_item_fields(
+            await staff_store.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
             )
@@ -718,7 +718,7 @@ async def refund_carryover_payout(
         if request_type == "Carry Over":
             final_carryover = fresh_carryover - days
             final_payout = fresh_payout
-            await sp_client.update_list_item_fields(
+            await staff_store.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "CarryOver": final_carryover},
             )
@@ -731,7 +731,7 @@ async def refund_carryover_payout(
         else:
             final_carryover = fresh_carryover
             final_payout = fresh_payout - days
-            await sp_client.update_list_item_fields(
+            await staff_store.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id,
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
             )

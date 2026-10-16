@@ -35,6 +35,7 @@ from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
 )
+from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -384,10 +385,9 @@ async def attach_taken_from(
     if employee_fields is None and name_to_item is None:
         # Self-sufficient fallback: one read, built into a name -> item map.
         from app.config import settings
-        from app.graph.sharepoint import sp_client
         name_to_item = {}
         try:
-            for item in await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY):
+            for item in await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY):
                 name = (item.get("fields", {}).get("Title") or "").strip().lower()
                 if name:
                     name_to_item[name] = item

@@ -13,9 +13,8 @@ as a name, a person with no Microsoft 365 link, and a below-zero balance the
 current rules would not have produced. Each flag is one ``legacy_findings`` row,
 filed once per case per person (the fingerprint makes reruns safe).
 
-The findings writer here is a small local stand-in with the shared contract
-signature; the migration's real ``legacy_findings.record_finding`` replaces it at
-the join.
+Findings are filed through the shared ``legacy_findings.record_finding``, the
+same writer the request checks use.
 """
 import logging
 
@@ -24,10 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
-from app.models.legacy_finding import LegacyFinding
 from app.models.staff import Staff, StaffSupervisor
 from app.repositories.postgres.staff import _lookup_id, _norm_email, apply_sp_fields, staff_query
 from app.services.employment import is_hourly
+from app.services.legacy_findings import record_finding
 
 logger = logging.getLogger(__name__)
 
@@ -45,57 +44,6 @@ _POT_COLUMNS = {
     "vacation": "CurrentVacationBalance",
     "payout": "Payout",
 }
-
-
-async def record_finding(
-    session: AsyncSession,
-    case: str,
-    subject: str,
-    kind: str | None,
-    subject_id: str,
-    reason: str,
-    evidence: dict,
-    run_id: int | None,
-) -> LegacyFinding | None:
-    """Insert one finding, skipping it when the same case was already filed. No commit.
-
-    The fingerprint ``case:subject:kind:subject_id`` is unique, so a rerun of the
-    same detector never files a duplicate. This is the local stand-in the staff
-    work uses until the migration's shared ``legacy_findings.record_finding`` is
-    joined; the signature matches that one exactly.
-
-    Args:
-        session: The caller's open session; nothing is committed here.
-        case: One of the legacy_findings cases.
-        subject: "request" or "staff".
-        kind: The request kind, or None for a staff finding.
-        subject_id: The item id or staff id the finding is about, as a string.
-        reason: One plain sentence for HR.
-        evidence: What backs the finding (JSON-serialisable).
-        run_id: The sync_runs row that found it, if any.
-
-    Returns:
-        The new finding row, or None when an identical one already existed.
-    """
-    fingerprint = f"{case}:{subject}:{kind or ''}:{subject_id}"      # the unique key
-    already = (await session.execute(
-        select(LegacyFinding).where(LegacyFinding.fingerprint == fingerprint)
-    )).scalars().first()
-    if already is not None:                                          # same case, same person: skip
-        return None
-    row = LegacyFinding(
-        subject=subject,
-        kind=kind,
-        subject_id=str(subject_id),
-        case=case,
-        reason=reason,
-        evidence=evidence or {},
-        status="open",
-        fingerprint=fingerprint,
-        run_id=run_id,
-    )
-    session.add(row)
-    return row
 
 
 def _num(value) -> float:

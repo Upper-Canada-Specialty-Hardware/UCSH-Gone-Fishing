@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.graph.sharepoint import sp_client
 from app.models.mixins import utcnow
 from app.routes import intake
 from app.services import email_codes, held_requests, leave_requests
@@ -76,7 +77,7 @@ def world(monkeypatch):
     async def lookup(email):
         return 12 if w.linked else None
 
-    monkeypatch.setattr(held_requests.sp_client, "get_list_items", staff_list)
+    monkeypatch.setattr(sp_client, "get_list_items", staff_list)  # the staff store reads through it
     monkeypatch.setattr(held_requests, "get_employee_by_name", by_name)
     monkeypatch.setattr(held_requests, "get_employee_by_email", by_email)
     monkeypatch.setattr(held_requests, "send_email", fake_send)

@@ -29,7 +29,6 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import async_session
-from app.graph.sharepoint import sp_client
 from app.models.request_deletion import RequestDeletion
 from app.repositories.request_store import request_store
 # The same creation, validation, preview and approval pieces every other way
@@ -61,6 +60,7 @@ from app.services.request_intake import RequestFormError, parse_request_form, su
 from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_ADMIN
 from app.services.requests_export import build_requests_workbook, requests_export_filename
+from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -403,7 +403,7 @@ async def admin_new_request_options():
         {"staff": [{"id", "name", "department", "location", "email",
         "managers"}], "leave_types": [...]}, staff sorted by name.
     """
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     staff = []
     for item in items:
         f = item.get("fields", {})

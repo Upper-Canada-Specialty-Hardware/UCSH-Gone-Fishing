@@ -67,6 +67,7 @@ from app.services.balance import (
     simulate_carryover_payout_impact,
 )
 from app.repositories.request_store import request_store
+from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -1189,7 +1190,7 @@ async def _count_same_name_others(employee_id: str | int, name: str) -> int | No
     if not name:
         return 0
     try:
-        staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     except Exception:  # noqa: BLE001 - one unreadable list must not sink the report
         logger.exception("Setup check: could not re-read the Staff Directory")
         return None
@@ -1660,7 +1661,7 @@ async def validate_all_employee_setups() -> dict:
         {"total_checked", "flagged", "directory_unreadable"} - flagged holds one
         row per record with at least one failing check, sorted by name.
     """
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     m365_rows = await _fetch_m365_rows()
     holiday_items = await get_holiday_repository().get_all()
 

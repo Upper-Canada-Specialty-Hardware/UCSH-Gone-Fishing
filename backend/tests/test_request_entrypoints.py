@@ -37,6 +37,7 @@ from app.routes.forms import router as forms_router
 from app.services import request_decisions as rd
 from app.services import request_intake
 from app.services.approval_links import NO_EXPIRY, _sign
+from staff_seed import import_staff, wipe_staff
 
 STAFF = settings.SP_LIST_STAFF_DIRECTORY
 USERS = "User Information List"
@@ -134,6 +135,8 @@ def client(monkeypatch):
     monkeypatch.setattr(request_intake, "carryover_payout_window", open_window)
 
     run(_wipe())
+    run(wipe_staff())
+    run(import_staff())                                             # staff live in Postgres: copy the fake in
     app = FastAPI()
     app.include_router(forms_router, prefix="/api/forms")
     app.include_router(dashboard_router, prefix="/api/dashboard")
@@ -141,6 +144,7 @@ def client(monkeypatch):
     test_client = TestClient(app, raise_server_exceptions=False)
     yield test_client
     run(_wipe())
+    run(wipe_staff())
 
 
 async def _records(kind):

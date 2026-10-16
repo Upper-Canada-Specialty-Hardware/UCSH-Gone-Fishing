@@ -51,6 +51,7 @@ from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.employment import HOURLY_TYPES, SALARY, employment_type
 from app.services.legacy_findings import record_finding  # shared writer: one row per fingerprint
 from app.services.request_journal import append_event, post_ledger, step_key
+from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,7 @@ async def build_staff_index() -> StaffIndex:
     Returns:
         A StaffIndex built from one read of each list.
     """
-    staff_items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    staff_items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     by_id: dict[str, dict] = {}
     by_email: dict[str, dict] = {}
     for item in staff_items:

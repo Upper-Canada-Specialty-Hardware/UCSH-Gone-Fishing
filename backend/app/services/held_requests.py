@@ -35,7 +35,6 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.database import async_session
 from app.graph.email import send_email
-from app.graph.sharepoint import sp_client
 from app.models import HeldRequest
 from app.models.mixins import utcnow
 from app.services.dashboard_tokens import generate_dashboard_url
@@ -46,6 +45,7 @@ from app.services.employee import (
 )
 from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
+from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ def _clean(text: str | None) -> str:
 
 async def _staff() -> list[dict]:
     """Every Staff Directory record (the list is not indexed, so all of it)."""
-    return await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    return await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
 
 async def list_departments() -> list[str]:
