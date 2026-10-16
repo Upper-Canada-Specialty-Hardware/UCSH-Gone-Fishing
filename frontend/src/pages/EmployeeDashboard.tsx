@@ -11,6 +11,8 @@ import { approveSummary, daysOffByMonth } from '../components/manager/teamStats'
 import { daysToCarryReset, myKindRows, myYear } from '../components/employee/myStats';
 import { STATUS_COLOR } from '../components/dataGridDefaults';
 import { getMyBalances, getMyRequests } from '../api/client';
+import { useLiveRequests } from '../hooks/useLiveRequests';
+import LiveNotice from '../components/LiveNotice';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
@@ -192,6 +194,10 @@ export default function EmployeeDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Live updates: merge each timeline event into the loaded requests, so an
+  // approval shows here without a reload (#328). Opens once the data has loaded.
+  const { status: liveStatus } = useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading });
+
   useEffect(() => {
     Promise.all([getMyBalances(), getMyRequests()])
       .then(([balRes, reqRes]) => {
@@ -250,6 +256,7 @@ export default function EmployeeDashboard() {
   const managers = String(employee?.managers || '').split(',').map((s) => s.trim()).filter(Boolean);
   return (
     <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
+      <LiveNotice status={liveStatus} />
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
           {/* Same greeting as the manager and admin dashboards, by this device's clock. */}

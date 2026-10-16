@@ -47,6 +47,12 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Database migrations applied")
 
+    # Live request feed: starts on the database alone, so it works even if the
+    # Graph/SharePoint startup below fails. It listens on Postgres (NOTIFY) or
+    # polls on SQLite, and fans request events out to open dashboards (#328).
+    from app.services.event_bus import event_bus
+    await event_bus.start()
+
     # 2. Connect to Graph API and SharePoint
     renewal_task = None
     carryover_reset_task = None
@@ -124,6 +130,8 @@ async def lifespan(app: FastAPI):
         shadow_sync_task.cancel()
     if sharepoint_check_task:
         sharepoint_check_task.cancel()
+    from app.services.event_bus import event_bus
+    await event_bus.stop()                                   # stop the live feed listener/poller
     await sp_client.close()
     logger.info("Shutdown complete")
 
@@ -146,6 +154,23 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
+
+@app.middleware("http")
+async def add_app_version_header(request: Request, call_next):
+    """Stamp every response with the running build, for the frontend auto-update (#331).
+
+    Args:
+        request: The incoming request.
+        call_next: The next handler in the chain.
+
+    Returns:
+        The response, with an ``X-App-Version`` header added.
+    """
+    from app.routes.events import app_version
+    response = await call_next(request)
+    response.headers["X-App-Version"] = app_version()        # the page reloads when this changes
+    return response
+
 templates = Jinja2Templates(directory="app/templates")
 
 # Register routers
@@ -160,6 +185,7 @@ from app.routes.admin_storage import router as admin_storage_router
 from app.routes.email_api_log import router as email_api_log_router
 from app.routes.intake import router as intake_router
 from app.routes.self_service import router as self_service_router
+from app.routes.events import router as events_router
 from app.routes.admin_auth import public_router as admin_sign_in_router, router as admin_password_router
 from app.services.admin_auth import admin_guard
 
@@ -183,6 +209,11 @@ app.include_router(admin_storage_router, prefix="/api/dashboard", tags=["dashboa
 app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # An employee signed in on the request page submits a request (/me/requests/{type}).
 app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The live event stream, the catch-up fallback, the per-request timeline and the
+# build version (#328-#332). Same prefix; the admin timeline sits under /admin so
+# the guard protects it, while the stream, catch-up and /me and /team timelines
+# authenticate themselves (signed token or admin session).
+app.include_router(events_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # The admin password: sign in (public) and change it (behind the guard).
 app.include_router(admin_sign_in_router, prefix="/api/admin-auth", tags=["admin-auth"])
 app.include_router(admin_password_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
