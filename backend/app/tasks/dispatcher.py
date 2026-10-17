@@ -20,12 +20,15 @@ async def dispatch_change(list_id: str, item: dict):
         item: The changed item as SharePoint sent it.
     """
     if await requests_in_postgres() and is_request_list(list_id):
-        # The request list is no longer the live source, but a Microsoft Form can
-        # still write to it. Run the post-switch check for this one item now, so a
-        # Form request is imported and its manager asked at once instead of waiting
-        # for the scheduled sweep. Idempotent: a rerun or the sweep does nothing.
+        # The request list is no longer the live source. Anything that still lands
+        # there (the Form until it is turned off, or a hand edit) is never imported
+        # as a request: the per-item check flags it for an admin instead. This is
+        # true whether or not staff have also moved (a half switch through an env
+        # override changes nothing here, because nothing is imported or notified);
+        # the webhook is logged so a stray item is never dropped in silence
+        # (#336 review, finding 10).
         from app.services.sharepoint_check import run_sharepoint_check_for_item
-        logger.info("Requests are in Postgres; checking SharePoint %s item %s now", list_id, item.get("id"))
+        logger.info("Requests are in Postgres; flagging SharePoint %s item %s via the check", list_id, item.get("id"))
         await run_sharepoint_check_for_item(list_id, item.get("id"))
         return
     fields = item.get("fields", {})

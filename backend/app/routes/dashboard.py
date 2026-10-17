@@ -38,9 +38,23 @@ from app.routes.approval import HANDLERS
 from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.request_live_reads import indexed_request_items
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
+from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _refuse_if_paused() -> None:
+    """Raise a 503 with the friendly message while the storage switch runs.
+
+    Called at the top of the dashboard decision endpoints so an approval,
+    rejection or refund is refused cleanly for the switch's short duration (#335).
+
+    Raises:
+        HTTPException: 503 while the switch pause is on.
+    """
+    if await is_paused():
+        raise HTTPException(status_code=503, detail=PAUSE_MESSAGE)
 
 
 # --- Auth dependency ---
@@ -877,6 +891,7 @@ async def team_approve(user: AuthUser, request_type: str, request_id: str):
     _require_role(user, "manager", "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
 
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
@@ -895,6 +910,7 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
     _require_role(user, "manager", "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
 
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
@@ -1705,6 +1721,7 @@ async def _run_request_action(handler, *args) -> dict:
 async def admin_approve(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
@@ -1716,6 +1733,7 @@ async def admin_approve(request_type: str, request_id: str):
 async def admin_reject(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
@@ -1727,6 +1745,7 @@ async def admin_reject(request_type: str, request_id: str):
 async def admin_refund(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
 
     from app.services.leave_requests import refund_leave_request
     from app.services.overtime_requests import refund_overtime_request
@@ -2112,40 +2131,11 @@ async def admin_export_carryover_payout():
     )
 
 
-@router.get("/admin/request-storage")
-async def admin_request_storage():
-    """Where the request lists live, and how many items each side holds.
-
-    Behind the admin password like every other /admin/* route (#228). Read only.
-
-    Returns:
-        The report from request_copy.request_storage_report.
-    """
-    from app.services.request_copy import request_storage_report
-    return await request_storage_report()
-
-
-@router.post("/admin/request-storage/copy")
-async def admin_copy_requests_to_postgres():
-    """Copy every request from the three SharePoint lists into Postgres.
-
-    Safe to run again while requests still live in SharePoint; refused once
-    STORAGE_REQUESTS is "postgres".
-
-    Returns:
-        The summary from request_copy.copy_requests_from_sharepoint.
-
-    Raises:
-        HTTPException: 503 while processing is disabled; 409 once requests
-            already live in Postgres.
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.request_copy import RequestsAlreadyMoved, copy_requests_from_sharepoint
-    try:
-        return await copy_requests_from_sharepoint()
-    except RequestsAlreadyMoved as e:
-        raise HTTPException(status_code=409, detail=str(e))
+# The old request-storage report and JSON copy endpoints were removed with the
+# storage-switch rework (#335/#336): the admin storage card now shows status and
+# runs the one-step flip through /admin/storage and /admin/storage/flip
+# (app/routes/admin_storage.py). The bulk copy helper stays in request_copy.py for
+# the pre-switch shadow phase; it is no longer exposed as an admin action.
 
 
 @router.get("/admin/sp-users")

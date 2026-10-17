@@ -10,6 +10,7 @@ from app.services.overtime_requests import process_new_overtime_request
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.request_intake import RequestTypeClosed, ensure_request_type_open
 from app.services.request_submitter import SOURCE_API, UnknownSubmitter
+from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,9 +59,25 @@ def _check_processing():
     return None
 
 
+async def _check_paused():
+    """A 503 with the friendly message while the storage switch runs, else None.
+
+    New submissions are refused for the switch's short duration so a request is
+    never created on the backend that is about to be left behind (#335, finding 5).
+
+    Returns:
+        A 503 JSONResponse when the switch pause is on, otherwise None.
+    """
+    if await is_paused():
+        return JSONResponse(status_code=503, content={"detail": PAUSE_MESSAGE})
+    return None
+
+
 @router.post("/leave")
 async def receive_leave_form(data: LeaveFormData):
     if (resp := _check_processing()):
+        return resp
+    if (resp := await _check_paused()):                          # refuse new requests mid-switch
         return resp
     try:
         item = await process_new_leave_request(data.model_dump(), data.submitter_email, SOURCE_API)
@@ -76,6 +93,8 @@ async def receive_leave_form(data: LeaveFormData):
 async def receive_overtime_form(data: OvertimeFormData):
     if (resp := _check_processing()):
         return resp
+    if (resp := await _check_paused()):                          # refuse new requests mid-switch
+        return resp
     try:
         item = await process_new_overtime_request(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}
@@ -89,6 +108,8 @@ async def receive_overtime_form(data: OvertimeFormData):
 @router.post("/carryover-payout")
 async def receive_carryover_payout_form(data: CarryoverPayoutFormData):
     if (resp := _check_processing()):
+        return resp
+    if (resp := await _check_paused()):                          # refuse new requests mid-switch
         return resp
     try:
         await ensure_request_type_open("carryover-payout")     # closed outside the season (#203)

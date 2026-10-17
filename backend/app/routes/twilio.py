@@ -12,6 +12,7 @@ from app.services.overtime_requests import approve_overtime_request, reject_over
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
 from app.repositories.request_store import request_store
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
+from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -61,6 +62,12 @@ async def receive_sms(request: Request):
     # Gate behind processing toggle
     if not settings.PROCESSING_ENABLED:
         await send_sms(from_number, "System is currently in reporting-only mode. Approvals via SMS are disabled.")
+        return ""
+
+    # While the storage switch runs, reply with the same friendly sentence the API
+    # routes return, so an SMS approval is refused cleanly rather than half-applied.
+    if await is_paused():
+        await send_sms(from_number, PAUSE_MESSAGE)
         return ""
 
     body = params.get("Body", "").strip()
