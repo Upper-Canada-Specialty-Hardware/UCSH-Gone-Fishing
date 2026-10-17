@@ -5,11 +5,15 @@ under conftest), with ``sp_client`` faked so nothing touches a real list. They
 cover: the store answers in the same shape from either backend; the import is
 idempotent and builds the supervisor links; matching is by id then email and
 never by name; the balance lock/write live inside the caller's transaction and a
-rollback leaves the pots untouched; the write-back retries until it lands and a
-pulled edit is never echoed; the newer edit wins; and each #341 detector fires on
-its case and stays quiet on a clean one.
+rollback leaves the pots untouched; the write-back retries until it lands, claims
+a row so a second drain never replays it, and reclaims a crashed claim; a pulled
+edit is never echoed; the newer non-balance edit wins while the app-owned balances
+are never overwritten (a differing SharePoint balance is filed as a finding), a
+person with an unsettled write-back is left alone, a duplicate email imports
+blanked; and each #341 detector fires on its case and stays quiet on a clean one.
 """
 import asyncio
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -18,6 +22,7 @@ from app.config import settings
 from app.database import async_session
 from app.graph import sharepoint as sharepoint_module
 from app.models.legacy_finding import LegacyFinding
+from app.models.mixins import utcnow
 from app.models.staff import (
     Department,
     Location,
@@ -316,13 +321,80 @@ def test_writeback_skipped_in_rehearsal(clean_db, monkeypatch):
     assert run(still_pending()) == "pending"                   # left for later
 
 
-# --- Pull: newer wins, logged, never echoed -----------------------------------
-
-def test_pull_applies_newer_edit_and_logs_it_without_echo(clean_db, monkeypatch):
+def test_a_claimed_writeback_is_not_replayed_by_a_second_drain(clean_db, monkeypatch):
+    # A row another instance has claimed ("sending", claim not yet expired) is not
+    # due, so a second drain never calls SharePoint for it.
     _seed_one(monkeypatch, _sp_item("101"))
 
-    # SharePoint now holds a newer edit (a changed vacation balance).
-    edited = _sp_item("101", CurrentVacationBalance=4.0, Modified="2026-10-20T09:00:00Z")
+    async def claim_elsewhere():
+        async with async_session() as session:
+            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 1.0})
+            await session.commit()
+        async with async_session() as session:                 # stand in for the other instance's claim
+            row = (await session.execute(select(StaffWriteback))).scalars().first()
+            row.status = staff_writeback.SENDING               # in flight elsewhere
+            row.next_attempt_at = utcnow() + timedelta(minutes=5)   # claim not yet expired
+            await session.commit()
+    run(claim_elsewhere())
+
+    calls = {"n": 0}
+
+    async def counting_patch(list_id, item_id, fields):
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(staff_writeback.sp_client, "update_list_item_fields", counting_patch)
+
+    result = run(staff_writeback.drain_writebacks())
+    assert result == {"sent": 0, "failed": 0, "skipped": 0}
+    assert calls["n"] == 0                                     # the claimed row was skipped
+
+    async def status():
+        async with async_session() as session:
+            return (await session.execute(select(StaffWriteback))).scalars().first().status
+    assert run(status()) == staff_writeback.SENDING            # still in flight, untouched
+
+
+def test_a_stale_claim_is_reclaimed(clean_db, monkeypatch):
+    # A "sending" row whose claim has expired (its owner crashed) is taken again by
+    # the next drain and sent, so a crash never strands a change.
+    _seed_one(monkeypatch, _sp_item("101"))
+
+    async def stale_claim():
+        async with async_session() as session:
+            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 1.0})
+            await session.commit()
+        async with async_session() as session:
+            row = (await session.execute(select(StaffWriteback))).scalars().first()
+            row.status = staff_writeback.SENDING
+            row.next_attempt_at = utcnow() - timedelta(minutes=20)   # claim long expired
+            await session.commit()
+    run(stale_claim())
+
+    calls = {"n": 0}
+
+    async def counting_patch(list_id, item_id, fields):
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(staff_writeback.sp_client, "update_list_item_fields", counting_patch)
+
+    result = run(staff_writeback.drain_writebacks())
+    assert result["sent"] == 1 and calls["n"] == 1             # reclaimed and sent
+
+    async def status():
+        async with async_session() as session:
+            return (await session.execute(select(StaffWriteback))).scalars().first().status
+    assert run(status()) == staff_writeback.DONE
+
+
+# --- Pull: newer wins, logged, never echoed -----------------------------------
+
+def test_pull_applies_a_newer_non_balance_edit_and_logs_it_without_echo(clean_db, monkeypatch):
+    # A newer SharePoint edit to a non-balance field is applied, logged with source
+    # "sharepoint", and never echoed back. Balances are app-owned, so the unchanged
+    # vacation pot stays as it was and no finding is filed.
+    _seed_one(monkeypatch, _sp_item("101"))
+
+    edited = _sp_item("101", CellNumber="555-9999", Modified="2026-10-20T09:00:00Z")
     _fake_list(monkeypatch, [edited])
 
     async def do_pull():
@@ -332,6 +404,7 @@ def test_pull_applies_newer_edit_and_logs_it_without_echo(clean_db, monkeypatch)
             return counts
     counts = run(do_pull())
     assert counts["applied"] == 1 and counts["changes_recorded"] >= 1
+    assert counts["balance_findings"] == 0
 
     async def read():
         async with async_session() as session:
@@ -340,11 +413,113 @@ def test_pull_applies_newer_edit_and_logs_it_without_echo(clean_db, monkeypatch)
                 select(StaffChange).where(StaffChange.employee_id == "101")
             )).scalars().all()
             wb = (await session.execute(select(StaffWriteback))).scalars().all()
-            return float(row.vacation_balance), changes, wb
-    vacation, changes, wb = run(read())
-    assert vacation == 4.0
-    assert any(c.field == "CurrentVacationBalance" and c.source == "sharepoint" for c in changes)
+            return row.cell_number, float(row.vacation_balance), changes, wb
+    cell, vacation, changes, wb = run(read())
+    assert cell == "555-9999"                                  # the non-balance edit landed
+    assert vacation == 10.5                                    # the app-owned balance is untouched
+    assert any(c.field == "CellNumber" and c.source == "sharepoint" for c in changes)
     assert wb == []                                            # a pulled edit is never written back
+
+
+def test_pull_never_writes_a_balance_and_files_one_finding(clean_db, monkeypatch):
+    # A newer SharePoint edit to a balance pot is NOT applied (balances are
+    # app-owned); the gap is filed once as a sharepoint_edit_after_switch finding
+    # carrying both values, and Postgres is left unchanged.
+    _seed_one(monkeypatch, _sp_item("101"))                    # stored vacation 10.5
+
+    edited = _sp_item("101", CurrentVacationBalance=4.0, Modified="2026-10-20T09:00:00Z")
+    _fake_list(monkeypatch, [edited])
+
+    async def do_pull():
+        async with async_session() as session:
+            counts = await staff_pull.staff_pull_step(session, None)
+            await session.commit()
+            return counts
+    counts = run(do_pull())
+    assert counts["balance_findings"] == 1
+
+    async def read():
+        async with async_session() as session:
+            row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            findings = (await session.execute(
+                select(LegacyFinding).where(LegacyFinding.subject_id == "101")
+            )).scalars().all()
+            wb = (await session.execute(select(StaffWriteback))).scalars().all()
+            return float(row.vacation_balance), findings, wb
+    vacation, findings, wb = run(read())
+    assert vacation == 10.5                                    # the balance is never overwritten
+    assert len(findings) == 1
+    assert findings[0].case == "sharepoint_edit_after_switch"
+    diff = findings[0].evidence["balances"]["CurrentVacationBalance"]
+    assert diff["sharepoint"] == 4.0 and diff["postgres"] == 10.5   # both values recorded
+    assert wb == []                                            # a finding is never echoed back
+
+
+def test_pull_leaves_a_person_with_a_pending_writeback_alone(clean_db, monkeypatch):
+    # An app change still queued for SharePoint means SharePoint is behind, so the
+    # pull leaves the person untouched: no field is overwritten and no finding is
+    # filed, even for a balance that differs.
+    _seed_one(monkeypatch, _sp_item("101"))                    # stored vacation 10.5, cell 555-1212
+
+    async def queue():
+        async with async_session() as session:
+            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 10.5})
+            await session.commit()
+    run(queue())
+
+    edited = _sp_item("101", CurrentVacationBalance=4.0, CellNumber="555-0000",
+                      Modified="2026-10-20T09:00:00Z")
+    _fake_list(monkeypatch, [edited])
+
+    async def do_pull():
+        async with async_session() as session:
+            counts = await staff_pull.staff_pull_step(session, None)
+            await session.commit()
+            return counts
+    counts = run(do_pull())
+    assert counts["skipped_pending"] == 1
+    assert counts["applied"] == 0 and counts["balance_findings"] == 0
+
+    async def read():
+        async with async_session() as session:
+            row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            findings = (await session.execute(select(LegacyFinding))).scalars().all()
+            return float(row.vacation_balance), row.cell_number, findings
+    vacation, cell, findings = run(read())
+    assert vacation == 10.5 and cell == "555-1212"             # nothing overwritten
+    assert findings == []                                      # SharePoint is behind, not a discrepancy
+
+
+def test_pull_imports_a_new_item_with_a_duplicate_email_blanked(clean_db, monkeypatch):
+    # A new SharePoint item whose email already belongs to someone is imported with
+    # a blank email rather than violating the unique index (which would fail the
+    # whole tick).
+    _seed_one(monkeypatch, _sp_item("101"))                    # Ada holds ada@ucsh.com
+
+    existing = _sp_item("101")                                 # unchanged, older-or-equal -> skipped
+    new_dup = _sp_item("202", Title="Clone", EmailAddress="ada@ucsh.com",
+                       Modified="2026-10-20T09:00:00Z")
+    _fake_list(monkeypatch, [existing, new_dup])
+
+    async def do_pull():
+        async with async_session() as session:
+            counts = await staff_pull.staff_pull_step(session, None)
+            await session.commit()
+            return counts
+    counts = run(do_pull())
+    assert counts["imported"] == 1 and counts["email_conflicts"] == 1
+    assert counts["failed"] == 0                               # the clash never failed the run
+
+    async def read():
+        async with async_session() as session:
+            clone = (await session.execute(
+                select(Staff).where(Staff.sp_item_id == "202"))).scalars().first()
+            ada = (await session.execute(
+                select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            return clone, ada.email
+    clone, ada_email = run(read())
+    assert clone is not None and clone.email is None           # imported, email blanked to NULL
+    assert ada_email == "ada@ucsh.com"                         # the first holder keeps it
 
 
 def test_pull_keeps_the_newer_stored_edit(clean_db, monkeypatch):

@@ -23,6 +23,34 @@ Changes made directly in SharePoint are brought into Postgres by the pull
 (`app/services/staff_pull.py`), newer edit wins by modified time, recorded in
 `staff_changes` with source `sharepoint`, and never echoed back.
 
+## The app owns the balances once staff live in Postgres
+
+Once staff are served from Postgres, the five balance pots
+(`CurrentSickDayBalance`, `CurrentOvertimeBalance`, `CarryOver`,
+`CurrentVacationBalance`, `Payout`) are owned by the app, not by SharePoint. The
+app moves them on approval and on the April-1 reset, and the write-back carries
+each move out to the SharePoint list so the Bulletin Board and the Form stay
+current. The pull therefore **never writes a balance column back into Postgres**,
+even when SharePoint's value is newer: doing so would let a stale SharePoint row
+(or a write-back that has not drained yet) silently reset a balance with no ledger
+entry behind it.
+
+Instead:
+
+- When a person has a write-back still pending, failed or in flight, the pull
+  leaves that person entirely alone (balances and other fields): SharePoint is
+  simply behind the app, so there is nothing to pull.
+- Otherwise, when a SharePoint balance differs from the app-owned balance in
+  Postgres, the pull records one `sharepoint_edit_after_switch` finding for HR
+  (both values kept as evidence) and leaves Postgres unchanged. HR reconciles the
+  real record through the hand edit; the pull never changes a pot.
+
+Every non-balance field keeps the newer-wins behaviour described above, except
+that a person with an unsettled write-back is skipped until it lands. If HR must
+correct a balance, they do it through the app (the person panel), which writes
+Postgres and queues the write-back, rather than editing the SharePoint list
+directly.
+
 ## Inventory of Staff Directory writes
 
 Each row is a code path that writes to the Staff Directory list today, the
