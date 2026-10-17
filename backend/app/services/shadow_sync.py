@@ -11,14 +11,22 @@ on the same rows. A Postgres advisory lock enforces that in production; on
 SQLite (local and tests) a single in-process lock stands in, which is all one
 process needs. The flip takes the same lock, so a sync and the flip never
 overlap. These lock helpers are shared with ``storage_switch``.
+
+The advisory lock is held on its OWN connection for the whole run, not on the
+session that does the work (#334 review, finding 3). ``pg_try_advisory_lock`` is
+tied to the connection it ran on; the work session commits several times during
+a run, and each commit hands its pooled connection back, so a later unlock on a
+different pooled connection would silently fail and leave the lock stuck. A
+dedicated connection, taken in ``acquire_sync_lock`` and closed in
+``release_sync_lock``, releases the exact lock it took.
 """
 import asyncio
 import logging
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
-from app.database import async_session
+from app.database import async_session, engine
 from app.models.mixins import utcnow
 from app.models.sync_run import SyncRun
 from app.repositories.request_store import requests_in_postgres
@@ -39,40 +47,83 @@ SYNC_LOCK_KEY = 0x55435348              # "UCSH" as an int; arbitrary but stable
 _single_process_lock = asyncio.Lock()
 
 
-async def acquire_sync_lock(session: AsyncSession) -> bool:
-    """Try to take the sync lock without blocking.
+class SyncLock:
+    """The one-runner sync lock, held for a whole run independent of the work session.
 
-    On Postgres this is a session-scoped advisory lock (held across the commits a
-    run makes, released by ``release_sync_lock``). On SQLite it is a single
-    in-process lock, which is all a one-process deployment needs.
+    On Postgres it owns a dedicated connection and takes a session-level advisory
+    lock on it; the lock lives until this same connection releases and closes it,
+    so the work session's commits (which recycle pooled connections) never touch
+    it. On SQLite it holds the in-process ``asyncio.Lock``, which is all a
+    one-process deployment needs.
 
-    Args:
-        session: An open session, whose connection holds the lock on Postgres.
+    Attributes:
+        _conn: The dedicated Postgres connection holding the lock, or None.
+    """
+
+    def __init__(self):
+        """Start with no connection held; ``acquire`` takes one on Postgres."""
+        self._conn: AsyncConnection | None = None               # set only on Postgres, only while held
+
+    async def acquire(self) -> bool:
+        """Try to take the lock without blocking.
+
+        Returns:
+            True when the lock was taken, False when another runner holds it.
+        """
+        if engine.dialect.name == "postgresql":
+            conn = await engine.connect()                       # a connection this lock alone holds
+            got = (await conn.execute(
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": SYNC_LOCK_KEY}
+            )).scalar()
+            if not got:
+                await conn.close()                              # someone else holds it: drop the connection
+                return False
+            self._conn = conn                                   # keep it open so the lock stays held
+            return True
+        if _single_process_lock.locked():
+            return False                                        # another task is syncing in this process
+        await _single_process_lock.acquire()
+        return True
+
+    async def release(self) -> None:
+        """Release the lock on the same connection that took it, then close it.
+
+        Safe to call once per acquire; closing the connection would drop a
+        session-level advisory lock anyway, but the explicit unlock returns it to
+        the pool clean.
+        """
+        if engine.dialect.name == "postgresql":
+            if self._conn is not None:                          # only when Postgres took one
+                try:
+                    await self._conn.execute(
+                        text("SELECT pg_advisory_unlock(:key)"), {"key": SYNC_LOCK_KEY}
+                    )
+                finally:
+                    await self._conn.close()                    # end the dedicated connection
+                    self._conn = None
+        elif _single_process_lock.locked():
+            _single_process_lock.release()
+
+
+async def acquire_sync_lock() -> SyncLock | None:
+    """Take the sync lock, or return None when another runner holds it.
 
     Returns:
-        True when the lock was taken, False when another runner holds it.
+        A held ``SyncLock`` to pass to ``release_sync_lock`` in a ``finally``, or
+        None when the lock could not be taken.
     """
-    if session.bind.dialect.name == "postgresql":
-        got = (await session.execute(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": SYNC_LOCK_KEY}
-        )).scalar()
-        return bool(got)
-    if _single_process_lock.locked():
-        return False                                           # another task is syncing in this process
-    await _single_process_lock.acquire()
-    return True
+    lock = SyncLock()
+    return lock if await lock.acquire() else None
 
 
-async def release_sync_lock(session: AsyncSession) -> None:
-    """Release the sync lock taken by ``acquire_sync_lock``.
+async def release_sync_lock(lock: SyncLock | None) -> None:
+    """Release a lock taken by ``acquire_sync_lock``. A no-op for None.
 
     Args:
-        session: The session that took the lock (same connection on Postgres).
+        lock: The held lock, or None when it was never taken.
     """
-    if session.bind.dialect.name == "postgresql":
-        await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": SYNC_LOCK_KEY})
-    elif _single_process_lock.locked():
-        _single_process_lock.release()
+    if lock is not None:
+        await lock.release()
 
 
 async def run_shadow_sync() -> dict:
@@ -87,26 +138,28 @@ async def run_shadow_sync() -> dict:
     """
     if await requests_in_postgres():
         return {"skipped": "requests already in postgres"}      # the shadow phase is done
-    async with async_session() as session:
-        if not await acquire_sync_lock(session):
-            logger.info("Shadow sync skipped: another runner holds the lock")
-            return {"skipped": "locked"}
-        run = SyncRun(job="shadow_sync")
-        session.add(run)
-        await session.flush()
-        try:
-            counts = await _run_steps(session, run)
-            run.counts = counts
-            run.finished_at = utcnow()
-            await session.commit()
-        except Exception as e:
-            run.error = str(e)
-            run.finished_at = utcnow()
-            await session.commit()
-            logger.exception("Shadow sync failed")
-            counts = {"error": str(e)}
-        finally:
-            await release_sync_lock(session)
+    lock = await acquire_sync_lock()                            # on its own connection, before the work session
+    if lock is None:
+        logger.info("Shadow sync skipped: another runner holds the lock")
+        return {"skipped": "locked"}
+    try:
+        async with async_session() as session:
+            run = SyncRun(job="shadow_sync")
+            session.add(run)
+            await session.flush()
+            try:
+                counts = await _run_steps(session, run)
+                run.counts = counts
+                run.finished_at = utcnow()
+                await session.commit()
+            except Exception as e:
+                run.error = str(e)
+                run.finished_at = utcnow()
+                await session.commit()
+                logger.exception("Shadow sync failed")
+                counts = {"error": str(e)}
+    finally:
+        await release_sync_lock(lock)                           # release on the lock's own connection
     return counts
 
 

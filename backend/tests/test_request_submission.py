@@ -7,8 +7,8 @@ QUEUED (never sent) against the SQLite test database. The checks are: a submissi
 writes one request, one submitted event and three outbox rows and sends nothing;
 a repeat adds nothing; the sender turns a manager row into ``sent_to_manager`` and
 a receipt row into ``receipt_sent``; a reminder is queued at most once a day; and a
-Microsoft Form item found after the switch is submitted once across repeated checks
-and a webhook for the same item.
+new SharePoint item found after the switch is flagged once (never imported) across
+repeated checks and a webhook for the same item.
 """
 import asyncio
 import copy
@@ -236,13 +236,18 @@ def test_a_reminder_is_queued_at_most_once_a_day(sp):
     assert all(o.channel == "email" for o in reminders)            # reminders are email-only
 
 
-# ----- a Microsoft Form item found after the switch is submitted once -----
+# ----- a new SharePoint item found after the switch is flagged, never submitted -----
 
 
-def test_a_form_item_is_submitted_once_across_checks_and_a_webhook(sp):
+def test_a_new_sharepoint_item_after_the_switch_is_flagged_not_submitted(sp):
+    # The Microsoft Form is retired at the switch with no fallback, so a new item
+    # that still lands in a SharePoint request list is NEVER imported as a request:
+    # the post-switch check flags it once for an admin and raises no app number, no
+    # manager notification and no receipt (#336, revised scope). Flagging it through
+    # the webhook and then two sweeps proves it is recorded at most once.
     from app.services.sharepoint_check import run_sharepoint_check, run_sharepoint_check_for_item
 
-    # A Form submission: blank RequestSource, named by its site lookup id.
+    # A would-be Form submission: blank RequestSource, named by its site lookup id.
     sp.lists[LEAVE] = [{
         "id": "500", "createdDateTime": "2026-05-01T10:00:00Z",
         "lastModifiedDateTime": "2026-05-01T10:00:00Z", "eTag": "v1",
@@ -251,26 +256,27 @@ def test_a_form_item_is_submitted_once_across_checks_and_a_webhook(sp):
                    "SubmittedTestLookupId": 101, "RequestSource": ""},
     }]
 
-    run(run_sharepoint_check_for_item(LEAVE, "500"))               # the webhook handles it at once
-    run(run_sharepoint_check())                                    # the scheduled sweep: no duplicate
+    run(run_sharepoint_check_for_item(LEAVE, "500"))               # the webhook flags it at once
+    run(run_sharepoint_check())                                    # the scheduled sweep: no second finding
     run(run_sharepoint_check())
 
     async def read():
         async with async_session() as session:
-            record = (await session.execute(
+            record = (await session.execute(                       # a request row, if one was (wrongly) imported
                 select(RequestRecord).where(RequestRecord.kind == "leave", RequestRecord.sp_item_id == "500")
             )).scalars().first()
-            events = (await session.execute(
-                select(RequestEvent).where(RequestEvent.request_id == record.id)
+            outbox = (await session.execute(select(Outbox))).scalars().all()   # any queued message at all
+            findings = (await session.execute(                     # the legacy findings about this item
+                select(LegacyFinding).where(LegacyFinding.subject_id == "500")
             )).scalars().all()
-            outbox = (await session.execute(
-                select(Outbox).where(Outbox.request_id == record.id)
-            )).scalars().all()
-            return record, events, outbox
+            return record, outbox, findings
 
-    record, events, outbox = run(read())
-    assert record is not None and record.manager_id == "20"        # the manager was assigned
-    assert len([e for e in events if e.type == "submitted"]) == 1  # submitted once, on the form channel
-    assert {e.channel for e in events if e.type == "submitted"} == {"form"}
-    kinds = sorted((o.message_type, o.channel) for o in outbox)
-    assert kinds == [("manager_approval", "email"), ("manager_approval", "sms"), ("receipt", "email")]
+    record, outbox, findings = run(read())
+    assert record is None                                          # never imported: no request row exists
+    assert outbox == []                                            # so no manager notification and no receipt
+    assert len(findings) == 1                                      # flagged once across the webhook and both sweeps
+    finding = findings[0]
+    assert finding.case == "sharepoint_new_after_switch"           # the allowed post-switch-new case
+    assert finding.subject == "request" and finding.kind == "leave"
+    assert finding.evidence["start_date"] == "2026-11-02"          # dates kept so HR can re-key it by hand
+    assert finding.evidence["request_source"] == ""               # blank source: it looked like a Form item

@@ -42,6 +42,7 @@ from app.database import async_session
 from app.graph.sharepoint import sp_client
 from app.models import request_vocab as vocab
 from app.models.mixins import utcnow
+from app.models.request_approval_state import RequestApprovalState
 from app.models.request_counter import RequestCounter
 from app.models.request_record import RequestRecord
 from app.models.sharepoint_seen import SharepointSeen
@@ -516,8 +517,15 @@ async def _import_item(
     *,
     event_type: str = "imported",
     event_channel: str = IMPORT_CHANNEL,
+    version_by_sp_id: dict | None = None,
 ) -> str:
     """Import or refresh one SharePoint item, then run its detectors.
+
+    Only the pre-switch shadow sync imports request items, and it keeps the
+    SharePoint item id as the item number so old links and SMS replies still name
+    the request. After the switch the Microsoft Form is retired: a new SharePoint
+    item is never imported, only recorded as a legacy finding (see
+    ``sharepoint_check``), so this is never called for a post-switch arrival.
 
     Args:
         session: An open session; the caller commits.
@@ -525,9 +533,12 @@ async def _import_item(
         sp_item: The SharePoint item ({"id", "fields", "createdDateTime", ...}).
         index: The loaded staff index.
         run_id: The sync_runs row this import belongs to, for findings and runs.
-        event_type: The timeline event to append ("imported", or "submitted" for
-            a Form item seen by the post-switch check).
+        event_type: The timeline event to append (always "imported" now).
         event_channel: The channel for that event and the ledger rows.
+        version_by_sp_id: SharePoint item id -> the current approval version from
+            ``request_approval_state``, so an item edited before the switch keeps
+            the version its latest emailed link carries (#333 review, finding 7).
+            None, or an id not in it, leaves the version at its default of 1.
 
     Returns:
         "created" when a new row was inserted, "updated" when an existing row was
@@ -541,6 +552,8 @@ async def _import_item(
     record = await _existing_record(session, kind, sp_item_id)
     created = record is None
     if record is None:
+        # The SharePoint item id is the item number people and links use; lookups
+        # stay by sp_item_id so a rerun updates this row, never duplicates it.
         record = RequestRecord(kind=kind, item_id=int(sp_item_id), sp_item_id=sp_item_id)
 
     # Identity first, so the leave-title split sees the right employee name.
@@ -574,6 +587,14 @@ async def _import_item(
     # Status must be one of the allowed values before the row can be flushed.
     if record.status not in vocab.STATUSES:
         record.status = "pending"
+
+    # Carry over the approval version its latest emailed link uses, so a request
+    # edited before the switch (request_approval_state at version 2, its live link
+    # at v2) is not seen as stale by the Postgres approve, which compares the
+    # link's version to this column (#333 review, finding 7). A later admin edit
+    # bumps from here, never back to 1.
+    if version_by_sp_id and sp_item_id in version_by_sp_id:
+        record.approval_version = int(version_by_sp_id[sp_item_id])
 
     # Dates that cannot be stored (end before start, negative amounts) are cleared
     # so the row imports, with the raw value preserved in the date_error finding;
@@ -843,6 +864,28 @@ async def record_seen_version(
         pass                                                   # this version was already recorded
 
 
+async def _version_map(session: AsyncSession, list_id: str) -> dict[str, int]:
+    """SharePoint item id -> its current approval version, for one request list.
+
+    The approval versions live in ``request_approval_state``, keyed by the
+    SharePoint list id and item id (the number the live SharePoint flow used).
+    The importer reads them so each imported row keeps the version its latest
+    emailed link carries (#333 review, finding 7).
+
+    Args:
+        session: An open session.
+        list_id: The SharePoint list id for this kind.
+
+    Returns:
+        ``{item_id: current_version}`` for every item of that list with a row.
+    """
+    rows = (await session.execute(
+        select(RequestApprovalState.item_id, RequestApprovalState.current_version)
+        .where(RequestApprovalState.list_id == list_id)
+    )).all()
+    return {str(item_id): int(version) for item_id, version in rows}
+
+
 async def _import_all(session: AsyncSession, run_id: int | None) -> dict:
     """Import every item of all three kinds into the typed table.
 
@@ -852,18 +895,25 @@ async def _import_all(session: AsyncSession, run_id: int | None) -> dict:
 
     Returns:
         Counts per kind plus a total, e.g.
-        ``{"leave": {"created": 3, "updated": 0, "errors": 0}, ...}``.
+        ``{"leave": {"created": 3, "updated": 0, "errors": 0, "error_ids": []}, ...}``.
     """
     index = await build_staff_index()
     counts: dict = {}
     for kind, setting_name in KIND_LIST_SETTING.items():
         list_id = getattr(settings, setting_name)
         items = await sp_client.get_list_items(list_id)
+        version_by_sp_id = await _version_map(session, list_id)    # link versions to carry onto each row
         created = updated = errors = 0
+        error_ids: list[str] = []                                  # the items this run could not import
         for sp_item in items:
             try:
                 async with session.begin_nested():             # isolate one bad item from the rest
-                    outcome = await _import_item(session, kind, sp_item, index, run_id)
+                    # The bulk import keeps the SharePoint id as the item number
+                    # (assign_app_item_id stays False); only post-switch imports
+                    # draw an app number. The version map keeps edited links valid.
+                    outcome = await _import_item(
+                        session, kind, sp_item, index, run_id, version_by_sp_id=version_by_sp_id,
+                    )
                     # Remember the version copied: the post-switch check's baseline.
                     await record_seen_version(
                         session, kind, str(sp_item.get("id")), item_version(sp_item), "unchanged", run_id,
@@ -871,10 +921,16 @@ async def _import_all(session: AsyncSession, run_id: int | None) -> dict:
                 created += outcome == "created"
                 updated += outcome == "updated"
             except Exception:
+                # The savepoint rolled this item back and no sharepoint_seen row
+                # was written for it, so the next run retries it. Record its id in
+                # the counts so a stuck item is visible on the storage screen and
+                # never silently lost (#333 review, finding 1).
                 errors += 1
+                error_ids.append(str(sp_item.get("id")))
                 logger.exception("Request import: failed on %s item %s", kind, sp_item.get("id"))
         await _raise_counters(session, kind)
-        counts[kind] = {"source_count": len(items), "created": created, "updated": updated, "errors": errors}
+        counts[kind] = {"source_count": len(items), "created": created, "updated": updated,
+                        "errors": errors, "error_ids": error_ids}
         logger.info("Request import (%s): %d read, %d created, %d updated, %d errors",
                     kind, len(items), created, updated, errors)
     return counts

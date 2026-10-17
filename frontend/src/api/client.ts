@@ -212,9 +212,11 @@ export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
 export const addRequestColumns = () => api.post('/admin/request-columns');
-// Admin - where the request lists live, and the copy from SharePoint before the move
-export const getRequestStorage = () => api.get('/admin/request-storage');
-export const copyRequestsToPostgres = () => api.post('/admin/request-storage/copy');
+// Admin - where requests and staff live, and the one-step switch to Postgres.
+/** Current storage, the last sync and recent runs, request counts and open findings. */
+export const getStorageStatus = () => api.get('/admin/storage');
+/** Run the final sync and switch requests (and staff) to Postgres. One-way. */
+export const flipStorageToPostgres = () => api.post('/admin/storage/flip');
 /** The dates carry-over and payout requests are accepted between (Toronto dates, both ends included). */
 export interface CarryoverWindow {
   start: string | null;   // YYYY-MM-DD, or null when no dates are set

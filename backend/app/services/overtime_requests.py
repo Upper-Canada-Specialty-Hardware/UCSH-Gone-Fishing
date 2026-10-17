@@ -55,6 +55,7 @@ from app.services.audit_trail import (
     write_audit_log,
 )
 from app.repositories.request_store import request_store, requests_in_postgres
+from app.services.switch_pause import raise_if_paused  # refuse writes while the storage switch runs
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,11 @@ async def process_new_overtime_request(
 
     Returns:
         The created SharePoint item.
+
+    Raises:
+        SystemPaused: While the storage switch is running (no request is created).
     """
+    await raise_if_paused()                                      # no new request mid-switch
     hours = float(form_data.get("hours", 0))
     fields = {
         "Title": form_data.get("description", ""),
@@ -486,7 +491,11 @@ async def approve_overtime_request(
     Returns:
         A result dict describing the approval. An "error" key means nothing was
         written and the request is unchanged.
+
+    Raises:
+        SystemPaused: While the storage switch is running (nothing is written).
     """
+    await raise_if_paused()                                      # no approval mid-switch
     from app.services.request_decisions import approve as _pg_approve, decisions_active
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_approve("overtime", request_id, manager_id, channel, link_version)
@@ -637,6 +646,7 @@ async def refund_overtime_request(
     request_id: str | int, admin_id: str | int, channel: str = "system",
 ) -> dict:
     """Reverse an approved overtime request — subtract from OT balance, cascade, recalc RAD."""
+    await raise_if_paused()                                      # no refund mid-switch
     from app.services.request_decisions import decisions_active, refund as _pg_refund
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_refund("overtime", request_id, admin_id, channel)
@@ -735,6 +745,7 @@ async def reject_overtime_request(
     link_version: int | None = None, reason: str | None = None,
 ) -> dict:
     """Process overtime rejection."""
+    await raise_if_paused()                                      # no rejection mid-switch
     from app.services.request_decisions import decisions_active, reject as _pg_reject
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_reject("overtime", request_id, manager_id, channel, link_version, reason)

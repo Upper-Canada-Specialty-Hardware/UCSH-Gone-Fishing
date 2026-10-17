@@ -62,6 +62,7 @@ from app.services.audit_trail import (
     extract_approval_deltas,
 )
 from app.repositories.request_store import request_store, requests_in_postgres
+from app.services.switch_pause import raise_if_paused  # refuse writes while the storage switch runs
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,11 @@ async def process_new_leave_request(
 
     Returns:
         The created SharePoint item.
+
+    Raises:
+        SystemPaused: While the storage switch is running (no request is created).
     """
+    await raise_if_paused()                                      # no new request mid-switch
     leave_type = form_data.get("leave_type", "")
     is_partial = leave_type == "Half Day or Partial Day Off"
 
@@ -709,7 +714,11 @@ async def approve_leave_request(
     Returns:
         A result dict describing the approval. An "error" key means nothing was
         written and the request is unchanged.
+
+    Raises:
+        SystemPaused: While the storage switch is running (nothing is written).
     """
+    await raise_if_paused()                                      # no approval mid-switch
     # Once requests and staff both live in Postgres, every channel runs the one
     # transactional decision path instead of this SharePoint flow (#324).
     from app.services.request_decisions import approve as _pg_approve, decisions_active
@@ -912,6 +921,7 @@ async def reject_leave_request(
     link_version: int | None = None, reason: str | None = None,
 ) -> dict:
     """Process leave rejection."""
+    await raise_if_paused()                                      # no rejection mid-switch
     from app.services.request_decisions import decisions_active, reject as _pg_reject
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_reject("leave", request_id, manager_id, channel, link_version, reason)
@@ -958,6 +968,7 @@ async def refund_leave_request(
     request_id: str | int, admin_id: str | int, channel: str = "system",
 ) -> dict:
     """Reverse an approved leave request — restore balance, cascade, recalc RAD."""
+    await raise_if_paused()                                      # no refund mid-switch
     from app.services.request_decisions import decisions_active, refund as _pg_refund
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_refund("leave", request_id, admin_id, channel)

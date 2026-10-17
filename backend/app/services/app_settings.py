@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 CARRYOVER_PAYOUT_WINDOW = "carryover_payout_window"   # {"start", "end"} ISO dates, or None
 REQUESTS_STORAGE = "requests_storage"                 # "sharepoint" (default) or "postgres"
 STAFF_STORAGE = "staff_storage"                       # "sharepoint" (default) or "postgres"
+SWITCH_PAUSE = "switch_pause"                         # {"until": ISO} while the storage switch runs, or None
 TORONTO = ZoneInfo("America/Toronto")                # the company's calendar day
 
 # The two backends the request lists can live in; the switch reads this.
@@ -32,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     CARRYOVER_PAYOUT_WINDOW: None,                  # no dates: closed until an admin sets them
     REQUESTS_STORAGE: SHAREPOINT,                   # requests stay in SharePoint until the switch is flipped
     STAFF_STORAGE: SHAREPOINT,                      # the Staff Directory stays in SharePoint until the switch is flipped
+    SWITCH_PAUSE: None,                             # no pause until the switch sets one; None means the app is open
 }
 
 

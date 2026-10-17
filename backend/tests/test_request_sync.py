@@ -5,8 +5,9 @@ site user list and the three request lists are in-memory dicts, so no test
 touches real SharePoint. The suite covers the importer (idempotency, item ids
 and counters, the leave-title split, the legacy flag, the audit log to ledger,
 and each request-side detector), the single-runner shadow sync, the flip's
-final-sync-then-setting, the post-switch SharePoint check (new Form item, edit,
-delete, and two look-alike items), and the rehearsal gate.
+final-sync-then-setting (and its refusal to run twice), the post-switch SharePoint
+check (a new item flagged not imported, edit, delete, and two look-alike items),
+the switch pause, the imported approval version, and the rehearsal gate.
 """
 import asyncio
 import copy
@@ -378,14 +379,17 @@ def _switch_to_postgres():
     run(app_settings.set_setting(REQUESTS_STORAGE, POSTGRES))
 
 
-def test_check_imports_a_new_form_item_once_across_three_runs(sp):
+def test_check_flags_a_new_item_once_and_never_imports_it(sp):
     _switch_to_postgres()
-    # A Form submission has a blank RequestSource.
+    # The Microsoft Form is retired at the switch: a new item (Form or not) is
+    # flagged for an admin, never imported, and only once across repeated sweeps.
     sp.lists[LEAVE] = [sp_item(500, leave_fields(lookup=101, request_source=""))]
     for _ in range(3):
         run(run_sharepoint_check())
-    assert run(_count(RequestRecord, kind="leave", sp_item_id="500")) == 1
-    assert run(_count(RequestEvent, type="submitted", channel="form")) == 1
+    assert run(_count(RequestRecord, kind="leave", sp_item_id="500")) == 0   # never imported
+    findings = run(_findings("sharepoint_new_after_switch"))
+    assert [f.subject_id for f in findings] == ["500"]                        # flagged exactly once
+    assert findings[0].evidence.get("start_date") == "2026-06-01"            # dates kept as evidence
 
 
 def test_check_flags_an_edit_once_and_never_applies_it(sp):
@@ -423,15 +427,17 @@ def test_check_flags_a_delete_once_and_never_applies_it(sp):
     assert run(_record("leave", 700)) is not None               # the Postgres row is kept
 
 
-def test_check_keeps_two_look_alike_items_apart(sp):
+def test_check_flags_two_look_alike_new_items_apart(sp):
     _switch_to_postgres()
-    # Same text, different SharePoint ids: matched by id, so both are kept.
+    # Same text, different SharePoint ids: matched by id, so each is flagged on its
+    # own, and neither is imported.
     sp.lists[LEAVE] = [
         sp_item(800, leave_fields(lookup=101, title="Same text", request_source="")),
         sp_item(801, leave_fields(lookup=101, title="Same text", request_source="")),
     ]
     run(run_sharepoint_check())
-    assert run(_count(RequestRecord, kind="leave")) == 2
+    assert run(_count(RequestRecord, kind="leave")) == 0                       # neither imported
+    assert {f.subject_id for f in run(_findings("sharepoint_new_after_switch"))} == {"800", "801"}
 
 
 # ----- rehearsal -----
@@ -472,3 +478,114 @@ def test_rehearsal_drops_non_allowlisted_sends(monkeypatch):
     assert rehearsal.allow_recipient("(647) 555-0100") is True   # same number, different formatting
     assert rehearsal.allow_recipient("stranger@example.com") is False
     assert run(sms.send_sms("+16475559999", "hi")) == {"skipped": "rehearsal"}
+
+
+# ----- the flip refuses a second run -----
+
+
+def test_flip_is_refused_after_the_switch(sp):
+    # A second flip would overwrite Postgres decisions with SharePoint's values.
+    from app.services.storage_switch import AlreadySwitched
+    _switch_to_postgres()
+    with pytest.raises(AlreadySwitched):
+        run(flip_to_postgres())
+
+
+# ----- a failed item is recorded and retried -----
+
+
+def test_a_failed_item_is_recorded_and_retried(sp, monkeypatch):
+    # One item raises on import; it must be visible in the counts, left unimported
+    # and unseen (so the next run retries it), while the good item still lands.
+    from app.services import request_import as ri
+    sp.lists[LEAVE] = [sp_item(10, leave_fields(lookup=101)), sp_item(66, leave_fields(lookup=101))]
+    real = ri._import_item
+
+    async def flaky(session, kind, sp_item, *args, **kwargs):
+        if str(sp_item.get("id")) == "66":
+            raise RuntimeError("boom")                            # simulate a bad item
+        return await real(session, kind, sp_item, *args, **kwargs)
+
+    monkeypatch.setattr(ri, "_import_item", flaky)
+    counts = run(import_requests())
+    assert counts["leave"]["errors"] == 1 and "66" in counts["leave"]["error_ids"]   # recorded and visible
+    assert run(_record("leave", 66)) is None                     # not imported
+    assert run(_record("leave", 10)) is not None                 # the good one still landed
+    assert run(_count(SharepointSeen, sp_item_id="66")) == 0      # unseen, so the next run retries it
+
+    monkeypatch.setattr(ri, "_import_item", real)                # the item stops failing
+    run(import_requests())
+    assert run(_record("leave", 66)) is not None                 # retried and imported
+
+
+# ----- the switch pause refuses writes, and expires on its own -----
+
+
+def test_a_decision_during_the_pause_is_refused(sp):
+    # While the pause is on, an approval is refused with the friendly message.
+    from app.services.leave_requests import approve_leave_request
+    from app.services.switch_pause import PAUSE_MESSAGE, SystemPaused, begin_pause
+    run(begin_pause())
+    with pytest.raises(SystemPaused) as caught:
+        run(approve_leave_request("1", "10", "manager_dashboard"))
+    assert caught.value.message == PAUSE_MESSAGE
+
+
+def test_the_pause_expires(sp):
+    # A pause past its safety expiry reads as cleared, so a crash mid-flip never
+    # leaves the app paused forever.
+    from datetime import datetime, timedelta, timezone
+    from app.services import switch_pause
+    run(switch_pause.begin_pause())
+    assert run(switch_pause.is_paused()) is True
+    later = datetime.now(timezone.utc) + switch_pause.PAUSE_MAX + timedelta(seconds=1)
+    assert run(switch_pause.is_paused(later)) is False
+
+
+# ----- the importer carries the approval version, and a v2 link approves -----
+
+
+class _FakeStaffBalances:
+    """An in-memory StaffBalances for the decision path (no real backend)."""
+
+    def __init__(self):
+        """Start every stored pot at zero."""
+        from app.repositories.staff_balances import POT_COLUMNS
+        self._pots = {pot: 0.0 for pot in POT_COLUMNS}           # the five spendable pots
+
+    async def lock_pots(self, session, employee_id):
+        """Return a copy of the current pots."""
+        return dict(self._pots)
+
+    async def write_pots(self, session, employee_id, new_values):
+        """Apply a pot write."""
+        self._pots.update(new_values)
+
+
+def test_import_carries_the_approval_version_and_a_v2_link_approves(sp, monkeypatch):
+    from app.models.request_approval_state import RequestApprovalState
+    from app.services import request_decisions as rd
+
+    # A leave request edited before the switch: its approval state is at version 2,
+    # and its latest emailed link carries v2.
+    async def seed_state():
+        async with async_session() as session:
+            session.add(RequestApprovalState(
+                list_id=LEAVE, item_id="3905", current_version=2, current_snapshot={}))
+            await session.commit()
+
+    run(seed_state())
+    sp.lists[LEAVE] = [sp_item(3905, leave_fields(lookup=101))]
+    run(import_requests())
+    assert run(_record("leave", 3905)).approval_version == 2     # carried from the approval state
+
+    fake = _FakeStaffBalances()
+
+    async def _get():
+        return fake
+
+    monkeypatch.setattr(rd, "get_staff_balances", _get)          # the decision path reads this
+    stale = run(rd.approve("leave", 3905, "Alice Salary", "email_link", link_version=1))
+    assert stale.get("refused") == "stale"                       # an old v1 link is now stale
+    ok = run(rd.approve("leave", 3905, "Alice Salary", "email_link", link_version=2))
+    assert ok.get("status") == "approved"                        # the live v2 link approves

@@ -17,6 +17,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.repositories.postgres.staff import PostgresStaffList
 from app.services.app_settings import staff_storage
+from app.services.switch_pause import raise_if_paused  # refuse staff writes while the storage switch runs
 
 SHAREPOINT = "sharepoint"
 POSTGRES = "postgres"
@@ -111,6 +112,7 @@ class StaffStore:
 
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
         """Add an item; returns it in the SharePoint item shape."""
+        await raise_if_paused()                                # no staff write mid-switch
         return await (await self._backend(list_id)).create_list_item(list_id, fields)
 
     async def update_list_item_fields(
@@ -139,6 +141,7 @@ class StaffStore:
         Returns:
             The item's fields after the change.
         """
+        await raise_if_paused()                           # no staff write mid-switch
         backend = await self._backend(list_id)
         if backend is _postgres_staff:                    # the Postgres staff table takes the extras
             return await backend.update_list_item_fields(
@@ -149,6 +152,7 @@ class StaffStore:
 
     async def delete_list_item(self, list_id: str, item_id) -> None:
         """Remove an item for good."""
+        await raise_if_paused()                                # no staff write mid-switch
         await (await self._backend(list_id)).delete_list_item(list_id, item_id)
 
 

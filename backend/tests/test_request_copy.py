@@ -8,14 +8,16 @@ refuses once requests live in Postgres.
 import asyncio
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.database import async_session
+from app.models.legacy_finding import LegacyFinding
 from app.models.request_change import RequestChange
 from app.models.request_counter import RequestCounter
 from app.models.request_item import CarryoverPayoutRequestItem, LeaveRequestItem, OvertimeRequestItem
 from app.models.request_record import RequestRecord
+from app.models.sharepoint_seen import SharepointSeen
 from app.repositories.request_store import request_list_tables
 from app.services.request_copy import _json_copy_tables
 from app.services import request_copy
@@ -56,7 +58,7 @@ def sharepoint_lists(monkeypatch):
         # typed requests table. Clear both (typed change rows and counters too).
         async with async_session() as session:
             for model in (LeaveRequestItem, OvertimeRequestItem, CarryoverPayoutRequestItem,
-                          RequestChange, RequestRecord, RequestCounter):
+                          RequestChange, RequestRecord, RequestCounter, LegacyFinding, SharepointSeen):
                 await session.execute(delete(model))
             await session.commit()
 
@@ -101,22 +103,21 @@ def test_the_report_counts_what_is_left_to_copy(sharepoint_lists):
     assert after["lists"]["leave"]["only_in_sharepoint"] == 0
 
 
-# The Microsoft Form fallback (#195): once requests live in Postgres, a new item
-# the Form writes to a SharePoint list is moved into Postgres and processed there.
+# The Microsoft Form is retired at the switch (no fallback, revised #336 scope):
+# once requests live in Postgres a new item that still lands in a SharePoint list
+# is never imported, only flagged for an admin on the Legacy data screen.
 
-# EmployeeID is set because the live typed requests table requires it; the
-# Microsoft Form carries the submitter's Staff Directory id alongside the person
-# lookup, so a real Form item has it too.
 FORM_ITEM = {
     "id": "950", "createdDateTime": "2026-10-10T13:00:00Z",
     "fields": {"LeaveType": "Vacation", "Status": "Pending", "StartDate": "2026-11-02",
-               "EndDate": "2026-11-02", "EmployeeID": "21", "SubmittedTestLookupId": "21"},
+               "EndDate": "2026-11-02", "EmployeeID": "21", "SubmittedTestLookupId": "21",
+               "SubmitterEmail": "pat@ucsh.com"},
 }
 
 
 @pytest.fixture
 def form_item(sharepoint_lists, monkeypatch):
-    """Requests in Postgres; SharePoint holds one new Form item (or none, once deleted)."""
+    """Requests in Postgres; SharePoint holds one new item a person or the Form wrote."""
     monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
     inbox = {"950": FORM_ITEM}
 
@@ -127,29 +128,23 @@ def form_item(sharepoint_lists, monkeypatch):
     return inbox
 
 
-def test_a_form_item_is_moved_once_with_a_new_id(form_item):
-    moved = run(request_copy.move_form_item_into_postgres(LEAVE, "950"))
-    assert moved["fields"]["LeaveType"] == "Vacation"
-    assert moved["fields"]["SubmitterEmail"] == "pat@ucsh.com"
-    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))["id"] == moved["id"]
-    assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None   # never twice
+async def _findings_for(sp_item_id, case):
+    """Legacy findings of one case for a SharePoint item id."""
+    async with async_session() as session:
+        return (await session.execute(
+            select(LegacyFinding).where(
+                LegacyFinding.subject_id == str(sp_item_id), LegacyFinding.case == case
+            )
+        )).scalars().all()
 
 
-def test_a_deleted_form_item_is_skipped(form_item):
-    form_item.clear()
-    assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None
-
-
-def test_the_dispatcher_runs_the_per_item_sharepoint_check(form_item, sharepoint_lists, monkeypatch):
-    # Since #336 the webhook path no longer ignores a request-list change once
-    # requests live in Postgres: it runs the post-switch SharePoint check for that
-    # one item at once (services/sharepoint_check.run_sharepoint_check_for_item),
-    # so a Microsoft Form submission is imported into Postgres without waiting for
-    # the scheduled sweep. Staff is still in SharePoint here, so no manager
-    # notification is queued (that needs staff in Postgres too); the item is moved.
+def test_the_dispatcher_flags_a_new_item_and_never_imports_it(form_item):
+    # Since the Form is retired, a request-list webhook once requests live in
+    # Postgres runs the per-item SharePoint check, which records one legacy finding
+    # for the new item and imports nothing (services/sharepoint_check).
     from app.tasks import dispatcher
-    # The staff index the check reads; empty is fine, the item imports with a
-    # fallback employee id when its submitter does not match a staff record.
-    sharepoint_lists[settings.SP_LIST_STAFF_DIRECTORY] = []
     run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is not None   # imported at once
+    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is None   # never imported
+    findings = run(_findings_for("950", "sharepoint_new_after_switch"))
+    assert len(findings) == 1                                                    # flagged for an admin
+    assert findings[0].evidence.get("submitter_email") == "pat@ucsh.com"         # id, list, submitter, dates

@@ -28,6 +28,7 @@ from app.services.audit_trail import (
     write_audit_log,
 )
 from app.repositories.request_store import request_store, requests_in_postgres
+from app.services.switch_pause import raise_if_paused  # refuse writes while the storage switch runs
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,11 @@ async def process_new_carryover_payout(
 
     Returns:
         The created SharePoint item.
+
+    Raises:
+        SystemPaused: While the storage switch is running (no request is created).
     """
+    await raise_if_paused()                                      # no new request mid-switch
     request_type = form_data.get("type_of_request", "")  # "Carry Over" or "Payout"
     days = float(form_data.get("days", 0))
 
@@ -541,6 +546,7 @@ async def approve_carryover_payout(
     request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
 ) -> dict:
     """Process approval — re-validate, apply balance transfer, recalc RAD."""
+    await raise_if_paused()                                      # no approval mid-switch
     from app.services.request_decisions import approve as _pg_approve, decisions_active
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_approve("carryover_payout", request_id, manager_id, channel, link_version)
@@ -688,6 +694,7 @@ async def refund_carryover_payout(
     request_id: str | int, admin_id: str | int, channel: str = "system",
 ) -> dict:
     """Reverse an approved carryover/payout — restore vacation, subtract from CO/Payout, recalc RAD."""
+    await raise_if_paused()                                      # no refund mid-switch
     from app.services.request_decisions import decisions_active, refund as _pg_refund
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_refund("carryover_payout", request_id, admin_id, channel)
@@ -779,6 +786,7 @@ async def reject_carryover_payout(
     link_version: int | None = None, reason: str | None = None,
 ) -> dict:
     """Process rejection."""
+    await raise_if_paused()                                      # no rejection mid-switch
     from app.services.request_decisions import decisions_active, reject as _pg_reject
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_reject("carryover_payout", request_id, manager_id, channel, link_version, reason)
