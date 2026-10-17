@@ -39,6 +39,14 @@ RECONNECT_MIN_SECONDS = 1
 RECONNECT_MAX_SECONDS = 30
 # Most events read in one dispatch; a backlog is drained over several reads.
 FETCH_LIMIT = 500
+# request_events.id comes from a sequence assigned at INSERT, but rows become
+# visible at COMMIT, so a long transaction holding ids 500-510 can commit after
+# 511 is already live. A plain "id > high-water mark" scan would then skip
+# 500-510 for good (finding 9). Instead the bus re-scans this many ids below the
+# high-water mark on every read and dispatches only ids it has not sent yet, so a
+# late-committing lower id is still delivered once. 200 is far above any plausible
+# number of events written inside one open transaction for this app.
+LOOKBACK_WINDOW = 200
 
 
 def _iso(value) -> str | None:
@@ -128,6 +136,26 @@ async def _current_max_id() -> int:
         return int((await session.execute(select(func.max(RequestEvent.id)))).scalar() or 0)
 
 
+async def _event_ids_above(floor: int) -> set[int]:
+    """The ids of every event currently committed above a floor.
+
+    Used at startup to seed the "already delivered" set with the ids already in
+    the lookback window, so a fresh reader is never sent that history while a
+    lower id that commits later (and so is not in this set) still is.
+
+    Args:
+        floor: Return ids strictly greater than this.
+
+    Returns:
+        The set of committed ids above the floor.
+    """
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(RequestEvent.id).where(RequestEvent.id > floor)
+        )).all()
+    return {int(r[0]) for r in rows}
+
+
 class EventBus:
     """Fans request-timeline events out to in-process subscriber queues.
 
@@ -138,7 +166,9 @@ class EventBus:
 
     def __init__(self):
         self._subscribers: set[asyncio.Queue] = set()   # one queue per open reader
-        self._last_id: int = 0                           # newest event already dispatched
+        self._high_water: int = 0                        # newest event id seen
+        self._floor: int = 0                             # reads scan ids strictly greater than this
+        self._delivered: set[int] = set()                # ids dispatched within the lookback window
         self._task: asyncio.Task | None = None           # the listener/poller task
         self._running = False
 
@@ -163,15 +193,20 @@ class EventBus:
     async def start(self) -> None:
         """Begin listening (Postgres) or polling (SQLite) for new events.
 
-        Sets the dispatch floor to the newest event now, so only events from
+        Sets the high-water mark to the newest event now, so only events from
         here on are fanned out live; older history is replayed per connection.
+        The floor sits a lookback window below it, and the ids already in that
+        window are seeded as "delivered" so a fresh reader is not sent them,
+        while a lower id that commits later (not in the seed) still is.
         """
         if self._running:
             return
         self._running = True
-        self._last_id = await _current_max_id()          # only dispatch what lands from now on
+        self._high_water = await _current_max_id()       # only dispatch what lands from now on
+        self._floor = max(0, self._high_water - LOOKBACK_WINDOW)
+        self._delivered = await _event_ids_above(self._floor)   # window history: already "delivered"
         self._task = asyncio.create_task(self._run())
-        logger.info("Event bus started at event id %s (%s)", self._last_id, engine.dialect.name)
+        logger.info("Event bus started at event id %s (%s)", self._high_water, engine.dialect.name)
 
     async def stop(self) -> None:
         """Stop the listener/poller and drop every subscriber."""
@@ -186,28 +221,39 @@ class EventBus:
         self._subscribers.clear()
 
     async def _dispatch(self, payloads: list[dict]) -> None:
-        """Push a batch of payloads to every subscriber and advance the floor.
+        """Push a batch of payloads to every subscriber.
 
         Args:
-            payloads: Event payloads, ordered by id ascending.
+            payloads: Event payloads to fan out (already de-duplicated by caller).
         """
         for payload in payloads:
-            self._last_id = max(self._last_id, int(payload["id"]))   # never dispatch the same id twice
             for queue in list(self._subscribers):        # a snapshot: a reader may unsubscribe mid-loop
                 queue.put_nowait(payload)
 
     async def poll_once(self) -> int:
-        """Read and dispatch every event newer than the floor, once.
+        """Re-scan the lookback window, dispatch only ids not sent yet, once.
 
-        The poll loop calls this on a timer; tests call it directly to drive the
-        SQLite path without waiting on the clock.
+        Reads every event above the floor (the window plus anything newer),
+        dispatches only those whose id the bus has not delivered, then advances
+        the high-water mark and drags the floor up behind it, pruning the
+        delivered set of ids that have dropped below the new floor. This way a
+        lower id that commits after a higher one is still delivered exactly once.
+        The poll loop calls this on a timer; tests call it directly.
 
         Returns:
-            How many events were dispatched.
+            How many new events were dispatched.
         """
-        payloads = await fetch_events(self._last_id)
-        await self._dispatch(payloads)
-        return len(payloads)
+        payloads = await fetch_events(self._floor)       # the window plus any newer ids
+        fresh = [p for p in payloads if int(p["id"]) not in self._delivered]   # drop ids already sent
+        await self._dispatch(fresh)
+        for payload in payloads:
+            self._high_water = max(self._high_water, int(payload["id"]))
+            self._delivered.add(int(payload["id"]))      # remember it so a re-scan does not resend it
+        new_floor = max(self._floor, self._high_water - LOOKBACK_WINDOW)
+        if new_floor > self._floor:                      # window slid forward
+            self._floor = new_floor
+            self._delivered = {i for i in self._delivered if i > self._floor}   # forget ids below the window
+        return len(fresh)
 
     async def _run(self) -> None:
         """Listen on Postgres, or poll everywhere else, until stopped."""

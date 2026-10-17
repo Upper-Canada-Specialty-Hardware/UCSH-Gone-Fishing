@@ -35,7 +35,12 @@ class RequestEvent(Base):
 
     # Autoincrement id, which is also the live-stream position readers page from.
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    request_id: Mapped[int] = mapped_column(ForeignKey("requests.id"), nullable=False, index=True)
+    # ON DELETE CASCADE: a request's timeline is deleted with the request when an
+    # admin deletes it (#282, finding 4). An event has no meaning without its
+    # request, unlike a ledger or outbox row, which survive via SET NULL.
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     # Denormalised from the request so a stream can filter without a join.
     kind: Mapped[str] = mapped_column(String, nullable=False)
     item_id: Mapped[int] = mapped_column(Integer, nullable=False)

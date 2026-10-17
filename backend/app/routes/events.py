@@ -44,7 +44,13 @@ from app.services.admin_auth import (
     stored_password,
 )
 from app.services.dashboard_tokens import validate_dashboard_token
-from app.services.event_bus import _current_max_id, event_bus, fetch_events, sse_message
+from app.services.event_bus import (
+    LOOKBACK_WINDOW,
+    _current_max_id,
+    event_bus,
+    fetch_events,
+    sse_message,
+)
 from app.services.request_live_reads import WIRE_TO_STORED
 
 logger = logging.getLogger(__name__)
@@ -176,9 +182,12 @@ async def _resolve_viewer(
 ) -> _Viewer:
     """Authenticate a stream or catch-up request and return its viewer.
 
-    Employees and managers use the signed dashboard token (query parameters);
-    an admin uses the admin-dashboard session as the ``X-Admin-Session`` header,
-    or, on the stream, a short-lived ticket from ``/admin/events-ticket``.
+    Employees and managers use the signed dashboard token (query parameters). The
+    admin scope needs the admin-dashboard password session, like every other
+    /admin screen (ruling 13): the catch-up sends it as the ``X-Admin-Session``
+    header, and the stream, which cannot set a header, sends a short-lived ticket
+    from ``/admin/events-ticket`` (itself behind that session). A signed
+    admin-role dashboard token alone is no longer enough for the admin feed.
 
     Args:
         request: The incoming request (for the admin session header).
@@ -196,13 +205,14 @@ async def _resolve_viewer(
     """
     if token and role and uid and exp:
         valid, _msg = validate_dashboard_token(role, uid, token, exp)
+        # Employee and team scopes still ride on the signed dashboard token. An
+        # admin-role token is deliberately NOT honoured here: the admin feed
+        # requires the password session below, like every other /admin route.
         if valid and role == "employee":
             return _Viewer("employee", employee_id=uid)
         if valid and role == "manager":
             manager_id, team_ids = await _team_ids_for(uid)
             return _Viewer("manager", manager_id=manager_id, team_ids=team_ids)
-        if valid and role == "admin":
-            return _Viewer("admin")
     stored = await stored_password()
     header = request.headers.get(SESSION_HEADER, "")
     if header and session_is_valid(header, stored):
@@ -212,36 +222,52 @@ async def _resolve_viewer(
     raise HTTPException(status_code=401, detail="Sign in to see live updates.")
 
 
-async def _stream(viewer: _Viewer, start_after: int):
+async def _stream(viewer: _Viewer, start_after: int, resuming: bool):
     """Yield the SSE text for one open connection: replay, then live, with heartbeats.
+
+    De-duplicates by event id with a per-connection set rather than a rising
+    high-water mark, so an event whose id is below one already sent (a lower id
+    that committed out of order, delivered by the bus) is still passed on once,
+    not skipped (finding 9). A resuming reader also re-scans a lookback window
+    below its resume point, to catch a lower id that committed while it was away;
+    a fresh reader starts exactly at now and replays no history.
 
     Args:
         viewer: The resolved reader.
-        start_after: Replay events with an id greater than this first.
+        start_after: The reader's resume point (its last seen id, or now).
+        resuming: True when the reader is resuming (look back below start_after);
+            False for a fresh reader (no history).
 
     Yields:
         SSE message blocks and heartbeat comment lines.
     """
     queue = event_bus.subscribe()                              # start buffering live events at once
     try:
-        last_sent = start_after
+        seen: set[int] = set()                                 # ids already sent on this connection
         # Tell the reader where it stands, so a later reconnect resumes from here.
         yield f"id: {start_after}\nevent: ready\ndata: {{}}\n\n"
-        for payload in await fetch_events(start_after):        # replay what the reader missed
+        # A resuming reader re-scans a window below its resume point for ids that
+        # committed late; a fresh reader replays nothing before now.
+        replay_from = max(0, start_after - LOOKBACK_WINDOW) if resuming else start_after
+        for payload in await fetch_events(replay_from):        # replay what the reader missed
+            seen.add(int(payload["id"]))
             if _event_visible(payload, viewer):
                 yield sse_message(payload)
-            last_sent = max(last_sent, int(payload["id"]))
         while True:
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
             except asyncio.TimeoutError:
                 yield ": heartbeat\n\n"                         # keep the connection and the proxy alive
                 continue
-            if int(payload["id"]) <= last_sent:
-                continue                                       # already replayed: do not repeat
+            pid = int(payload["id"])
+            if pid in seen:
+                continue                                       # already sent (replay overlap or a bus re-scan)
+            seen.add(pid)
             if _event_visible(payload, viewer):
                 yield sse_message(payload)
-            last_sent = max(last_sent, int(payload["id"]))
+            if len(seen) > LOOKBACK_WINDOW * 4:                # keep the set bounded on a long connection
+                floor = max(seen) - LOOKBACK_WINDOW            # forget ids far below the newest
+                seen = {i for i in seen if i > floor}
     finally:
         event_bus.unsubscribe(queue)                           # drop the queue when the client goes
 
@@ -271,13 +297,13 @@ async def events_stream(
     """
     viewer = await _resolve_viewer(request, token, role, uid, exp, ticket)
     if last_event_id and last_event_id.isdigit():
-        start_after = int(last_event_id)                       # the browser's resume wins over ?after
+        start_after, resuming = int(last_event_id), True       # the browser's resume wins over ?after
     elif after is not None:
-        start_after = after                                    # the page's own resume point
+        start_after, resuming = after, True                    # the page's own resume point
     else:
-        start_after = await _current_max_id()                  # a fresh reader: from now, no history
+        start_after, resuming = await _current_max_id(), False   # a fresh reader: from now, no history
     return StreamingResponse(
-        _stream(viewer, start_after),
+        _stream(viewer, start_after, resuming),
         media_type="text/event-stream",
         headers=STREAM_HEADERS,
     )
@@ -307,8 +333,10 @@ async def events_catch_up(
     if after is None:
         # A fresh reader: no history, only the point to poll from next time.
         return {"events": [], "last_id": await _current_max_id(), "version": app_version()}
-    payloads = await fetch_events(int(after))
-    # Resume from the newest event read, seen or not, so hidden ones are not re-read.
+    # Re-scan a window below the resume point so a lower id that committed out of
+    # order is not skipped (finding 9); the client de-duplicates by id. The resume
+    # point still advances only to the newest id read, so it never goes backward.
+    payloads = await fetch_events(max(0, int(after) - LOOKBACK_WINDOW))
     last_id = max([int(after)] + [int(p["id"]) for p in payloads])
     return {
         "events": [p for p in payloads if _event_visible(p, viewer)],

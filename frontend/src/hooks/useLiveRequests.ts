@@ -84,9 +84,21 @@ export function useLiveRequests(options: {
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let lastId: number | null = null;                      // resume point; null = start from now
+    // Ids already applied on this connection. The stream and the catch-up both
+    // re-scan a window below the high-water mark so an event that committed out
+    // of order is not skipped (finding 9); that means the same id can arrive
+    // twice, so apply each id once here. Bounded so it cannot grow without end.
+    const seen = new Set<number>();
+    const SEEN_CAP = 2000;
 
-    /** Apply one event: advance the resume point, merge it, tell the page. */
+    /** Apply one event once: skip a repeat id, advance the resume point, merge, tell the page. */
     const apply = (ev: LiveEvent) => {
+      if (seen.has(ev.id)) return;                         // already applied (a re-scan re-sent it)
+      seen.add(ev.id);
+      if (seen.size > SEEN_CAP) {                          // forget the oldest ids on a long connection
+        const floor = Math.max(...seen) - SEEN_CAP;
+        for (const id of seen) if (id <= floor) seen.delete(id);
+      }
       lastId = Math.max(lastId ?? 0, ev.id);
       setRowsRef.current((rows) => mergeEvent(rows, ev));
       onEventRef.current?.(ev);

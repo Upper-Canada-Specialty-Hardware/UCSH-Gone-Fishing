@@ -709,6 +709,34 @@ async def _queue_reminder(session, kind, item_id, today) -> bool:
 # How long a pending request waits for its first reminder, then each repeat.
 FIRST_REMINDER_DAYS = 30
 REPEAT_REMINDER_DAYS = 7
+# Carry-over/payout requests have no event date to stop at, so reminders stop
+# after this many, matching reminders.py's MAX_REMINDERS_WITHOUT_DATE (finding 12).
+MAX_REMINDERS_WITHOUT_DATE = 6
+
+
+def _reminder_cutoff_passed(record: RequestRecord, today: date) -> bool:
+    """Whether a pending request is moot and reminders should stop (finding 12).
+
+    Mirrors reminders.py's SharePoint cutoff so the Postgres path stops in the
+    same cases: a leave or overtime once its start date has passed, and a
+    carry-over/payout (which has no event date) after year-end of the year it was
+    made in, or after ``MAX_REMINDERS_WITHOUT_DATE`` reminders.
+
+    Args:
+        record: The pending request row.
+        today: Today's date in the local sense the caller uses.
+
+    Returns:
+        True when reminders should stop for this request.
+    """
+    if record.kind in ("leave", "overtime"):
+        return record.start_date is not None and record.start_date < today   # the date is in the past
+    if record.kind == "carryover_payout":
+        created = record.created_at
+        if created is not None and today.year > created.year:                # past year-end of its year
+            return True
+        return (record.reminder_count or 0) >= MAX_REMINDERS_WITHOUT_DATE    # or capped by count
+    return False
 
 
 def _reminder_due(record: RequestRecord, now) -> bool:
@@ -740,12 +768,16 @@ async def queue_due_reminders() -> int:
     """Queue a reminder for every pending Postgres request whose cadence is due.
 
     The scheduled reminder task calls this once requests and staff are in Postgres
-    instead of its SharePoint sweep. Each request still reminds at most once a day
-    (the dated outbox key), and a request past its start date is skipped.
+    instead of its SharePoint sweep. It keeps the SharePoint path's stops exactly
+    (finding 12): the carry-over/payout year-end and max-count cutoff, and the
+    ``reminders_closed`` flag on the approval-version state (set by an edit or a
+    past cutoff). Each request still reminds at most once a day (the dated outbox
+    key).
 
     Returns:
         How many requests had a reminder queued this run.
     """
+    from app.models import RequestApprovalState
     from app.models.mixins import utcnow
     now = utcnow()
     today = date.today()
@@ -755,8 +787,17 @@ async def queue_due_reminders() -> int:
         )).scalars().all()
         queued = 0
         for record in pending:
-            if record.start_date and record.start_date < today:
-                continue                                          # the date has passed: let it lapse
+            # A Postgres request gets an approval-version-state row once it is
+            # edited; honour its reminders_closed flag the way reminders.py does.
+            state = await session.get(
+                RequestApprovalState, (_edit_list_id(record.kind), str(record.item_id))
+            )
+            if state is not None and state.reminders_closed:
+                continue                                          # reminders explicitly closed: skip
+            if _reminder_cutoff_passed(record, today):
+                if state is not None and not state.reminders_closed:
+                    state.reminders_closed = True                 # close it so later scans skip without recomputing
+                continue
             if not _reminder_due(record, now):
                 continue
             if await _queue_reminder(session, record.kind, record.item_id, today):
