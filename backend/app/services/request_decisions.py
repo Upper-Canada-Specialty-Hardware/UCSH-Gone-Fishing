@@ -43,8 +43,12 @@ from app.services.concurrency import lock_manager
 from app.services.employment import (
     HOURLY_TYPES,
     NO_COST_LEAVE,
+    PARTIAL_DAY,
+    SICK_LEAVE,
+    VACATION,
     leave_costs_balance,
     overtime_costs_balance,
+    whole_sick_days,
 )
 from app.services.overlap_detection import approval_refusal, find_leave_conflict, find_overtime_conflict
 from app.services.request_journal import append_event, enqueue_message, log_step, post_ledger, step_key
@@ -571,8 +575,17 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             subject, html, sms_text = _result_context(request, "Approved", rows, note)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "approved", channel=channel, actor=actor, outcome=event_type)
+            # The pots after this approval (moved holds the new values; empty for
+            # a counted or no-balance outcome), for the RequestAllowDate recalc.
+            final_pots = {**before_pots, **moved}
             await session.commit()
         _wake_sender()                                             # send the result without waiting for the poll
+        # Recalc the allow date, and (leave/overtime) tell the employee about any
+        # request this approval has just stranded. After the commit, best-effort.
+        await _after_decision_followups(
+            request, final_pots.get("vacation", 0.0), final_pots.get("carry_over", 0.0),
+            send_blocked_notice=True,
+        )
         return {"status": "approved", "balance_state": request.balance_state}
 
 
@@ -631,6 +644,12 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
     the same way. The request becomes ``refunded`` and a ``balance_reversed``
     event is recorded, then the refund notice is queued.
 
+    A request approved in SharePoint before this ledger existed (legacy) has no
+    ledger rows to reverse. Rather than restore nothing, its balance effect is
+    re-derived the way the SharePoint refund does (``_legacy_refund_net``) and
+    given back, with ledger rows whose reason says the amount was reconstructed
+    (finding 8). The result email shows the restored amounts either way.
+
     Args:
         kind: The request kind.
         item_id: The item_id.
@@ -656,11 +675,19 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                 return {"error": NOT_APPROVED_MESSAGE}
 
             net_by_pot = await _approval_net_by_pot(session, request)
+            reconstructed = False
+            if not net_by_pot:                                     # legacy: no ledger rows for this approval
+                net_by_pot = _legacy_refund_net(request)           # re-derive what it moved, as the SharePoint path does
+                reconstructed = bool(net_by_pot)                   # empty still means a genuine no-balance approval
             balances = await get_staff_balances()
             before_pots = await balances.lock_pots(session, request.employee_id)
             rows: list[dict] = []
             pot_writes: dict[str, float] = {}
-            refund_reason = f"refund of {kind} #{request.item_id}"
+            refund_reason = (
+                f"refund of {kind} #{request.item_id} (amount reconstructed, approved before the ledger)"
+                if reconstructed else
+                f"refund of {kind} #{request.item_id}"
+            )
             for pot, net in net_by_pot.items():
                 key = step_key(kind, request.item_id, f"refund:ledger:{pot}", version)
                 if pot == "vacation_taken":                        # reverse the counter, no pot to write
@@ -678,6 +705,8 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                 rows.append({"label": POT_LABEL[pot], "value": f"{before:g} -> {after:g} days"})
             if pot_writes:
                 await balances.write_pots(session, request.employee_id, pot_writes)
+            # The pots after the reversal, for the RequestAllowDate recalc below.
+            final_pots = {**before_pots, **pot_writes}
 
             _mark_decided(request, "refunded", actor, channel)
             request.balance_state = "reversed"
@@ -691,6 +720,11 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
             log_step(request, "refunded", channel=channel, actor=actor)
             await session.commit()
         _wake_sender()                                             # send the refund notice without waiting
+        # A refund frees dates, so it strands nothing: recalc the allow date only.
+        await _after_decision_followups(
+            request, final_pots.get("vacation", 0.0), final_pots.get("carry_over", 0.0),
+            send_blocked_notice=False,
+        )
         return {"status": "refunded", "no_balance_change": not rows}
 
 
@@ -715,6 +749,96 @@ async def _approval_net_by_pot(session, request: RequestRecord) -> dict[str, flo
     for pot, change in rows:
         net[pot] = net.get(pot, 0.0) + float(change)               # sum, so split approvals reverse whole
     return net
+
+
+def _legacy_refund_net(request: RequestRecord) -> dict[str, float]:
+    """Re-derive what a pre-ledger approval moved, so a legacy refund can give it back.
+
+    A request approved in SharePoint before this ledger existed has no ledger
+    rows, so ``_approval_net_by_pot`` returns nothing and a plain refund would
+    restore nothing (finding 8). This reconstructs the balance effect the same
+    way the SharePoint refund's no-audit-log fallback does (the fallback branches
+    in leave_requests / overtime_requests / carryover_payout), in the same sign
+    convention as ``_approval_net_by_pot``: the signed change the approval made,
+    which the refund loop then reverses. Hourly vacation is a ``vacation_taken``
+    counter, reconstructed the same way.
+
+    Pure (no I/O), from the request's own stored fields. ``employment_type`` is
+    the snapshot on the request; it is null for legacy rows, which correctly reads
+    as salaried, since the pre-ledger era ran every request under salaried rules.
+
+    Args:
+        request: The approved request being refunded, with no ledger rows.
+
+    Returns:
+        ``{pot: net_change}`` the approval is taken to have made, or ``{}`` when
+        the approval genuinely moved no balance (bereavement, jury duty, hourly
+        overtime), where there is nothing to restore.
+    """
+    hourly = _is_hourly(request)
+    days = float(request.days or 0)
+    if request.kind == "leave":
+        leave_type = request.leave_type or ""
+        if leave_type in NO_COST_LEAVE:                            # never cost anything: nothing to restore
+            return {}
+        if hourly:
+            if leave_type in (SICK_LEAVE, PARTIAL_DAY):            # hourly: whole sick days came off sick
+                return {"sick": -whole_sick_days(days)}
+            if leave_type == VACATION:                             # hourly vacation was counted, not spent
+                return {"vacation_taken": days}
+            return {}                                              # any other hourly leave cost nothing
+        if leave_type in (VACATION, PARTIAL_DAY):                  # salaried fallback: days came off Make-Up
+            return {"make_up": -days}
+        if leave_type == SICK_LEAVE:                               # salaried sick: days came off Sick
+            return {"sick": -days}
+        return {"make_up": -days}                                 # any other costing leave: Make-Up, as the fallback
+    if request.kind == "overtime":
+        if hourly:                                                 # hourly banks nothing, so nothing to reverse
+            return {}
+        return {"make_up": float(request.hours or 0) / 8}         # salaried banked hours/8 into Make-Up
+    # carry-over / payout: days left Vacation and landed in Carry Over or Payout.
+    if (request.request_option or "") == "payout":
+        return {"vacation": -days, "payout": days}
+    return {"vacation": -days, "carry_over": days}
+
+
+async def _after_decision_followups(
+    request: RequestRecord, final_vacation: float, final_carryover: float, *, send_blocked_notice: bool,
+) -> None:
+    """Run the SharePoint path's post-decision side effects on the Postgres path (finding 11).
+
+    After a decision commits, the SharePoint path recalculates the employee's
+    RequestAllowDate from the vacation/carry-over pair and, on an approval that
+    reserves dates (leave, overtime), tells the employee about any other request
+    that approval has just stranded. The Postgres decision path dropped both; this
+    adds them back. Everything here runs after the commit, is best-effort and
+    logged, and can never undo the decision: a failure is swallowed.
+
+    Args:
+        request: The decided request.
+        final_vacation: The vacation pot after the decision.
+        final_carryover: The carry-over pot after the decision.
+        send_blocked_notice: True on an approval of leave/overtime (which reserve
+            dates); False on a refund and on carry-over/payout.
+    """
+    try:
+        # recalculate_request_allow_date writes through the staff store, which is
+        # Postgres on this path, so no SharePoint call is made.
+        from app.services.balance import recalculate_request_allow_date
+        await recalculate_request_allow_date(request.employee_id, final_vacation, final_carryover)
+    except Exception:  # noqa: BLE001 - the decision is already committed; never fail it here
+        logger.exception("RequestAllowDate recalc failed after %s #%s", request.kind, request.item_id)
+    if not send_blocked_notice or request.kind not in ("leave", "overtime"):
+        return                                                     # only a date-reserving approval strands others
+    try:
+        from app.repositories.postgres.typed_requests import TypedRequestList
+        from app.services.notify_blocked import notify_requests_blocked_by_approval
+        fields = TypedRequestList(request.kind)._item_shape(request)["fields"]   # the approved row, SharePoint shape
+        await notify_requests_blocked_by_approval(
+            request.kind, request.item_id, fields, request.employee_email or "",
+        )
+    except Exception:  # noqa: BLE001 - a notice failure must never undo the approval
+        logger.exception("Blocked-request notice failed after %s #%s", request.kind, request.item_id)
 
 
 def _mark_decided(request: RequestRecord, status: str, actor, channel: str) -> None:

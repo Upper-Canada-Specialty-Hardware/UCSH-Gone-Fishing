@@ -38,8 +38,15 @@ class Outbox(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     # The request and event this message is for; null for a message with neither.
-    request_id: Mapped[int | None] = mapped_column(ForeignKey("requests.id"), nullable=True)
-    event_id: Mapped[int | None] = mapped_column(ForeignKey("request_events.id"), nullable=True)
+    # ON DELETE SET NULL on both: deleting a request keeps the record that a
+    # message was sent (so a "did they get the email?" question is still answerable),
+    # with request_id/event_id cleared (#282, finding 4).
+    request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("requests.id", ondelete="SET NULL"), nullable=True
+    )
+    event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("request_events.id", ondelete="SET NULL"), nullable=True
+    )
     message_type: Mapped[str] = mapped_column(String, nullable=False)        # manager_approval, receipt, result, ...
     channel: Mapped[str] = mapped_column(String, nullable=False)             # email or sms
     recipient: Mapped[str] = mapped_column(String, nullable=False)           # address or phone number
@@ -50,6 +57,10 @@ class Outbox(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")   # pending/sending/sent/failed/dropped
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the worker marked this row "sending"; a claim older than the timeout is
+    # treated as abandoned (a deploy or crash mid-send) and returned to "pending"
+    # so the message is not stuck unsent forever (#326, finding 6).
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String, nullable=True)   # the provider's id for the sent message
     email_api_log_id: Mapped[int | None] = mapped_column(Integer, nullable=True)      # the email_api_log row, once sent

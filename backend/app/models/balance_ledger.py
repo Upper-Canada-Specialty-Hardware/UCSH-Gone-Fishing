@@ -41,7 +41,11 @@ class BalanceLedger(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     # The request this movement belongs to; null for a hand edit with no request.
-    request_id: Mapped[int | None] = mapped_column(ForeignKey("requests.id"), nullable=True)
+    # ON DELETE SET NULL: deleting a request keeps its balance history (a payroll
+    # dispute is answered from the ledger), with request_id cleared (#282, finding 4).
+    request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("requests.id", ondelete="SET NULL"), nullable=True
+    )
     # Whose balance moved; every history read filters by one person, so indexed.
     employee_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     pot: Mapped[str] = mapped_column(String, nullable=False)                 # which pot moved

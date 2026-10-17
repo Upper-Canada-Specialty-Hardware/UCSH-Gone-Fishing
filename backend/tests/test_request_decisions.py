@@ -487,6 +487,104 @@ def test_refund_requires_an_approved_request(monkeypatch):
     assert "error" in result and "approved" in result["error"].lower()
 
 
+# ----- legacy refunds: re-derive the balance effect when there is no ledger (finding 8) -----
+
+
+def test_legacy_refund_reconstructs_a_salaried_vacation_with_no_ledger(monkeypatch):
+    fake = _use(monkeypatch, _all_pots(make_up=0, vacation=10))
+    # Approved, but with no ledger rows: a leave approved in SharePoint before the
+    # ledger existed. The refund must re-derive what it moved and give it back.
+    record = _leave(leave_type="Vacation", days=3, status="approved", balance_state="legacy_unknown")
+
+    result = run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert result["status"] == "refunded" and result["no_balance_change"] is False
+    fresh, ledger, events, outbox = run(_inspect(record))
+    # Vacation leave spends Make-Up first, so the refund restores 3 days to Make-Up.
+    assert fake.write_calls == [{"make_up": 3.0}]
+    make_up_rows = [row for row in ledger if row.pot == "make_up"]
+    assert len(make_up_rows) == 1 and make_up_rows[0].after == 3.0
+    assert "reconstructed" in (make_up_rows[0].reason or "")    # the ledger says the amount was rebuilt
+    assert any(e.type == "balance_reversed" for e in events)
+    assert outbox and "3 days" in outbox[0].body                # the email shows the restored amount
+
+
+def test_legacy_refund_reconstructs_an_hourly_vacation_counter(monkeypatch):
+    fake = _use(monkeypatch, _all_pots(sick=5, vacation=10))
+    record = _leave(leave_type="Vacation", days=2, employment_type="Hourly",
+                    status="approved", balance_state="legacy_unknown")
+
+    result = run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert result["status"] == "refunded" and result["no_balance_change"] is False
+    fresh, ledger, events, outbox = run(_inspect(record))
+    assert fake.write_calls == []                               # hourly vacation is a counter, no pot moves
+    counter = [row for row in ledger if row.pot == "vacation_taken"]
+    # No prior counter row, so reversing the +2 the approval counted lands at -2.
+    assert len(counter) == 1 and counter[0].after == -2.0
+    assert "reconstructed" in (counter[0].reason or "")
+
+
+def test_legacy_refund_of_a_no_cost_leave_restores_nothing(monkeypatch):
+    fake = _use(monkeypatch, _all_pots(sick=5))
+    record = _leave(leave_type="Bereavement", days=2, status="approved", balance_state="legacy_unknown")
+
+    result = run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert result["status"] == "refunded" and result["no_balance_change"] is True
+    assert fake.write_calls == []                               # bereavement never cost anything
+
+
+# ----- the Postgres decision runs the SharePoint path's follow-ups (finding 11) -----
+
+
+def test_approve_recalcs_the_allow_date_and_sends_the_blocked_notice(monkeypatch):
+    _use(monkeypatch, _all_pots(sick=5, vacation=10))
+    record = _leave(leave_type="Sick or Personal Day", days=2)
+    recalc_calls: list = []
+    blocked_calls: list = []
+
+    async def fake_recalc(employee_id, vacation, carryover):
+        recalc_calls.append((str(employee_id), vacation, carryover))
+        return None
+
+    async def fake_blocked(kind, item_id, fields, email):
+        blocked_calls.append((kind, item_id, email))
+        return 0
+
+    monkeypatch.setattr("app.services.balance.recalculate_request_allow_date", fake_recalc)
+    monkeypatch.setattr("app.services.notify_blocked.notify_requests_blocked_by_approval", fake_blocked)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["status"] == "approved"
+    assert len(recalc_calls) == 1 and recalc_calls[0][0] == record.employee_id
+    assert len(blocked_calls) == 1 and blocked_calls[0][0] == "leave"
+
+
+def test_refund_recalcs_the_allow_date_but_sends_no_blocked_notice(monkeypatch):
+    _use(monkeypatch, _all_pots(sick=5, vacation=10))
+    record = _leave(leave_type="Sick or Personal Day", days=2)
+    run(rd.approve("leave", record.item_id, "Boss", "email_link", link_version=1))
+    recalc = {"n": 0}
+    blocked = {"n": 0}
+
+    async def fake_recalc(*_a):
+        recalc["n"] += 1
+        return None
+
+    async def fake_blocked(*_a):
+        blocked["n"] += 1
+        return 0
+
+    monkeypatch.setattr("app.services.balance.recalculate_request_allow_date", fake_recalc)
+    monkeypatch.setattr("app.services.notify_blocked.notify_requests_blocked_by_approval", fake_blocked)
+
+    run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert recalc["n"] == 1 and blocked["n"] == 0               # a refund frees dates, strands nothing
+
+
 # ----- SharePoint is never touched by a Postgres decision -----
 
 

@@ -12,6 +12,7 @@ backstop (and to retry failed rows once their backoff passes).
 """
 import asyncio
 import logging
+from datetime import timedelta
 
 from sqlalchemy import or_, select
 
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 15                 # backstop poll, and the retry check for failed rows
 CLAIM_BATCH = 20                  # how many rows to claim per pass
+# A row claimed "sending" this long ago is treated as abandoned (the worker that
+# claimed it was deployed over or crashed mid-send) and returned to "pending" so
+# it is not stuck unsent forever (#326, finding 6). Well above a normal send.
+CLAIM_TIMEOUT_SECONDS = 600       # ten minutes
 
 # Set by the decision path after it commits, so a new message goes out at once.
 _wakeup = asyncio.Event()
@@ -51,6 +56,7 @@ async def _claim_due(limit: int) -> list[int]:
     """
     now = utcnow()
     async with async_session() as session:
+        await _reclaim_abandoned(session, now)                     # free rows stuck "sending" past the timeout
         statement = (
             select(Outbox)
             .where(
@@ -66,8 +72,36 @@ async def _claim_due(limit: int) -> list[int]:
         ids = [row.id for row in rows]
         for row in rows:
             row.status = "sending"                                 # claimed: other workers skip it
+            row.claimed_at = now                                   # stamp the claim so a stall can be detected
         await session.commit()
     return ids
+
+
+async def _reclaim_abandoned(session, now) -> None:
+    """Return outbox rows stuck "sending" past the timeout to "pending" (no commit).
+
+    A row is marked "sending" the moment the worker claims it; it should become
+    "sent" or "failed" within seconds. One left "sending" long after its
+    ``claimed_at`` means the worker that held it died mid-send (a deploy, a
+    crash), and nothing else would ever pick it up. This frees such a row so the
+    next claim sends it. A row whose ``claimed_at`` is null (claimed before this
+    column existed) is treated the same way.
+
+    Args:
+        session: The open claim session; the caller commits.
+        now: The current time, the reference for the timeout.
+    """
+    cutoff = now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)        # claimed before this is abandoned
+    stale = (await session.execute(
+        select(Outbox).where(
+            Outbox.status == "sending",
+            or_(Outbox.claimed_at.is_(None), Outbox.claimed_at < cutoff),
+        )
+    )).scalars().all()
+    for row in stale:
+        row.status = "pending"                                    # back in the queue for the next claim
+        row.claimed_at = None                                     # clear the stale claim stamp
+        logger.warning("Outbox %s reclaimed from a stalled send (%s)", row.id, row.channel)
 
 
 async def _drain() -> None:

@@ -10,12 +10,13 @@ import asyncio
 import itertools
 import sys
 import types
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import delete, select
 
 from app.database import async_session
+from app.models.mixins import utcnow
 from app.models.outbox import Outbox
 from app.models.request_change import RequestChange
 from app.models.request_counter import RequestCounter
@@ -226,3 +227,52 @@ def test_the_worker_drains_due_rows_and_never_sends_one_twice(monkeypatch):
             return [row.status for row in rows]
 
     assert run(statuses()) == ["sent", "sent"]
+
+
+# ----- a stalled "sending" claim is reclaimed (finding 6) -----
+
+
+async def _enqueue_sending(request, *, claimed_minutes_ago: float | None) -> int:
+    """Insert one "sending" outbox row with a chosen claim age, and return its id.
+
+    Args:
+        request: The request to tie it to, or None.
+        claimed_minutes_ago: How long ago it was claimed, or None for no stamp
+            (a row claimed before the claimed_at column existed).
+
+    Returns:
+        The new row's id.
+    """
+    claimed_at = None if claimed_minutes_ago is None else utcnow() - timedelta(minutes=claimed_minutes_ago)
+    async with async_session() as session:
+        row = Outbox(
+            request_id=request.id if request else None,
+            message_type="result", channel="email", recipient="pat@ucsh.com",
+            subject="Leave Request: Approved", body="<p>approved</p>",
+            status="sending", attempts=0, claimed_at=claimed_at,
+            idempotency_key=f"key-{next(_keys)}",
+        )
+        session.add(row)
+        await session.commit()
+        return row.id
+
+
+def test_a_stale_sending_row_is_reclaimed_and_a_fresh_one_is_left():
+    request = run(_request())
+    stale_id = run(_enqueue_sending(request, claimed_minutes_ago=20))      # past the 10-minute timeout
+    null_id = run(_enqueue_sending(request, claimed_minutes_ago=None))     # pre-column claim, treated as stale
+    fresh_id = run(_enqueue_sending(request, claimed_minutes_ago=1))       # still in flight, leave it
+
+    claimed = run(outbox_worker._claim_due(10))                            # reclaims stale, then claims due
+
+    async def read(row_id):
+        async with async_session() as session:
+            return await session.get(Outbox, row_id)
+
+    # The two abandoned claims are freed and re-claimed with a fresh stamp.
+    assert stale_id in claimed and null_id in claimed
+    reclaimed = run(read(stale_id))
+    assert reclaimed.status == "sending" and reclaimed.claimed_at is not None
+    # The fresh claim is left alone: still "sending", not re-claimed this pass.
+    assert fresh_id not in claimed
+    assert run(read(fresh_id)).status == "sending"

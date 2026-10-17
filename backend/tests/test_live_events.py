@@ -121,7 +121,7 @@ def test_an_appended_event_reaches_a_subscriber():
         await _reset()
         await _add_request(item_id=101)
         bus = EventBus()
-        bus._last_id = await _current_max_id()                 # dispatch only what lands from here
+        bus._floor = await _current_max_id()                   # dispatch only what lands from here
         queue = bus.subscribe()
         await _append(101, "approved", "email_link", "Dave", "leave:101:approved:v1")
         count = await bus.poll_once()                          # the SQLite path, driven by hand
@@ -169,6 +169,49 @@ def test_last_event_id_replay_returns_exactly_the_missed_events():
     assert [p["id"] for p in after_first] == ids[1:]           # exactly the two missed, in order
 
 
+async def _insert_event_with_id(request_id: int, item_id: int, event_id: int, key: str) -> None:
+    """Insert one timeline event with an explicit id, to stage an out-of-order commit.
+
+    Args:
+        request_id: The request's surrogate id (the foreign key).
+        item_id: The request's item number.
+        event_id: The id to force (simulating a sequence value assigned earlier).
+        key: The unique idempotency key.
+    """
+    async with async_session() as s:
+        s.add(RequestEvent(
+            id=event_id, request_id=request_id, kind="leave", item_id=item_id,
+            employee_id="7", manager_id="9", type="approved", channel="system",
+            actor="Dave", detail={}, idempotency_key=key,
+        ))
+        await s.commit()
+
+
+def test_the_bus_delivers_an_event_that_commits_out_of_order():
+    """A lower id that commits after a higher one is still dispatched, not skipped (finding 9)."""
+    async def scenario():
+        await _reset()
+        rid = await _add_request(item_id=601)
+        bus = EventBus()                                       # floor 0, nothing delivered yet
+        queue = bus.subscribe()
+        # Two ids already committed; id 1001 is still inside an open transaction.
+        await _insert_event_with_id(rid, 601, 1000, "leave:601:e1000")
+        await _insert_event_with_id(rid, 601, 1002, "leave:601:e1002")
+        first = await bus.poll_once()                          # dispatches 1000 and 1002
+        # The open transaction now commits id 1001, below the high-water mark 1002.
+        await _insert_event_with_id(rid, 601, 1001, "leave:601:e1001")
+        second = await bus.poll_once()                         # must pick up 1001, not skip it
+        delivered = []
+        while not queue.empty():
+            delivered.append(queue.get_nowait()["id"])
+        return first, second, delivered
+
+    first, second, delivered = run(scenario())
+    assert first == 2 and second == 1                          # 1000, 1002 then the late 1001
+    assert set(delivered) == {1000, 1001, 1002}
+    assert delivered.count(1001) == 1                          # delivered exactly once
+
+
 # ----- the catch-up route and its role filter -----
 
 @pytest.fixture
@@ -205,17 +248,52 @@ def test_catch_up_filters_for_an_employee(events_client):
     assert got and all(p["employee_id"] == "7" for p in got)   # only the employee's own
 
 
-def test_catch_up_shows_everything_to_an_admin(events_client):
+def _admin_session_header(monkeypatch) -> dict:
+    """Give the events route a known admin password and a valid session header.
+
+    The admin feed needs the admin-dashboard password session, not a dashboard
+    token (ruling 13), so a catch-up test signs in the way a real admin call does.
+
+    Args:
+        monkeypatch: The pytest monkeypatch fixture.
+
+    Returns:
+        ``{"X-Admin-Session": "<token>"}`` for a request's headers.
+    """
+    from app.services import admin_auth
+
+    stored = "hashed-admin-password"
+
+    async def fake_stored():
+        return stored
+
+    monkeypatch.setattr(events, "stored_password", fake_stored)
+    return {"X-Admin-Session": admin_auth.make_session(stored)["token"]}
+
+
+def test_catch_up_shows_everything_to_an_admin(events_client, monkeypatch):
     run(_reset())
     run(_add_request(item_id=311, employee_id="7"))
     run(_add_request(item_id=312, employee_id="8"))
     run(_append(311, "approved", "email_link", "Dave", "leave:311:approved:v1"))
     run(_append(312, "approved", "email_link", "Dave", "leave:312:approved:v1"))
 
-    resp = events_client.get("/api/dashboard/events", params={**_token("admin", "1"), "after": 0})
+    headers = _admin_session_header(monkeypatch)
+    resp = events_client.get("/api/dashboard/events", params={"after": 0}, headers=headers)
     assert resp.status_code == 200
     employees = {p["employee_id"] for p in resp.json()["events"]}
     assert employees == {"7", "8"}
+
+
+def test_catch_up_refuses_an_admin_role_token_without_the_session(events_client):
+    """Ruling 13: an admin-role dashboard token alone no longer opens the admin feed."""
+    run(_reset())
+    run(_add_request(item_id=313, employee_id="7"))
+    run(_append(313, "approved", "email_link", "Dave", "leave:313:approved:v1"))
+
+    # A signed admin-role token, no admin session header: refused.
+    resp = events_client.get("/api/dashboard/events", params={**_token("admin", "1"), "after": 0})
+    assert resp.status_code == 401
 
 
 def test_catch_up_filters_for_a_manager(events_client, monkeypatch):
@@ -240,14 +318,15 @@ def test_catch_up_refuses_an_unauthenticated_caller(events_client):
     assert resp.status_code == 401
 
 
-def test_a_fresh_reader_starts_from_now_not_the_whole_history(events_client):
+def test_a_fresh_reader_starts_from_now_not_the_whole_history(events_client, monkeypatch):
     """No resume point means no replay: only where "now" is, to poll from."""
     run(_reset())
     run(_add_request(item_id=331, employee_id="7"))
     run(_append(331, "imported", "import", None, "import:leave:331"))
     run(_append(331, "approved", "email_link", "Dave", "leave:331:approved:v1"))
 
-    resp = events_client.get("/api/dashboard/events", params=_token("admin", "1"))
+    headers = _admin_session_header(monkeypatch)
+    resp = events_client.get("/api/dashboard/events", headers=headers)
     body = resp.json()
     assert resp.status_code == 200 and body["events"] == []    # history is not replayed
     assert body["last_id"] >= 2                                 # but the resume point is now

@@ -21,7 +21,11 @@ class RequestChange(Base):
     __tablename__ = "request_changes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    request_id: Mapped[int] = mapped_column(ForeignKey("requests.id"), nullable=False, index=True)
+    # ON DELETE CASCADE: the field-change history goes with the request when an
+    # admin deletes it (#282, finding 4); it describes that request and nothing else.
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     field: Mapped[str] = mapped_column(String, nullable=False)          # the SharePoint column name changed
     old_value: Mapped[object] = mapped_column(JSON, nullable=True)       # value before (JSON: any shape)
     new_value: Mapped[object] = mapped_column(JSON, nullable=True)       # value after

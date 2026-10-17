@@ -337,7 +337,13 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
         await claim_action(list_id, request_id, "approve")
 
     # Refund first, only for an approved item the admin chose to refund. A refused
-    # refund stops here, so nothing is deleted and no record is kept.
+    # refund stops here, so nothing is deleted and no record is kept. Refund must
+    # come before the delete: it reads the request and its ledger rows to work out
+    # what to reverse, and on Postgres the delete sets those ledger rows'
+    # request_id to null (finding 4), so a deleted request could no longer be
+    # refunded. If the refund succeeds but the delete below then fails, the item
+    # is left refunded and still present (not lost): the admin can simply retry
+    # the delete, and the refund is idempotent, so no balance moves twice.
     refunded = False
     if body.refund and fields.get("Status") == "Approved":
         # channel="admin_dashboard"; refund-then-delete is an admin-only path.
@@ -346,9 +352,12 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
             raise HTTPException(status_code=400, detail=result["error"])
         refunded = True
 
-    # Delete the item first, then keep the record, so a deletion record never
-    # outlives an item that is still there. A 404 means it is already gone, which
-    # is success (#294 S5).
+    # Delete the item, then keep the record, so a deletion record never outlives
+    # an item that is still there. On Postgres the request's child rows follow the
+    # foreign-key rules set in Alembic 0021: its timeline and field history cascade
+    # away, while balance_ledger and outbox rows survive with their link nulled, so
+    # balance history and sent-message records outlive the delete. A 404 means it
+    # is already gone, which is success (#294 S5).
     try:
         await request_store.delete_list_item(list_id, request_id)
     except httpx.HTTPStatusError as e:

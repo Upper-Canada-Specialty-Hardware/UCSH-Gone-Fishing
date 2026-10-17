@@ -274,3 +274,72 @@ def test_a_form_item_is_submitted_once_across_checks_and_a_webhook(sp):
     assert {e.channel for e in events if e.type == "submitted"} == {"form"}
     kinds = sorted((o.message_type, o.channel) for o in outbox)
     assert kinds == [("manager_approval", "email"), ("manager_approval", "sms"), ("receipt", "email")]
+
+
+# ----- Postgres reminders keep the cutoff and the reminders_closed flag (finding 12) -----
+
+
+def test_postgres_reminders_respect_the_cutoff_and_the_closed_flag(sp, monkeypatch):
+    """Carry-over/payout stop at year-end and at a max count, and a closed flag is honoured."""
+    from datetime import datetime, timezone
+
+    from app.models import RequestApprovalState
+    from app.models.mixins import utcnow
+
+    due_at = utcnow() - timedelta(days=40)                         # older than the 30-day first threshold
+    last_year = datetime(date.today().year - 1, 6, 1, tzinfo=timezone.utc)
+
+    # 1) A due, in-window leave: its start date is in the future, so it is offered.
+    due_leave = run(_leave_record(item_id=90_000_101, created_at=due_at))
+    # 2) A carry-over made last year: past its year-end, so reminders must stop.
+    co_old = run(_leave_record(
+        item_id=90_000_102, kind="carryover_payout", leave_type=None,
+        request_option="carry_over", days=3.0, start_date=None, end_date=None,
+        created_at=last_year,
+    ))
+    # 3) A payout made this year but already reminded the maximum number of times.
+    co_maxed = run(_leave_record(
+        item_id=90_000_103, kind="carryover_payout", leave_type=None,
+        request_option="payout", days=2.0, start_date=None, end_date=None,
+        created_at=due_at, reminder_count=rs.MAX_REMINDERS_WITHOUT_DATE,
+    ))
+    # 4) A due leave whose approval-version state says reminders are closed.
+    closed_leave = run(_leave_record(item_id=90_000_104, created_at=due_at))
+
+    async def seed_states():
+        async with async_session() as session:
+            session.add(RequestApprovalState(                      # the old carry-over has an open state row
+                list_id=settings.SP_LIST_CARRYOVER_PAYOUT, item_id=str(co_old.item_id),
+                current_version=1, current_snapshot={}, reminders_closed=False,
+            ))
+            session.add(RequestApprovalState(                      # the due leave is explicitly closed
+                list_id=settings.SP_LIST_LEAVE_REQUESTS, item_id=str(closed_leave.item_id),
+                current_version=1, current_snapshot={}, reminders_closed=True,
+            ))
+            await session.commit()
+
+    run(seed_states())
+
+    offered: list = []
+
+    async def fake_queue(session, kind, item_id, today):
+        offered.append((kind, item_id))                            # record who was actually offered a reminder
+        return True
+
+    monkeypatch.setattr(rs, "_queue_reminder", fake_queue)
+    run(rs.queue_due_reminders())
+
+    # Only the due, in-window leave is reminded; the two cutoff ones and the
+    # closed one are skipped.
+    assert offered == [("leave", due_leave.item_id)]
+
+    async def state_closed(item_id):
+        async with async_session() as session:
+            row = await session.get(
+                RequestApprovalState, (settings.SP_LIST_CARRYOVER_PAYOUT, str(item_id))
+            )
+            return row.reminders_closed
+
+    # The past-cutoff carry-over had its state row closed so later scans skip it.
+    assert run(state_closed(co_old.item_id)) is True
+    assert co_maxed.item_id not in [i for _k, i in offered]
