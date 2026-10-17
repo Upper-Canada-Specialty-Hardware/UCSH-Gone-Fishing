@@ -14,6 +14,7 @@ paused (see ``switch_pause``).
 ``flip_back`` reverses the settings for a rehearsal, so a rehearsal can flip,
 look around, and flip back without leaving the app pointed at Postgres.
 """
+import asyncio
 import logging
 
 from app.database import async_session
@@ -26,6 +27,11 @@ from app.services.shadow_sync import _run_steps, acquire_sync_lock, release_sync
 from app.services.switch_pause import begin_pause, end_pause
 
 logger = logging.getLogger(__name__)
+
+# How long the switch waits after pausing before the final sync reads SharePoint,
+# so an approval or edit that started just before the pause finishes its
+# SharePoint writes first and the final sync sees them.
+PAUSE_SETTLE_SECONDS = 15
 
 STAFF_STORAGE = "staff_storage"         # the staff store builder adds this setting; flip it too when present
 
@@ -60,6 +66,7 @@ async def flip_to_postgres() -> dict:
         raise RuntimeError("A sync is running; try the switch again in a moment.")
     await begin_pause()                                        # refuse approvals/submissions/staff writes now
     try:
+        await asyncio.sleep(PAUSE_SETTLE_SECONDS)              # let in-flight decisions land in SharePoint first
         async with async_session() as session:
             run = SyncRun(job="final_sync")                    # started_at is the flip time the check schedules from
             session.add(run)

@@ -96,6 +96,12 @@ class FakeSharePoint:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _no_settle_wait(monkeypatch):
+    """Skip the switch's post-pause wait so these tests do not sleep."""
+    monkeypatch.setattr("app.services.storage_switch.PAUSE_SETTLE_SECONDS", 0)
+
+
 @pytest.fixture
 def sp(monkeypatch):
     """A faked sp_client and a clean database, reset after the test."""
