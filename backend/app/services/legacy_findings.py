@@ -51,7 +51,7 @@ class FindingError(Exception):
         self.status_code = status_code                         # the route maps this to HTTPException
 
 
-def _fingerprint(case: str, subject: str, kind: str | None, subject_id: str) -> str:
+def _fingerprint(case: str, subject: str, kind: str | None, subject_id: str, variant: str | None = None) -> str:
     """Build the unique fingerprint a rerun dedupes on.
 
     Args:
@@ -59,12 +59,16 @@ def _fingerprint(case: str, subject: str, kind: str | None, subject_id: str) -> 
         subject: "request" or "staff".
         kind: The request kind, or None for a staff finding.
         subject_id: The item id or staff id as a string.
+        variant: An optional tag for what exactly was found (for example a digest
+            of the differing values), so a new difference on the same subject files
+            again while the same difference never does; None for one per subject.
 
     Returns:
-        ``case:subject:kind:subject_id`` with an empty slot for a null kind, so
-        every writer (this module and the builders' local stand-ins) agrees.
+        ``case:subject:kind:subject_id`` with an empty slot for a null kind, plus
+        ``:variant`` when one is given.
     """
-    return f"{case}:{subject}:{kind or ''}:{subject_id}"       # kind empty for staff findings
+    base = f"{case}:{subject}:{kind or ''}:{subject_id}"       # kind empty for staff findings
+    return f"{base}:{variant}" if variant else base            # one finding per distinct variant
 
 
 def _to_dict(finding: LegacyFinding) -> dict:
@@ -102,6 +106,8 @@ async def record_finding(
     reason: str,
     evidence: dict | None,
     run_id: int | None = None,
+    *,
+    variant: str | None = None,
 ) -> LegacyFinding | None:
     """Write one finding, at most once per fingerprint, without committing.
 
@@ -119,11 +125,13 @@ async def record_finding(
         reason: One plain sentence describing the discrepancy.
         evidence: What backs the finding, JSON-serialisable; None stores ``{}``.
         run_id: The sync_runs row that found it, or None.
+        variant: Optional tag making the fingerprint content-specific (see
+            ``_fingerprint``); None keeps one finding per case and subject.
 
     Returns:
         The inserted LegacyFinding, or None when the fingerprint already existed.
     """
-    fingerprint = _fingerprint(case, subject, kind, str(subject_id))   # the dedupe key
+    fingerprint = _fingerprint(case, subject, kind, str(subject_id), variant)   # the dedupe key
     row = LegacyFinding(
         subject=subject,
         kind=kind,

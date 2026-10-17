@@ -19,37 +19,37 @@ so callers do not change. Balance pot writes on approval go through the shared
 `StaffBalances` interface; its Postgres implementation
 (`app/repositories/postgres/staff_balances.py`) writes the pots in the caller's
 own transaction and queues a write-back so the SharePoint list catches up.
-Changes made directly in SharePoint are brought into Postgres by the pull
-(`app/services/staff_pull.py`), newer edit wins by modified time, recorded in
-`staff_changes` with source `sharepoint`, and never echoed back.
 
-## The app owns the balances once staff live in Postgres
+## Postgres is the source of truth; the pull only detects
 
-Once staff are served from Postgres, the five balance pots
-(`CurrentSickDayBalance`, `CurrentOvertimeBalance`, `CarryOver`,
-`CurrentVacationBalance`, `Payout`) are owned by the app, not by SharePoint. The
-app moves them on approval and on the April-1 reset, and the write-back carries
-each move out to the SharePoint list so the Bulletin Board and the Form stay
-current. The pull therefore **never writes a balance column back into Postgres**,
-even when SharePoint's value is newer: doing so would let a stale SharePoint row
-(or a write-back that has not drained yet) silently reset a balance with no ledger
-entry behind it.
+Once staff are served from Postgres, Postgres is the **only** source of truth for
+staff. The app keeps writing its own changes back to the SharePoint Staff
+Directory through the write-back drain, so the Bulletin Board views, the Microsoft
+Form and the Power Automate flows stay current. But edits made **directly in
+SharePoint** are no longer brought back into Postgres, for any column. Pulling
+them in would let a stale SharePoint row, or a write-back that has not drained
+yet, silently overwrite a balance (or any field) with no ledger or history behind
+it.
 
-Instead:
+So `app/services/staff_pull.py` is a detector, not a writer. It changes nothing in
+Postgres. For each SharePoint record it:
 
-- When a person has a write-back still pending, failed or in flight, the pull
-  leaves that person entirely alone (balances and other fields): SharePoint is
-  simply behind the app, so there is nothing to pull.
-- Otherwise, when a SharePoint balance differs from the app-owned balance in
-  Postgres, the pull records one `sharepoint_edit_after_switch` finding for HR
-  (both values kept as evidence) and leaves Postgres unchanged. HR reconciles the
-  real record through the hand edit; the pull never changes a pot.
+- leaves a person alone when the app still has a write-back for them that is
+  pending, failed or in flight: SharePoint is simply behind the app, not a
+  discrepancy, so there is nothing to report;
+- files one `sharepoint_edit_after_switch` finding for HR when the SharePoint row
+  differs from the Postgres row in any column the app models (the five balance
+  pots included), recording each differing column with both values as evidence;
+- files one `sharepoint_new_after_switch` finding when a SharePoint staff item has
+  no matching Postgres row at all (someone added it directly in SharePoint),
+  without importing it.
 
-Every non-balance field keeps the newer-wins behaviour described above, except
-that a person with an unsettled write-back is skipped until it lands. If HR must
-correct a balance, they do it through the app (the person panel), which writes
-Postgres and queues the write-back, rather than editing the SharePoint list
-directly.
+Findings are idempotent: the `legacy_findings` fingerprint
+(`case:subject:kind:subject_id`) keeps the same person's finding from being filed
+twice on a rerun, and a different kind of discrepancy (a different case) files on
+its own. HR reconciles the underlying record through the app (the person panel),
+which writes Postgres and queues the write-back; editing the SharePoint list
+directly is never the way to change a staff record after the switch.
 
 ## Inventory of Staff Directory writes
 
@@ -95,9 +95,12 @@ Covered by this work:
   the row (`sp_remote_item_id`), and both later patches and the pull resolve a
   person through that id too, so a created SharePoint item reconciles to the same
   row instead of a duplicate.
-- Changes made directly in SharePoint are pulled into Postgres, newer-wins, with
-  a `staff_changes` record and no echo.
-- The write-back drains to SharePoint with retries so other systems stay current.
+- Changes made directly in SharePoint are no longer pulled into Postgres. The
+  pull detects them and files a legacy finding for HR (a differing row, or a
+  SharePoint item with no Postgres row), changing nothing in Postgres.
+- The write-back drains to SharePoint with retries so other systems stay current,
+  claiming each row before it sends so two instances never replay the same row and
+  a create never makes a second SharePoint item.
 
 The older balance writes in `balance.py` and `carryover_payout.py` (including
 `recalculate_request_allow_date`, which writes `RequestAllowDate`) also go
