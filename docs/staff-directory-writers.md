@@ -69,8 +69,6 @@ columns it writes, and how the move covers it.
 | `services/manager_assignments.py` `update_employee_managers` and the bulk operations | `AllManagers` | Manager links. **Now routed through `staff_store` (#269):** reads and the write go through the store, the manager names are passed alongside the id collection so the Postgres links keep their names, and the store records one `system` history row. The bulk operations call `update_employee_managers`, so they are covered too. On SharePoint it is unchanged. |
 
 Notes:
-- `tasks/setup_nudges.py` uses the Staff Directory list id only as an idempotency
-  namespace for its daily sweep (`claim_action`); it does not write staff fields.
 - `app/repositories/sharepoint/employee.py` is the SharePoint side of the
   repository seam and only writes when a caller asks it to; no caller writes
   through it today.

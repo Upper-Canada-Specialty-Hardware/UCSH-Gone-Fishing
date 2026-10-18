@@ -15,7 +15,6 @@ from app.graph.sharepoint import sp_client
 from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
-from app.tasks.setup_nudges import start_setup_nudge_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
 from app.tasks.sync_tasks import start_shadow_sync_task
 from app.tasks.outbox_worker import start_outbox_worker  # drains queued result emails/texts (#326)
@@ -63,7 +62,6 @@ async def lifespan(app: FastAPI):
     renewal_task = None
     carryover_reset_task = None
     reminder_task = None
-    setup_nudge_task = None
     held_request_task = None
     shadow_sync_task = None
     from app.services.sharepoint_cutoff import sharepoint_cut_off
@@ -76,7 +74,6 @@ async def lifespan(app: FastAPI):
         logger.info("Switched to Postgres: SharePoint startup, webhooks and syncs are skipped")
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
-        setup_nudge_task = start_setup_nudge_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
     else:                                                      # still on SharePoint: connect as before
         try:
@@ -97,7 +94,6 @@ async def lifespan(app: FastAPI):
             renewal_task = start_subscription_renewal_task()
             carryover_reset_task = start_carryover_reset_task()
             reminder_task = start_reminder_task()
-            setup_nudge_task = start_setup_nudge_task()
             held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
             # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
             # until the switch (#334); it stops itself once requests are in Postgres.
@@ -139,8 +135,6 @@ async def lifespan(app: FastAPI):
         carryover_reset_task.cancel()
     if reminder_task:
         reminder_task.cancel()
-    if setup_nudge_task:
-        setup_nudge_task.cancel()
     if held_request_task:
         held_request_task.cancel()
     if shadow_sync_task:

@@ -46,7 +46,7 @@ A second switch is refused ("Already switched"). There is no switch-back button;
 
 After the switch the app never talks to SharePoint again. Postgres is the only source of truth, with no fallback either way:
 - every Graph call is refused at one gate and logged as "SharePoint call refused after the switch";
-- on restart the app skips the Graph token, the SharePoint probe, webhooks, catch-up and the 5 minute sync; the reminder, carry-over reset, setup nudge and new hire jobs run on Postgres alone;
+- on restart the app skips the Graph token, the SharePoint probe, webhooks, catch-up and the 5 minute sync; the reminder, carry-over reset and new hire jobs run on Postgres alone (the setup-nudge emails are gone; broken staff records show on the admin setup tab);
 - incoming webhook notifications are acknowledged and ignored;
 - nothing checks SharePoint after the switch, and staff edits are not copied back to the Staff Directory (that copy is now off before the switch too);
 - the holiday copy panel and the request columns card are gone from the admin dashboard.

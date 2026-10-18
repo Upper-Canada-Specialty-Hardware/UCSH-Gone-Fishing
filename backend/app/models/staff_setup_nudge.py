@@ -10,6 +10,10 @@ from app.models.mixins import utcnow
 class StaffSetupNudge(Base):
     """What the creator of a broken Staff Directory record has been told, and when.
 
+    No longer written: the setup-nudge emails were dropped on 2026-10-18 (the
+    owner's ruling; the admin setup tab is the place to see broken records). The
+    table is kept only so no schema change is needed to remove it.
+
     The setup sweep can name every record that would stall a request, but
     knowing is not telling: until this table existed the list sat on a dashboard
     tab nobody opens until someone is already blocked. The daily nudge emails
