@@ -27,7 +27,6 @@ from app.services import (
     manager_assignments,
     staff_entitlements as se,
     staff_import,
-    staff_writeback,
 )
 from app.tasks import carryover_reset
 
@@ -236,11 +235,9 @@ GOOD_FORM = {
 }
 
 
-def test_add_employee_round_trips_its_sharepoint_item_id(clean_db, monkeypatch):
-    # In Postgres mode add-employee mints a staff id and queues a "create"
-    # write-back; draining it creates the SharePoint item and stores the returned
-    # id back on the row, so later patches and the pull resolve the same person.
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
+def test_add_employee_lands_only_in_postgres(clean_db, monkeypatch):
+    # In Postgres mode add-employee mints a staff id in the app's own range, and
+    # nothing is written to SharePoint or queued for it.
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
 
     async def none_(*a, **k):
@@ -260,13 +257,16 @@ def test_add_employee_round_trips_its_sharepoint_item_id(clean_db, monkeypatch):
         return {501: "The Boss"}
     monkeypatch.setattr(manager_assignments, "_get_sp_user_name_map", fake_map)
 
+    sharepoint_writes = []                                 # any SharePoint write would land here
+
     async def fake_create(list_id, fields):
-        return {"id": "900", "fields": fields}             # SharePoint assigns id 900
+        sharepoint_writes.append(("create", list_id))
+        return {"id": "900", "fields": fields}
     async def fake_update(list_id, item_id, fields):
+        sharepoint_writes.append(("update", list_id))
         return {}
     monkeypatch.setattr(sharepoint_module.sp_client, "create_list_item", fake_create)
     monkeypatch.setattr(sharepoint_module.sp_client, "update_list_item_fields", fake_update)
-    monkeypatch.setattr(staff_writeback, "_backoff_seconds", lambda attempts: 0)
 
     record = run(ec.create_employee(GOOD_FORM, [501]))
     new_id = record["id"]
@@ -277,15 +277,12 @@ def test_add_employee_round_trips_its_sharepoint_item_id(clean_db, monkeypatch):
     async def writebacks():
         async with async_session() as session:
             return (await session.execute(select(StaffWriteback))).scalars().all()
-    created = [w for w in run(writebacks()) if w.op == "create"]
-    assert len(created) == 1 and created[0].sp_item_id == new_id   # a create replay is queued
-
-    run(staff_writeback.drain_writebacks())                # create the SharePoint item and map its id
+    assert run(writebacks()) == []                         # nothing queued for SharePoint
+    assert sharepoint_writes == []                         # and nothing written there
 
     async def read_row():
         async with async_session() as session:
             return (await session.execute(
                 select(Staff).where(Staff.sp_item_id == new_id)
             )).scalars().first()
-    row = run(read_row())
-    assert row.sp_remote_item_id == "900"                  # the returned id is stored on the row
+    assert run(read_row()).name == "New Hire"              # the person is in Postgres

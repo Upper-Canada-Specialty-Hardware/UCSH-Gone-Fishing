@@ -116,9 +116,9 @@ async def _reset_single_employee(emp_info: dict):
     """Zero out CarryOver for one employee, then recalculate RequestAllowDate."""
     emp_id = emp_info["id"]
     async with lock_manager.lock(emp_id):
-        # Route the zeroing through the store: on Postgres it lands there, queues
-        # one write-back and records one ``system`` history row; on SharePoint it
-        # writes the list directly, exactly as before.
+        # Route the zeroing through the store: on Postgres it lands there and
+        # records one ``system`` history row; on SharePoint it writes the list
+        # directly, exactly as before.
         await staff_store.update_list_item_fields(
             settings.SP_LIST_STAFF_DIRECTORY,
             emp_id,

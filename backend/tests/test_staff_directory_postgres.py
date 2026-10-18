@@ -14,7 +14,6 @@ an unsettled write-back alone, and filing one finding per unchanged difference;
 and each #341 detector fires on its case and stays quiet on a clean one.
 """
 import asyncio
-from datetime import timedelta
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -23,7 +22,6 @@ from app.config import settings
 from app.database import async_session
 from app.graph import sharepoint as sharepoint_module
 from app.models.legacy_finding import LegacyFinding
-from app.models.mixins import utcnow
 from app.models.staff import (
     Department,
     Location,
@@ -34,7 +32,7 @@ from app.models.staff import (
 from app.models.staff_change import StaffChange
 from app.repositories.postgres.staff_balances import PostgresStaffBalances
 from app.repositories.staff_store import staff_store
-from app.services import staff_import, staff_pull, staff_writeback
+from app.services import staff_import
 from app.services.person_match import match_person
 
 STAFF = settings.SP_LIST_STAFF_DIRECTORY
@@ -300,7 +298,7 @@ def test_lock_and_write_pots_commit(clean_db, monkeypatch):
             return float(row.vacation_balance), float(row.sick_balance), wb
     vacation, sick, wb = run(do())
     assert (vacation, sick) == (8.0, 2.0)
-    assert wb == []                                             # write-back is off: nothing for SharePoint
+    assert wb == []                                             # nothing is queued for SharePoint
 
 
 def test_rollback_leaves_the_pots_unchanged(clean_db, monkeypatch):
@@ -318,294 +316,10 @@ def test_rollback_leaves_the_pots_unchanged(clean_db, monkeypatch):
             return float(row.vacation_balance), float(row.sick_balance), wb
     vacation, sick, wb = run(do())
     assert (vacation, sick) == (10.5, 3.0)                      # untouched
-    assert wb == []                                            # the queued write-back rolled back too
+    assert wb == []                                            # nothing is queued for SharePoint
 
 
 # --- Write-back: retries until it lands ---------------------------------------
-
-def test_writeback_retries_until_it_lands(clean_db, monkeypatch):
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
-    _seed_one(monkeypatch, _sp_item("101"))
-    monkeypatch.setattr(staff_writeback, "_backoff_seconds", lambda attempts: 0)  # retry at once
-
-    async def enqueue():
-        async with async_session() as session:
-            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 1.0})
-            await session.commit()
-    run(enqueue())
-
-    attempts = {"n": 0}
-
-    async def flaky_patch(list_id, item_id, fields):
-        attempts["n"] += 1
-        if attempts["n"] < 3:                                  # fail the first two tries
-            raise RuntimeError("SharePoint is down")
-        return {}
-    monkeypatch.setattr(staff_writeback.sp_client, "update_list_item_fields", flaky_patch)
-
-    run(staff_writeback.drain_writebacks())                    # fails
-    run(staff_writeback.drain_writebacks())                    # fails
-    run(staff_writeback.drain_writebacks())                    # lands
-
-    async def status():
-        async with async_session() as session:
-            row = (await session.execute(select(StaffWriteback))).scalars().first()
-            return row.status, row.sent_at
-    final_status, sent_at = run(status())
-    assert attempts["n"] == 3
-    assert final_status == "done" and sent_at is not None
-
-
-def test_writeback_skipped_in_rehearsal(clean_db, monkeypatch):
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
-    _seed_one(monkeypatch, _sp_item("101"))
-
-    async def enqueue():
-        async with async_session() as session:
-            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 1.0})
-            await session.commit()
-    run(enqueue())
-    monkeypatch.setattr(staff_writeback, "_writes_allowed", lambda: False)
-
-    result = run(staff_writeback.drain_writebacks())
-    assert result["skipped"] == -1 and result["sent"] == 0
-
-    async def still_pending():
-        async with async_session() as session:
-            row = (await session.execute(select(StaffWriteback))).scalars().first()
-            return row.status
-    assert run(still_pending()) == "pending"                   # left for later
-
-
-def test_a_claimed_writeback_is_not_replayed_by_a_second_drain(clean_db, monkeypatch):
-    # A row another instance has claimed ("sending", claim not yet expired) is not
-    # due, so a second drain never calls SharePoint for it.
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
-    _seed_one(monkeypatch, _sp_item("101"))
-
-    async def claim_elsewhere():
-        async with async_session() as session:
-            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 1.0})
-            await session.commit()
-        async with async_session() as session:                 # stand in for the other instance's claim
-            row = (await session.execute(select(StaffWriteback))).scalars().first()
-            row.status = staff_writeback.SENDING               # in flight elsewhere
-            row.next_attempt_at = utcnow() + timedelta(minutes=5)   # claim not yet expired
-            await session.commit()
-    run(claim_elsewhere())
-
-    calls = {"n": 0}
-
-    async def counting_patch(list_id, item_id, fields):
-        calls["n"] += 1
-        return {}
-    monkeypatch.setattr(staff_writeback.sp_client, "update_list_item_fields", counting_patch)
-
-    result = run(staff_writeback.drain_writebacks())
-    assert result == {"sent": 0, "failed": 0, "skipped": 0}
-    assert calls["n"] == 0                                     # the claimed row was skipped
-
-    async def status():
-        async with async_session() as session:
-            return (await session.execute(select(StaffWriteback))).scalars().first().status
-    assert run(status()) == staff_writeback.SENDING            # still in flight, untouched
-
-
-def test_a_stale_claim_is_reclaimed(clean_db, monkeypatch):
-    # A "sending" row whose claim has expired (its owner crashed) is taken again by
-    # the next drain and sent, so a crash never strands a change.
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
-    _seed_one(monkeypatch, _sp_item("101"))
-
-    async def stale_claim():
-        async with async_session() as session:
-            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 1.0})
-            await session.commit()
-        async with async_session() as session:
-            row = (await session.execute(select(StaffWriteback))).scalars().first()
-            row.status = staff_writeback.SENDING
-            row.next_attempt_at = utcnow() - timedelta(minutes=20)   # claim long expired
-            await session.commit()
-    run(stale_claim())
-
-    calls = {"n": 0}
-
-    async def counting_patch(list_id, item_id, fields):
-        calls["n"] += 1
-        return {}
-    monkeypatch.setattr(staff_writeback.sp_client, "update_list_item_fields", counting_patch)
-
-    result = run(staff_writeback.drain_writebacks())
-    assert result["sent"] == 1 and calls["n"] == 1             # reclaimed and sent
-
-    async def status():
-        async with async_session() as session:
-            return (await session.execute(select(StaffWriteback))).scalars().first().status
-    assert run(status()) == staff_writeback.DONE
-
-
-# --- Pull: a detector only, never writes Postgres -----------------------------
-
-async def _pull():
-    """Run the detector once and commit the session, returning its counts."""
-    async with async_session() as session:
-        counts = await staff_pull.staff_pull_step(session, None)
-        await session.commit()
-        return counts
-
-
-async def _staff_changes_and_wb(sp_id):
-    """The change-log rows and the write-back rows, to prove the detector wrote none."""
-    async with async_session() as session:
-        changes = (await session.execute(
-            select(StaffChange).where(StaffChange.employee_id == sp_id)
-        )).scalars().all()
-        wb = (await session.execute(select(StaffWriteback))).scalars().all()
-        return changes, wb
-
-
-def test_pull_flags_a_differing_column_without_changing_postgres(clean_db, monkeypatch):
-    # A SharePoint non-balance field that differs from Postgres is flagged for HR
-    # (one sharepoint_edit_after_switch finding) and nothing in Postgres changes:
-    # no field is written, no change-log row, no echo write-back.
-    _seed_one(monkeypatch, _sp_item("101"))                    # stored cell 555-1212
-    _fake_list(monkeypatch, [_sp_item("101", CellNumber="555-9999")])
-
-    counts = run(_pull())
-    assert counts["diff_findings"] == 1 and counts["seen"] == 1
-
-    async def read():
-        async with async_session() as session:
-            row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
-            findings = (await session.execute(
-                select(LegacyFinding).where(LegacyFinding.subject_id == "101")
-            )).scalars().all()
-            return row.cell_number, findings
-    cell, findings = run(read())
-    assert cell == "555-1212"                                  # Postgres is never changed
-    assert len(findings) == 1 and findings[0].case == "sharepoint_edit_after_switch"
-    diff = findings[0].evidence["columns"]["CellNumber"]
-    assert diff["sharepoint"] == "555-9999" and diff["postgres"] == "555-1212"
-
-    changes, wb = run(_staff_changes_and_wb("101"))
-    assert changes == [] and wb == []                          # nothing written, nothing echoed
-
-
-def test_pull_flags_a_differing_balance_with_both_values(clean_db, monkeypatch):
-    # A SharePoint balance that differs is flagged (balances are app-owned) with
-    # both values as evidence; the Postgres balance is never overwritten.
-    _seed_one(monkeypatch, _sp_item("101"))                    # stored vacation 10.5
-    _fake_list(monkeypatch, [_sp_item("101", CurrentVacationBalance=4.0)])
-
-    counts = run(_pull())
-    assert counts["diff_findings"] == 1
-
-    async def read():
-        async with async_session() as session:
-            row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
-            finding = (await session.execute(
-                select(LegacyFinding).where(LegacyFinding.subject_id == "101")
-            )).scalars().first()
-            return float(row.vacation_balance), finding
-    vacation, finding = run(read())
-    assert vacation == 10.5                                    # the balance is never overwritten
-    diff = finding.evidence["columns"]["CurrentVacationBalance"]
-    assert diff["sharepoint"] == 4.0 and diff["postgres"] == 10.5   # both values recorded
-
-
-def test_pull_files_nothing_when_identical(clean_db, monkeypatch):
-    # A SharePoint row identical to Postgres is counted as unchanged and files no
-    # finding, whatever its modified time.
-    _seed_one(monkeypatch, _sp_item("101"))
-    _fake_list(monkeypatch, [_sp_item("101")])                 # byte-for-byte the same
-
-    counts = run(_pull())
-    assert counts["unchanged"] == 1 and counts["diff_findings"] == 0
-
-    async def findings():
-        async with async_session() as session:
-            return (await session.execute(select(LegacyFinding))).scalars().all()
-    assert run(findings()) == []
-
-
-def test_pull_leaves_a_person_with_a_pending_writeback_alone(clean_db, monkeypatch):
-    # An app change still queued for SharePoint means SharePoint is behind, so the
-    # detector leaves the person alone: no finding is filed even when a balance and
-    # a field both differ.
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
-    _seed_one(monkeypatch, _sp_item("101"))
-
-    async def queue():
-        async with async_session() as session:
-            staff_writeback.enqueue_writeback(session, "101", {"CurrentVacationBalance": 10.5})
-            await session.commit()
-    run(queue())
-
-    _fake_list(monkeypatch, [_sp_item("101", CurrentVacationBalance=4.0, CellNumber="555-0000")])
-
-    counts = run(_pull())
-    assert counts["skipped_pending"] == 1 and counts["diff_findings"] == 0
-
-    async def findings():
-        async with async_session() as session:
-            return (await session.execute(select(LegacyFinding))).scalars().all()
-    assert run(findings()) == []                               # SharePoint is behind, not a discrepancy
-
-
-def test_pull_flags_a_new_sharepoint_item_without_importing(clean_db, monkeypatch):
-    # A SharePoint item with no Postgres row is flagged as new and is NOT imported
-    # (Postgres is the source of truth).
-    _seed_one(monkeypatch, _sp_item("101"))
-
-    new_item = _sp_item("202", Title="Walked In", EmailAddress="walkin@ucsh.com")
-    _fake_list(monkeypatch, [_sp_item("101"), new_item])
-
-    counts = run(_pull())
-    assert counts["new_findings"] == 1 and counts["unchanged"] == 1
-
-    async def read():
-        async with async_session() as session:
-            created = (await session.execute(
-                select(Staff).where(Staff.sp_item_id == "202"))).scalars().first()
-            finding = (await session.execute(
-                select(LegacyFinding).where(LegacyFinding.subject_id == "202")
-            )).scalars().first()
-            return created, finding
-    created, finding = run(read())
-    assert created is None                                     # never imported
-    assert finding.case == "sharepoint_new_after_switch"
-    assert finding.evidence["name"] == "Walked In" and finding.evidence["email"] == "walkin@ucsh.com"
-
-
-def test_pull_findings_are_not_duplicated_on_rerun(clean_db, monkeypatch):
-    # The same unchanged difference files one finding; a rerun adds none (the
-    # fingerprint keeps it unique).
-    _seed_one(monkeypatch, _sp_item("101"))
-    _fake_list(monkeypatch, [_sp_item("101", CellNumber="555-9999")])
-
-    assert run(_pull())["diff_findings"] == 1
-    assert run(_pull())["diff_findings"] == 0                  # rerun files nothing new
-
-    async def count():
-        async with async_session() as session:
-            return (await session.execute(
-                select(func.count()).select_from(LegacyFinding)
-                .where(LegacyFinding.subject_id == "101")
-            )).scalar_one()
-    assert run(count()) == 1
-
-
-def test_a_new_difference_files_a_new_finding(clean_db, monkeypatch):
-    # A later, different SharePoint edit files again (even once HR has dealt
-    # with the first), while the same difference stays filed once.
-    _seed_one(monkeypatch, _sp_item("101"))
-    _fake_list(monkeypatch, [_sp_item("101", CellNumber="555-9999")])
-    assert run(_pull())["diff_findings"] == 1
-
-    _fake_list(monkeypatch, [_sp_item("101", CellNumber="555-0000")])   # a second, different edit
-    assert run(_pull())["diff_findings"] == 1
-    assert run(_pull())["diff_findings"] == 0                  # and that one only once
-
 
 # --- #341 detectors -----------------------------------------------------------
 
@@ -710,15 +424,16 @@ def test_a_mistyped_staff_setting_fails_loudly(monkeypatch):
         run(staff_store.get_list_items(STAFF))
 
 
-def test_create_through_the_store_queues_a_writeback(clean_db, monkeypatch):
-    # A create while on Postgres mints an id and queues the SharePoint replay.
-    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
+def test_create_through_the_store_lands_only_in_postgres(clean_db, monkeypatch):
+    # A create while on Postgres mints an id in the app's range and queues nothing
+    # for SharePoint: Postgres is the only copy of staff.
+    from app.repositories.postgres.staff import APP_STAFF_ID_START
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
     created = run(staff_store.create_list_item(STAFF, {"Title": "New Person", "SalaryHourly": "Salary"}))
     assert created["fields"]["Title"] == "New Person"
+    assert int(created["id"]) >= APP_STAFF_ID_START           # an app-made id
 
     async def read_wb():
         async with async_session() as session:
             return (await session.execute(select(StaffWriteback))).scalars().all()
-    wb = run(read_wb())
-    assert len(wb) == 1 and wb[0].sp_item_id == created["id"]
+    assert run(read_wb()) == []                                # nothing for SharePoint

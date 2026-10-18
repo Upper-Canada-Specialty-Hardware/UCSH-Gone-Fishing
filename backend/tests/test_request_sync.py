@@ -33,7 +33,6 @@ from app.models.sync_run import SyncRun
 from app.services import app_settings, rehearsal, shadow_sync
 from app.services.app_settings import HOLIDAYS_STORAGE, POSTGRES, REQUESTS_STORAGE, STAFF_STORAGE
 from app.services.request_import import import_requests
-from app.services.sharepoint_check import run_sharepoint_check
 from app.services.storage_switch import flip_to_postgres
 
 LEAVE = settings.SP_LIST_LEAVE_REQUESTS
@@ -396,7 +395,7 @@ def test_flip_runs_a_final_sync_then_sets_the_storage(sp):
     assert run(_record("leave", 3905)) is not None                      # the final sync imported the item
 
 
-# ----- the post-switch SharePoint check -----
+# ----- after the switch -----
 
 
 def _switch_to_postgres():
@@ -408,67 +407,6 @@ def _switch_to_postgres():
     run(app_settings.set_setting(REQUESTS_STORAGE, POSTGRES))
     run(app_settings.set_setting(STAFF_STORAGE, POSTGRES))
     run(app_settings.set_setting(HOLIDAYS_STORAGE, POSTGRES))
-
-
-def test_check_flags_a_new_item_once_and_never_imports_it(sp):
-    _switch_to_postgres()
-    # The Microsoft Form is retired at the switch: a new item (Form or not) is
-    # flagged for an admin, never imported, and only once across repeated sweeps.
-    sp.lists[LEAVE] = [sp_item(500, leave_fields(lookup=101, request_source=""))]
-    for _ in range(3):
-        run(run_sharepoint_check())
-    assert run(_count(RequestRecord, kind="leave", sp_item_id="500")) == 0   # never imported
-    findings = run(_findings("sharepoint_new_after_switch"))
-    assert [f.subject_id for f in findings] == ["500"]                        # flagged exactly once
-    assert findings[0].evidence.get("start_date") == "2026-06-01"            # dates kept as evidence
-
-
-def test_check_flags_an_edit_once_and_never_applies_it(sp):
-    # Import the item, switch, then edit it in SharePoint.
-    sp.lists[LEAVE] = [sp_item(600, leave_fields(lookup=101, days=5), modified="2026-05-01T10:00:00Z")]
-    run(import_requests())
-    _switch_to_postgres()
-    run(run_sharepoint_check())                                 # baseline sighting, no flag
-    sp.lists[LEAVE] = [sp_item(600, leave_fields(lookup=101, days=9), modified="2026-07-01T10:00:00Z")]
-    run(run_sharepoint_check())                                 # a new version -> edit flagged
-    run(run_sharepoint_check())                                 # same new version -> no re-flag
-    assert len(run(_findings("sharepoint_edit_after_switch"))) == 1
-    assert run(_record("leave", 600)).days == 5                 # the edit was not applied
-
-
-def test_an_edit_right_after_the_switch_is_still_flagged(sp):
-    """An edit between the final sync and the first check is not taken as the baseline."""
-    sp.lists[LEAVE] = [sp_item(650, leave_fields(lookup=101, days=5), modified="2026-05-01T10:00:00Z")]
-    run(flip_to_postgres())                                     # the final sync records this version
-    sp.lists[LEAVE] = [sp_item(650, leave_fields(lookup=101, days=9), modified="2026-05-01T10:05:00Z")]
-    run(run_sharepoint_check())                                 # the very first check sees the edit
-    assert len(run(_findings("sharepoint_edit_after_switch"))) == 1
-    assert run(_record("leave", 650)).days == 5                 # and never applies it
-
-
-def test_check_flags_a_delete_once_and_never_applies_it(sp):
-    sp.lists[LEAVE] = [sp_item(700, leave_fields(lookup=101))]
-    run(import_requests())
-    _switch_to_postgres()
-    run(run_sharepoint_check())                                 # baseline
-    sp.lists[LEAVE] = []                                        # the item is gone from SharePoint
-    run(run_sharepoint_check())                                 # delete flagged
-    run(run_sharepoint_check())                                 # no re-flag
-    assert len(run(_findings("sharepoint_delete_after_switch"))) == 1
-    assert run(_record("leave", 700)) is not None               # the Postgres row is kept
-
-
-def test_check_flags_two_look_alike_new_items_apart(sp):
-    _switch_to_postgres()
-    # Same text, different SharePoint ids: matched by id, so each is flagged on its
-    # own, and neither is imported.
-    sp.lists[LEAVE] = [
-        sp_item(800, leave_fields(lookup=101, title="Same text", request_source="")),
-        sp_item(801, leave_fields(lookup=101, title="Same text", request_source="")),
-    ]
-    run(run_sharepoint_check())
-    assert run(_count(RequestRecord, kind="leave")) == 0                       # neither imported
-    assert {f.subject_id for f in run(_findings("sharepoint_new_after_switch"))} == {"800", "801"}
 
 
 # ----- rehearsal -----
@@ -562,7 +500,6 @@ def test_a_failed_item_is_recorded_and_retried(sp, monkeypatch):
     assert counts["leave"]["errors"] == 1 and "66" in counts["leave"]["error_ids"]   # recorded and visible
     assert run(_record("leave", 66)) is None                     # not imported
     assert run(_record("leave", 10)) is not None                 # the good one still landed
-    assert run(_count(SharepointSeen, sp_item_id="66")) == 0      # unseen, so the next run retries it
 
     monkeypatch.setattr(ri, "_import_item", real)                # the item stops failing
     run(import_requests())

@@ -197,9 +197,8 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     if not manager_sp_user_ids:
         raise EmployeeValidationError("At least one supervisor must be assigned.")
 
-    # Create through the store: on Postgres this mints the new staff id and queues
-    # a "create" write-back (which later makes the SharePoint item and stores its
-    # returned id on the row); on SharePoint it creates the item directly as before.
+    # Create through the store: on Postgres this mints the new staff id there
+    # (nothing goes to SharePoint); on SharePoint it creates the item directly.
     item = await staff_store.create_list_item(settings.SP_LIST_STAFF_DIRECTORY, fields)
     employee_id = item["id"]
     logger.info("Created Staff Directory record #%s (%s)", employee_id, fields["Title"])

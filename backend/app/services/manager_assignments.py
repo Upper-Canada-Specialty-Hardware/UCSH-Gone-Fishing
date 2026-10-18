@@ -115,8 +115,8 @@ async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[i
     """Update the AllManagers field on a single Staff Directory record.
 
     Routed through ``staff_store``, so the change lands in Postgres when staff live
-    there (queuing one SharePoint write-back and recording one ``system`` history
-    row) and goes straight to SharePoint otherwise, byte for byte as before.
+    there (recording one ``system`` history row) and goes straight to SharePoint
+    otherwise, byte for byte as before.
 
     Args:
         employee_id: Staff Directory item id of the person whose managers change.

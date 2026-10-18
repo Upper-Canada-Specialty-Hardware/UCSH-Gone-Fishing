@@ -178,8 +178,8 @@ def _sync_errors(counts: dict) -> tuple[int, list]:
 async def _run_final_sync() -> dict:
     """Run every sync step one last time, keeping the pause alive between steps.
 
-    Writes one ``final_sync`` SyncRun row, whose ``started_at`` is the flip time the
-    post-switch check schedules from. Each step runs in its own session and commits,
+    Writes one ``final_sync`` SyncRun row, whose ``started_at`` records when the
+    switch happened. Each step runs in its own session and commits,
     and the pause expiry is refreshed before each step; refreshing between steps
     (not inside an open step transaction) keeps the pause in force through a slow
     sync without a write of one step blocking the pause refresh of the next.
@@ -192,7 +192,7 @@ async def _run_final_sync() -> dict:
             records the error first, then it propagates so the flip is refused.
     """
     # Record the run first and commit it, so its id and start time are fixed before
-    # the steps run (the post-switch check schedules from this start time).
+    # the steps run.
     async with async_session() as session:
         run = SyncRun(job="final_sync")
         session.add(run)

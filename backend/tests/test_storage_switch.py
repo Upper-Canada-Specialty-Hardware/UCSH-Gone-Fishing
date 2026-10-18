@@ -21,7 +21,6 @@ Everything runs on SQLite with a faked ``sp_client``; no test touches real Share
 """
 import asyncio
 import copy
-from datetime import timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -453,46 +452,6 @@ def test_dispatch_skips_a_request_list_while_paused(monkeypatch):
 
     run(body())
     assert seen == []                                         # paused: skipped, not processed
-
-
-# ----- item 8: the sweep due-count ignores per-item and unclean sweeps -----
-
-
-def _sweep(job, minutes_ago, finished=True, error=None):
-    """A SyncRun row for the due-count tests, started ``minutes_ago`` minutes back."""
-    at = utcnow() - timedelta(minutes=minutes_ago)
-    return SyncRun(job=job, started_at=at, finished_at=(at if finished else None), error=error)
-
-
-def test_due_count_ignores_per_item_and_unclean_sweeps():
-    # Flip 40 min ago, no clean sweep yet, so the first (30 min) check is due. The
-    # per-item check and the failed / unfinished sweeps must not count as a check,
-    # or the schedule would think the 1-hour check is next and wrongly wait.
-    from app.tasks import sync_tasks
-
-    async def body():
-        async with async_session() as session:
-            session.add(_sweep("final_sync", 40))
-            session.add(_sweep("sharepoint_check_item", 5))    # a webhook check: never counts
-            session.add(_sweep("sharepoint_check", 10, error="boom"))   # failed: never counts
-            session.add(_sweep("sharepoint_check", 12, finished=False))  # unfinished: never counts
-            await session.commit()
-        assert await sync_tasks._check_is_due() is True
-    run(body())
-
-
-def test_due_count_counts_a_clean_full_sweep():
-    # Flip 40 min ago with one clean full sweep already done: the next check is the
-    # 1-hour one, which is not due yet, so a clean sweep does postpone it.
-    from app.tasks import sync_tasks
-
-    async def body():
-        async with async_session() as session:
-            session.add(_sweep("final_sync", 40))
-            session.add(_sweep("sharepoint_check", 35))        # a clean finished full sweep
-            await session.commit()
-        assert await sync_tasks._check_is_due() is False
-    run(body())
 
 
 # ----- item 9: a truncated read raises rather than returning short -----

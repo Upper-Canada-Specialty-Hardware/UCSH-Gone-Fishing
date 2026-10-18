@@ -10,10 +10,10 @@ async def dispatch_change(list_id: str, item: dict):
     """Route SP list changes to the correct service pipeline.
 
     Once requests live in Postgres (#335), a SharePoint request list is no longer
-    a live source: the webhook path stops treating its changes as requests and
-    leaves them to the scheduled SharePoint check (services/sharepoint_check.py),
-    which imports a new Form submission, and flags any other new item, edit or
-    delete for review. So a request-list change here is ignored after the switch.
+    a live source, so a request-list change here is logged and ignored: it is
+    never imported or processed, and nothing reads SharePoint for it. In practice
+    the webhook route drops every notification after the switch before it gets
+    here; this is the second guard.
 
     Args:
         list_id: The SharePoint list the change came from.
@@ -33,15 +33,10 @@ async def dispatch_change(list_id: str, item: dict):
 
     if await requests_in_postgres() and is_request_list(list_id):
         # The request list is no longer the live source. Anything that still lands
-        # there (the Form until it is turned off, or a hand edit) is never imported
-        # as a request: the per-item check flags it for an admin instead. This is
-        # true whether or not staff have also moved (a half switch through an env
-        # override changes nothing here, because nothing is imported or notified);
-        # the webhook is logged so a stray item is never dropped in silence
-        # (#336 review, finding 10).
-        from app.services.sharepoint_check import run_sharepoint_check_for_item
-        logger.info("Requests are in Postgres; flagging SharePoint %s item %s via the check", list_id, item.get("id"))
-        await run_sharepoint_check_for_item(list_id, item.get("id"))
+        # there (a Form submission or a hand edit) is never imported or processed:
+        # it would otherwise run the old SharePoint path and email a manager. The
+        # line is logged so a stray item is never dropped in silence.
+        logger.info("Requests are in Postgres; ignoring SharePoint %s item %s", list_id, item.get("id"))
         return
     fields = item.get("fields", {})
     item_id = item.get("id")

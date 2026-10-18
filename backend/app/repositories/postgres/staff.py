@@ -70,7 +70,7 @@ _DATE_COLUMNS = {
     "RequestAllowDate": "request_allow_date",
 }
 
-# SharePoint timestamp columns kept for the pull's newer-wins compare.
+# SharePoint timestamp columns kept for the shadow sync's newer-wins compare.
 _SP_TIMESTAMP_COLUMNS = {
     "Modified": "sp_modified",
     "Created": "sp_created",
@@ -115,8 +115,8 @@ def column_changed(column: str, old, new) -> bool:
 def diff_logged_fields(before_fields: dict, incoming: dict) -> list[tuple[str, object, object]]:
     """The logged columns present in ``incoming`` whose value changed.
 
-    Shared by the write path (the store's own history) and the pull, so both log
-    changes against the same set of columns the same way.
+    Shared by the write path (the store's own history) and the shadow sync's
+    staff copy, so both log changes against the same set of columns the same way.
 
     Args:
         before_fields: The person's current SharePoint shape (rebuilt from Postgres).
@@ -610,9 +610,8 @@ async def _load_one(session: AsyncSession, sp_item_id) -> Staff | None:
 class PostgresStaffList:
     """The Staff Directory list in Postgres, with sp_client's list methods.
 
-    A write (create or update) queues a write-back so the change reaches the
-    SharePoint list the Bulletin Board and the Microsoft Form still read; a
-    read never does.
+    A write (create or update) lands only here: Postgres is the only copy of
+    staff, and nothing is written back to SharePoint.
     """
 
     async def get_list_items(self, list_id: str, select=None, **kwargs) -> list[dict]:
@@ -673,14 +672,13 @@ class PostgresStaffList:
             raise
 
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
-        """Add a staff row from a SharePoint payload and queue the write-back.
+        """Add a staff row from a SharePoint-shaped payload.
 
         A Postgres-native person has no SharePoint item backing them yet, so a
         fresh id is minted in its own range, from APP_STAFF_ID_START up. SharePoint
         hands out its ids from the low end, so an id minted here can never equal
-        one SharePoint gives a person HR adds there at the same moment, and the
-        pull cannot merge two people. The write-back then creates the matching
-        SharePoint item in the background and keeps its id in sp_remote_item_id.
+        one SharePoint gave a person before the switch, so two people are never
+        merged. Postgres is the only copy: nothing is written back to SharePoint.
 
         Args:
             list_id: The Staff Directory list id.
@@ -689,8 +687,6 @@ class PostgresStaffList:
         Returns:
             The created row as ``{"id","fields"}``.
         """
-        from app.services.staff_writeback import enqueue_writeback   # avoid an import cycle
-
         async with async_session() as session:
             existing = (await session.execute(select(Staff.sp_item_id))).scalars()
             numeric = [int(s) for s in existing if s is not None and str(s).isdigit()]
@@ -700,9 +696,6 @@ class PostgresStaffList:
             session.add(row)
             await apply_sp_fields(session, row, fields)
             row.sp_modified = row.sp_modified or utcnow()  # a fresh row is modified now
-            # A create replay makes the SharePoint item (op="create"); the drain
-            # stores the returned SharePoint id back on this row (sp_remote_item_id).
-            enqueue_writeback(session, new_id, dict(fields), op="create")
             await session.commit()
         return await self.get_list_item(list_id, new_id)
 
@@ -711,7 +704,7 @@ class PostgresStaffList:
         links: dict | None = None, history_source: str | None = None,
         history_reason: str | None = None,
     ) -> dict:
-        """Merge fields into a staff row, queue the write-back, return its fields.
+        """Merge fields into a staff row and return its fields.
 
         Args:
             list_id: The Staff Directory list id.
@@ -733,8 +726,6 @@ class PostgresStaffList:
         Raises:
             httpx.HTTPStatusError: 404 when there is no such person.
         """
-        from app.services.staff_writeback import enqueue_writeback   # avoid an import cycle
-
         async with async_session() as session:
             row = await _load_one(session, item_id)
             if row is None:
@@ -745,7 +736,6 @@ class PostgresStaffList:
                 name_now = row.name or ""                 # name at the time of the change
             await apply_sp_fields(session, row, fields, links=links)
             row.sp_modified = utcnow()                    # an app edit is modified now
-            enqueue_writeback(session, str(item_id), dict(fields))
             if history_source:                            # record history in the same transaction
                 for column, old, new in _write_history_rows(
                     before_fields, fields, links, before_managers

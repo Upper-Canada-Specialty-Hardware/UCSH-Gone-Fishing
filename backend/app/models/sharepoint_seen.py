@@ -23,7 +23,11 @@ from app.models.mixins import utcnow
 
 
 class SharepointSeen(Base):
-    """One SharePoint item version, and what the sweep did with it."""
+    """No longer written: the post-switch SharePoint check was removed (2026-10-18
+    ruling). The table is kept so no schema change is needed; the rest of this
+    docstring describes what it used to hold.
+
+    One SharePoint item version, and what the sweep did with it."""
 
     __tablename__ = "sharepoint_seen"
     __table_args__ = (

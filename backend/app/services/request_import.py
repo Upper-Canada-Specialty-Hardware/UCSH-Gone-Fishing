@@ -34,7 +34,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -46,7 +45,6 @@ from app.models.request_approval_state import RequestApprovalState
 from app.models.request_counter import RequestCounter
 from app.models.request_deletion import RequestDeletion
 from app.models.request_record import RequestRecord
-from app.models.sharepoint_seen import SharepointSeen
 from app.models.sync_run import SyncRun
 from app.repositories.postgres.requests import _stored
 from app.repositories.postgres.typed_requests import TypedRequestList
@@ -578,9 +576,8 @@ async def _import_item(
 
     Only the pre-switch shadow sync imports request items, and it keeps the
     SharePoint item id as the item number so old links and SMS replies still name
-    the request. After the switch the Microsoft Form is retired: a new SharePoint
-    item is never imported, only recorded as a legacy finding (see
-    ``sharepoint_check``), so this is never called for a post-switch arrival.
+    the request. After the switch nothing reads SharePoint again, so a new
+    SharePoint item is never imported and this is never called for it.
 
     Args:
         session: An open session; the caller commits.
@@ -982,35 +979,6 @@ def item_version(sp_item: dict) -> str:
     )
 
 
-async def record_seen_version(
-    session: AsyncSession, kind: str, sp_item_id: str, sp_version: str, outcome: str, run_id: int | None
-) -> None:
-    """Record one SharePoint item version, at most once per version (#336).
-
-    The importer records every version it copies, so the check after the switch
-    knows exactly what Postgres holds: any later version of a known item is an
-    edit made in SharePoint after the switch, even one made in the minutes
-    between the final sync and the first check.
-
-    Args:
-        session: An open session; not committed here.
-        kind: The request kind.
-        sp_item_id: The SharePoint item id.
-        sp_version: The version seen.
-        outcome: One of request_vocab.SEEN_OUTCOMES ("unchanged" for an import).
-        run_id: The sync_runs row this belongs to.
-    """
-    row = SharepointSeen(
-        kind=kind, sp_item_id=str(sp_item_id), sp_version=sp_version, outcome=outcome, run_id=run_id
-    )
-    try:
-        async with session.begin_nested():                     # a SAVEPOINT around just this insert
-            session.add(row)
-            await session.flush()
-    except IntegrityError:
-        pass                                                   # this version was already recorded
-
-
 async def _version_map(session: AsyncSession, list_id: str) -> dict[str, int]:
     """SharePoint item id -> its current approval version, for one request list.
 
@@ -1061,15 +1029,11 @@ async def _import_all(session: AsyncSession, run_id: int | None) -> dict:
                     outcome = await _import_item(
                         session, kind, sp_item, index, run_id, version_by_sp_id=version_by_sp_id,
                     )
-                    # Remember the version copied: the post-switch check's baseline.
-                    await record_seen_version(
-                        session, kind, str(sp_item.get("id")), item_version(sp_item), "unchanged", run_id,
-                    )
                 created += outcome == "created"
                 updated += outcome == "updated"
             except Exception:
-                # The savepoint rolled this item back and no sharepoint_seen row
-                # was written for it, so the next run retries it. Record its id in
+                # The savepoint rolled this item back, so the next run retries
+                # it. Record its id in
                 # the counts so a stuck item is visible on the storage screen and
                 # never silently lost (#333 review, finding 1).
                 errors += 1

@@ -62,7 +62,7 @@ After the switch the app never talks to SharePoint again. Postgres is the only s
 - every Graph call is refused at one gate and logged as "SharePoint call refused after the switch";
 - on restart the app skips the Graph token, the SharePoint probe, webhooks, catch-up and the 5 minute sync; the reminder, carry-over reset and new hire jobs run on Postgres alone (the setup-nudge emails are gone; broken staff records show on the admin setup tab);
 - incoming webhook notifications are acknowledged and ignored;
-- nothing checks SharePoint after the switch, and staff edits are not copied back to the Staff Directory (that copy is now off before the switch too);
+- nothing checks SharePoint after the switch, and staff edits are not copied back to the Staff Directory (the code for both was removed);
 - the holiday copy panel and the request columns card are gone from the admin dashboard.
 
 ## Tests after the switch (roberto@ucsh.com)
@@ -97,11 +97,6 @@ They stay on. They write only into the SharePoint lists; nothing in the app is c
 ## Production switch: what differs
 
 - Production runs without `REHEARSAL_MODE`, so messages go to everyone and the switch deletes the live Graph webhook subscriptions.
-- At the switch, turn off everything that still feeds SharePoint, by hand:
-  - In Microsoft Forms, open each leave, overtime and carry-over form, go to Settings and turn off "Accept responses".
-  - In Power Automate, turn off the flow or flows that copy a Form response into a SharePoint request list.
-  - Make the request lists, the Staff Directory and the holidays list read-only for staff.
-  - This needs an M365 account that owns or co-owns those forms, plus a Power Platform maker or admin for the flow's environment.
-  - Missing this step loses data silently: the app no longer reads SharePoint, so anything that still lands in a list is never seen. Do it before the switch.
+- The Microsoft Form and its Power Automate flow stay on (product owner ruling, 2026-10-18). After the switch the app never reads SharePoint, so anything submitted through the Form, or typed into a SharePoint list, is not taken in. That is accepted: requests are made on the request page, and a Form submission after the switch is a user mistake, not a gap to cover. The flow never writes the Staff Directory.
 - Run the switch after hours. The pause lasts as long as the final sync, usually a few minutes.
 - Merging to `master` deploys production. The switch itself is a separate, deliberate click afterwards.

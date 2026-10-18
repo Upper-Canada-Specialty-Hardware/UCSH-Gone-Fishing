@@ -183,6 +183,10 @@ class StaffSupervisor(Base):
 class StaffWriteback(Base):
     """One pending write of an app-made staff change back to the SharePoint list.
 
+    No longer written: staff write-back was removed (2026-10-18 ruling; Postgres
+    is the only copy of staff). The table is kept so no schema change is needed;
+    the rest of this docstring describes what it used to hold.
+
     Every change the app makes to a person's record (a balance movement on
     approval, an HR edit once that path routes through the store) is queued here
     and drained to SharePoint in the background, retried until it lands, so the

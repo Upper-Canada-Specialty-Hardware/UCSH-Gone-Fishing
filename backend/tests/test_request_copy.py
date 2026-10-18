@@ -103,9 +103,8 @@ def test_the_report_counts_what_is_left_to_copy(sharepoint_lists):
     assert after["lists"]["leave"]["only_in_sharepoint"] == 0
 
 
-# The Microsoft Form is retired at the switch (no fallback, revised #336 scope):
-# once requests live in Postgres a new item that still lands in a SharePoint list
-# is never imported, only flagged for an admin on the Legacy data screen.
+# After the switch nothing reads SharePoint: a new item that still lands in a
+# SharePoint list (a Form submission or a hand edit) is never imported or flagged.
 
 FORM_ITEM = {
     "id": "950", "createdDateTime": "2026-10-10T13:00:00Z",
@@ -138,13 +137,17 @@ async def _findings_for(sp_item_id, case):
         )).scalars().all()
 
 
-def test_the_dispatcher_flags_a_new_item_and_never_imports_it(form_item):
-    # Since the Form is retired, a request-list webhook once requests live in
-    # Postgres runs the per-item SharePoint check, which records one legacy finding
-    # for the new item and imports nothing (services/sharepoint_check).
+def test_the_dispatcher_ignores_a_new_item_after_the_switch(form_item, monkeypatch):
+    # A request-list change once requests live in Postgres is logged and ignored:
+    # never imported, never flagged, and SharePoint is not read for it.
     from app.tasks import dispatcher
+    reads = []
+
+    async def counting_read(list_id, item_id):
+        reads.append(item_id)
+        return form_item.get(str(item_id))
+    monkeypatch.setattr(request_copy.sp_client, "get_list_item_or_none", counting_read)
     run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
     assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is None   # never imported
-    findings = run(_findings_for("950", "sharepoint_new_after_switch"))
-    assert len(findings) == 1                                                    # flagged for an admin
-    assert findings[0].evidence.get("submitter_email") == "pat@ucsh.com"         # id, list, submitter, dates
+    assert run(_findings_for("950", "sharepoint_new_after_switch")) == []        # never flagged
+    assert reads == []                                                           # SharePoint not read

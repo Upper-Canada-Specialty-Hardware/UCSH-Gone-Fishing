@@ -2223,10 +2223,9 @@ async def admin_set_balances(body: dict):
                           for k, sp_field in BALANCE_FIELDS.items()
                           if k in entry}
 
-                # Route through the store: on Postgres the correction lands there,
-                # queues one write-back and records the balance change in the
-                # history (admin_dashboard); on SharePoint it writes the list
-                # directly, exactly as before.
+                # Route through the store: on Postgres the correction lands there
+                # and records the balance change in the history (admin_dashboard);
+                # on SharePoint it writes the list directly, exactly as before.
                 await staff_store.update_list_item_fields(
                     settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
                     history_source="admin_dashboard",
