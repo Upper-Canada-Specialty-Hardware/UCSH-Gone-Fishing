@@ -76,6 +76,7 @@ _SWITCH_STATUS: dict = {
     "finished_at": None,        # ISO time it ended (done or failed)
     "error": None,              # why it failed, if it did
     "final_sync": None,         # the final sync's per-step counts (errors and ids included)
+    "summary": None,            # what Postgres holds once the switch is done (see _switch_summary)
 }
 
 
@@ -101,18 +102,21 @@ def _status_begin() -> None:
     """Mark the switch as started, clearing any previous run's result."""
     _SWITCH_STATUS.update(
         state="running", step="pausing", started_at=utcnow().isoformat(),
-        finished_at=None, error=None, final_sync=None,
+        finished_at=None, error=None, final_sync=None, summary=None,
     )
+    logger.info("Switch: started")                             # every switch log line starts "Switch:"
 
 
 def _status_step(step: str) -> None:
     """Record the phase the switch is in now."""
     _SWITCH_STATUS["step"] = step
+    logger.info("Switch: step %s", step)                       # one line per phase, to follow it live
 
 
 def _status_done() -> None:
     """Mark the switch finished and successful."""
     _SWITCH_STATUS.update(state="done", step="done", finished_at=utcnow().isoformat())
+    logger.info("Switch: complete")
 
 
 def _status_fail(message: str, error_ids: list | None = None) -> None:
@@ -125,6 +129,7 @@ def _status_fail(message: str, error_ids: list | None = None) -> None:
     if error_ids:
         message = f"{message} (item ids: {', '.join(str(i) for i in error_ids)})"
     _SWITCH_STATUS.update(state="failed", error=message, finished_at=utcnow().isoformat())
+    logger.error("Switch: FAILED, nothing was switched: %s", message)
 
 
 async def _all_in_postgres() -> bool:
@@ -203,6 +208,7 @@ async def _run_final_sync() -> dict:
                 run = await session.get(SyncRun, run_id)
                 counts[step.__name__] = await step(session, run)
                 await session.commit()
+            logger.info("Switch: final sync %s: %s", step.__name__, counts[step.__name__])
         async with async_session() as session:
             run = await session.get(SyncRun, run_id)
             run.counts = counts
@@ -217,6 +223,67 @@ async def _run_final_sync() -> dict:
             run.finished_at = utcnow()
             await session.commit()
         raise
+
+
+async def _outbox_count() -> int:
+    """How many email/text messages the outbox holds, of any status.
+
+    Returns:
+        The row count; read before and after the switch so the summary can show
+        that the switch itself queued nothing.
+    """
+    from sqlalchemy import func, select
+    from app.models.outbox import Outbox                       # lazy: keeps this module's imports light
+    async with async_session() as session:
+        return int((await session.execute(select(func.count()).select_from(Outbox))).scalar_one())
+
+
+async def _switch_summary(outbox_before: int) -> dict:
+    """Count what Postgres holds right after the flip, and log it in one line.
+
+    This is the line to read in the logs to confirm the switch went through: the
+    request rows per kind and the pending ones, the staff and holiday rows, the
+    manager links (and how many name nobody on staff), and how many messages
+    the switch queued, which must be zero.
+
+    Args:
+        outbox_before: The outbox row count taken before the pause began.
+
+    Returns:
+        The counts, also kept on the switch status for the storage card.
+    """
+    from sqlalchemy import func, select
+    from app.models.holiday import Holiday
+    from app.models.request_record import RequestRecord
+    from app.models.staff import Staff, StaffSupervisor
+    async with async_session() as session:
+        by_kind = dict((await session.execute(
+            select(RequestRecord.kind, func.count()).group_by(RequestRecord.kind)
+        )).all())
+        pending = dict((await session.execute(
+            select(RequestRecord.kind, func.count())
+            .where(RequestRecord.status == "pending").group_by(RequestRecord.kind)
+        )).all())
+        staff = (await session.execute(select(func.count()).select_from(Staff))).scalar_one()
+        holidays = (await session.execute(select(func.count()).select_from(Holiday))).scalar_one()
+        links = (await session.execute(select(func.count()).select_from(StaffSupervisor))).scalar_one()
+        unlinked = (await session.execute(
+            select(func.count()).select_from(StaffSupervisor)
+            .where(StaffSupervisor.manager_sp_user_id.is_(None))
+        )).scalar_one()
+    summary = {
+        "requests": {k: int(v) for k, v in by_kind.items()},
+        "pending": {k: int(v) for k, v in pending.items()},
+        "staff": int(staff),
+        "holidays": int(holidays),
+        "manager_links": int(links),
+        "manager_links_not_on_staff": int(unlinked),
+        "messages_queued_by_switch": await _outbox_count() - outbox_before,
+    }
+    logger.info("Switch: Postgres now holds %s", summary)
+    if summary["messages_queued_by_switch"]:
+        logger.error("Switch: messages were queued during the switch: %s", summary["messages_queued_by_switch"])
+    return summary
 
 
 def _staff_number(row) -> int | None:
@@ -248,6 +315,8 @@ async def _rekey_people_links(session) -> dict:
     * each manager or supervisor link takes the staff id of the person it names:
       the linked staff row when the import found one, else the staff row with the
       same name (the rule the rest of the app matches managers by);
+    * the supervisor link, which SharePoint stores with no name, is matched by the
+      record's own Supervisor text column;
     * a link whose person is not in the staff table keeps its name and loses its
       id, so it can never be mistaken for somebody's staff id;
     * each person's own account link becomes their own staff id.
@@ -274,9 +343,15 @@ async def _rekey_people_links(session) -> dict:
     links = (await session.execute(select(StaffSupervisor))).scalars().all()
     unmatched = 0
     for link in links:
+        name = link.manager_name
+        if not name and link.relation == "supervisor_link":
+            # SharePoint gives the supervisor link an id but no name; the record's
+            # own Supervisor text column names the same person.
+            owner = by_key.get(link.staff_id)
+            name = owner.supervisor_text if owner is not None else None
         target = by_key.get(link.manager_staff_id) if link.manager_staff_id else None
         if target is None:
-            target = by_name.get((link.manager_name or "").strip().lower())   # match by name
+            target = by_name.get((name or "").strip().lower())   # match by name
         if target is None:
             link.manager_sp_user_id = None                        # not on staff: keep the name, drop the id
             unmatched += 1
@@ -298,7 +373,7 @@ async def _flip_settings_to_postgres() -> None:
     """
     async with async_session() as session:
         rekeyed = await _rekey_people_links(session)          # before the flip lands, same commit
-        logger.info("Manager links moved to staff ids: %s", rekeyed)
+        logger.info("Switch: manager links moved to staff ids: %s", rekeyed)
         for key in (REQUESTS_STORAGE, STAFF_STORAGE, HOLIDAYS_STORAGE):
             row = await session.get(AppSetting, key)
             if row is None:
@@ -337,6 +412,7 @@ async def flip_to_postgres() -> dict:
             _status_done()
             raise AlreadySwitched("Already switched")
 
+        outbox_before = await _outbox_count()                  # to prove the switch queues no message
         await begin_pause()                                    # refuse approvals/submissions/staff writes now
         _status_step("waiting_in_flight")
         await asyncio.sleep(max(0, PAUSE_SETTLE_SECONDS))      # a short floor before the in-flight wait
@@ -373,6 +449,8 @@ async def flip_to_postgres() -> dict:
         from app.tasks.subscription_manager import delete_all_subscriptions
         await delete_all_subscriptions()
         await _flip_settings_to_postgres()                     # all three settings, one transaction
+        summary = await _switch_summary(outbox_before)         # what landed, for the log and the card
+        _SWITCH_STATUS["summary"] = summary
         _status_done()
         return {"final_sync": counts, "storage": POSTGRES, "staff_storage": True, "holidays_storage": True}
     except AlreadySwitched:

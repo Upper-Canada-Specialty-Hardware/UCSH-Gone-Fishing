@@ -102,7 +102,7 @@ async def delete_all_subscriptions() -> int:
             await session.delete(row)                          # forget it either way
             removed += 1
         await session.commit()
-    logger.info("Removed %d SharePoint webhook subscription(s)", removed)
+    logger.info("Switch: removed %d SharePoint webhook subscription(s)", removed)
     return removed
 
 

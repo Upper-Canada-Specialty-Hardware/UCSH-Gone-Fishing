@@ -44,7 +44,7 @@ from app.models.sync_run import SyncRun
 from app.routes.dashboard import DashboardUser, get_dashboard_user
 from app.services import rehearsal, sharepoint_cutoff
 from app.services.admin_auth import admin_guard
-from app.services.app_settings import HOLIDAYS_STORAGE, POSTGRES, REQUESTS_STORAGE, STAFF_STORAGE
+from app.services.app_settings import POSTGRES
 from staff_seed import import_staff, wipe_staff
 
 STAFF = settings.SP_LIST_STAFF_DIRECTORY
@@ -57,7 +57,11 @@ _BALANCES = {
 EMPLOYEE = {"id": "10", "fields": {
     "Title": "Alice Salary", "EmailAddress": "alice@ucsh.com", "SalaryHourly": "Salary",
     "Location": "Toronto Warden", "Department": "Sales", "CellNumber": "+16475550000",
-    "AllManagers": [{"LookupValue": "Boss Person", "LookupId": 20}], **_BALANCES,
+    # SharePoint names the manager by their Microsoft 365 user id (612), not their
+    # staff id (20); the switch converts it. The supervisor link has an id only,
+    # and the Supervisor text column names the same person.
+    "AllManagers": [{"LookupValue": "Boss Person", "LookupId": 612}],
+    "SupervisorLinkLookupId": 612, "Supervisor": "Boss Person", **_BALANCES,
 }}
 MANAGER = {"id": "20", "fields": {
     "Title": "Boss Person", "EmailAddress": "boss@ucsh.com", "CellNumber": "+16475551234",
@@ -77,14 +81,6 @@ async def _wipe():
                       SharepointSeen, RequestRecord, RequestCounter, SyncRun, Holiday, AppSetting,
                       CarryoverResetLog):
             await session.execute(delete(model))
-        await session.commit()
-
-
-async def _switch_settings():
-    """Write the three storage settings as the switch does: all Postgres."""
-    async with async_session() as session:
-        for key in (REQUESTS_STORAGE, STAFF_STORAGE, HOLIDAYS_STORAGE):
-            session.add(AppSetting(key=key, value=POSTGRES))
         await session.commit()
 
 
@@ -113,7 +109,8 @@ def switched(monkeypatch):
             return [copy.deepcopy(EMPLOYEE), copy.deepcopy(MANAGER)] if list_id == STAFF else []
         seed.setattr(sharepoint.sp_client, "get_list_items", fake_items)
         run(import_staff())
-    run(_switch_settings())
+    from app.services import storage_switch
+    run(storage_switch._flip_settings_to_postgres())        # the real flip: settings plus the link conversion
 
     # Record every SharePoint call before the real gate refuses it.
     calls: list[tuple[str, str]] = []
@@ -649,5 +646,92 @@ def test_the_switch_points_manager_links_at_staff_ids(monkeypatch):
         assert pairs == [("Boss Person", 20), ("Gone Away", None)]   # 10 would have been Alice's staff id
         assert own_link == 10
     finally:
+        run(_wipe())
+        run(wipe_staff())
+
+
+def test_managers_supervisors_and_teams_hold_after_the_switch(switched):
+    # The assignment screen, the picker, the supervisor link, the team view and
+    # approval routing all agree on Boss after the switch converts his id.
+    from app.models.staff import Staff, StaffSupervisor
+    admin = _client()
+    alice = next(a for a in admin.get("/api/dashboard/admin/manager-assignments").json()["assignments"]
+                 if a["name"] == "Alice Salary")
+    assert alice["managers"] == [{"sp_user_id": 20, "name": "Boss Person"}]   # 612 became Boss's staff id
+    users = {u["name"]: u["sp_user_id"] for u in admin.get("/api/dashboard/admin/sp-users").json()["users"]}
+    assert users["Boss Person"] == 20                         # the picker offers the same id
+
+    async def supervisor_link():
+        async with async_session() as session:
+            owner = (await session.execute(select(Staff).where(Staff.sp_item_id == "10"))).scalar_one()
+            link = (await session.execute(select(StaffSupervisor).where(
+                StaffSupervisor.staff_id == owner.id, StaffSupervisor.relation == "supervisor_link",
+            ))).scalar_one()
+            return link.manager_sp_user_id
+    assert run(supervisor_link()) == 20                       # matched by the Supervisor text
+
+    # Saving the managers back keeps Boss and his name (no blank, no stranger).
+    saved = admin.patch("/api/dashboard/admin/manager-assignments/10", json={"manager_ids": [20]})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["managers"] == [{"sp_user_id": 20, "name": "Boss Person"}]
+
+    members = _client("manager", "20").get("/api/dashboard/team/members").json()["members"]
+    assert [m["name"] for m in members] == ["Alice Salary"]   # Boss's team is Alice
+
+    # A new request routes to Boss: his approval email and text are queued.
+    item_id = _submit_leave(admin, 45)
+
+    async def approvals():
+        async with async_session() as session:
+            rows = (await session.execute(select(Outbox).where(Outbox.message_type == "manager_approval"))).scalars().all()
+            return sorted((row.channel, row.recipient) for row in rows)
+    assert run(approvals()) == [("email", "boss@ucsh.com"), ("sms", "+16475551234")]
+    assert run(_record("leave", item_id)).status == "pending"
+    assert switched == []
+
+
+def test_the_switch_queues_no_message_and_reports_what_landed(monkeypatch):
+    # The whole switch, start to finish, on a pending request already imported:
+    # nothing is queued to send, and the summary line counts what landed.
+    from app.services import storage_switch
+    from app.services.shadow_sync import SYNC_STEPS
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "sharepoint")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "sharepoint")
+    monkeypatch.setattr(settings, "STORAGE_HOLIDAYS", "sharepoint")
+    monkeypatch.setattr(storage_switch, "PAUSE_SETTLE_SECONDS", 0)
+    run(_wipe())
+    run(wipe_staff())
+
+    async def seed():
+        async with async_session() as session:
+            session.add(RequestRecord(
+                kind="leave", item_id=9001, sp_item_id="9001", status="pending", employee_id="10",
+                employee_email="alice@ucsh.com", leave_type="Vacation", days=1.0,
+                start_date=_future_weekday(15), end_date=_future_weekday(15),
+            ))
+            await session.commit()
+    run(seed())
+
+    async def no_step(session, sync_run):
+        return {}                                             # the copy itself is covered elsewhere
+    monkeypatch.setattr("app.services.storage_switch.SYNC_STEPS", [no_step])
+    try:
+        result = run(storage_switch.flip_to_postgres())
+        summary = storage_switch.switch_status()["summary"]
+        assert result["storage"] == POSTGRES
+        assert summary["messages_queued_by_switch"] == 0
+        assert summary["pending"] == {"leave": 1}
+
+        # The first reminder pass after the switch leaves the imported request alone:
+        # the old path never emailed its manager from this database.
+        from app.services.request_submission import queue_due_reminders
+        assert run(queue_due_reminders()) == 0
+
+        async def outbox_rows():
+            async with async_session() as session:
+                return (await session.execute(select(Outbox))).scalars().all()
+        assert run(outbox_rows()) == []
+    finally:
+        assert SYNC_STEPS                                     # the real steps were untouched
         run(_wipe())
         run(wipe_staff())
