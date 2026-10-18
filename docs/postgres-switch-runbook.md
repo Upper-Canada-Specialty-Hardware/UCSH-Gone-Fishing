@@ -37,8 +37,22 @@ Admin dashboard, storage card, **Switch to Postgres**, then confirm in the panel
 2. The switch waits for anything already in flight to finish (up to 2 minutes; if something is still running then, the switch fails and nothing changes).
 3. The final sync copies SharePoint's latest requests, staff and company holidays into Postgres. If any part of it fails, the switch stops and nothing changes.
 4. The Graph webhook subscriptions are deleted (in rehearsal only the database rows go; no live subscription is touched).
-5. Requests, staff and holidays all switch to Postgres in one step.
+5. In one transaction: every staff manager and supervisor link is moved from its Microsoft 365 user id to the staff id of the person it names, and requests, staff and holidays all switch to Postgres.
 6. The pause ends. If anything fails, the pause also expires by itself after 15 minutes.
+
+The switch sends no email or text and reprocesses no request. The final sync only copies; nothing in it queues a message.
+
+### Confirming it in the backend log
+
+Every line the switch writes starts with `Switch:`. A clean run reads, in order:
+- `Switch: started`, then `Switch: step waiting_in_flight`, `Switch: step final_sync`;
+- one `Switch: final sync <step>: {...}` line per copy step (requests, staff, holidays), each with its counts and `errors: 0`;
+- `Switch: step switching`, `Switch: removed N SharePoint webhook subscription(s)`;
+- `Switch: manager links moved to staff ids: {'links': N, 'unmatched': N}` (unmatched = managers who are not on staff);
+- `Switch: Postgres now holds {...}`: requests per kind, pending per kind, staff, holidays, manager links, and `messages_queued_by_switch: 0`;
+- `Switch: complete`.
+
+A failure logs `Switch: FAILED, nothing was switched: <reason>` and leaves every setting on SharePoint. After a good run there must be no `SharePoint call refused` line.
 
 The switch runs in the background; the storage card shows its progress and, if it fails, the reason and a "Try again" button.
 
@@ -72,6 +86,13 @@ For each test, watch three things:
 5. **New employee pipeline.** Add an employee from the admin dashboard (and from the manager dashboard). They get an app id of 1,000,000 or above, appear in the dashboards at once, and can submit a request. Nothing is copied to SharePoint.
 6. **Holidays.** Add, edit and delete a company holiday in the admin dashboard; a leave request over that date counts one day less.
 7. **No SharePoint traffic.** Watch the backend log through all of the above: there must be no "SharePoint call refused" line. One would mean a code path still reaching for SharePoint.
+
+## The Microsoft Form and Power Automate during the rehearsal
+
+They stay on. They write only into the SharePoint lists; nothing in the app is called by them.
+- Before the preview switch, the 5 minute sync copies what they write into the preview's Postgres (read only; rehearsal never processes or emails it beyond the allowlist).
+- After the preview switch, the preview never reads SharePoint, so they cannot touch the preview's Postgres. From then on the preview and production drift apart: Form requests and production decisions made after that moment do not appear in the preview. That is expected for a rehearsal.
+- Production keeps running on SharePoint as today, Form included.
 
 ## Production switch: what differs
 
