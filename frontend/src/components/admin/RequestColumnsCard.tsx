@@ -33,6 +33,7 @@ export default function RequestColumnsCard({ processingEnabled }: { processingEn
   };
 
   if (!report && !error) return null;
+  if (report?.switched) return null;                       // after the switch the SharePoint lists are not used
   const listErrors = report
     ? Object.entries(report.lists || {}).filter(([, v]: any) => v.error).map(([k, v]: any) => `${k}: ${v.error}`)
     : [];

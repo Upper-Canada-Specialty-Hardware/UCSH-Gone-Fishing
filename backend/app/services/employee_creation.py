@@ -18,7 +18,7 @@ Comments, Extension, Birthday) are deliberately left unset.
 import logging
 
 from app.config import settings
-from app.repositories.staff_store import staff_store
+from app.repositories.staff_store import staff_store, staff_in_postgres
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     get_employee_by_email,
@@ -184,9 +184,10 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
 
     # Not finding them in the site's user list is a notice, not a refusal: the
     # request page links requests by email, and someone only joins that list
-    # once they visit the site or are added to it.
+    # once they visit the site or are added to it. Once staff live in Postgres
+    # there is no such list and the notice would be misleading, so it is skipped.
     notices: list[str] = []
-    if not await _resolve_user_lookup_id(fields["EmailAddress"]):
+    if not await staff_in_postgres() and not await _resolve_user_lookup_id(fields["EmailAddress"]):
         notices.append(
             f"{fields['EmailAddress']} is not linked to the SharePoint site yet. "
             "They can use the request page now; the Microsoft Form works once "

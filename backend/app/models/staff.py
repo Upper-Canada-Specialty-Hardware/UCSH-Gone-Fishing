@@ -44,9 +44,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.mixins import TimestampMixin, utcnow
 
-# Days and hours: two decimals, handed to Python as float not Decimal, matching
-# the request tables so a balance compares equal across the two backends.
-_NUM = Numeric(8, 2, asdecimal=False)
+# Days and hours: four decimals, handed to Python as float not Decimal, matching
+# the request tables so a balance compares equal across the two backends. Four
+# decimals because SharePoint balances carry up to 4 (hours / 8, e.g. 0.1875), so
+# two would round them on import (#335 fix).
+_NUM = Numeric(12, 4, asdecimal=False)
 
 
 class Location(Base):

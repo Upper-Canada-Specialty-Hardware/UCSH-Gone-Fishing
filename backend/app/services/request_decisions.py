@@ -34,6 +34,8 @@ from app.models.request_record import RequestRecord
 from app.repositories.request_store import requests_in_postgres
 from app.repositories.staff_balances import POT_COLUMNS, get_staff_balances, staff_in_postgres
 from app.services.balance import (
+    cascade_current_year_pure,
+    cascade_next_year_pure,
     is_next_year_request,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
@@ -373,6 +375,31 @@ async def _refuse(session, request, channel, actor, version, why, reason) -> Non
     log_step(request, "refused", channel=channel, actor=actor, why=why)
 
 
+def _decider_phrase(request: RequestRecord) -> str:
+    """The " by <who>" clause for a result message, naming who actually decided.
+
+    The decision records the actor and the channel it came from. An admin
+    decision or refund (actor ``"admin"``, or the ``admin_dashboard`` channel) is
+    named as an administrator rather than the request's assigned manager, which
+    is who the message named before even when an admin decided or refunded
+    (finding 10). A manager deciding through their own channel keeps naming the
+    manager. This changes only the wording, never who the result is sent to.
+
+    Args:
+        request: The decided request, with ``decided_by`` / ``decided_channel`` set.
+
+    Returns:
+        ``" by <name>"`` when a decider is known, or ``""`` when none is.
+    """
+    actor = (request.decided_by or "").strip()
+    channel = request.decided_channel or ""
+    if actor.lower() == "admin" or channel == "admin_dashboard":   # an admin acted, not the manager
+        return " by an administrator"
+    if request.manager_name:                                       # a manager decided on their own channel
+        return f" by {request.manager_name}"
+    return ""
+
+
 def _result_context(request: RequestRecord, outcome_word: str, rows: list[dict], note: str) -> tuple[str, str, str]:
     """Build the result email subject, HTML body and SMS text from the step.
 
@@ -388,7 +415,7 @@ def _result_context(request: RequestRecord, outcome_word: str, rows: list[dict],
     name = request.employee_name or "there"
     label = KIND_LABEL.get(request.kind, "Request")
     heading = f"{label} Request: {outcome_word}"
-    decided_by = f" by {request.manager_name}" if request.manager_name else ""
+    decided_by = _decider_phrase(request)
     verb = {"Approved": "has been approved", "Rejected": "was not approved", "Refunded": "has been refunded"}[outcome_word]
     intro = f"Hi {name}, your {label.lower()} request #{request.item_id} {verb}{decided_by}."
     subject = f"{request.employee_name or 'Staff'} - {label} Request: {outcome_word}"
@@ -522,7 +549,16 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
                 return {"error": ALREADY_DECIDED_MESSAGE, "refused": "decided"}
 
             balances = await get_staff_balances()                  # SharePoint or Postgres, per the setting
-            before_pots = await balances.lock_pots(session, request.employee_id)
+            try:
+                before_pots = await balances.lock_pots(session, request.employee_id)
+            except LookupError:
+                # An imported request whose submitter never matched a staff row
+                # (employee_id like "spuser:N"/"spitem:N") has no balance to
+                # move: refuse cleanly, as the SharePoint path returns "Employee
+                # not found", instead of 500ing on the missing lookup.
+                logger.warning("No staff row for %s #%s (employee %s); cannot approve",
+                               kind, request.item_id, request.employee_id)
+                return {"error": "Employee not found"}
             # Checked after the balance lock so a clashing approval committed a
             # moment ago (on any server) is seen; nothing is written on a clash.
             clash = await _approval_conflict(session, request)
@@ -680,7 +716,14 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                 net_by_pot = _legacy_refund_net(request)           # re-derive what it moved, as the SharePoint path does
                 reconstructed = bool(net_by_pot)                   # empty still means a genuine no-balance approval
             balances = await get_staff_balances()
-            before_pots = await balances.lock_pots(session, request.employee_id)
+            try:
+                before_pots = await balances.lock_pots(session, request.employee_id)
+            except LookupError:
+                # An imported request whose submitter never matched a staff row:
+                # nothing to reverse, refuse cleanly like the SharePoint path.
+                logger.warning("No staff row for %s #%s (employee %s); cannot refund",
+                               kind, request.item_id, request.employee_id)
+                return {"error": "Employee not found"}
             rows: list[dict] = []
             pot_writes: dict[str, float] = {}
             refund_reason = (
@@ -703,9 +746,22 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                 await post_ledger(session, request, request.employee_id, pot,
                                   before, after, refund_reason, actor, channel, key)
                 rows.append({"label": POT_LABEL[pot], "value": f"{before:g} -> {after:g} days"})
+            # Reversing the ledger can leave a pot negative: refunding banked
+            # overtime after it was spent takes Make-Up below zero. Cascade the
+            # result the way the SharePoint refund does, and write and ledger the
+            # extra moves, so Make-Up/Carry Over never sit negative (finding 6).
+            pots_after = {**before_pots, **pot_writes}
+            for pot, new_value in _refund_cascade(request, pots_after).items():
+                if new_value == pots_after[pot]:
+                    continue                                       # this pot did not move in the cascade
+                key = step_key(kind, request.item_id, f"refund:cascade:{pot}", version)
+                await post_ledger(session, request, request.employee_id, pot,
+                                  pots_after[pot], new_value, f"{refund_reason} (cascade)", actor, channel, key)
+                rows.append({"label": POT_LABEL[pot], "value": f"{pots_after[pot]:g} -> {new_value:g} days"})
+                pot_writes[pot] = new_value                        # fold the cascade move into the single write
             if pot_writes:
                 await balances.write_pots(session, request.employee_id, pot_writes)
-            # The pots after the reversal, for the RequestAllowDate recalc below.
+            # The pots after the reversal and cascade, for the RequestAllowDate recalc below.
             final_pots = {**before_pots, **pot_writes}
 
             _mark_decided(request, "refunded", actor, channel)
@@ -749,6 +805,40 @@ async def _approval_net_by_pot(session, request: RequestRecord) -> dict[str, flo
     for pot, change in rows:
         net[pot] = net.get(pot, 0.0) + float(change)               # sum, so split approvals reverse whole
     return net
+
+
+def _refund_cascade(request: RequestRecord, pots: dict[str, float]) -> dict[str, float]:
+    """The cascaded values of the current-year pots after a refund's raw reversal.
+
+    The SharePoint refund cascades the balances after putting the amount back, so
+    a reversal that drives Make-Up (or Sick/Carry Over) below zero overflows down
+    Sick -> Make-Up -> Carry Over -> Vacation instead of leaving a pot negative
+    (finding 6). A next-year leave uses the next-year cascade (Make-Up -> Carry
+    Over only), matching how its approval was applied. Pure: it only reads the
+    reversed pots and returns the cascaded ones.
+
+    Args:
+        request: The request being refunded (its kind and dates pick the cascade).
+        pots: The pots right after the raw reversal (``{pot: value}``).
+
+    Returns:
+        ``{pot: value}`` for the pots the cascade touches; Payout and the
+        ``vacation_taken`` counter are not part of the cascade and are left out.
+    """
+    sick = pots.get("sick", 0.0)
+    make_up = pots.get("make_up", 0.0)
+    carry_over = pots.get("carry_over", 0.0)
+    vacation = pots.get("vacation", 0.0)
+    if request.kind == "leave" and _is_next_year(request):         # next year never touches Vacation
+        result = cascade_next_year_pure(make_up, carry_over)
+    else:
+        result = cascade_current_year_pure(sick, make_up, carry_over, vacation)
+    out: dict[str, float] = {}
+    for sp_field, value in result.items():                         # map SharePoint columns back to pot names
+        pot = SP_FIELD_TO_POT.get(sp_field)
+        if pot is not None:
+            out[pot] = float(value)
+    return out
 
 
 def _legacy_refund_net(request: RequestRecord) -> dict[str, float]:

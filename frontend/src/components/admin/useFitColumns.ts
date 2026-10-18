@@ -1,4 +1,4 @@
-import { RefObject, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 
 /**
  * No admin table scrolls sideways (the owner's rule). When a table is wider
@@ -70,26 +70,45 @@ export function fitColumns(width: number, columns: string[], widths: ColumnWidth
   return { visible, hidden, cards: false };
 }
 
+/** The hook's result: the fit, whether it is measured yet, and the ref to attach. */
+export interface UseFitResult extends FitResult {
+  /** False until the container's real width is known; show a placeholder until then. */
+  measured: boolean;
+  /** Attach to the table/cards container. A callback ref, so it follows the
+   *  element across the table-to-cards swap and re-measures. */
+  ref: (node: HTMLElement | null) => void;
+}
+
 /**
  * Track a container's width and return the columns that fit inside it.
  *
- * @param containerRef - The element the table lives in (its inner width is the budget).
+ * The container is attached through the returned callback ref, not a passed-in
+ * ref object, so when the table and the cards layout swap one element for
+ * another the ResizeObserver follows the new element. Until the first real
+ * width is known {@link UseFitResult.measured} is false, so the caller shows a
+ * light placeholder instead of every column laid out at a guessed width.
+ *
  * @param columns - Column keys in importance order (most important first).
  * @param widths - Assumed width per column key.
- * @returns The current fit: visible, hidden and whether to use cards.
+ * @returns The current fit, whether it is measured, and the ref to attach.
  */
 export function useFitColumns(
-  containerRef: RefObject<HTMLElement | null>,
   columns: string[],
   widths: ColumnWidths,
-): FitResult {
+): UseFitResult {
+  // The container element, tracked in state via a callback ref so a swapped
+  // element re-runs the observer effect below.
+  const [el, setEl] = useState<HTMLElement | null>(null);
   const [width, setWidth] = useState(0);
   // Columns dropped beyond the width budget because the real table, once laid
   // out, still overflowed (the assumed widths under-counted a long value).
   const [extraDrop, setExtraDrop] = useState(0);
 
+  // A callback ref: React calls it with the element (null on unmount), so the
+  // effect re-attaches the observer whenever the element changes.
+  const ref = useCallback((node: HTMLElement | null) => setEl(node), []);
+
   useEffect(() => {
-    const el = containerRef.current;
     if (!el) return;
     // Measure now, then whenever the container resizes. Only the width matters,
     // so a height change from hiding a column never loops back into a refit.
@@ -105,7 +124,7 @@ export function useFitColumns(
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [containerRef]);
+  }, [el]);
 
   // A width change starts the fit over, so post-layout drops do not accumulate.
   useEffect(() => { setExtraDrop(0); }, [width]);
@@ -115,15 +134,22 @@ export function useFitColumns(
   // After the table is on screen, if it still overflows its container (clipped,
   // never scrolled), drop one more of the lowest-priority columns and let it
   // settle. Capped so it cannot loop, and the actions column is never dropped.
+  // Proper deps (the old version had none, forcing a layout read every render):
+  // this runs once per element, width, column-set or drop change.
+  const columnsKey = columns.join('|');
   useLayoutEffect(() => {
-    const el = containerRef.current;
     if (!el || base.cards) return;
     const overflowing = el.scrollWidth > el.clientWidth + 1;
     const droppable = base.visible.filter((k) => k !== PROTECTED).length;
     if (overflowing && extraDrop < droppable - 2) setExtraDrop((n) => n + 1);
-  });
+    // base.cards and base.visible derive from width + columns, covered by the deps.
+  }, [el, width, extraDrop, columnsKey]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (base.cards || extraDrop === 0) return base;
+  // "Measured" is simply having a real width; until then the caller shows a
+  // placeholder rather than all columns at a guessed width (which could overflow).
+  const measured = width > 0;
+
+  if (base.cards || extraDrop === 0) return { ...base, measured, ref };
 
   // Move the lowest-priority visible columns (from the end of the importance
   // order) into hidden, skipping the actions column.
@@ -136,6 +162,6 @@ export function useFitColumns(
     visible.splice(i, 1);
     dropped++;
   }
-  if (visible.length <= 2) return { visible: [], hidden: columns, cards: true };   // nothing useful left: cards
-  return { visible, hidden, cards: false };
+  if (visible.length <= 2) return { visible: [], hidden: columns, cards: true, measured, ref };   // nothing useful left: cards
+  return { visible, hidden, cards: false, measured, ref };
 }

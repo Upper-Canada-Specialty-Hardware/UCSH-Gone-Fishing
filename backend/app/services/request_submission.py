@@ -714,7 +714,7 @@ REPEAT_REMINDER_DAYS = 7
 MAX_REMINDERS_WITHOUT_DATE = 6
 
 
-def _reminder_cutoff_passed(record: RequestRecord, today: date) -> bool:
+def _reminder_cutoff_passed(record: RequestRecord, today: date, count: int | None = None) -> bool:
     """Whether a pending request is moot and reminders should stop (finding 12).
 
     Mirrors reminders.py's SharePoint cutoff so the Postgres path stops in the
@@ -725,6 +725,8 @@ def _reminder_cutoff_passed(record: RequestRecord, today: date) -> bool:
     Args:
         record: The pending request row.
         today: Today's date in the local sense the caller uses.
+        count: Reminders already sent, from ``_reminder_clock``; None reads the
+            row's own count.
 
     Returns:
         True when reminders should stop for this request.
@@ -735,32 +737,80 @@ def _reminder_cutoff_passed(record: RequestRecord, today: date) -> bool:
         created = record.created_at
         if created is not None and today.year > created.year:                # past year-end of its year
             return True
-        return (record.reminder_count or 0) >= MAX_REMINDERS_WITHOUT_DATE    # or capped by count
+        sent = (record.reminder_count or 0) if count is None else count       # merged count when given
+        return sent >= MAX_REMINDERS_WITHOUT_DATE                            # or capped by count
     return False
 
 
-def _reminder_due(record: RequestRecord, now) -> bool:
+def _reminder_clock(record: RequestRecord, state) -> tuple:
+    """Where a request's reminder cadence stands: the last email time and the count.
+
+    A request made in the app keeps its own clock on the row. A request imported
+    from SharePoint carries no reminder history on the row, because the old path
+    kept it in ``request_approval_state`` (when the approval email or the last
+    reminder went out, and how many reminders were sent). Reading that history
+    keeps the cadence where it was at the switch, so the first sweep after the
+    switch does not remind every old pending request at once.
+
+    Args:
+        record: The pending request row.
+        state: Its ``request_approval_state`` row, or None.
+
+    Returns:
+        ``(last, count)``: the time the cadence is measured from (None when there
+        is nothing to measure from) and the reminders already sent.
+    """
+    last = record.last_reminder_at or record.created_at          # an app request's own clock
+    count = record.reminder_count or 0
+    if record.sp_item_id is not None and state is not None:      # imported: continue the old clock
+        emailed = state.last_emailed_at                            # approval email or last old-path reminder
+        if emailed is not None and (record.last_reminder_at is None or emailed > _naive_utc(record.last_reminder_at)):
+            last = emailed                                         # the later of the two clocks wins
+        count = max(count, state.reminder_count or 0)              # reminders sent on either path
+    return last, count
+
+
+def _naive_utc(moment):
+    """Drop the timezone from an aware UTC time, so it compares with a naive one.
+
+    Args:
+        moment: A datetime, aware or naive (naive means UTC here).
+
+    Returns:
+        The same moment as a naive UTC datetime.
+    """
+    from datetime import timezone
+    if moment.tzinfo is None:
+        return moment                                              # already naive UTC
+    return moment.astimezone(timezone.utc).replace(tzinfo=None)    # aware -> naive UTC
+
+
+def _reminder_due(record: RequestRecord, now, clock: tuple | None = None) -> bool:
     """Whether a pending request is due a reminder now, by the usual cadence.
 
-    First reminder after ``FIRST_REMINDER_DAYS`` from submission, then one every
+    First reminder after ``FIRST_REMINDER_DAYS`` from submission (or, for an
+    imported request, from its approval email), then one every
     ``REPEAT_REMINDER_DAYS`` from the last. A request past its start date is left
     for the caller to skip; this only times the cadence.
 
     Args:
         record: The pending request row.
         now: The current time (aware), for the comparison.
+        clock: ``(last, count)`` from ``_reminder_clock``; None reads the row alone.
 
     Returns:
         True when a reminder is due.
     """
     from datetime import timedelta
-    last = record.last_reminder_at or record.created_at
+    last, count = clock if clock is not None else (
+        record.last_reminder_at or record.created_at, record.reminder_count or 0,
+    )
     if last is None:
         return True                                              # no clock to measure from: due
     if last.tzinfo is None:                                      # SQLite hands back naive UTC
         from datetime import timezone
         last = last.replace(tzinfo=timezone.utc)
-    threshold = FIRST_REMINDER_DAYS if (record.reminder_count or 0) == 0 else REPEAT_REMINDER_DAYS
+    threshold = FIRST_REMINDER_DAYS if count == 0 else REPEAT_REMINDER_DAYS   # first wait, then the repeat
     return now - last >= timedelta(days=threshold)
 
 
@@ -794,11 +844,16 @@ async def queue_due_reminders() -> int:
             )
             if state is not None and state.reminders_closed:
                 continue                                          # reminders explicitly closed: skip
-            if _reminder_cutoff_passed(record, today):
+            if record.sp_item_id is not None and state is None:
+                # Imported, and the old path never emailed its manager (no state
+                # row), so the old path never reminded it either: keep it silent.
+                continue
+            clock = _reminder_clock(record, state)                # continue an imported request's cadence
+            if _reminder_cutoff_passed(record, today, clock[1]):
                 if state is not None and not state.reminders_closed:
                     state.reminders_closed = True                 # close it so later scans skip without recomputing
                 continue
-            if not _reminder_due(record, now):
+            if not _reminder_due(record, now, clock):
                 continue
             if await _queue_reminder(session, record.kind, record.item_id, today):
                 queued += 1
@@ -851,18 +906,22 @@ async def _sync_version_state(session, kind, item_id, version, before, after) ->
     list_id = _edit_list_id(kind)
     snapshot = {k: after.get(k) for k in keys}                    # the links now reflect these values
     previous = {k: before.get(k) for k in keys}
+    # request_approval_state.last_emailed_at is a naive DateTime column, so it
+    # takes naive UTC (as approval_versions.py writes it); an aware value here
+    # makes asyncpg reject the whole edit. _naive_utc drops the tzinfo.
+    emailed_at = _naive_utc(utcnow())
     state = await session.get(RequestApprovalState, (list_id, str(item_id)))
     if state is None:                                             # a Postgres request has no row until its first edit
         session.add(RequestApprovalState(
             list_id=list_id, item_id=str(item_id), current_version=version,
             current_snapshot=snapshot, previous_snapshot=previous,
-            last_emailed_at=utcnow(), reminder_count=0, reminders_closed=False,
+            last_emailed_at=emailed_at, reminder_count=0, reminders_closed=False,
         ))
     else:
         state.previous_snapshot = state.current_snapshot
         state.current_snapshot = snapshot
         state.current_version = version
-        state.last_emailed_at = utcnow()
+        state.last_emailed_at = emailed_at
         state.reminder_count = 0                                  # a material change restarts the reminder cadence
         state.reminders_closed = False
 

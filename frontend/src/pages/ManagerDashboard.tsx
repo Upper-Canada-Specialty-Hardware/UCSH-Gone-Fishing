@@ -144,14 +144,25 @@ export default function ManagerDashboard() {
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
 
   // Live updates: merge each timeline event into the team's requests, and refresh
-  // the pending queue (debounced) when a decision lands from another channel (#328).
+  // the pending queue when a decision lands from another channel. A decision that
+  // moves a balance (approve/reject/refund/cancel) also refetches the team
+  // members, so their balance cards and vacation rings follow the change; a
+  // timeline event cannot carry a balance. Both are debounced (#328).
   const pendingRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const balancesDirty = useRef(false);                     // a balance-moving event arrived since the last flush
   const onLiveEvent = useCallback((ev: LiveEvent) => {
     const queueTypes = ['approved', 'rejected', 'cancelled', 'submitted', 'sent_to_manager', 'refunded'];
     if (!queueTypes.includes(ev.type)) return;
+    if (['approved', 'rejected', 'refunded', 'cancelled'].includes(ev.type)) balancesDirty.current = true;
     if (pendingRefresh.current) clearTimeout(pendingRefresh.current);
     pendingRefresh.current = setTimeout(() => {
       getTeamPending().then((r) => setPending(r.data.pending || [])).catch(() => { /* stale queue until next load */ });
+      if (balancesDirty.current) {                          // a balance moved: pull the team cards again
+        balancesDirty.current = false;
+        getTeamMembers()
+          .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
+          .catch(() => { /* the cards keep their figures until the next load */ });
+      }
     }, 600);
   }, []);
   const { status: liveStatus } = useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });

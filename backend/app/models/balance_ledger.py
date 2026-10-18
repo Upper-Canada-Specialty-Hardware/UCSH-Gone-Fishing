@@ -49,9 +49,11 @@ class BalanceLedger(Base):
     # Whose balance moved; every history read filters by one person, so indexed.
     employee_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     pot: Mapped[str] = mapped_column(String, nullable=False)                 # which pot moved
-    change: Mapped[float] = mapped_column(Numeric(8, 2, asdecimal=False), nullable=False)   # after - before
-    before: Mapped[float] = mapped_column(Numeric(8, 2, asdecimal=False), nullable=False)   # pot value before
-    after: Mapped[float] = mapped_column(Numeric(8, 2, asdecimal=False), nullable=False)    # pot value after
+    # Numeric(12, 4): SharePoint balances carry up to 4 decimals (hours / 8), so
+    # a ledger row keeps the exact before/after/change without rounding (#335 fix).
+    change: Mapped[float] = mapped_column(Numeric(12, 4, asdecimal=False), nullable=False)   # after - before
+    before: Mapped[float] = mapped_column(Numeric(12, 4, asdecimal=False), nullable=False)   # pot value before
+    after: Mapped[float] = mapped_column(Numeric(12, 4, asdecimal=False), nullable=False)    # pot value after
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)          # one plain sentence
     actor: Mapped[str | None] = mapped_column(String, nullable=True)         # who caused it
     channel: Mapped[str] = mapped_column(String, nullable=False)             # where it came from

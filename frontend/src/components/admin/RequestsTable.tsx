@@ -1,4 +1,4 @@
-import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, ReactNode, useEffect, useMemo, useState } from 'react';
 import { Box, Button, Checkbox, Collapse } from '@mui/material';
 import { Theme, alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
@@ -107,11 +107,18 @@ function groupKey(r: Row, group: string): string {
 export default function RequestsTable(props: Props) {
   const { rows, src, sort, onSort, sortable, group, openKey, onToggleOpen, selected, processingEnabled, busyKey, leaving, actions, empty, onFitNote } = props;
   const theme = useTheme();
-  const wrapRef = useRef<HTMLDivElement>(null);
   const cols = COLUMN_SETS[src];
-  const fit = useFitColumns(wrapRef, priorityOrder(src), COLUMN_WIDTHS);
+  const fit = useFitColumns(priorityOrder(src), COLUMN_WIDTHS);
   const hidden = useMemo(() => new Set(fit.hidden), [fit.hidden]);
   const cards = fit.cards;
+
+  // Paint at most a page of rows at a time: thousands in the DOM freeze the tab.
+  // Search, filters, sort, grouping and stats still run over the full list; only
+  // how many rows are rendered is capped, with a "Show 100 more" control (#278).
+  const PAGE = 100;
+  const [limit, setLimit] = useState(PAGE);
+  // Start again at one page when the row set, grouping or list changes.
+  useEffect(() => { setLimit(PAGE); }, [rows.length, group, src]);
 
   // Tell the screen which columns are dropped (they stay in the opened request).
   // In an effect, not during render, so it never updates the parent mid-render.
@@ -134,6 +141,23 @@ export default function RequestsTable(props: Props) {
     return Array.from(map.entries());
   }, [rows, group]);
 
+  // The rows actually painted, capped to `limit` across the groups in order.
+  // The group and its per-group totals use the full group; only the slice that
+  // is rendered is limited, so the DOM never holds thousands of rows at once.
+  const renderGroups = useMemo(() => {
+    let budget = limit;
+    return groups.map(([gk, gr]) => {
+      const show = budget > 0 ? gr.slice(0, budget) : [];  // this group's share of the page
+      budget -= gr.length;
+      return [gk, gr, show] as [string, Row[], Row[]];
+    });
+  }, [groups, limit]);
+  const totalRows = rows.length;                           // the full matched set
+  const renderedCount = Math.min(limit, totalRows);        // how many are painted
+  const onMore = () => setLimit((n) => n + PAGE);          // reveal one more page
+
+  // Select-all and the header checkbox act on EVERY matched row, not just the
+  // painted ones, so a bulk action is correct for rows below the page cap.
   const shownKeys = rows.map((r) => r.key);
   const pickedShown = shownKeys.filter((k) => selected.has(k)).length;
   const allChecked = pickedShown > 0 && pickedShown === shownKeys.length;
@@ -176,15 +200,19 @@ export default function RequestsTable(props: Props) {
   const headCellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, fontSize: 12.5, fontWeight: 700, color: 'text.secondary', bgcolor: theme.tokens.hover, userSelect: 'none' } as const;
   const bodyCellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', whiteSpace: 'nowrap', verticalAlign: 'middle' } as const;
 
+  // Before the first width measure, a light placeholder keeps the container (and
+  // its ref) in the DOM to be measured, without laying out every column at a guess.
+  if (!fit.measured) return <Box ref={fit.ref} sx={{ overflow: 'clip', minHeight: 160 }} aria-hidden />;
+
   // ---- Cards layout: each request a labelled block (phones, or still too wide). ----
   if (cards) {
     return (
-      <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky toolbar above it working (#294 S9) */}
+      <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky toolbar above it working (#294 S9) */}
         {rows.length === 0 && <Box sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>{empty}</Box>}
-        {groups.map(([gk, gr]) => (
+        {renderGroups.map(([gk, gr, show]) => (show.length === 0 ? null : (
           <Box key={gk || 'all'}>
             {gk && <Box sx={{ bgcolor: theme.tokens.chip, px: 1.75, py: 0.875, fontSize: 12.5, fontWeight: 700, color: 'text.secondary' }}>{gk} · {gr.length} {gr.length === 1 ? 'request' : 'requests'}{totalsText(gr)}</Box>}
-            {gr.map((r) => {
+            {show.map((r) => {
               const open = openKey === r.key;
               return (
                 <Box key={r.key} id={`req-row-${r.key}`} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, opacity: isLeaving(r) ? 0 : 1, transition: 'opacity .25s' }}>
@@ -213,35 +241,36 @@ export default function RequestsTable(props: Props) {
               );
             })}
           </Box>
-        ))}
+        )))}
+        <MoreRows rendered={renderedCount} total={totalRows} step={PAGE} onMore={onMore} />
       </Box>
     );
   }
 
   // ---- Table layout ----
-  const colSpan = cols.filter((k) => !hidden.has(k)).length + 2;   // + selection + chevron
+  const visibleCols = cols.filter((k) => !hidden.has(k));          // skip hidden cells, do not render them
+  const colSpan = visibleCols.length + 2;                          // + selection + chevron
   return (
-    <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky header and toolbar working (#294 S9) */}
+    <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky header and toolbar working (#294 S9) */}
       <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
         <Box component="thead">
           <Box component="tr">
             <Box component="th" sx={{ ...headCellSx, width: 34, pr: 0 }}>
-              <Checkbox size="small" checked={allChecked} indeterminate={someChecked} onChange={(e) => props.onSelectAll(shownKeys, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': 'Select every request shown' }} />
+              <Checkbox size="small" checked={allChecked} indeterminate={someChecked} onChange={(e) => props.onSelectAll(shownKeys, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select all ${shownKeys.length} requests` }} />
             </Box>
             <Box component="th" sx={{ ...headCellSx, width: 24 }} />
-            {cols.map((k) => {
+            {visibleCols.map((k) => {
               const c = COLUMNS[k];
               const active = sortable && sort.k === k;
               return (
                 <Box
                   key={k} component="th"
-                  className={hidden.has(k) ? 'fit-hide' : undefined}
                   onClick={() => { if (!c.noSort && sortable) onSort(k); }}
                   role={!c.noSort && sortable ? 'button' : undefined}
                   tabIndex={!c.noSort && sortable ? 0 : undefined}
                   onKeyDown={(e) => { if ((e.key === 'Enter') && !c.noSort && sortable) onSort(k); }}
                   aria-sort={active ? (sort.dir > 0 ? 'ascending' : 'descending') : undefined}
-                  sx={{ ...headCellSx, display: hidden.has(k) ? 'none' : 'table-cell', textAlign: c.numeric ? 'right' : 'left', cursor: !c.noSort && sortable ? 'pointer' : 'default', '&:hover': { color: !c.noSort && sortable ? 'text.primary' : undefined } }}
+                  sx={{ ...headCellSx, display: 'table-cell', textAlign: c.numeric ? 'right' : 'left', cursor: !c.noSort && sortable ? 'pointer' : 'default', '&:hover': { color: !c.noSort && sortable ? 'text.primary' : undefined } }}
                 >
                   {c.label}{active && <Box component="span" sx={{ ml: 0.5, display: 'inline-block', transform: sort.dir > 0 ? 'none' : 'rotate(180deg)' }}>↑</Box>}
                 </Box>
@@ -253,12 +282,12 @@ export default function RequestsTable(props: Props) {
           {rows.length === 0 && (
             <Box component="tr"><Box component="td" colSpan={colSpan} sx={{ ...bodyCellSx, textAlign: 'center', color: 'text.secondary', py: 4, whiteSpace: 'normal' }}>{empty}</Box></Box>
           )}
-          {groups.map(([gk, gr]) => (
+          {renderGroups.map(([gk, gr, show]) => (show.length === 0 ? null : (
             <Fragment key={gk || 'all'}>
               {gk && (
                 <Box component="tr"><Box component="td" colSpan={colSpan} sx={{ ...bodyCellSx, bgcolor: theme.tokens.chip, fontSize: 12.5, fontWeight: 700, color: 'text.secondary', whiteSpace: 'normal' }}>{gk} · {gr.length} {gr.length === 1 ? 'request' : 'requests'}{totalsText(gr)}</Box></Box>
               )}
-              {gr.map((r) => {
+              {show.map((r) => {
                 const open = openKey === r.key;
                 return (
                   <Fragment key={r.key}>
@@ -276,11 +305,10 @@ export default function RequestsTable(props: Props) {
                       <Box component="td" sx={{ ...bodyCellSx, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
                         <Box component="span" sx={{ display: 'inline-block', width: 18, color: open ? 'primary.main' : 'text.secondary', transition: 'transform .3s', transform: open ? 'rotate(90deg)' : 'none' }}>›</Box>
                       </Box>
-                      {cols.map((k) => (
+                      {visibleCols.map((k) => (
                         <Box
                           key={k} component="td"
-                          className={hidden.has(k) ? 'fit-hide' : undefined}
-                          sx={{ ...bodyCellSx, display: hidden.has(k) ? 'none' : 'table-cell', textAlign: COLUMNS[k].numeric ? 'right' : 'left', whiteSpace: COLUMNS[k].wrap ? 'normal' : 'nowrap', ...(COLUMNS[k].wrap ? { minWidth: 160, maxWidth: 340 } : {}), borderBottomColor: open ? 'transparent' : theme.tokens.line }}
+                          sx={{ ...bodyCellSx, display: 'table-cell', textAlign: COLUMNS[k].numeric ? 'right' : 'left', whiteSpace: COLUMNS[k].wrap ? 'normal' : 'nowrap', ...(COLUMNS[k].wrap ? { minWidth: 160, maxWidth: 340 } : {}), borderBottomColor: open ? 'transparent' : theme.tokens.line }}
                         >
                           {cell(r, k)}
                         </Box>
@@ -297,7 +325,7 @@ export default function RequestsTable(props: Props) {
                 );
               })}
             </Fragment>
-          ))}
+          )))}
         </Box>
         {rows.length > 0 && (
           <Box component="tfoot">
@@ -305,6 +333,31 @@ export default function RequestsTable(props: Props) {
           </Box>
         )}
       </Box>
+      <MoreRows rendered={renderedCount} total={totalRows} step={PAGE} onMore={onMore} />
+    </Box>
+  );
+}
+
+/**
+ * The "Show 100 more" control and the shown-of-total line under a capped table.
+ * It appears only once the matched set is larger than one page, so a small list
+ * carries no footer.
+ *
+ * @param props.rendered - How many rows are painted right now.
+ * @param props.total - How many rows match in all.
+ * @param props.step - The page size added by each click.
+ * @param props.onMore - Reveal one more page.
+ * @returns The control, or null when nothing is capped.
+ */
+function MoreRows({ rendered, total, step, onMore }: { rendered: number; total: number; step: number; onMore: () => void }) {
+  const theme = useTheme();
+  if (total <= step) return null;                          // one page or fewer: no footer needed
+  return (
+    <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap', p: '10px 14px', borderTop: `1px solid ${theme.tokens.line}` }}>
+      {rendered < total && (
+        <Button size="small" variant="outlined" color="inherit" onClick={onMore}>Show {step} more</Button>
+      )}
+      <Box sx={{ fontSize: 13, color: 'text.secondary' }}>Showing {rendered.toLocaleString()} of {total.toLocaleString()}</Box>
     </Box>
   );
 }

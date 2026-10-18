@@ -94,8 +94,10 @@ OUTBOX_MESSAGE_TYPES = (
 # What the SharePoint sweep decided about one item (sharepoint_seen.outcome).
 SEEN_OUTCOMES = ("imported", "flagged_new", "flagged_edit", "flagged_delete", "unchanged")
 
-# The jobs that write a sync_runs row.
-SYNC_JOBS = ("import", "shadow_sync", "final_sync", "sharepoint_check")
+# The jobs that write a sync_runs row. "sharepoint_check_item" is the per-item
+# webhook check, kept apart from the scheduled "sharepoint_check" sweep so a
+# webhook cannot postpone the scheduled sweeps (#336 fix).
+SYNC_JOBS = ("import", "shadow_sync", "final_sync", "sharepoint_check", "sharepoint_check_item")
 
 # What a legacy finding is about (legacy_findings.subject).
 FINDING_SUBJECTS = ("request", "staff")
@@ -115,6 +117,9 @@ FINDING_CASES = (
     "sharepoint_new_after_switch",
     "sharepoint_edit_after_switch",
     "sharepoint_delete_after_switch",
+    "email_conflict",          # two staff records claim one email; the later one was blanked (#341 fix)
+    "pending_unprocessed",     # a pending request the old pipeline never finished (no days or no manager)
+    "unknown_status",          # a SharePoint Status outside the five known values (stored as cancelled)
 )
 
 # What HR did with a finding (legacy_findings.status).

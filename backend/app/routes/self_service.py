@@ -70,7 +70,7 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
     # which needs them in the site's user list. Refuse up front rather than
     # create a request nobody is told about. Never the case once requests live
     # in Postgres.
-    if not requests_linked_by_email():
+    if not await requests_linked_by_email():
         email = employee["fields"].get("EmailAddress", "")
         if not await _resolve_user_lookup_id(email):
             raise HTTPException(

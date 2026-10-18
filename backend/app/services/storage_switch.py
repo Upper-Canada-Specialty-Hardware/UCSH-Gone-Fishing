@@ -1,43 +1,61 @@
-"""Flip requests (and staff, when ready) from SharePoint to Postgres (#335).
+"""Flip requests (and staff) from SharePoint to Postgres (#335).
 
-The switch is one deliberate step: refuse that it has not already happened, take
-the sync lock so no shadow sync is running, pause the request and staff writes
-for its short duration, run every sync step one last time so Postgres holds
-SharePoint's latest state, record that final sync, then set the
-``requests_storage`` app setting to ``postgres`` (and ``staff_storage`` too).
-From then on the app reads and writes requests in Postgres, and the post-switch
-SharePoint check (``sharepoint_check``) watches the old lists for anything that
-still lands there. The pause is cleared in ``finally``, so writes resume even if
-the flip raises, and it carries its own expiry so a crash never leaves the app
-paused (see ``switch_pause``).
+The switch is one deliberate step, run in the background so the request that
+triggers it returns at once. Under the sync lock (so no shadow sync overlaps) it:
+pauses request and staff writes, waits for any write that was already in flight to
+finish, runs every sync step one last time so Postgres holds SharePoint's latest
+state, records that final sync, and only then sets both the ``requests_storage``
+and ``staff_storage`` app settings to ``postgres`` in one transaction. From then
+on the app reads and writes requests and staff in Postgres, and the post-switch
+SharePoint check watches the old lists for anything that still lands there.
 
-``flip_back`` reverses the settings for a rehearsal, so a rehearsal can flip,
-look around, and flip back without leaving the app pointed at Postgres.
+The flip refuses to change the settings when the final sync reported any error
+(an item that would not import, or a truncated SharePoint read), when the pause
+lapsed while it ran, or when an in-flight write did not finish in time. In every
+such case the pause is cleared, the settings are left unchanged, and the switch is
+marked failed with the reason (and any error ids) so an admin can see what
+happened on the storage screen. The pause is cleared in ``finally`` too, so writes
+resume even if the flip raises, and it carries its own expiry so a crash never
+leaves the app paused (see ``switch_pause``).
+
+``flip_back`` reverses the settings for a rehearsal, so a rehearsal can flip, look
+around, and flip back without leaving the app pointed at Postgres.
 """
 import asyncio
 import logging
 
 from app.database import async_session
+from app.models.app_setting import AppSetting
 from app.models.mixins import utcnow
 from app.models.sync_run import SyncRun
+from app.repositories.factory import holidays_in_postgres
 from app.repositories.request_store import requests_in_postgres
-from app.services import app_settings
-from app.services.app_settings import POSTGRES, REQUESTS_STORAGE, SHAREPOINT, set_setting
-from app.services.shadow_sync import _run_steps, acquire_sync_lock, release_sync_lock
-from app.services.switch_pause import begin_pause, end_pause
+from app.repositories.staff_store import staff_in_postgres
+from app.services.app_settings import (
+    HOLIDAYS_STORAGE,
+    POSTGRES,
+    REQUESTS_STORAGE,
+    SHAREPOINT,
+    STAFF_STORAGE,
+    set_setting,
+)
+from app.services.shadow_sync import SYNC_STEPS, acquire_sync_lock, release_sync_lock
+from app.services.switch_pause import begin_pause, end_pause, is_paused, wait_until_idle
 
 logger = logging.getLogger(__name__)
 
-# How long the switch waits after pausing before the final sync reads SharePoint,
-# so an approval or edit that started just before the pause finishes its
-# SharePoint writes first and the final sync sees them.
-PAUSE_SETTLE_SECONDS = 15
+# The shortest the switch settles after pausing before it reads SharePoint, so a
+# write that had just started lands first. The in-flight wait does the real work;
+# this is only a floor. Tests monkeypatch it to zero so they do not sleep.
+PAUSE_SETTLE_SECONDS = 2
 
-STAFF_STORAGE = "staff_storage"         # the staff store builder adds this setting; flip it too when present
+# The longest the switch waits for in-flight writes to finish before it gives up,
+# ends the pause and fails the switch rather than reading a half-written balance.
+IN_FLIGHT_TIMEOUT = 120
 
 
 class AlreadySwitched(RuntimeError):
-    """The flip was asked for after requests already live in Postgres.
+    """The flip was asked for after requests and staff already live in Postgres.
 
     A second flip would re-import SharePoint and reset Postgres statuses from it,
     reverting decisions made since the switch, so it is refused. It subclasses
@@ -45,67 +63,301 @@ class AlreadySwitched(RuntimeError):
     """
 
 
-async def flip_to_postgres() -> dict:
-    """Run a final sync under the lock, pausing writes, then switch to Postgres.
+class SwitchRunning(RuntimeError):
+    """A flip was asked for while one is already running (a second POST)."""
+
+
+# The in-memory switch status, shown on the storage screen. One backend instance
+# runs the switch, so a process-local dict is enough; it is reset on each start.
+_SWITCH_STATUS: dict = {
+    "state": "idle",            # idle / running / done / failed
+    "step": None,               # pausing / waiting_in_flight / final_sync / switching / done
+    "started_at": None,         # ISO time the flip began
+    "finished_at": None,        # ISO time it ended (done or failed)
+    "error": None,              # why it failed, if it did
+    "final_sync": None,         # the final sync's per-step counts (errors and ids included)
+}
+
+
+def switch_status() -> dict:
+    """The current switch status, for the storage screen.
 
     Returns:
-        ``{"final_sync": <counts>, "storage": "postgres", "staff_storage": bool}``,
-        where ``staff_storage`` says whether that setting also existed and was
-        flipped.
+        A copy of the status dict (state, step, times, error, final_sync).
+    """
+    return dict(_SWITCH_STATUS)
+
+
+def switch_is_running() -> bool:
+    """Whether a flip is running right now.
+
+    Returns:
+        True while the background switch task is in progress.
+    """
+    return _SWITCH_STATUS["state"] == "running"
+
+
+def _status_begin() -> None:
+    """Mark the switch as started, clearing any previous run's result."""
+    _SWITCH_STATUS.update(
+        state="running", step="pausing", started_at=utcnow().isoformat(),
+        finished_at=None, error=None, final_sync=None,
+    )
+
+
+def _status_step(step: str) -> None:
+    """Record the phase the switch is in now."""
+    _SWITCH_STATUS["step"] = step
+
+
+def _status_done() -> None:
+    """Mark the switch finished and successful."""
+    _SWITCH_STATUS.update(state="done", step="done", finished_at=utcnow().isoformat())
+
+
+def _status_fail(message: str, error_ids: list | None = None) -> None:
+    """Mark the switch failed, with a reason and any offending item ids.
+
+    Args:
+        message: The plain reason the flip was refused or failed.
+        error_ids: The SharePoint item ids the final sync could not import, if any.
+    """
+    if error_ids:
+        message = f"{message} (item ids: {', '.join(str(i) for i in error_ids)})"
+    _SWITCH_STATUS.update(state="failed", error=message, finished_at=utcnow().isoformat())
+
+
+async def _all_in_postgres() -> bool:
+    """Whether requests, staff AND holidays already live in Postgres (switch done).
+
+    Returns:
+        True only when all three backends are Postgres; with any one still on
+        SharePoint the switch has work left, so this is False.
+    """
+    return (
+        await requests_in_postgres()
+        and await staff_in_postgres()
+        and await holidays_in_postgres()
+    )
+
+
+def _sync_errors(counts: dict) -> tuple[int, list]:
+    """Total error/failed counts and the offending item ids across every step.
+
+    Reads both step shapes: the request import's per-kind ``errors``/``error_ids``
+    and the staff import's top-level ``failed``.
+
+    Args:
+        counts: The final sync's per-step counts.
+
+    Returns:
+        ``(total_errors, error_ids)``; zero and an empty list when the sync was clean.
+    """
+    total = 0
+    ids: list = []
+    for step_counts in counts.values():
+        if not isinstance(step_counts, dict):
+            continue
+        failed = step_counts.get("failed")                     # the staff step's failure count
+        if isinstance(failed, int):
+            total += failed
+        for value in step_counts.values():                     # the request step's per-kind blocks
+            if isinstance(value, dict):
+                errors = value.get("errors")
+                if isinstance(errors, int):
+                    total += errors
+                ids.extend(value.get("error_ids") or [])
+    return total, ids
+
+
+async def _run_final_sync() -> dict:
+    """Run every sync step one last time, keeping the pause alive between steps.
+
+    Writes one ``final_sync`` SyncRun row, whose ``started_at`` is the flip time the
+    post-switch check schedules from. Each step runs in its own session and commits,
+    and the pause expiry is refreshed before each step; refreshing between steps
+    (not inside an open step transaction) keeps the pause in force through a slow
+    sync without a write of one step blocking the pause refresh of the next.
+
+    Returns:
+        The per-step counts.
 
     Raises:
-        AlreadySwitched: When requests already live in Postgres (a second flip).
-        RuntimeError: When a sync is already running and the lock cannot be taken.
+        Exception: Whatever a step raises (a truncated read, say); the SyncRun row
+            records the error first, then it propagates so the flip is refused.
     """
-    if await requests_in_postgres():
+    # Record the run first and commit it, so its id and start time are fixed before
+    # the steps run (the post-switch check schedules from this start time).
+    async with async_session() as session:
+        run = SyncRun(job="final_sync")
+        session.add(run)
+        await session.flush()
+        run_id = run.id
+        await session.commit()
+
+    counts: dict = {}
+    try:
+        for step in SYNC_STEPS:
+            await begin_pause()                                # refresh the pause expiry: keep it in force
+            async with async_session() as session:             # one session per step, committed on its own
+                run = await session.get(SyncRun, run_id)
+                counts[step.__name__] = await step(session, run)
+                await session.commit()
+        async with async_session() as session:
+            run = await session.get(SyncRun, run_id)
+            run.counts = counts
+            run.finished_at = utcnow()
+            await session.commit()
+        return counts
+    except Exception as e:
+        async with async_session() as session:
+            run = await session.get(SyncRun, run_id)
+            run.error = str(e)
+            run.counts = counts                                # whatever landed before the failure
+            run.finished_at = utcnow()
+            await session.commit()
+        raise
+
+
+async def _flip_settings_to_postgres() -> None:
+    """Set all three storage settings to Postgres in one transaction (#335 fix).
+
+    Writing requests, staff and holidays together means the app never sees one
+    domain in Postgres while another is still SharePoint because of a crash
+    between separate commits.
+    """
+    async with async_session() as session:
+        for key in (REQUESTS_STORAGE, STAFF_STORAGE, HOLIDAYS_STORAGE):
+            row = await session.get(AppSetting, key)
+            if row is None:
+                session.add(AppSetting(key=key, value=POSTGRES))   # first change from the default
+            else:
+                row.value = POSTGRES
+        await session.commit()
+    logger.info("Storage switched to Postgres (requests, staff and holidays)")
+
+
+async def flip_to_postgres() -> dict:
+    """Run the final sync under the lock, pausing writes, then switch to Postgres.
+
+    Returns:
+        ``{"final_sync": <counts>, "storage": "postgres", "staff_storage": True}``.
+
+    Raises:
+        AlreadySwitched: When both backends already live in Postgres.
+        RuntimeError: When a sync is already running, an in-flight write did not
+            finish in time, the final sync reported errors, or the pause lapsed; in
+            each case the pause is cleared and the settings are left unchanged.
+    """
+    if await _all_in_postgres():
         # Refuse a second flip: re-running the final sync would overwrite the
         # statuses of requests decided in Postgres with SharePoint's older values.
         raise AlreadySwitched("Already switched")
+    _status_begin()
     lock = await acquire_sync_lock()                           # on its own connection, before any work
     if lock is None:
+        _status_fail("A sync is running; try the switch again in a moment.")
         raise RuntimeError("A sync is running; try the switch again in a moment.")
-    await begin_pause()                                        # refuse approvals/submissions/staff writes now
     try:
-        await asyncio.sleep(PAUSE_SETTLE_SECONDS)              # let in-flight decisions land in SharePoint first
-        async with async_session() as session:
-            run = SyncRun(job="final_sync")                    # started_at is the flip time the check schedules from
-            session.add(run)
-            await session.flush()
-            try:
-                counts = await _run_steps(session, run)
-                run.counts = counts
-                run.finished_at = utcnow()
-                await session.commit()
-            except Exception as e:
-                run.error = str(e)
-                run.finished_at = utcnow()
-                await session.commit()
-                raise
-        # Only after the final sync is committed does the app start using Postgres.
-        await set_setting(REQUESTS_STORAGE, POSTGRES)
-        staff_flipped = STAFF_STORAGE in app_settings.DEFAULTS
-        if staff_flipped:
-            await set_setting(STAFF_STORAGE, POSTGRES)         # keep staff and requests on the same backend
-        logger.info("Storage switched to Postgres (staff_storage flipped: %s)", staff_flipped)
-        return {"final_sync": counts, "storage": POSTGRES, "staff_storage": staff_flipped}
+        # Re-check under the lock: a flip on another path may have finished between
+        # the pre-check and taking the lock (#335 fix, finding 4d).
+        if await _all_in_postgres():
+            _status_done()
+            raise AlreadySwitched("Already switched")
+
+        await begin_pause()                                    # refuse approvals/submissions/staff writes now
+        _status_step("waiting_in_flight")
+        await asyncio.sleep(max(0, PAUSE_SETTLE_SECONDS))      # a short floor before the in-flight wait
+        if not await wait_until_idle(IN_FLIGHT_TIMEOUT):
+            # A write that started before the pause is still running; reading now
+            # could miss its SharePoint write, so give up rather than risk a loss.
+            await end_pause()
+            msg = "in-flight writes did not finish in time; the switch was aborted"
+            _status_fail(msg)
+            raise RuntimeError(msg)
+
+        _status_step("final_sync")
+        counts = await _run_final_sync()                       # may raise (truncated read, bad item)
+        _SWITCH_STATUS["final_sync"] = counts
+        total_errors, error_ids = _sync_errors(counts)
+        if total_errors > 0:
+            # Some item would not import; flipping now would lose it, so refuse.
+            await end_pause()
+            msg = f"the final sync reported {total_errors} error(s); the switch was aborted"
+            _status_fail(msg, error_ids)
+            raise RuntimeError(msg)
+
+        _status_step("switching")
+        if not await is_paused():
+            # The pause lapsed while the final sync ran, so a write could have
+            # landed in SharePoint after the read; refuse rather than flip blind.
+            await end_pause()
+            msg = "the switch pause lapsed before the flip; the switch was aborted"
+            _status_fail(msg)
+            raise RuntimeError(msg)
+
+        # Stop SharePoint calling this app before Postgres becomes the source:
+        # after the flip no SharePoint call is allowed, deletes included.
+        from app.tasks.subscription_manager import delete_all_subscriptions
+        await delete_all_subscriptions()
+        await _flip_settings_to_postgres()                     # all three settings, one transaction
+        _status_done()
+        return {"final_sync": counts, "storage": POSTGRES, "staff_storage": True, "holidays_storage": True}
+    except AlreadySwitched:
+        raise                                                  # a refusal, not a failure; status already set
+    except Exception as e:
+        if _SWITCH_STATUS["state"] != "failed":                # an unexpected error (e.g. a step raised)
+            _status_fail(str(e))
+        raise
     finally:
         # Resume writes and free the lock even if the final sync or the flip raised.
         await end_pause()
         await release_sync_lock(lock)
 
 
+async def _run_switch_task() -> None:
+    """Run the flip as a background task, swallowing its result and error.
+
+    ``flip_to_postgres`` has already recorded success or failure in the status, so
+    this only keeps the task from raising an unretrieved exception.
+    """
+    try:
+        await flip_to_postgres()
+    except Exception:
+        logger.exception("Storage switch failed")              # the reason is already in the status
+
+
+async def start_switch() -> asyncio.Task:
+    """Validate, then start the flip in the background and return its task.
+
+    Returns:
+        The created asyncio task running the flip.
+
+    Raises:
+        AlreadySwitched: When both backends already live in Postgres.
+        SwitchRunning: When a flip is already running.
+    """
+    if await _all_in_postgres():                               # nothing to do; a second flip is refused
+        raise AlreadySwitched("Already switched")
+    # The running-check and the status set happen with no await between them, so
+    # two near-simultaneous POSTs cannot both start a switch.
+    if switch_is_running():
+        raise SwitchRunning("The switch is already running.")
+    _status_begin()
+    return asyncio.create_task(_run_switch_task())
+
+
 async def flip_back() -> dict:
-    """Point requests (and staff, if present) back at SharePoint. Rehearsal only.
+    """Point requests, staff and holidays back at SharePoint. Rehearsal only.
 
     No final sync is run: this undoes a rehearsal flip so the app resumes reading
     and writing SharePoint. It is not a production step.
 
     Returns:
-        ``{"storage": "sharepoint", "staff_storage": bool}``.
+        ``{"storage": "sharepoint", "staff_storage": True, "holidays_storage": True}``.
     """
     await set_setting(REQUESTS_STORAGE, SHAREPOINT)
-    staff_flipped = STAFF_STORAGE in app_settings.DEFAULTS
-    if staff_flipped:
-        await set_setting(STAFF_STORAGE, SHAREPOINT)
-    logger.info("Storage flipped back to SharePoint (staff_storage flipped: %s)", staff_flipped)
-    return {"storage": SHAREPOINT, "staff_storage": staff_flipped}
+    await set_setting(STAFF_STORAGE, SHAREPOINT)
+    await set_setting(HOLIDAYS_STORAGE, SHAREPOINT)
+    logger.info("Storage flipped back to SharePoint (requests, staff and holidays)")
+    return {"storage": SHAREPOINT, "staff_storage": True, "holidays_storage": True}

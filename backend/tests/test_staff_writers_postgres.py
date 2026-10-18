@@ -77,10 +77,10 @@ def clean_db():
     run(wipe())
 
 
-def _seed(monkeypatch, item):
-    """Import one SharePoint item into Postgres so the writers have a row to edit."""
+def _seed(monkeypatch, *items):
+    """Import SharePoint items into Postgres so the writers have rows to edit."""
     async def fake_get_list_items(list_id, **kwargs):
-        return [item]
+        return list(items)                                 # every seeded item, in order
     monkeypatch.setattr(sharepoint_module.sp_client, "get_list_items", fake_get_list_items)
 
     async def inner():
@@ -121,8 +121,7 @@ def test_entitlements_land_in_postgres_without_double_history(clean_db, monkeypa
 
     row, _links, wb, changes = run(_links_wb_changes("101"))
     assert float(row.vacation_balance) == 4.0             # the move landed in Postgres
-    assert len(wb) == 1 and wb[0].op == "update"          # exactly one write-back
-    assert wb[0].fields["CurrentVacationBalance"] == 4.0
+    assert wb == []                                        # write-back is off: nothing for SharePoint
     vac = [c for c in changes if c.field == "CurrentVacationBalance"]
     assert len(vac) == 1 and vac[0].source == "admin_dashboard"   # logged once, by the service
 
@@ -150,7 +149,7 @@ def test_entitlements_managers_round_trip_names_into_postgres(clean_db, monkeypa
     managers = [link for link in links if link.relation == "manager"]
     assert len(managers) == 1
     assert managers[0].manager_sp_user_id == 77 and managers[0].manager_name == "Grace Hopper"
-    assert len(wb) == 1                                    # one write-back for the one save
+    assert wb == []                                        # write-back is off: nothing for SharePoint
     assert len([c for c in changes if c.field == "AllManagers"]) == 1
 
 
@@ -175,7 +174,7 @@ def test_set_balances_lands_in_postgres(clean_db, monkeypatch):
 
     row, _links, wb, changes = run(_links_wb_changes("101"))
     assert float(row.vacation_balance) == 3.0
-    assert len(wb) == 1 and wb[0].op == "update"
+    assert wb == []                                        # write-back is off: nothing for SharePoint
     vac = [c for c in changes if c.field == "CurrentVacationBalance"]
     assert len(vac) == 1 and vac[0].source == "admin_dashboard"
 
@@ -185,12 +184,10 @@ def test_set_balances_lands_in_postgres(clean_db, monkeypatch):
 def test_manager_assignment_lands_in_postgres(clean_db, monkeypatch):
     # Setting a person's managers lands the link (with name) in Postgres, queues
     # one write-back carrying the id collection, and records one system history row.
-    _seed(monkeypatch, _sp_item("101"))
+    # The manager is a staff row too: on Postgres the name comes from the staff
+    # table, never from the SharePoint site user list.
+    _seed(monkeypatch, _sp_item("101"), _sp_item("77", Title="Grace Hopper", EmailAddress="grace@ucsh.com"))
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
-
-    async def fake_map():
-        return {77: "Grace Hopper"}
-    monkeypatch.setattr(manager_assignments, "_get_sp_user_name_map", fake_map)
 
     result = run(manager_assignments.update_employee_managers(101, [77]))
     assert any(m["sp_user_id"] == 77 and m["name"] == "Grace Hopper" for m in result["managers"])
@@ -198,8 +195,7 @@ def test_manager_assignment_lands_in_postgres(clean_db, monkeypatch):
     _row, links, wb, changes = run(_links_wb_changes("101"))
     managers = [link for link in links if link.relation == "manager"]
     assert len(managers) == 1 and managers[0].manager_name == "Grace Hopper"
-    assert len(wb) == 1 and wb[0].op == "update"
-    assert wb[0].fields["AllManagersLookupId"] == [77]
+    assert wb == []                                        # write-back is off: nothing for SharePoint
     mgr_changes = [c for c in changes if c.field == "AllManagers"]
     assert len(mgr_changes) == 1 and mgr_changes[0].source == "system"
 
@@ -222,7 +218,7 @@ def test_carryover_reset_lands_in_postgres(clean_db, monkeypatch):
 
     row, _links, wb, changes = run(_links_wb_changes("101"))
     assert float(row.carry_over) == 0.0
-    assert len(wb) == 1 and wb[0].op == "update" and wb[0].fields["CarryOver"] == 0
+    assert wb == []                                        # write-back is off: nothing for SharePoint
     co = [c for c in changes if c.field == "CarryOver"]
     assert len(co) == 1 and co[0].source == "system"
 
@@ -244,6 +240,7 @@ def test_add_employee_round_trips_its_sharepoint_item_id(clean_db, monkeypatch):
     # In Postgres mode add-employee mints a staff id and queues a "create"
     # write-back; draining it creates the SharePoint item and stores the returned
     # id back on the row, so later patches and the pull resolve the same person.
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
 
     async def none_(*a, **k):

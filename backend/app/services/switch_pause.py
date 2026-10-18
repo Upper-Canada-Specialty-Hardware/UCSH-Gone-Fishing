@@ -19,7 +19,11 @@ forms routes and the dashboard, email-link and SMS decision entry points) and
 staff writes through ``staff_store``. Reads, background reminders and the outbox
 keep running; they do not move a balance or create a request.
 """
+import asyncio
+import functools
 import logging
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 from app.services.app_settings import SWITCH_PAUSE, get_setting, set_setting
@@ -131,3 +135,145 @@ async def raise_if_paused(now: datetime | None = None) -> None:
     """
     if await is_paused(now):
         raise SystemPaused()                                    # carries PAUSE_MESSAGE for the caller
+
+
+# ----- in-flight tracking, so the switch waits for writes that started before it -----
+#
+# ``raise_if_paused`` only refuses a write that starts DURING the pause. A write
+# that passed its check a moment before ``begin_pause`` (a Graph-throttled approve,
+# say) is still running when the final sync reads SharePoint, so its balance write
+# can land after the read and be lost. ``guarded_write`` closes that window: it
+# counts the operation as in flight for as long as it runs, and the switch waits
+# for the count to reach zero before it reads. The app runs as one backend
+# instance, so a plain in-process counter sees every guarded write; the event loop
+# is single-threaded, so ``_in_flight += 1`` and the switch's read of it never tear.
+
+_in_flight = 0                                                  # guarded writes running right now
+
+# The backend each store should use for the length of a guarded write, captured at
+# guard entry so a decision that started on SharePoint finishes on SharePoint even
+# if the setting flips underneath it. None means "no guard active; read the setting".
+_pin_requests: ContextVar[bool | None] = ContextVar("switch_pin_requests", default=None)
+_pin_staff: ContextVar[bool | None] = ContextVar("switch_pin_staff", default=None)
+
+
+def in_flight_count() -> int:
+    """How many guarded writes are running right now.
+
+    Returns:
+        The current in-flight count; the switch waits for this to reach zero.
+    """
+    return _in_flight
+
+
+def pinned_requests_backend() -> bool | None:
+    """The request backend pinned for the current guarded write, if any.
+
+    Returns:
+        True (Postgres) or False (SharePoint) while a guarded write holds the
+        pin, else None so the store reads the live setting.
+    """
+    return _pin_requests.get()
+
+
+def pinned_staff_backend() -> bool | None:
+    """The staff backend pinned for the current guarded write, if any.
+
+    Returns:
+        True (Postgres) or False (SharePoint) while a guarded write holds the
+        pin, else None so the store reads the live setting.
+    """
+    return _pin_staff.get()
+
+
+async def _capture_pins() -> tuple:
+    """Pin both stores to their current backend for this operation.
+
+    Imported lazily, because the stores import this module, so a top-level import
+    would be a cycle.
+
+    Returns:
+        The two ContextVar tokens to reset when the guard exits.
+    """
+    from app.repositories.request_store import requests_in_postgres   # lazy: avoid an import cycle
+    from app.repositories.staff_store import staff_in_postgres        # lazy: avoid an import cycle
+    req = await requests_in_postgres()                         # the backend requests live in now
+    stf = await staff_in_postgres()                            # the backend staff live in now
+    return _pin_requests.set(req), _pin_staff.set(stf)         # tokens the finally resets
+
+
+@asynccontextmanager
+async def guarded_write(now: datetime | None = None):
+    """Refuse a write while paused; otherwise count it in flight until it exits.
+
+    The one wrapper a balance-moving write uses instead of ``raise_if_paused``: it
+    makes the same refusal, and it also keeps the operation counted so the switch
+    waits for it before the final sync reads. The count is bumped BEFORE the pause
+    is re-checked, so the switch can never read zero while this write is between
+    its check and its write.
+
+    Args:
+        now: The moment to test the pause against; defaults to now in UTC.
+
+    Raises:
+        SystemPaused: While the pause is set and has not lapsed.
+    """
+    global _in_flight
+    _in_flight += 1                                            # count first, so the switch never reads past us
+    # Re-entrant: a guarded write nested inside another (a staff store write made
+    # by a decision) is already counted and pinned, so it must not re-check the
+    # pause; a pause that began mid-decision would otherwise half-finish it.
+    nested = _pin_requests.get() is not None
+    try:
+        if not nested and await is_paused(now):               # the switch started: back out and refuse
+            raise SystemPaused()
+        tokens = await _capture_pins()                        # pin the backends for this operation
+    except BaseException:
+        _in_flight -= 1                                       # nothing is in flight if the guard did not open
+        raise
+    tok_r, tok_s = tokens
+    try:
+        yield                                                 # the caller does its read-modify-write here
+    finally:
+        _pin_requests.reset(tok_r)                            # drop the pins
+        _pin_staff.reset(tok_s)
+        _in_flight -= 1                                       # the write is done; the switch may proceed
+
+
+def guarded(fn):
+    """Run a whole async write function inside ``guarded_write``.
+
+    For the request create, approve, reject and refund entry points: the pause
+    is checked once on entry and the call stays counted in flight until it
+    returns, so the switch waits for it before the final sync reads.
+
+    Args:
+        fn: The async function to wrap.
+
+    Returns:
+        The wrapped async function, with the same signature and docstring.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        async with guarded_write():                           # refuse mid-switch; else count in flight
+            return await fn(*args, **kwargs)
+    return wrapper
+
+
+async def wait_until_idle(timeout: float, poll: float = 0.1) -> bool:
+    """Wait for every in-flight guarded write to finish, up to ``timeout`` seconds.
+
+    Args:
+        timeout: The longest to wait, in seconds, before giving up.
+        poll: How often to re-check the count, in seconds.
+
+    Returns:
+        True once the in-flight count is zero; False if ``timeout`` passed first.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout                          # when to stop waiting
+    while in_flight_count() > 0:                              # still a write in progress
+        if loop.time() >= deadline:
+            return False                                      # gave up: the caller fails the switch
+        await asyncio.sleep(poll)                             # let the in-flight writes run
+    return True                                               # nothing in flight; safe to read SharePoint

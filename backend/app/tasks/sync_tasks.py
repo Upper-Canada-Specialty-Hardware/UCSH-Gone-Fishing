@@ -88,9 +88,15 @@ async def _check_is_due() -> bool:
         if flip_at is None:
             return False                                       # no flip yet
         flip_at = _aware(flip_at)
+        # Only full sweeps that finished without error count toward the schedule: a
+        # per-item webhook check ("sharepoint_check_item") and a failed or
+        # unfinished sweep must not postpone the next scheduled sweep (#336 fix).
         rows = (await session.execute(
             select(SyncRun.started_at).where(
-                SyncRun.job == "sharepoint_check", SyncRun.started_at >= flip_at
+                SyncRun.job == "sharepoint_check",
+                SyncRun.started_at >= flip_at,
+                SyncRun.finished_at.is_not(None),
+                SyncRun.error.is_(None),
             )
         )).scalars().all()
     aware_rows = [_aware(r) for r in rows]

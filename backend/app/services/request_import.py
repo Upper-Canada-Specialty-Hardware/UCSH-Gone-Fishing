@@ -44,6 +44,7 @@ from app.models import request_vocab as vocab
 from app.models.mixins import utcnow
 from app.models.request_approval_state import RequestApprovalState
 from app.models.request_counter import RequestCounter
+from app.models.request_deletion import RequestDeletion
 from app.models.request_record import RequestRecord
 from app.models.sharepoint_seen import SharepointSeen
 from app.models.sync_run import SyncRun
@@ -71,6 +72,13 @@ PERSON_COLUMN = {
     "leave": "SubmittedTest",
     "overtime": "SubmittedBy",
     "carryover_payout": "SubmittedBy",
+}
+# kind -> the request_type the deletion log stores (the dashboard's hyphenated
+# segment, not the kind), so the counter can see numbers that were deleted.
+DELETION_REQUEST_TYPE = {
+    "leave": "leave",
+    "overtime": "overtime",
+    "carryover_payout": "carryover-payout",
 }
 # SharePoint balance column -> ledger pot name, for turning the audit log into
 # ledger rows and for naming which pots a change touched.
@@ -208,15 +216,15 @@ async def build_staff_index() -> StaffIndex:
     for item in staff_items:
         by_id[str(item["id"])] = item                           # staff id -> record
         email = (item.get("fields", {}).get("EmailAddress") or "").strip().lower()
-        if email:
-            by_email[email] = item                              # email -> record
+        if email and email not in by_email:
+            by_email[email] = item                              # first record wins, as the staff import does
     user_email: dict[int, str] = {}
     user_name: dict[int, str] = {}
-    try:
-        users = await sp_client.get_list_items("User Information List", top=5000)
-    except Exception:
-        logger.exception("Request import: could not read the User Information List")
-        users = []
+    # A failed User Information List read is NOT swallowed: without it a submitter
+    # matched by that list on an earlier run would now fail to match and be
+    # downgraded to a fallback id, so the read must fail the whole run instead and
+    # let the switch refuse (#333 fix). A truncated read raises the same way (#336).
+    users = await sp_client.get_list_items("User Information List", top=5000)
     for user in users:
         uid = user.get("id")
         if uid is None:
@@ -367,6 +375,29 @@ def _hourly_vacation(kind: str, leave_type: str | None, emp_type: str | None) ->
     return kind == "leave" and leave_type == "Vacation" and emp_type in HOURLY_TYPES
 
 
+def _old_carryover_without_log(record: RequestRecord, kind: str, audit: AuditSummary) -> bool:
+    """Whether this is an old carry-over or payout with no balance record at all.
+
+    Before the app took over approvals (``LEGACY_CUTOFF``), a carry-over or payout
+    was moved by hand or by the April reset and never wrote a balance audit log,
+    so "no balance change recorded" says nothing about it. Those are left out of
+    ``approved_no_balance_change`` (the request still carries ``legacy_unknown``).
+    One approved since then, or one with a log that shows no move, is still flagged.
+
+    Args:
+        record: The imported request row.
+        kind: The request kind.
+        audit: Its parsed audit log.
+
+    Returns:
+        True when the finding should be skipped for this request.
+    """
+    if kind != "carryover_payout" or audit.present:
+        return False                                           # other kinds, or a log to judge by
+    when = record.decided_at or record.created_at              # old rows may lack an approved date
+    return when is not None and when.date() < LEGACY_CUTOFF    # from before the app approved anything
+
+
 def _moves_spendable_pot(kind: str, leave_type: str | None, emp_type: str | None) -> bool:
     """Whether approving this request should move a spendable balance pot.
 
@@ -490,6 +521,29 @@ def _fallback_employee_id(fields: dict, person_col: str, sp_item_id: str) -> str
     return f"spitem:{sp_item_id}"                              # last resort: the source item
 
 
+def _reset_absent_fields(record: RequestRecord, fields: dict) -> None:
+    """Clear the mapped request columns a full import's payload omitted.
+
+    Graph drops a null or empty field from an item, so a value cleared in
+    SharePoint (an end date, a day count, a manager) would otherwise linger in
+    Postgres on a re-import. This resets the mapping-owned columns that are safe to
+    clear, so the row matches what SharePoint now holds. Identity columns resolved
+    from staff, and the per-kind required fields, are left alone.
+
+    Args:
+        record: The record being refreshed in place.
+        fields: The incoming SharePoint fields (system columns already dropped).
+    """
+    if "EndDate" not in fields:
+        record.end_date = None                                 # a cleared or shortened leave range
+    if record.kind == "leave" and "Days" not in fields:
+        record.days = None                                     # leave Days is optional; carry-over requires it
+    if "ManagerID" not in fields:
+        record.manager_id = None                               # the deciding manager id, removed
+    if "Managertxt" not in fields:
+        record.manager_name = None                             # removed from AllManagers
+
+
 async def _existing_record(session: AsyncSession, kind: str, sp_item_id: str) -> RequestRecord | None:
     """The already-imported row for a SharePoint item, if there is one.
 
@@ -518,6 +572,7 @@ async def _import_item(
     event_type: str = "imported",
     event_channel: str = IMPORT_CHANNEL,
     version_by_sp_id: dict | None = None,
+    full_import: bool = True,
 ) -> str:
     """Import or refresh one SharePoint item, then run its detectors.
 
@@ -556,6 +611,17 @@ async def _import_item(
         # stay by sp_item_id so a rerun updates this row, never duplicates it.
         record = RequestRecord(kind=kind, item_id=int(sp_item_id), sp_item_id=sp_item_id)
 
+    # Whether this row already carries an employee matched on an earlier run: a real
+    # staff id, not a "spuser:"/"spitem:" fallback. If so, a run that fails to match
+    # now must NOT downgrade it to a fallback or wipe its name (#333 fix).
+    previously_matched = (
+        not created
+        and bool(record.employee_id)
+        and not str(record.employee_id).startswith(("spuser:", "spitem:"))
+    )
+    preserved_id = record.employee_id if previously_matched else None
+    preserved_email = record.employee_email if previously_matched else None
+
     # Identity first, so the leave-title split sees the right employee name.
     if staff is not None:
         sf = staff.get("fields", {})
@@ -565,10 +631,19 @@ async def _import_item(
         record.employment_type = employment_type(sf) or None    # "" -> None, keeps the CHECK happy
         record.location = sf.get("Location") or record.location
         record.department = sf.get("Department") or record.department
+    elif previously_matched:
+        pass                                                    # keep the earlier match; do not downgrade
     else:
         record.employee_id = _fallback_employee_id(fields, person_col, sp_item_id)
         record.employee_name = display_name or None
         record.employee_email = (fields.get("SubmitterEmail") or "").strip().lower() or None
+
+    # On a full import, clear the mapped columns SharePoint omitted (Graph drops a
+    # null/empty field), so a cleared EndDate/Days or a removed manager does not
+    # linger in Postgres. Imports only run before the switch, so no app-owned value
+    # is at risk (#335 fix).
+    if full_import:
+        _reset_absent_fields(record, fields)
 
     # Reuse the adapter's SharePoint-to-typed mapping, then re-assert identity
     # (the EmployeeID / SubmitterEmail columns it reads must not beat the match).
@@ -577,6 +652,9 @@ async def _import_item(
     if staff is not None:
         record.employee_id = str(staff["id"])
         record.employee_email = (staff.get("fields", {}).get("EmailAddress") or "").strip().lower() or None
+    elif previously_matched:
+        record.employee_id = preserved_id                      # the adapter's EmployeeID must not override it
+        record.employee_email = preserved_email
     if fields.get("Managertxt"):
         record.manager_name = fields["Managertxt"]              # the manager's plain-text name
 
@@ -584,9 +662,17 @@ async def _import_item(
     record.created_at = _when(sp_item.get("createdDateTime")) or record.created_at or utcnow()
     record.updated_at = _when(sp_item.get("lastModifiedDateTime")) or record.updated_at or record.created_at
 
-    # Status must be one of the allowed values before the row can be flushed.
-    if record.status not in vocab.STATUSES:
-        record.status = "pending"
+    # A SharePoint Status outside the five known values, or a blank one, is stored
+    # as "cancelled" (non-actionable, so it never lands in a manager queue); the raw
+    # value is kept in extra and a finding is filed. The five known values keep the
+    # mapping the adapter gave them (#335 fix).
+    raw_status = fields.get("Status")
+    unknown_status = raw_status in (None, "") or record.status not in vocab.STATUSES
+    if unknown_status:
+        extra = dict(record.extra or {})
+        extra["Status_raw"] = raw_status                       # what SharePoint actually held
+        record.extra = extra
+        record.status = "cancelled"                            # non-actionable until HR acts on the finding
 
     # Carry over the approval version its latest emailed link uses, so a request
     # edited before the switch (request_approval_state at version 2, its live link
@@ -635,6 +721,7 @@ async def _import_item(
 
     await _run_request_detectors(
         session, record, kind, fields, staff, display_name, audit, date_evidence, run_id,
+        previously_matched=previously_matched, unknown_status=unknown_status, raw_status=raw_status,
     )
     return "created" if created else "updated"
 
@@ -687,6 +774,10 @@ async def _run_request_detectors(
     audit: AuditSummary,
     date_evidence: dict | None,
     run_id: int | None,
+    *,
+    previously_matched: bool = False,
+    unknown_status: bool = False,
+    raw_status=None,
 ) -> None:
     """Record any reconciliation findings this request raises. Changes nothing.
 
@@ -704,6 +795,11 @@ async def _run_request_detectors(
         audit: The parsed audit log.
         date_evidence: The date-error evidence, or None.
         run_id: The sync_runs row that found these.
+        previously_matched: Whether the row kept an employee matched on an earlier
+            run, so a current non-match must not file submitter_unmatched.
+        unknown_status: Whether the SharePoint Status was blank or unknown (stored
+            as "cancelled"), which files unknown_status.
+        raw_status: The raw Status value, for the unknown_status evidence.
     """
     item_id = str(record.item_id)
     emp_type = record.employment_type
@@ -713,14 +809,37 @@ async def _run_request_detectors(
         """Shorthand to record one request finding for this item."""
         await record_finding(session, case, "request", kind, item_id, reason, evidence, run_id)
 
-    # submitter_unmatched: nobody matched by id or email.
-    if staff is None:
+    # submitter_unmatched: nobody matched by id or email. A row that kept an earlier
+    # match is not flagged, since this run's non-match did not change its employee.
+    if staff is None and not previously_matched:
         await file(
             "submitter_unmatched",
             "The request could not be matched to a staff record by id or email.",
             {"submitter_email": fields.get("SubmitterEmail"), "employee_id": fields.get("EmployeeID"),
              "person_name": display_name},
         )
+
+    # unknown_status: the SharePoint Status was blank or outside the five known
+    # values, so the row was stored as "cancelled" for HR to act on.
+    if unknown_status:
+        await file(
+            "unknown_status",
+            "The request carried a status outside the known values, so it was stored as cancelled.",
+            {"status_raw": raw_status},
+        )
+
+    # pending_unprocessed: a pending row the old pipeline never finished. The
+    # dispatcher fills a manager for every kind and the day count for leave; a
+    # pending row still missing either was never completed, so HR can act on it.
+    if record.status == "pending":
+        missing_manager = not (record.manager_id or record.manager_name)
+        missing_days = kind == "leave" and record.days is None
+        if missing_manager or missing_days:
+            await file(
+                "pending_unprocessed",
+                "The request is pending but was never finished: it has no manager or no day count.",
+                {"has_manager": not missing_manager, "has_days": not missing_days},
+            )
 
     # username_as_name: the submitter's name reads like a login or email.
     name_to_test = display_name or (record.employee_name or "")
@@ -732,7 +851,12 @@ async def _run_request_detectors(
         )
 
     # approved_no_balance_change: approved, should have moved a pot, but did not.
-    if record.status == "approved" and _moves_spendable_pot(kind, leave_type, emp_type) and not audit.net_changed:
+    if (
+        record.status == "approved"
+        and _moves_spendable_pot(kind, leave_type, emp_type)
+        and not audit.net_changed
+        and not _old_carryover_without_log(record, kind, audit)   # moved by hand back then: not a finding
+    ):
         await file(
             "approved_no_balance_change",
             "The request was approved but no balance change was recorded.",
@@ -797,25 +921,48 @@ async def _run_request_detectors(
 
 
 async def _raise_counters(session: AsyncSession, kind: str) -> None:
-    """Lift a kind's item-id counter above the largest imported id.
+    """Lift a kind's item-id counter above every SharePoint number it has ever held.
 
-    So a request created in Postgres after the import never reuses an id an
-    imported SharePoint item already holds.
+    A request created in Postgres after the import must never reuse a number a
+    SharePoint item once had. A number lives in three places: the imported
+    requests, the approval-version rows for the kind's list (an edited link still
+    names its item), and the deletion log (a deleted item's number must not come
+    back). The counter is lifted above the largest of all three.
 
     Args:
         session: An open session; not committed here.
         kind: The request kind.
     """
-    largest = (await session.execute(
+    candidates: list[int] = []
+    largest_request = (await session.execute(
         select(func.max(RequestRecord.item_id)).where(RequestRecord.kind == kind)
     )).scalar()
-    if largest is None:
-        return                                                 # nothing imported for this kind
+    if largest_request is not None:
+        candidates.append(int(largest_request))
+
+    # The approval-version rows are keyed by the SharePoint list id and item number.
+    list_id = getattr(settings, KIND_LIST_SETTING[kind])
+    state_ids = (await session.execute(
+        select(RequestApprovalState.item_id).where(RequestApprovalState.list_id == list_id)
+    )).scalars().all()
+    # The deletion log stores the kind as the dashboard's hyphenated request_type.
+    deletion_ids = (await session.execute(
+        select(RequestDeletion.list_item_id).where(
+            RequestDeletion.request_type == DELETION_REQUEST_TYPE[kind]
+        )
+    )).scalars().all()
+    for raw in list(state_ids) + list(deletion_ids):
+        if raw is not None and str(raw).isdigit():             # only real numeric ids count
+            candidates.append(int(raw))
+
+    if not candidates:
+        return                                                 # no number for this kind anywhere
+    largest = max(candidates)
     counter = await session.get(RequestCounter, kind)
     if counter is None:
-        session.add(RequestCounter(kind=kind, last_item_id=int(largest)))
-    elif counter.last_item_id < int(largest):
-        counter.last_item_id = int(largest)                    # never lower it
+        session.add(RequestCounter(kind=kind, last_item_id=largest))
+    elif counter.last_item_id < largest:
+        counter.last_item_id = largest                         # never lower it
 
 
 def item_version(sp_item: dict) -> str:

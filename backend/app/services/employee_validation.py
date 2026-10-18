@@ -67,7 +67,7 @@ from app.services.balance import (
     simulate_carryover_payout_impact,
 )
 from app.repositories.request_store import request_store
-from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
+from app.repositories.staff_store import staff_in_postgres, staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -867,7 +867,7 @@ def summarise_request(kind: str, item: dict, notified: bool | None = None) -> di
         "item_id": str(item.get("id", "")),
         "status": status,
         "has_amount": amount > 0,
-        "has_manager": bool(f.get("ManagerLookupId")),
+        "has_manager": bool(f.get("ManagerLookupId") or f.get("ManagerID")),   # SharePoint lookup id, or the staff id on Postgres
         "notified": notified,
         "start_date": str(f.get("StartDate") or "")[:10],
         "end_date": str(f.get("EndDate") or "")[:10],
@@ -1078,6 +1078,12 @@ async def _check_identity(employee_id, fields: dict) -> dict:
         {"status", "account_count", "detail", "lookup_id"} - lookup_id is None
         when the email never resolved.
     """
+    if await staff_in_postgres():
+        # After the switch a request links to its submitter by email against the
+        # staff table, so that table is the directory; SharePoint is never read.
+        staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        directory, id_to_name = _staff_as_directory(staff)
+        return _identity_from_maps(str(employee_id), fields, directory, id_to_name, _index_staff_by_name(staff))
     email = (fields.get("EmailAddress") or "").strip()
     if not email:
         return _identity_verdict(employee_id, email, None, None)
@@ -1085,6 +1091,37 @@ async def _check_identity(employee_id, fields: dict) -> dict:
     if not lookup_id:
         return _identity_verdict(employee_id, email, None, None)
     return _identity_verdict(employee_id, email, lookup_id, await resolve_person_field(lookup_id))
+
+
+def _staff_as_directory(staff: list[dict]) -> tuple[dict[str, int], dict[int, str]]:
+    """The staff table read as the directory, for after the switch.
+
+    Gives the same two maps ``_parse_m365_rows`` builds from the Microsoft 365
+    user list, keyed by staff id instead of a SharePoint lookup id, so every
+    identity and supervisor check runs unchanged on Postgres.
+
+    Args:
+        staff: Staff rows in the ``{"id","fields"}`` shape.
+
+    Returns:
+        (lowercased email -> staff id, staff id -> name). The first row with an
+        email keeps it, as the staff import does with a duplicate.
+    """
+    by_email: dict[str, int] = {}
+    by_id: dict[int, str] = {}
+    for row in staff:
+        try:
+            staff_id = int(row["id"])                       # staff ids are whole numbers
+        except (KeyError, TypeError, ValueError):
+            continue                                        # unmatchable either way
+        fields = row.get("fields", {})
+        email = (fields.get("EmailAddress") or "").strip().lower()
+        if email:
+            by_email.setdefault(email, staff_id)            # first wins on a duplicate
+        name = fields.get("Title", "")
+        if name:
+            by_id[staff_id] = name
+    return by_email, by_id
 
 
 async def _fetch_m365_rows() -> list[dict] | None:
@@ -1148,6 +1185,9 @@ async def _load_m365_directory() -> dict[str, int] | None:
         Lowercased email -> lookup id, or None when the list could not be read
         at all — which is a different answer from "nobody matched".
     """
+    if await staff_in_postgres():                           # after the switch: the staff table
+        staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        return _staff_as_directory(staff)[0]
     users = await _fetch_m365_rows()
     if users is None:
         return None
@@ -1263,6 +1303,20 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
     """
     matched: list[tuple[str, str, dict]] = []  # (kind, list_id, raw row)
 
+    # After the switch every request row carries the submitter's staff id, so
+    # all three lists match on it (no SharePoint person column involved).
+    on_postgres = await staff_in_postgres()
+    if on_postgres:
+        for kind, list_id in (
+            ("leave", settings.SP_LIST_LEAVE_REQUESTS),
+            ("overtime", settings.SP_LIST_OVERTIME_REQUESTS),
+            ("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT),
+        ):
+            for item in await request_store.get_list_items(list_id):   # Postgres; an error surfaces
+                if str(item.get("fields", {}).get("EmployeeID") or "") == str(employee_id):
+                    matched.append((kind, list_id, item))
+        submitter_lookup_id = None                          # skip the SharePoint matching below
+
     # Without the lookup id there is no way to tell their rows from anyone
     # else's, so these two lists are skipped rather than guessed at.
     if submitter_lookup_id:
@@ -1282,7 +1336,8 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
     # Carry-over/payout stores the Staff Directory id outright, so it works even
     # when the Microsoft 365 lookup failed.
     try:
-        co_po_items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        # Already matched above on Postgres.
+        co_po_items = [] if on_postgres else await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:  # noqa: BLE001
         logger.exception("Setup check: could not read the carry-over/payout list")
         co_po_items = []
@@ -1662,7 +1717,6 @@ async def validate_all_employee_setups() -> dict:
         row per record with at least one failing check, sorted by name.
     """
     staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    m365_rows = await _fetch_m365_rows()
     holiday_items = await get_holiday_repository().get_all()
 
     # A directory that could not be read stays None all the way down, so the
@@ -1670,8 +1724,13 @@ async def validate_all_employee_setups() -> dict:
     # every record at once.
     directory: dict[str, int] | None = None
     sp_user_to_name: dict[int, str] = {}
-    if m365_rows is not None:
-        directory, sp_user_to_name = _parse_m365_rows(m365_rows)
+    if await staff_in_postgres():
+        # After the switch the staff table is the directory; SharePoint is never read.
+        directory, sp_user_to_name = _staff_as_directory(staff)
+    else:
+        m365_rows = await _fetch_m365_rows()
+        if m365_rows is not None:
+            directory, sp_user_to_name = _parse_m365_rows(m365_rows)
 
     staff_by_name = _index_staff_by_name(staff)
     name_counts = _count_staff_names(staff)
@@ -1705,5 +1764,5 @@ async def validate_all_employee_setups() -> dict:
     return {
         "total_checked": len(staff),
         "flagged": flagged,
-        "directory_unreadable": m365_rows is None,
+        "directory_unreadable": directory is None,               # None only when the user list could not be read
     }

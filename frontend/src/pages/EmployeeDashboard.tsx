@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
@@ -12,6 +12,7 @@ import { daysToCarryReset, myKindRows, myYear } from '../components/employee/myS
 import { STATUS_COLOR } from '../components/dataGridDefaults';
 import { getMyBalances, getMyRequests } from '../api/client';
 import { useLiveRequests } from '../hooks/useLiveRequests';
+import { LiveEvent } from '../api/events';
 import LiveNotice from '../components/LiveNotice';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
@@ -195,8 +196,25 @@ export default function EmployeeDashboard() {
   const [error, setError] = useState('');
 
   // Live updates: merge each timeline event into the loaded requests, so an
-  // approval shows here without a reload (#328). Opens once the data has loaded.
-  const { status: liveStatus } = useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading });
+  // approval shows here without a reload (#328). A decision by email, SMS or an
+  // admin also moves this person's balances and the Taken-from chips, which the
+  // merge cannot know, so a balance-changing event refetches the balances and
+  // requests on a short debounce. Opens once the data has loaded.
+  const liveRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLiveEvent = useCallback((ev: LiveEvent) => {
+    const balanceTypes = ['approved', 'rejected', 'refunded', 'cancelled'];   // the ones that move a balance
+    if (!balanceTypes.includes(ev.type)) return;
+    if (liveRefresh.current) clearTimeout(liveRefresh.current);
+    liveRefresh.current = setTimeout(() => {
+      Promise.all([getMyBalances(), getMyRequests()])
+        .then(([balRes, reqRes]) => {
+          setBalances(balRes.data.balances);               // fresh pots after the decision
+          setRequests(reqRes.data.requests || []);         // fresh Taken-from chips and status
+        })
+        .catch(() => { /* the merged rows stay; balances refresh on the next event */ });
+    }, 1500);
+  }, []);
+  const { status: liveStatus } = useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   useEffect(() => {
     Promise.all([getMyBalances(), getMyRequests()])

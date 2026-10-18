@@ -124,23 +124,27 @@ async function authParams(scope: LiveScope): Promise<Record<string, string> | nu
  * @returns A row-shaped object keyed by request_type and id.
  */
 export function eventToRow(ev: LiveEvent): Record<string, unknown> {
-  const option =
-    ev.request_option === 'payout' ? 'Payout' : ev.request_option === 'carry_over' ? 'Carry Over' : '';
-  return {
-    request_type: requestTypeOf(ev.kind),
-    id: String(ev.item_id),
-    stage: ev.stage || '',
-    Status: statusLabel(ev.status),
-    employee_name: ev.employee_name || '',
-    LeaveType: ev.leave_type || '',
-    StartDate: ev.start_date || '',
-    EndDate: ev.end_date || '',
-    Days: ev.days ?? null,
-    Hours: ev.hours ?? null,
-    TypeofRequest: option,
-    ApprovedDate: ev.decided_at || '',
-    Created: ev.request_created_at || '',
+  // The merge key is always carried; every other field is added only when the
+  // event actually brings a value, so a sparse event never blanks a loaded field
+  // (Created, ApprovedDate, Days and the rest keep their loaded values).
+  const patch: Record<string, unknown> = {
+    request_type: requestTypeOf(ev.kind),                  // merge key: which list
+    id: String(ev.item_id),                                // merge key: which item
   };
+  if (ev.stage) patch.stage = ev.stage;                    // the live stage in words
+  if (ev.status) patch.Status = statusLabel(ev.status);    // Pending/Approved/...
+  if (ev.employee_name) patch.employee_name = ev.employee_name;
+  if (ev.leave_type) patch.LeaveType = ev.leave_type;
+  if (ev.start_date) patch.StartDate = ev.start_date;
+  if (ev.end_date) patch.EndDate = ev.end_date;
+  if (ev.days != null) patch.Days = ev.days;               // 0 is a real value; null means not carried
+  if (ev.hours != null) patch.Hours = ev.hours;
+  // carry_over / payout only; a missing option leaves the loaded value as it is.
+  if (ev.request_option === 'payout') patch.TypeofRequest = 'Payout';
+  else if (ev.request_option === 'carry_over') patch.TypeofRequest = 'Carry Over';
+  if (ev.decided_at) patch.ApprovedDate = ev.decided_at;   // decided-at instant
+  if (ev.request_created_at) patch.Created = ev.request_created_at;
+  return patch;
 }
 
 /**

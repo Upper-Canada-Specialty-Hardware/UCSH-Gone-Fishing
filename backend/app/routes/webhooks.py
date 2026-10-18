@@ -27,6 +27,14 @@ async def sharepoint_webhook(
     notifications = body.get("value", [])
     logger.info("Received %d SP webhook notification(s)", len(notifications))
 
+    # After the switch to Postgres a late notification (a subscription the
+    # switch could not delete) is acknowledged and dropped: nothing reads
+    # SharePoint any more, so there is nothing to process.
+    from app.services.sharepoint_cutoff import sharepoint_cut_off
+    if await sharepoint_cut_off():
+        logger.info("Switched to Postgres: ignoring %d SP webhook notification(s)", len(notifications))
+        return JSONResponse(content={}, status_code=202)
+
     if settings.PROCESSING_ENABLED:
         for notification in notifications:
             asyncio.create_task(process_notification(notification))

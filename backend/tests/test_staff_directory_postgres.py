@@ -201,6 +201,60 @@ def test_import_builds_supervisor_links_and_relinks_by_name(clean_db, monkeypatc
     assert manager_link.manager_staff_id == grace_id            # relinked to Grace's staff row
 
 
+# --- Duplicate email and supervisor-link replacement (#341) -------------------
+
+def test_duplicate_email_blanks_the_later_and_files_a_conflict_finding(clean_db, monkeypatch):
+    # Two records claim one email: the first keeps it, the later one's email is
+    # blanked so the unique index holds, and an email_conflict finding is filed
+    # against the later record carrying both ids and the shared email.
+    first = _sp_item("101", EmailAddress="dup@ucsh.com")
+    later = _sp_item("202", Title="Bob Builder", EmailAddress="dup@ucsh.com")
+    _fake_list(monkeypatch, [first, later])
+    counts = _import([first, later])
+    assert counts["email_conflicts"] == 1                      # the later record was flagged a dup
+
+    async def read():
+        async with async_session() as session:
+            rows = {r.sp_item_id: r for r in (await session.execute(select(Staff))).scalars().all()}
+            finding = (await session.execute(
+                select(LegacyFinding).where(LegacyFinding.case == "email_conflict")
+            )).scalars().first()
+            return rows, finding
+    rows, finding = run(read())
+
+    assert rows["101"].email == "dup@ucsh.com"                 # the first keeps the email
+    assert (rows["202"].email or "") == ""                     # the later one is blanked to NULL
+    assert finding is not None
+    assert finding.subject_id == "202"                         # filed against the blanked record
+    assert finding.evidence["blanked_sp_id"] == "202"
+    assert finding.evidence["kept_sp_id"] == "101"
+    assert finding.evidence["email"] == "dup@ucsh.com"
+
+
+def test_reimport_without_managers_removes_the_manager_link(clean_db, monkeypatch):
+    # A manager removed in SharePoint must be removed here too: the import replaces
+    # the supervisor links with exactly what the payload carries, so an absent /
+    # empty AllManagers drops the old manager link rather than leaving it stale.
+    with_manager = _sp_item("101")                             # AllManagers names #77
+    _fake_list(monkeypatch, [with_manager])
+    _import([with_manager])
+
+    async def manager_links():
+        async with async_session() as session:
+            ada = (await session.execute(
+                select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            links = (await session.execute(
+                select(StaffSupervisor).where(StaffSupervisor.staff_id == ada.id)
+            )).scalars().all()
+            return [link.relation for link in links]
+    assert "manager" in run(manager_links())                   # the link exists after the first import
+
+    without = _sp_item("101", AllManagers=[], SupervisorLinkLookupId=None)
+    _fake_list(monkeypatch, [without])
+    _import([without])
+    assert "manager" not in run(manager_links())               # the removed manager is gone
+
+
 # --- Matching: id then email, never name (#265) -------------------------------
 
 def test_match_by_id_then_email_never_name(clean_db, monkeypatch):
@@ -246,8 +300,7 @@ def test_lock_and_write_pots_commit(clean_db, monkeypatch):
             return float(row.vacation_balance), float(row.sick_balance), wb
     vacation, sick, wb = run(do())
     assert (vacation, sick) == (8.0, 2.0)
-    assert len(wb) == 1                                         # the move queued a write-back
-    assert wb[0].fields["CurrentVacationBalance"] == 8.0
+    assert wb == []                                             # write-back is off: nothing for SharePoint
 
 
 def test_rollback_leaves_the_pots_unchanged(clean_db, monkeypatch):
@@ -271,6 +324,7 @@ def test_rollback_leaves_the_pots_unchanged(clean_db, monkeypatch):
 # --- Write-back: retries until it lands ---------------------------------------
 
 def test_writeback_retries_until_it_lands(clean_db, monkeypatch):
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     _seed_one(monkeypatch, _sp_item("101"))
     monkeypatch.setattr(staff_writeback, "_backoff_seconds", lambda attempts: 0)  # retry at once
 
@@ -303,6 +357,7 @@ def test_writeback_retries_until_it_lands(clean_db, monkeypatch):
 
 
 def test_writeback_skipped_in_rehearsal(clean_db, monkeypatch):
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     _seed_one(monkeypatch, _sp_item("101"))
 
     async def enqueue():
@@ -325,6 +380,7 @@ def test_writeback_skipped_in_rehearsal(clean_db, monkeypatch):
 def test_a_claimed_writeback_is_not_replayed_by_a_second_drain(clean_db, monkeypatch):
     # A row another instance has claimed ("sending", claim not yet expired) is not
     # due, so a second drain never calls SharePoint for it.
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     _seed_one(monkeypatch, _sp_item("101"))
 
     async def claim_elsewhere():
@@ -358,6 +414,7 @@ def test_a_claimed_writeback_is_not_replayed_by_a_second_drain(clean_db, monkeyp
 def test_a_stale_claim_is_reclaimed(clean_db, monkeypatch):
     # A "sending" row whose claim has expired (its owner crashed) is taken again by
     # the next drain and sent, so a crash never strands a change.
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     _seed_one(monkeypatch, _sp_item("101"))
 
     async def stale_claim():
@@ -475,6 +532,7 @@ def test_pull_leaves_a_person_with_a_pending_writeback_alone(clean_db, monkeypat
     # An app change still queued for SharePoint means SharePoint is behind, so the
     # detector leaves the person alone: no finding is filed even when a balance and
     # a field both differ.
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     _seed_one(monkeypatch, _sp_item("101"))
 
     async def queue():
@@ -654,6 +712,7 @@ def test_a_mistyped_staff_setting_fails_loudly(monkeypatch):
 
 def test_create_through_the_store_queues_a_writeback(clean_db, monkeypatch):
     # A create while on Postgres mints an id and queues the SharePoint replay.
+    monkeypatch.setattr(staff_writeback, "WRITEBACK_ENABLED", True)   # the dormant queue itself, turned on to test it
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
     created = run(staff_store.create_list_item(STAFF, {"Title": "New Person", "SalaryHourly": "Salary"}))
     assert created["fields"]["Title"] == "New Person"

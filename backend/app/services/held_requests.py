@@ -426,7 +426,7 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
     from app.services.leave_requests import _resolve_user_lookup_id
     from app.services.request_submitter import requests_linked_by_email
     waiting_for_site = (
-        not requests_linked_by_email() and not await _resolve_user_lookup_id(email)
+        not await requests_linked_by_email() and not await _resolve_user_lookup_id(email)
     )
 
     results: list[ReleaseResult] = []

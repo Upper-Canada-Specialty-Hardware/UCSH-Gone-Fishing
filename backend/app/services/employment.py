@@ -198,6 +198,14 @@ def vacation_days_counted(leave_rows: list[dict], year: int) -> float:
             continue
         if (row.get("LeaveType") or "") != VACATION:          # only vacation is counted
             continue
+        # The employment type stamped on the request at decision time, when the
+        # row carries it (Postgres #300). A vacation approved while the person was
+        # salaried spent pots, so it is not an hourly "counted" day and must be
+        # left out, matching the vacation_taken ledger counter. A row without the
+        # stamp (SharePoint) keeps the old behaviour: this person is hourly now.
+        stamped = row.get("RequestEmploymentType")
+        if stamped is not None and stamped not in HOURLY_TYPES:
+            continue
         start = str(row.get("StartDate") or "")[:4]           # "YYYY" of the first day
         if start != str(year):
             continue

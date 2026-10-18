@@ -17,6 +17,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.app_settings import requests_storage
+from app.services.switch_pause import pinned_requests_backend  # a guarded write pins the backend
 
 SHAREPOINT = "sharepoint"
 POSTGRES = "postgres"
@@ -110,7 +111,12 @@ class RequestStore:
             A request-list table when the list is a request list and requests
             live in Postgres; otherwise sp_client.
         """
-        if await requests_in_postgres():
+        # A guarded write pins the backend for its whole run, so a decision that
+        # started on SharePoint still reads and writes SharePoint even if the
+        # switch flips the setting underneath it; with no guard, read the setting.
+        pinned = pinned_requests_backend()
+        in_postgres = pinned if pinned is not None else await requests_in_postgres()
+        if in_postgres:
             table = request_list_tables().get(list_id)
             if table is not None:
                 return table

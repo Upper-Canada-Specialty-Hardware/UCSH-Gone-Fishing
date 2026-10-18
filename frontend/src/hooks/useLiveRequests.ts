@@ -127,6 +127,7 @@ export function useLiveRequests(options: {
       source = opened;
       if (!source) { startPolling(); return; }             // not signed in for this scope
       setStatus('connecting');
+      armDead();                                           // arm now: a stream stuck connecting still trips the fallback
       source.onopen = () => { if (!closed) { stopPolling(); setStatus('live'); armDead(); } };
       // The server's first message says where "now" is, so a later resume starts there.
       source.addEventListener('ready', (e) => {
@@ -165,17 +166,26 @@ export function useLiveRequests(options: {
       }
     };
 
+    /** (Re)arm the stream retry while polling, so a failed reopen is tried again. */
+    const armRetry = () => {
+      if (closed) return;
+      if (retryTimer) clearTimeout(retryTimer);            // one retry pending at a time
+      // Keep trying the stream; polling is the fallback, not the goal.
+      retryTimer = setTimeout(() => { retryTimer = null; void startStream(); }, RETRY_STREAM_MS);
+    };
+
     /** Give up on the stream and read the catch-up on a timer instead. */
     const startPolling = () => {
-      if (closed || pollTimer) return;                     // already polling
-      if (source) { source.close(); source = null; }
+      if (closed) return;
+      if (source) { source.close(); source = null; }       // drop any half-open stream
       clearDead();
+      // Already polling: a retry's reopen failed (the retry fired and cleared
+      // itself), so re-arm it and keep polling rather than getting stuck here.
+      if (pollTimer) { armRetry(); return; }
       setStatus('polling');
       void pollOnce();
       pollTimer = setInterval(() => void pollOnce(), POLL_MS);
-      // Keep trying the stream; polling is the fallback, not the goal.
-      if (retryTimer) clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => { retryTimer = null; void startStream(); }, RETRY_STREAM_MS);
+      armRetry();
     };
 
     void startStream();

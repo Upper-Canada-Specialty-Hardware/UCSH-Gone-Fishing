@@ -280,6 +280,65 @@ def _none() -> dict:
     return {"state": "none", "pieces": []}
 
 
+async def _ledger_taken_from(kind: str, item_id, status: str, today: date) -> dict:
+    """taken_from for a decided Postgres request, built from its balance_ledger rows.
+
+    The Postgres decision path never writes BalanceAuditLog; the pots it moved are
+    the request's ``balance_ledger`` rows instead. This reads them and builds the
+    same pieces the audit-log path builds, so an approved request reads as
+    ``recorded``, a refunded one as ``refunded`` (still showing what the approval
+    did, not the net zero after reversal), and an hourly vacation as ``counted``
+    (a ``vacation_taken`` row, no pot moved). The employment type stamped on the
+    request is implicit here: the ledger already records exactly what that type
+    caused, so no current-SalaryHourly read is needed.
+
+    Args:
+        kind: The request kind ("leave", "overtime", "carryover_payout").
+        item_id: The request's item_id.
+        status: The request's trimmed Status ("Approved" or "Refunded").
+        today: Today in Toronto, the fallback change date.
+
+    Returns:
+        ``{"state", "pieces", ...}`` as ``taken_from_for`` returns.
+    """
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models.balance_ledger import BalanceLedger
+    from app.models.request_record import RequestRecord
+    try:
+        key = int(item_id)
+    except (TypeError, ValueError):
+        return {"state": "unrecorded", "pieces": []}
+    async with async_session() as session:
+        record = (await session.execute(
+            select(RequestRecord).where(RequestRecord.kind == kind, RequestRecord.item_id == key)
+        )).scalars().first()
+        if record is None:
+            return {"state": "unrecorded", "pieces": []}
+        ledger = (await session.execute(
+            select(BalanceLedger.pot, BalanceLedger.change, BalanceLedger.reason)
+            .where(BalanceLedger.request_id == record.id)
+        )).all()
+    # Only the approval's own rows: a refund writes reversal and cascade rows
+    # (reason starts "refund"), which would net the approval to zero.
+    approval = [(pot, float(change)) for pot, change, reason in ledger
+                if not (reason or "").startswith("refund")]
+    counted = sum(c for pot, c in approval if pot == "vacation_taken")   # the hourly vacation counter
+    pot_moves = [(pot, c) for pot, c in approval if pot != "vacation_taken"]
+    if counted and not pot_moves:                           # hourly vacation: a counter, no pot moved
+        return {"state": "counted", "pieces": [], "counted_days": round(counted, 3)}
+    if not pot_moves:                                       # no-cost leave, hourly overtime: nothing moved
+        return _none()
+    deltas: dict[str, float] = {}
+    for pot, change in pot_moves:                           # pot -> SharePoint key, summed signed
+        field = FIELD_FOR_POT.get(pot)
+        if field:
+            deltas[field] = deltas.get(field, 0.0) + change
+    change_day = record.decided_at.date() if record.decided_at else today   # for the CO/PO year
+    state = "refunded" if status == "Refunded" else "recorded"
+    return {"state": state, "pieces": _pieces_from_deltas(deltas, change_day)}
+
+
 def taken_from_for(
     item_fields: dict, request_type: str, employee_fields: dict | None, today: date,
 ) -> dict:
@@ -381,6 +440,13 @@ async def attach_taken_from(
         from app.services.app_settings import toronto_today
         today = toronto_today()
 
+    # After the switch, a decided request's real movements are its balance_ledger
+    # rows, not a BalanceAuditLog the Postgres path never writes. For those rows
+    # we read the ledger instead of the audit log, so an approved request still
+    # shows what it took and a refunded one what the approval had taken (#296).
+    from app.repositories.request_store import requests_in_postgres
+    postgres = await requests_in_postgres()
+
     name_to_item = staff_by_name
     if employee_fields is None and name_to_item is None:
         # Self-sufficient fallback: one read, built into a name -> item map.
@@ -402,9 +468,17 @@ async def attach_taken_from(
                 name = (row.get("employee_name") or "").strip().lower()
                 item = name_to_item.get(name) if (name and name_to_item) else None
                 emp_fields = item.get("fields") if item else None
-            # The row itself carries the SharePoint fields (merged in by the
-            # endpoint), so it doubles as item_fields for the pure function.
-            row["taken_from"] = taken_from_for(row, row.get("request_type", ""), emp_fields, today)
+            request_type = row.get("request_type", "")
+            status = (row.get("Status") or "").strip()
+            if postgres and status in ("Approved", "Refunded"):
+                # Decided on Postgres: read the ledger, which is authoritative and
+                # already reflects the employment type stamped at decision time.
+                kind = request_type.replace("-", "_")   # "carryover-payout" -> "carryover_payout"
+                row["taken_from"] = await _ledger_taken_from(kind, row.get("id"), status, today)
+            else:
+                # Pending, or still on SharePoint: the pure function reads the
+                # row's SharePoint fields (merged in by the endpoint) directly.
+                row["taken_from"] = taken_from_for(row, request_type, emp_fields, today)
         except Exception:  # noqa: BLE001 - one bad row must not fail the whole response
             logger.debug("taken_from: could not compute for a %s row", row.get("request_type"), exc_info=True)
             row["taken_from"] = {"state": "unrecorded", "pieces": []}

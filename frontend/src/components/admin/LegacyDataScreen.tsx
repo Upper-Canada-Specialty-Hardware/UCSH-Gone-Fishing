@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
   Paper, Snackbar, Stack, TextField, Typography,
@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   FindingStatus, FindingsPage, LegacyFinding, getLegacyFindings, ignoreLegacyFinding, resolveLegacyFinding,
 } from '../../api/legacy';
+import { requestTypeOf } from '../../api/events';
 
 /** A plain-words title and one sentence on what each reconciliation case means. */
 interface CaseInfo {
@@ -111,6 +112,7 @@ export default function LegacyDataScreen({ onNotify }: Props) {
   const navigate = useNavigate();
   const [status, setStatus] = useState<FindingStatus>('open');
   const [caseFilter, setCaseFilter] = useState<string | null>(null);
+  const [page, setPage] = useState(1);                      // 1-based; reset to 1 on a status/case change
   const [data, setData] = useState<FindingsPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -118,17 +120,34 @@ export default function LegacyDataScreen({ onNotify }: Props) {
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [snack, setSnack] = useState<{ open: boolean; message: string }>({ open: false, message: '' });
+  // Each load takes a ticket; only the newest ticket's answer is applied, so a
+  // quick chip switch cannot paint the previous filter's results over the new.
+  const reqSeq = useRef(0);
 
-  /** Fetch the current status (and case filter) from the backend. */
-  const load = useCallback(() => {
+  /**
+   * Fetch one page of findings for the current status and case. Page 1 replaces
+   * the list; a later page appends, for the "Load more" control.
+   *
+   * @param targetPage - The 1-based page to fetch.
+   */
+  const load = useCallback((targetPage: number) => {
+    const seq = ++reqSeq.current;                           // this request's ticket
     setLoading(true);
     setError('');
-    getLegacyFindings({ status, case: caseFilter || undefined, page_size: PAGE_SIZE })
-      .then((res) => setData(res.data))
-      .catch(() => setError('The findings could not be loaded.'))
-      .finally(() => setLoading(false));
+    getLegacyFindings({ status, case: caseFilter || undefined, page: targetPage, page_size: PAGE_SIZE })
+      .then((res) => {
+        if (seq !== reqSeq.current) return;                 // a newer request started: drop this answer
+        setData((prev) => (targetPage <= 1 || !prev
+          ? res.data                                        // first page: replace
+          : { ...res.data, findings: [...prev.findings, ...res.data.findings] }));   // later page: append
+      })
+      .catch(() => { if (seq === reqSeq.current) setError('The findings could not be loaded.'); })
+      .finally(() => { if (seq === reqSeq.current) setLoading(false); });
   }, [status, caseFilter]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(page); }, [load, page]);
+
+  /** Load the next page of findings (keeps what is already shown). */
+  const loadMore = useCallback(() => setPage((p) => p + 1), []);
 
   // The counts come back for the whole status, so the overview chips are always
   // complete even when only one case's findings are loaded.
@@ -150,7 +169,9 @@ export default function LegacyDataScreen({ onNotify }: Props) {
   }, [data]);
 
   const total = data?.total ?? 0;
-  const loaded = data?.findings.length ?? 0;
+  // Count only findings that still match the current status, so a card decided
+  // in place (it no longer matches) does not inflate the shown count.
+  const loaded = data?.findings.filter((f) => f.status === status).length ?? 0;
 
   /** Open the note dialog for a resolve or ignore. */
   const startDecision = (finding: LegacyFinding, action: 'resolve' | 'ignore') => {
@@ -164,11 +185,20 @@ export default function LegacyDataScreen({ onNotify }: Props) {
     setSaving(true);
     try {
       const call = pending.action === 'resolve' ? resolveLegacyFinding : ignoreLegacyFinding;
-      await call(pending.finding.id, note.trim());
+      const res = await call(pending.finding.id, note.trim());   // the finding with its new status and note
       const word = pending.action === 'resolve' ? 'resolved' : 'ignored';
+      const caseKey = pending.finding.case;
+      // Update the one card in place and drop it from this status's counts; no
+      // full reload, so the scroll position is kept.
+      setData((prev) => {
+        if (!prev) return prev;
+        const findings = prev.findings.map((f) => (f.id === res.data.id ? res.data : f));
+        const counts = { ...prev.counts };
+        if (counts[caseKey]) counts[caseKey] -= 1;
+        return { ...prev, findings, counts, total: Math.max(0, prev.total - 1) };
+      });
       setPending(null);
       onNotify?.(`Finding ${word}.`, 'success');
-      load();                                                  // the row leaves the open view
     } catch {
       setSnack({ open: true, message: 'That could not be saved. Try again shortly.' });
     } finally {
@@ -176,9 +206,22 @@ export default function LegacyDataScreen({ onNotify }: Props) {
     }
   };
 
-  /** Go to the screen where HR fixes the underlying record. */
+  /**
+   * Open the one record a finding is about, not the whole list. A staff finding
+   * opens that person's profile by id; a request finding opens just that request
+   * on the All requests screen. The screens read the `open` query param: a staff
+   * id, or the request's row key history-<request type>-<id> (requestTypeOf maps
+   * carryover_payout to the hyphenated url form the table uses).
+   *
+   * @param finding - The finding whose subject to open.
+   */
   const openSubject = (finding: LegacyFinding) => {
-    navigate(finding.subject === 'staff' ? '/admin/staff' : '/admin/requests');
+    if (finding.subject === 'staff') {
+      navigate(`/admin/staff?open=${encodeURIComponent(finding.subject_id)}`);   // the person's profile
+      return;
+    }
+    const type = requestTypeOf(finding.kind || 'leave');                          // url-form request type
+    navigate(`/admin/requests?open=${encodeURIComponent(`history-${type}-${finding.subject_id}`)}`);
   };
 
   return (
@@ -196,7 +239,7 @@ export default function LegacyDataScreen({ onNotify }: Props) {
             label={t.label}
             color={status === t.key ? 'primary' : 'default'}
             variant={status === t.key ? 'filled' : 'outlined'}
-            onClick={() => { setStatus(t.key); setCaseFilter(null); }}
+            onClick={() => { setStatus(t.key); setCaseFilter(null); setPage(1); }}
             aria-pressed={status === t.key}
           />
         ))}
@@ -213,7 +256,7 @@ export default function LegacyDataScreen({ onNotify }: Props) {
               label={`All (${total})`}
               color={caseFilter === null ? 'primary' : 'default'}
               variant={caseFilter === null ? 'filled' : 'outlined'}
-              onClick={() => setCaseFilter(null)}
+              onClick={() => { setCaseFilter(null); setPage(1); }}
               aria-pressed={caseFilter === null}
             />
             {casesWithFindings.map((c) => (
@@ -222,7 +265,7 @@ export default function LegacyDataScreen({ onNotify }: Props) {
                 label={`${CASE_INFO[c]?.title || c} (${counts[c] || 0})`}
                 color={caseFilter === c ? 'primary' : 'default'}
                 variant={caseFilter === c ? 'filled' : 'outlined'}
-                onClick={() => setCaseFilter(c)}
+                onClick={() => { setCaseFilter(c); setPage(1); }}
                 aria-pressed={caseFilter === c}
               />
             ))}
@@ -230,7 +273,7 @@ export default function LegacyDataScreen({ onNotify }: Props) {
         </Paper>
       )}
 
-      {loading ? (
+      {loading && page === 1 ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 6 }}><CircularProgress /></Box>
       ) : error ? (
         <Paper sx={{ p: 3 }}><Typography color="error">{error}</Typography></Paper>
@@ -242,11 +285,18 @@ export default function LegacyDataScreen({ onNotify }: Props) {
         </Paper>
       ) : (
         <Stack spacing={2.5}>
-          {/* A note when the open view holds more than one page of findings. */}
-          {caseFilter === null && loaded < total && (
-            <Typography variant="body2" color="text.secondary">
-              Showing the newest {loaded} of {total}. Pick a case above to see all of one.
-            </Typography>
+          {/* Always show how many of the total are loaded, with a Load more. */}
+          {total > 0 && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+              <Typography variant="body2" color="text.secondary">
+                Showing {loaded} of {total}{caseFilter === null ? '' : ' in this case'}.
+              </Typography>
+              {loaded < total && (
+                <Button size="small" variant="outlined" onClick={loadMore} disabled={loading}>
+                  {loading ? 'Loading...' : 'Load more'}
+                </Button>
+              )}
+            </Box>
           )}
           {grouped.map(([caseKey, findings]) => {
             const info = CASE_INFO[caseKey];

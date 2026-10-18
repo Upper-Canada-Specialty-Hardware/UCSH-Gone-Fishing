@@ -4,6 +4,7 @@ import {
   TableHead, TableRow, TextField, Typography, useMediaQuery,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
+import { useSearchParams } from 'react-router-dom';
 import CloseIcon from '@mui/icons-material/Close';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import DownloadIcon from '@mui/icons-material/Download';
@@ -103,6 +104,7 @@ interface Props {
  */
 export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onReload, onNotify }: Props) {
   const theme = useTheme();
+  const [searchParams] = useSearchParams();                             // ?open=<id> from the Legacy data screen
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Record<string, string[]>>({});   // filter key -> chosen values
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -185,6 +187,14 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
       setRecordLoading(false);
     }
   };
+
+  // Opened from the Legacy data screen with ?open=<id>: show that person's
+  // profile at once. Runs when the param changes, so closing the profile by hand
+  // (the param stays) does not spring it back open.
+  useEffect(() => {
+    const id = searchParams.get('open');
+    if (id && id !== openId) openPerson(id);
+  }, [searchParams]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Reload everything a save can touch: the dashboard balances/requests, the
    *  manager assignments (for the row), and the open person's full record. */

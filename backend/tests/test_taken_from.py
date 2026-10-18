@@ -5,17 +5,32 @@ employee balances (the bulk, since the math lives there), and one presence test
 per endpoint family proving the ``taken_from`` key is attached to every row.
 """
 
+import asyncio
+import itertools
 import json
 
 import pytest
-from datetime import date
+from datetime import date, datetime, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 
 from app.config import settings
+from app.database import async_session
+from app.models.balance_ledger import BalanceLedger
+from app.models.request_record import RequestRecord
 from app.routes import dashboard
-from app.routes.dashboard import DashboardUser, _PersonNames, get_dashboard_user
-from app.services.taken_from import _earned_year, taken_from_for
+from app.routes.dashboard import DashboardUser, _PersonNames, _enrich_pending_item, get_dashboard_user
+from app.services.employment import vacation_days_counted
+from app.services.taken_from import _earned_year, attach_taken_from, taken_from_for
+
+
+def _run(coro):
+    """Run one coroutine to completion in its own event loop."""
+    return asyncio.run(coro)
+
+
+_ledger_item_ids = itertools.count(60_000_000)
 
 # A fixed "today" so the pending-projection year is deterministic: November is
 # past April 1, so a carry-over/payout earned now reads as the current year.
@@ -370,3 +385,145 @@ def test_admin_stuck_requests_carry_taken_from(mounted, monkeypatch):
     assert resp.status_code == 200
     rows = resp.json()["stuck"]
     assert rows and all("taken_from" in r for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# After the switch: a decided request reads taken_from from the ledger (finding 5)
+# ---------------------------------------------------------------------------
+
+async def _insert_decided(kind, item_id, status, ledger_rows):
+    """Insert one decided request plus its balance_ledger rows, and return nothing.
+
+    Args:
+        kind: The request kind.
+        item_id: The item_id people and links use.
+        status: The lower-case lifecycle status ("approved" / "refunded").
+        ledger_rows: ``[(pot, change, before, after, reason)]`` to insert.
+    """
+    async with async_session() as session:
+        record = RequestRecord(
+            kind=kind, item_id=item_id, status=status, employee_id="7",
+            employee_name="Pat Staff", employee_email="pat@ucsh.com",
+            leave_type="Sick or Personal Day", start_date=date(2026, 11, 2),
+            days=2.0, approval_version=1, balance_state="applied",
+            decided_at=datetime(2026, 11, 2, 15, 0, tzinfo=timezone.utc),
+        )
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        for pot, change, before, after, reason in ledger_rows:
+            session.add(BalanceLedger(
+                request_id=record.id, employee_id="7", pot=pot, change=change,
+                before=before, after=after, reason=reason, actor="Boss",
+                channel="manager_dashboard",
+                idempotency_key=f"tk-{item_id}-{pot}-{next(_ledger_item_ids)}",
+            ))
+        await session.commit()
+
+
+@pytest.fixture
+def _clean_requests():
+    """Wipe the request and ledger rows these ledger-path tests insert."""
+    async def wipe():
+        async with async_session() as session:
+            await session.execute(delete(BalanceLedger))
+            await session.execute(delete(RequestRecord))
+            await session.commit()
+    _run(wipe())
+    yield
+    _run(wipe())
+
+
+def test_approved_postgres_request_reads_taken_from_from_the_ledger(monkeypatch, _clean_requests):
+    # After the switch the decision writes no BalanceAuditLog; its pots are the
+    # balance_ledger rows. The row here carries no audit log at all, so the old
+    # pure path would read "unrecorded"; the ledger path must read "recorded".
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    item_id = next(_ledger_item_ids)
+    _run(_insert_decided("leave", item_id, "approved",
+                         [("sick", -2.0, 5.0, 3.0, f"approved leave #{item_id}")]))
+
+    rows = [{"id": str(item_id), "request_type": "leave", "Status": "Approved",
+             "employee_name": "Pat Staff"}]       # no BalanceAuditLog key on purpose
+    _run(attach_taken_from(rows, employee_fields=EMP, today=TODAY))
+
+    assert rows[0]["taken_from"]["state"] == "recorded"
+    assert rows[0]["taken_from"]["pieces"] == [{"pot": "sick", "days": -2.0, "year": None}]
+
+
+def test_refunded_postgres_request_still_shows_what_the_approval_took(monkeypatch, _clean_requests):
+    # A refund adds reversal rows (reason starts "refund"); they must be ignored
+    # so the row still reads "refunded" with the approval's original movement.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    item_id = next(_ledger_item_ids)
+    _run(_insert_decided("leave", item_id, "refunded", [
+        ("sick", -2.0, 5.0, 3.0, f"approved leave #{item_id}"),
+        ("sick", 2.0, 3.0, 5.0, f"refund of leave #{item_id}"),     # the reversal, ignored
+    ]))
+
+    rows = [{"id": str(item_id), "request_type": "leave", "Status": "Refunded",
+             "employee_name": "Pat Staff"}]
+    _run(attach_taken_from(rows, employee_fields=EMP, today=TODAY))
+
+    assert rows[0]["taken_from"]["state"] == "refunded"
+    assert rows[0]["taken_from"]["pieces"] == [{"pot": "sick", "days": -2.0, "year": None}]
+
+
+def test_approved_postgres_hourly_vacation_reads_as_counted(monkeypatch, _clean_requests):
+    # An hourly vacation moves no pot; its ledger is a single vacation_taken
+    # counter row, which must read as "counted" with the day count.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    item_id = next(_ledger_item_ids)
+    _run(_insert_decided("leave", item_id, "approved",
+                         [("vacation_taken", 2.0, 0.0, 2.0, f"approved leave #{item_id}")]))
+
+    rows = [{"id": str(item_id), "request_type": "leave", "Status": "Approved",
+             "employee_name": "Pat Staff"}]
+    _run(attach_taken_from(rows, employee_fields=HOURLY, today=TODAY))
+
+    assert rows[0]["taken_from"] == {"state": "counted", "pieces": [], "counted_days": 2.0}
+
+
+# ---------------------------------------------------------------------------
+# The pending projection follows the request's stamped employment type (finding 5)
+# ---------------------------------------------------------------------------
+
+def test_pending_enrich_uses_the_requests_stamped_employment_type():
+    # The person is salaried NOW, but the request was submitted while they were
+    # hourly. The projection must follow the stamp, so a vacation reads as the
+    # hourly "counted" case (no pot moves), matching what approval will do.
+    staff = {"id": "7", "fields": {**EMP, "SalaryHourly": "Salary"}}
+    sp_user_to_name = _PersonNames()
+    sp_user_to_name.by_email["pat@ucsh.com"] = "Pat Staff"
+    item_data = {
+        "id": "300", "LeaveType": "Vacation", "Days": 2,
+        "StartDate": "2026-11-02", "EndDate": "2026-11-03",
+        "SubmitterEmail": "pat@ucsh.com", "RequestEmploymentType": "Hourly",
+    }
+
+    _enrich_pending_item(item_data, "leave", {"pat staff": staff}, {7: staff}, sp_user_to_name)
+
+    assert item_data["projected_balances"] is None
+    assert item_data["balance_unchanged"] == "hourly: counted as vacation taken, no balance used"
+
+
+# ---------------------------------------------------------------------------
+# The hourly vacation counter follows the stamped type too (finding 5)
+# ---------------------------------------------------------------------------
+
+def test_vacation_days_counted_skips_rows_stamped_non_hourly():
+    # Only days approved while hourly are the hourly counter; a vacation approved
+    # while salaried spent pots and must not be counted. A row without the stamp
+    # (SharePoint-era) keeps the old behaviour and counts.
+    rows = [
+        {"Status": "Approved", "LeaveType": "Vacation", "StartDate": "2026-05-01",
+         "Days": 2, "RequestEmploymentType": "Hourly"},            # hourly: counts
+        {"Status": "Approved", "LeaveType": "Vacation", "StartDate": "2026-06-01",
+         "Days": 3, "RequestEmploymentType": "Salary"},            # salaried then: skipped
+        {"Status": "Approved", "LeaveType": "Vacation", "StartDate": "2026-07-01",
+         "Days": 1},                                               # no stamp: legacy, counts
+    ]
+    assert vacation_days_counted(rows, 2026) == 3.0

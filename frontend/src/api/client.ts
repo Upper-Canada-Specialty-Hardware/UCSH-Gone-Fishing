@@ -162,8 +162,6 @@ export const updateHoliday = (id: string, payload: { title: string; date: string
 export const deleteHoliday = (id: string) => api.delete(`/admin/holidays/${id}`);
 
 // Admin - holidays SharePoint -> Postgres copy + parity check
-export const getHolidaysParity = () => api.get('/admin/holidays/parity');
-export const copyHolidaysToPostgres = () => api.post('/admin/holidays/copy-to-postgres');
 
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');

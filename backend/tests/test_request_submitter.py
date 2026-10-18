@@ -47,16 +47,33 @@ def directory(monkeypatch):
 # ----- writing the columns -----
 
 def test_nothing_is_written_while_the_setting_is_off(monkeypatch):
+    # Requests in SharePoint (the default) and the columns not enabled: nothing.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "sharepoint")
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
-    assert request_submitter.submitter_columns("pat@ucsh.com", "Request page") == {}
+    assert asyncio.run(request_submitter.submitter_columns("pat@ucsh.com", "Request page")) == {}
 
 
 def test_both_columns_are_written_once_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "sharepoint")
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", True)
-    assert request_submitter.submitter_columns(" Pat@UCSH.com ", "Request page") == {
+    assert asyncio.run(request_submitter.submitter_columns(" Pat@UCSH.com ", "Request page")) == {
         "SubmitterEmail": "pat@ucsh.com",
         "RequestSource": "Request page",
     }
+
+
+def test_the_columns_are_written_on_postgres_even_with_the_setting_off(monkeypatch):
+    # After the switch a request row takes any field, so the two columns are
+    # written regardless of the SharePoint column setting; requests_linked_by_email
+    # no longer depends on REQUEST_EMAIL_COLUMNS_ENABLED (finding 2). The function
+    # is async now, so this also pins that it is awaited, not called.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
+    assert asyncio.run(request_submitter.submitter_columns("pat@ucsh.com", "Request page")) == {
+        "SubmitterEmail": "pat@ucsh.com",
+        "RequestSource": "Request page",
+    }
+    assert asyncio.run(request_submitter.requests_linked_by_email()) is True
 
 
 def test_a_new_leave_item_carries_the_columns_when_enabled(monkeypatch):

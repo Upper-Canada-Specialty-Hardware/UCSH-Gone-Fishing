@@ -22,14 +22,16 @@ from app.graph import sharepoint
 from app.models.app_setting import AppSetting
 from app.models.balance_ledger import BalanceLedger
 from app.models.legacy_finding import LegacyFinding
+from app.models.request_approval_state import RequestApprovalState
 from app.models.request_change import RequestChange
 from app.models.request_counter import RequestCounter
+from app.models.request_deletion import RequestDeletion
 from app.models.request_event import RequestEvent
 from app.models.request_record import RequestRecord
 from app.models.sharepoint_seen import SharepointSeen
 from app.models.sync_run import SyncRun
 from app.services import app_settings, rehearsal, shadow_sync
-from app.services.app_settings import POSTGRES, REQUESTS_STORAGE
+from app.services.app_settings import HOLIDAYS_STORAGE, POSTGRES, REQUESTS_STORAGE, STAFF_STORAGE
 from app.services.request_import import import_requests
 from app.services.sharepoint_check import run_sharepoint_check
 from app.services.storage_switch import flip_to_postgres
@@ -58,7 +60,7 @@ USER_ITEMS = [
 
 # Tables this suite owns and clears between tests.
 _TABLES = [BalanceLedger, RequestEvent, RequestChange, LegacyFinding, SharepointSeen,
-           RequestRecord, RequestCounter, SyncRun, AppSetting]
+           RequestRecord, RequestCounter, RequestApprovalState, RequestDeletion, SyncRun, AppSetting]
 
 
 def run(coro):
@@ -265,6 +267,23 @@ def test_detector_approved_no_balance_change(sp):
     assert fired == {"1"}
 
 
+def test_old_carryovers_without_a_log_are_not_flagged(sp):
+    # Before the app approved anything (2026-03-23), carry-overs and payouts were
+    # moved by hand and wrote no balance log, so they are not findings. One
+    # approved since then with no log is still flagged.
+    sp.lists[CARRYOVER] = [
+        sp_item(1, {"TypeofRequest": "Carry Over", "Days": 3, "Status": "Approved",
+                    "ApprovedDate": "2024-12-10", "SubmittedByLookupId": 101}),            # old, no log -> quiet
+        sp_item(2, {"TypeofRequest": "Payout", "Days": 2, "Status": "Approved",
+                    "SubmittedByLookupId": 101}, created="2023-11-01T10:00:00Z"),          # old, no date -> quiet
+        sp_item(3, {"TypeofRequest": "Carry Over", "Days": 3, "Status": "Approved",
+                    "ApprovedDate": "2026-06-02", "SubmittedByLookupId": 101}),            # since the app -> fires
+    ]
+    run(import_requests())
+    fired = {f.subject_id for f in run(_findings("approved_no_balance_change"))}
+    assert fired == {"3"}
+
+
 def test_detector_employment_type_suspect(sp):
     sp.lists[OVERTIME] = [
         sp_item(1, {"Title": "OT", "Date": "2026-06-01", "Hours": 4, "Status": "Approved",
@@ -381,8 +400,14 @@ def test_flip_runs_a_final_sync_then_sets_the_storage(sp):
 
 
 def _switch_to_postgres():
-    """Put requests in Postgres for the post-switch checks."""
+    """Put requests, staff and holidays in Postgres for the post-switch checks.
+
+    All three settings are flipped, so the switch reads as fully done (the flip
+    refuses a second run only when every backend is already Postgres).
+    """
     run(app_settings.set_setting(REQUESTS_STORAGE, POSTGRES))
+    run(app_settings.set_setting(STAFF_STORAGE, POSTGRES))
+    run(app_settings.set_setting(HOLIDAYS_STORAGE, POSTGRES))
 
 
 def test_check_flags_a_new_item_once_and_never_imports_it(sp):
@@ -474,6 +499,26 @@ def test_rehearsal_blocks_sharepoint_writes(monkeypatch):
     assert run(sharepoint.sp_client.create_list_item(LEAVE, {"Title": "x"})) == {}
     assert run(sharepoint.sp_client.update_list_item_fields(LEAVE, "1", {"Title": "x"})) == {}
     assert run(sharepoint.sp_client.delete_list_item(LEAVE, "1")) is None
+
+
+def test_rehearsal_never_adds_columns_to_the_live_lists(monkeypatch):
+    # The admin "add request columns" button changes the live SharePoint lists,
+    # so in rehearsal it reports only and never posts a column.
+    from app.services import request_submitter
+    monkeypatch.setattr(settings, "REHEARSAL_MODE", True)
+    monkeypatch.setattr(sharepoint.sp_client, "site_id", "site")
+
+    async def no_columns(path, params=None):
+        return {"value": []}                                    # every list is missing both columns
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("a SharePoint column was added in rehearsal")
+
+    monkeypatch.setattr(request_submitter.graph_client, "get", no_columns)
+    monkeypatch.setattr(request_submitter.graph_client, "post", boom)
+    report = run(request_submitter.ensure_request_columns(create=True))
+    assert all(entry["added"] == [] for entry in report["lists"].values())
+    assert all(len(entry["missing"]) == 2 for entry in report["lists"].values())
 
 
 def test_rehearsal_drops_non_allowlisted_sends(monkeypatch):
@@ -595,3 +640,114 @@ def test_import_carries_the_approval_version_and_a_v2_link_approves(sp, monkeypa
     assert stale.get("refused") == "stale"                       # an old v1 link is now stale
     ok = run(rd.approve("leave", 3905, "Alice Salary", "email_link", link_version=2))
     assert ok.get("status") == "approved"                        # the live v2 link approves
+
+
+# ----- the fixes before the rehearsal (#335, #336, #341) -----
+
+
+def test_a_failed_user_list_read_fails_the_import(sp, monkeypatch):
+    # A failed User Information List read must fail the whole run, not be swallowed,
+    # so a run that cannot resolve submitters never downgrades matched rows (item 2).
+    sp.lists[LEAVE] = [sp_item(1, leave_fields(lookup=101))]
+    real = sp.get_list_items
+
+    async def flaky(list_id, **kwargs):
+        if list_id == USERS:
+            raise RuntimeError("user list unavailable")
+        return await real(list_id, **kwargs)
+
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", flaky)
+    with pytest.raises(RuntimeError):
+        run(import_requests())
+
+
+def test_a_prior_match_is_not_downgraded_on_a_later_non_match(sp):
+    # Alice matched by email on the first import; when she later drops out of the
+    # directory the row must keep her id, not fall back and file a finding (item 2).
+    sp.lists[LEAVE] = [sp_item(50, leave_fields(lookup=999, submitter_email="alice@ucsh.com"))]
+    run(import_requests())
+    assert run(_record("leave", 50)).employee_id == "10"         # Alice's staff id
+
+    sp.lists[STAFF] = [i for i in sp.lists[STAFF] if i["id"] != "10"]   # Alice is gone
+    run(import_requests())
+    record = run(_record("leave", 50))
+    assert record.employee_id == "10"                            # kept, not downgraded to a fallback
+    assert run(_findings("submitter_unmatched")) == []           # and not flagged as unmatched
+
+
+def test_counter_lifts_above_approval_state_and_deletions(sp):
+    # The counter must clear every number a SharePoint item ever held: imported
+    # requests, approval-version rows, and the deletion log (item 5).
+    async def seed():
+        async with async_session() as session:
+            session.add(RequestApprovalState(
+                list_id=LEAVE, item_id="5000", current_version=1, current_snapshot={}))
+            session.add(RequestDeletion(
+                request_type="leave", list_item_id="6000", fields={}, reason="removed"))
+            await session.commit()
+
+    run(seed())
+    sp.lists[LEAVE] = [sp_item(100, leave_fields(lookup=101))]
+    run(import_requests())
+
+    async def counter():
+        async with async_session() as session:
+            return await session.get(RequestCounter, "leave")
+
+    assert run(counter()).last_item_id >= 6000                   # above the deleted number, not just 100
+
+
+def test_staff_index_first_wins_on_a_duplicate_email(sp):
+    # Two records share an email; the request index must match the FIRST, as the
+    # staff import's first-wins rule does (item 6).
+    sp.lists[STAFF] = [
+        {"id": "40", "fields": {"Title": "First Dup", "EmailAddress": "dup@ucsh.com", "SalaryHourly": "Salary"}},
+        {"id": "41", "fields": {"Title": "Second Dup", "EmailAddress": "dup@ucsh.com", "SalaryHourly": "Salary"}},
+    ]
+    sp.lists[LEAVE] = [sp_item(70, leave_fields(lookup=999, submitter_email="dup@ucsh.com"))]
+    run(import_requests())
+    assert run(_record("leave", 70)).employee_id == "40"         # the first record wins
+
+
+def test_detector_pending_unprocessed(sp):
+    # A pending row the old pipeline never finished (no days or no manager) is
+    # flagged; one with both is quiet (item 7).
+    sp.lists[LEAVE] = [
+        sp_item(1, {"LeaveType": "Vacation", "StartDate": "2026-06-01", "Status": "Pending",
+                    "SubmittedTestLookupId": 101}),                               # no days, no manager -> fires
+        sp_item(2, leave_fields(lookup=101, days=5, Managertxt="Boss")),          # has both -> quiet
+    ]
+    run(import_requests())
+    assert {f.subject_id for f in run(_findings("pending_unprocessed"))} == {"1"}
+
+
+def test_unknown_status_is_stored_as_cancelled_and_flagged(sp):
+    # A Status outside the five known values is stored as cancelled with the raw
+    # value kept, and flagged; a known value keeps its mapping (item 10).
+    sp.lists[LEAVE] = [
+        sp_item(1, leave_fields(lookup=101, status="In Review")),                 # unknown -> cancelled + finding
+        sp_item(2, leave_fields(lookup=101, status="Approved", approved="2026-06-02")),  # known -> unchanged
+    ]
+    run(import_requests())
+    unknown = run(_record("leave", 1))
+    assert unknown.status == "cancelled"
+    assert unknown.extra.get("Status_raw") == "In Review"
+    assert {f.subject_id for f in run(_findings("unknown_status"))} == {"1"}
+    assert run(_record("leave", 2)).status == "approved"         # the five keep their mapping
+
+
+def test_absent_fields_are_cleared_on_reimport(sp):
+    # Graph omits a cleared field, so a re-import must reset the mapped columns it
+    # no longer carries: a shortened range, a removed day count and manager (item 11).
+    sp.lists[LEAVE] = [sp_item(300, {"LeaveType": "Vacation", "StartDate": "2026-06-01",
+                                     "EndDate": "2026-06-05", "Days": 5, "Status": "Pending",
+                                     "SubmittedTestLookupId": 101, "Managertxt": "Boss", "ManagerID": "77"})]
+    run(import_requests())
+    first = run(_record("leave", 300))
+    assert first.end_date is not None and first.days == 5 and first.manager_name == "Boss"
+
+    sp.lists[LEAVE] = [sp_item(300, {"LeaveType": "Vacation", "StartDate": "2026-06-01",
+                                     "Status": "Pending", "SubmittedTestLookupId": 101})]
+    run(import_requests())
+    second = run(_record("leave", 300))
+    assert second.end_date is None and second.days is None and second.manager_name is None

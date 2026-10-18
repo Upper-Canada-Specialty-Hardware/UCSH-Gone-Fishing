@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 _BACKOFF_BASE_SECONDS = 60
 _BACKOFF_CAP_SECONDS = 3600
 
+# A row that keeps failing is abandoned after this many tries, so a permanently
+# bad recipient or provider is not retried forever. The worker's claim query
+# skips a failed row at this cap (see tasks/outbox_worker.py).
+MAX_OUTBOX_ATTEMPTS = 10
+
 # A delivered message's type -> the timeline event a successful send records, so
 # the stage reads right: a queued manager ask becomes "Waiting on manager", the
 # employee receipt "Submitted, receipt sent", a reminder "Reminder sent", and a
@@ -133,7 +138,17 @@ async def send_outbox_row(session, row: Outbox) -> None:
     except Exception as e:                                         # a provider error: schedule a retry
         row.status = "failed"
         row.last_error = f"{type(e).__name__}: {e}"
-        row.next_attempt_at = utcnow() + timedelta(seconds=_backoff_seconds(row.attempts))
+        if row.attempts >= MAX_OUTBOX_ATTEMPTS:                     # too many tries: give up, keep the error
+            # No further retry is scheduled; the worker's claim query skips a
+            # failed row at the cap, so this row stays "failed" and is left alone.
+            row.next_attempt_at = None
+            logger.error(
+                "Outbox %s abandoned after %s attempts (%s): %s",
+                row.id, row.attempts, row.channel, row.last_error,
+            )
+        else:                                                      # still retrying: back off and try later
+            row.next_attempt_at = utcnow() + timedelta(seconds=_backoff_seconds(row.attempts))
+            logger.warning("Outbox %s failed (attempt %s): %s", row.id, row.attempts, row.last_error)
         if request is not None:
             await append_event(
                 session, request, "send_failed", "system", None,
@@ -141,4 +156,3 @@ async def send_outbox_row(session, row: Outbox) -> None:
                 f"{row.idempotency_key}:send_failed:{row.attempts}",
             )
             log_step(request, "send_failed", channel=row.channel, attempt=row.attempts)
-        logger.warning("Outbox %s failed (attempt %s): %s", row.id, row.attempts, row.last_error)

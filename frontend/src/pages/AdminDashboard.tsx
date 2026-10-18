@@ -395,16 +395,44 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  // Refetch only the derived views after a live event: the pending queue, the
+  // stuck list and the totals. The full /admin/requests list is NOT pulled here;
+  // the live stream already merges each event into the loaded rows, so re-reading
+  // all of it (thousands of rows) on every decision is wasteful (#328).
+  const reloadDerived = useCallback(async () => {
+    try {
+      const [pendRes, stuckRes, statsRes] = await Promise.all([
+        getAdminPending(),
+        getAdminStuckRequests(),
+        getAdminStats(),
+      ]);
+      setPending(pendRes.data.pending || []);
+      setStuckRequests(stuckRes.data.stuck || []);
+      setStats(statsRes.data);
+    } catch {
+      /* the merged rows stay current; the derived lists refresh on the next event */
+    }
+  }, []);
+
   // Live updates: merge each timeline event into the requests table, and refresh
-  // the pending, stuck and totals views (debounced) when a decision lands from
-  // another channel so every admin view stays current without a reload (#328).
+  // the derived views (debounced ~2s) when a decision lands from another channel
+  // so every admin view stays current without re-reading the whole list (#328).
   const liveRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const needFullList = useRef(false);                      // a new request arrived since the last flush
   const onLiveEvent = useCallback((ev: LiveEvent) => {
     const refreshTypes = ['approved', 'rejected', 'cancelled', 'submitted', 'sent_to_manager', 'refunded'];
     if (!refreshTypes.includes(ev.type)) return;
+    // A new request's merged row holds only the event's fields (no location,
+    // email or description), so a submission pulls the full list once; they are
+    // rare next to decisions, which only refresh the derived views.
+    if (ev.type === 'submitted') needFullList.current = true;
     if (liveRefresh.current) clearTimeout(liveRefresh.current);
-    liveRefresh.current = setTimeout(() => void reloadRequests(), 700);
-  }, [reloadRequests]);
+    liveRefresh.current = setTimeout(() => {
+      const full = needFullList.current;
+      needFullList.current = false;
+      void (full ? reloadRequests() : reloadDerived());
+    }, 2000);
+  }, [reloadDerived, reloadRequests]);
   const { status: liveStatus } = useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   const handleReprocess = useCallback(async (id: string, reason: string) => {

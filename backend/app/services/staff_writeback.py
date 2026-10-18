@@ -21,7 +21,7 @@ is not echoed back to it. The whole replay is gated off in rehearsal mode (no
 live SharePoint writes); a missing rehearsal module counts as "allowed".
 """
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,10 +82,20 @@ def _writes_allowed() -> bool:
     return sharepoint_writes_allowed()
 
 
+# Turned off by the owner's ruling (2026-10-18): after the switch nothing in the
+# app writes to SharePoint, so staff changes are no longer copied back to the
+# Staff Directory list (it freezes at the switch, and the Bulletin Board with it).
+# The queue and its drain stay in place but nothing is queued and no task drains.
+WRITEBACK_ENABLED = False
+
+
 def enqueue_writeback(
     session: AsyncSession, sp_item_id: str, fields: dict, op: str = "update"
-) -> StaffWriteback:
+) -> StaffWriteback | None:
     """Queue one SharePoint-shaped change to replay onto a staff item. No commit.
+
+    While ``WRITEBACK_ENABLED`` is False (the current ruling) this queues nothing
+    and returns None, so no staff change ever reaches SharePoint.
 
     Added to the caller's session so the queue row commits with the change that
     caused it (or not at all). Never called for a pulled edit, so a SharePoint
@@ -102,8 +112,11 @@ def enqueue_writeback(
             id back on the staff row.
 
     Returns:
-        The queued StaffWriteback row (not yet committed).
+        The queued StaffWriteback row (not yet committed), or None while the
+        write-back is turned off.
     """
+    if not WRITEBACK_ENABLED:                              # write-back is off: SharePoint is never written
+        return None
     row = StaffWriteback(
         sp_item_id=str(sp_item_id),
         fields=dict(fields),                               # a copy: the caller may mutate theirs
@@ -140,16 +153,39 @@ async def _target_item_id(session: AsyncSession, row: StaffWriteback) -> str:
     return row.sp_item_id                                  # imported id, or minted id before create
 
 
+def _as_utc_naive(dt: datetime | None) -> datetime | None:
+    """Normalise a stored datetime to naive UTC, so either backend compares.
+
+    The ``next_attempt_at`` column is tz-aware, but SQLite (the tests) returns
+    it naive while Postgres returns it aware. Reducing both operands to naive
+    UTC avoids a naive-vs-aware TypeError on the due check.
+
+    Args:
+        dt: A datetime read from the column, or ``now``, or None.
+
+    Returns:
+        The datetime as naive UTC, or None when given None.
+    """
+    if dt is None:                                         # nothing to normalise
+        return None
+    if dt.tzinfo is not None:                              # aware (Postgres, or utcnow): drop to UTC wall time
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt                                              # already naive (SQLite): assume UTC
+
+
 async def _claim_due_rows(session: AsyncSession, now, limit: int) -> list[StaffWriteback]:
     """Take up to ``limit`` due rows for this drain alone, committing the claim.
 
-    A due row is a pending one, a failed one whose backoff has elapsed, or a
-    ``sending`` one whose claim has expired (its owning instance crashed). On
-    Postgres the pick is ``FOR UPDATE SKIP LOCKED`` so a second drain running at
-    the same moment never takes the same rows. Each taken row is moved to
-    ``sending`` with ``next_attempt_at`` pushed one claim-timeout ahead, and the
-    claim is committed before any SharePoint call, so any later drain sees the
-    claim (a future ``next_attempt_at``) and leaves the row alone.
+    Writes are absolute values, so a retried older write landing after a newer
+    one would leave SharePoint stale. To stop that, only each SharePoint item's
+    OLDEST unfinished row (its head, by id) is ever claimed: a newer row for the
+    same item waits until every older one for it is done, so per-item writes
+    always land in order (finding 8). A row is claimable when it is due (pending,
+    or a failed one whose backoff has elapsed); a head that is still backing off,
+    or a ``sending`` head whose claim has not expired, holds its item's whole
+    queue. On Postgres the pick is ``FOR UPDATE SKIP LOCKED`` so a second drain
+    never takes the same rows; the claim (``sending`` with ``next_attempt_at``
+    pushed one claim-timeout ahead) is committed before any SharePoint call.
 
     Args:
         session: The open session; this function commits the claim on it.
@@ -160,24 +196,35 @@ async def _claim_due_rows(session: AsyncSession, now, limit: int) -> list[StaffW
         The claimed rows, already committed as ``sending`` (their attributes stay
         readable because the session does not expire on commit).
     """
+    # Every unfinished row, oldest first, so each item's head is seen before any
+    # newer row for the same item.
     statement = (
         select(StaffWriteback)
-        .where(
-            StaffWriteback.status.in_([PENDING, FAILED, SENDING]),
-            (StaffWriteback.next_attempt_at.is_(None)) | (StaffWriteback.next_attempt_at <= now),
-        )
-        .order_by(StaffWriteback.next_attempt_at.asc(), StaffWriteback.id.asc())
-        .limit(limit)
+        .where(StaffWriteback.status.in_([PENDING, FAILED, SENDING]))
+        .order_by(StaffWriteback.id.asc())
     )
     if session.bind.dialect.name == "postgresql":          # a real claim only where it exists
         statement = statement.with_for_update(skip_locked=True)
-    rows = (await session.execute(statement)).scalars().all()
+    candidates = (await session.execute(statement)).scalars().all()
     claim_until = now + timedelta(seconds=_CLAIM_TIMEOUT_SECONDS)   # reclaim only after this
-    for row in rows:
+    claimed: list[StaffWriteback] = []
+    seen_items: set[str] = set()
+    for row in candidates:
+        if row.sp_item_id in seen_items:
+            continue                                       # a newer row for this item waits for its head
+        seen_items.add(row.sp_item_id)                     # this row is its item's head (lowest id)
+        # Compare on a common footing: the column is tz-aware, but SQLite reads it
+        # back naive while Postgres keeps it aware, so normalise both to naive UTC.
+        due = row.next_attempt_at is None or _as_utc_naive(row.next_attempt_at) <= _as_utc_naive(now)
+        if not due:
+            continue                                       # head backing off (or an unexpired claim): hold the item
         row.status = SENDING                               # in flight: other drains skip it
         row.next_attempt_at = claim_until                  # not due again until the claim expires
+        claimed.append(row)
+        if len(claimed) >= limit:
+            break
     await session.commit()                                 # publish the claim before any SharePoint call
-    return rows
+    return claimed
 
 
 async def _replay_create(session: AsyncSession, row: StaffWriteback) -> None:

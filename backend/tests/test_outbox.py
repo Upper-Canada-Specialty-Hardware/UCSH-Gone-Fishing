@@ -276,3 +276,41 @@ def test_a_stale_sending_row_is_reclaimed_and_a_fresh_one_is_left():
     # The fresh claim is left alone: still "sending", not re-claimed this pass.
     assert fresh_id not in claimed
     assert run(read(fresh_id)).status == "sending"
+
+
+# ----- a row is abandoned at the attempt cap and never claimed again (finding 12) -----
+
+
+def test_a_row_is_abandoned_at_the_attempt_cap_and_the_worker_stops_claiming_it(monkeypatch):
+    # A permanently failing row must not be retried forever: once it reaches the
+    # cap it is left "failed" with no next_attempt_at, and the worker skips it.
+    from app.services.outbox_sender import MAX_OUTBOX_ATTEMPTS
+    _stub_email(monkeypatch, error=RuntimeError("provider down"))
+    request = run(_request())
+    row_id = run(_enqueue(request, status="sending"))
+
+    async def preset():                                          # one try below the cap
+        async with async_session() as session:
+            row = await session.get(Outbox, row_id)
+            row.attempts = MAX_OUTBOX_ATTEMPTS - 1
+            await session.commit()
+    run(preset())
+
+    async def deliver():                                         # this failure reaches the cap
+        async with async_session() as session:
+            row = await session.get(Outbox, row_id)
+            await send_outbox_row(session, row)
+            await session.commit()
+    run(deliver())
+
+    async def read():
+        async with async_session() as session:
+            return await session.get(Outbox, row_id)
+
+    row = run(read())
+    assert row.attempts == MAX_OUTBOX_ATTEMPTS
+    assert row.status == "failed"
+    assert row.next_attempt_at is None                           # abandoned, not rescheduled for another try
+
+    claimed = run(outbox_worker._claim_due(10))                  # the worker leaves a capped row alone
+    assert row_id not in claimed

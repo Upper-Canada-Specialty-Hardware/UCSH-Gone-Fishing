@@ -17,8 +17,7 @@ from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.reminders import start_reminder_task
 from app.tasks.setup_nudges import start_setup_nudge_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
-from app.tasks.staff_sync import start_staff_sync_task
-from app.tasks.sync_tasks import start_shadow_sync_task, start_sharepoint_check_task
+from app.tasks.sync_tasks import start_shadow_sync_task
 from app.tasks.outbox_worker import start_outbox_worker  # drains queued result emails/texts (#326)
 
 logging.basicConfig(
@@ -58,65 +57,76 @@ async def lifespan(app: FastAPI):
     # queued result emails/texts drain even when Graph/SharePoint is unavailable.
     outbox_task = start_outbox_worker()
 
-    # 2. Connect to Graph API and SharePoint
+    # 2. Connect to Graph API and SharePoint, unless the switch to Postgres has
+    # run. From then on the app never talks to SharePoint: no token, probes,
+    # webhooks, catch-up or syncs, and the jobs run on Postgres alone.
     renewal_task = None
     carryover_reset_task = None
     reminder_task = None
     setup_nudge_task = None
     held_request_task = None
-    staff_sync_task = None
     shadow_sync_task = None
-    sharepoint_check_task = None
+    from app.services.sharepoint_cutoff import sharepoint_cut_off
     try:
-        await token_manager.get_token()
-        logger.info("Graph API token acquired")
-
-        await sp_client.resolve_site_id()
-        logger.info(f"SharePoint site ID resolved: {sp_client.site_id}")
-
-        items = await sp_client.get_list_items(
-            settings.SP_LIST_STAFF_DIRECTORY, top=1, select=["Title"]
-        )
-        if items:
-            logger.info(f"SharePoint access verified — read: {items[0].get('fields', {}).get('Title', '?')}")
-        else:
-            logger.warning("SharePoint access check returned no items")
-
-        renewal_task = start_subscription_renewal_task()
+        switched = await sharepoint_cut_off()                  # the requests setting, read from Postgres
+    except Exception:
+        logger.exception("Could not read the storage setting; starting as if SharePoint is still in use")
+        switched = False
+    if switched:
+        logger.info("Switched to Postgres: SharePoint startup, webhooks and syncs are skipped")
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
         setup_nudge_task = start_setup_nudge_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
-        staff_sync_task = start_staff_sync_task()  # staff directory: write-back + pull (#261)
-        # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
-        # before the switch, and sweep SharePoint for stragglers after it (#334, #336).
-        shadow_sync_task = start_shadow_sync_task()
-        sharepoint_check_task = start_sharepoint_check_task()
+    else:                                                      # still on SharePoint: connect as before
+        try:
+            await token_manager.get_token()
+            logger.info("Graph API token acquired")
 
-        # Defer catch-up and subscription registration — both can be slow under
-        # backlog/rate-limit conditions, and Graph webhook validation needs the
-        # server to already be accepting HTTP. Running them after yield keeps
-        # /health responsive within Railway's healthcheck window.
-        async def _deferred_catch_up():
-            try:
-                from app.tasks.change_processor import catch_up_all_lists
-                await catch_up_all_lists()
-            except Exception:
-                logger.exception("Deferred catch-up failed")
+            await sp_client.resolve_site_id()
+            logger.info(f"SharePoint site ID resolved: {sp_client.site_id}")
 
-        async def _deferred_subscriptions():
-            await asyncio.sleep(3)
-            try:
-                from app.tasks.subscription_manager import register_all_subscriptions
-                await register_all_subscriptions()
-            except Exception:
-                logger.exception("Deferred subscription registration failed")
+            items = await sp_client.get_list_items(
+                settings.SP_LIST_STAFF_DIRECTORY, top=1, select=["Title"]
+            )
+            if items:
+                logger.info(f"SharePoint access verified — read: {items[0].get('fields', {}).get('Title', '?')}")
+            else:
+                logger.warning("SharePoint access check returned no items")
 
-        asyncio.create_task(_deferred_catch_up())
-        asyncio.create_task(_deferred_subscriptions())
-        logger.info("EmployeeLockManager ready")
-    except Exception:
-        logger.exception("Graph/SharePoint startup failed — app will serve but SP features are unavailable until restart")
+            renewal_task = start_subscription_renewal_task()
+            carryover_reset_task = start_carryover_reset_task()
+            reminder_task = start_reminder_task()
+            setup_nudge_task = start_setup_nudge_task()
+            held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
+            # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
+            # until the switch (#334); it stops itself once requests are in Postgres.
+            shadow_sync_task = start_shadow_sync_task()
+
+            # Defer catch-up and subscription registration — both can be slow under
+            # backlog/rate-limit conditions, and Graph webhook validation needs the
+            # server to already be accepting HTTP. Running them after yield keeps
+            # /health responsive within Railway's healthcheck window.
+            async def _deferred_catch_up():
+                try:
+                    from app.tasks.change_processor import catch_up_all_lists
+                    await catch_up_all_lists()
+                except Exception:
+                    logger.exception("Deferred catch-up failed")
+
+            async def _deferred_subscriptions():
+                await asyncio.sleep(3)
+                try:
+                    from app.tasks.subscription_manager import register_all_subscriptions
+                    await register_all_subscriptions()
+                except Exception:
+                    logger.exception("Deferred subscription registration failed")
+
+            asyncio.create_task(_deferred_catch_up())
+            asyncio.create_task(_deferred_subscriptions())
+            logger.info("EmployeeLockManager ready")
+        except Exception:
+            logger.exception("Graph/SharePoint startup failed — app will serve but SP features are unavailable until restart")
 
     logger.info("Startup complete — serving requests")
     yield
@@ -133,12 +143,8 @@ async def lifespan(app: FastAPI):
         setup_nudge_task.cancel()
     if held_request_task:
         held_request_task.cancel()
-    if staff_sync_task:
-        staff_sync_task.cancel()
     if shadow_sync_task:
         shadow_sync_task.cancel()
-    if sharepoint_check_task:
-        sharepoint_check_task.cancel()
     from app.services.event_bus import event_bus
     await event_bus.stop()                                   # stop the live feed listener/poller
     outbox_task.cancel()                                            # stop draining the outbox on shutdown

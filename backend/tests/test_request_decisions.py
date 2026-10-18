@@ -619,3 +619,106 @@ def test_a_late_link_open_keeps_the_decided_stage(monkeypatch):
     # The stage still names the outcome, not "Manager opened the link".
     assert fresh.stage == "Approved, balance updated"
     assert any(event.type == "link_opened" for event in events)
+
+
+# ----- refunding banked overtime that was already spent cascades (finding 6) -----
+
+
+def test_refunding_spent_overtime_cascades_so_no_pot_sits_negative(monkeypatch):
+    # One employee: bank 8h overtime (Make-Up 0 -> 1), spend it on a vacation day
+    # (Make-Up 1 -> 0), then refund the overtime. Reversing the +1 Make-Up alone
+    # would leave Make-Up at -1; the refund must cascade that deficit down the
+    # chain (Make-Up -> Carry Over -> Vacation) so no pot but Vacation sits below
+    # zero, exactly as an approval's own spend cascades.
+    emp = str(next(_employee_ids))
+    fake = _use(monkeypatch, _all_pots())                         # every pot starts at zero
+    overtime = _overtime(hours=8.0, employee_id=emp)
+    run(rd.approve("overtime", overtime.item_id, "Boss", "manager_dashboard"))
+    assert fake._pots["make_up"] == 1.0                           # 8h / 8 banked into Make-Up
+
+    vacation = _leave(leave_type="Vacation", days=1.0, employee_id=emp)
+    run(rd.approve("leave", vacation.item_id, "Boss", "manager_dashboard"))
+    assert fake._pots["make_up"] == 0.0                           # the vacation spent Make-Up first
+
+    result = run(rd.refund("overtime", overtime.item_id, "admin", "admin_dashboard"))
+
+    assert result["status"] == "refunded"
+    # Make-Up and Carry Over never sit negative: the deficit lands on Vacation.
+    assert fake._pots["make_up"] == 0.0
+    assert fake._pots["carry_over"] == 0.0
+    assert fake._pots["vacation"] == -1.0
+    _fresh, ledger, _events, _outbox = run(_inspect(overtime))
+    cascade_rows = [row for row in ledger if "cascade" in (row.reason or "")]
+    assert any(row.pot == "vacation" and row.after == -1.0 for row in cascade_rows)
+
+
+# ----- an unmatched employee is refused cleanly, not a 500 (finding 9) -----
+
+
+class _NoStaffBalances:
+    """A StaffBalances whose lock_pots always raises, as for an unmatched employee."""
+
+    async def lock_pots(self, session, employee_id):
+        """Raise as PostgresStaffBalances does when there is no staff row."""
+        raise LookupError(f"no staff row for {employee_id}")
+
+    async def write_pots(self, session, employee_id, new_values):
+        """Never reached: a missing employee stops before any write."""
+        raise AssertionError("write_pots must not run when the employee is missing")
+
+
+def _use_missing(monkeypatch) -> None:
+    """Install a StaffBalances that cannot find the employee."""
+    async def _get():
+        return _NoStaffBalances()
+    monkeypatch.setattr(rd, "get_staff_balances", _get)
+
+
+def test_approve_of_an_unmatched_employee_is_a_clean_error(monkeypatch):
+    _use_missing(monkeypatch)
+    record = _leave(leave_type="Sick or Personal Day", days=2)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result == {"error": "Employee not found"}
+    fresh, ledger, events, outbox = run(_inspect(record))
+    assert fresh.status == "pending"                              # nothing decided, nothing moved
+    assert ledger == [] and outbox == []
+
+
+def test_refund_of_an_unmatched_employee_is_a_clean_error(monkeypatch):
+    # Approve normally so the refund gets past its status gate, then make the
+    # staff row unlockable at refund time.
+    _use(monkeypatch, _all_pots(sick=5))
+    record = _leave(leave_type="Sick or Personal Day", days=2)
+    run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+    _use_missing(monkeypatch)                                     # the staff row is gone now
+
+    result = run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert result == {"error": "Employee not found"}
+    fresh, _ledger, _events, _outbox = run(_inspect(record))
+    assert fresh.status == "approved"                             # still approved; the refund did nothing
+
+
+# ----- the result names who actually decided (finding 10) -----
+
+
+def test_an_admin_decision_is_named_as_an_administrator(monkeypatch):
+    _use(monkeypatch, _all_pots(sick=5))
+    record = _leave(leave_type="Sick or Personal Day", days=2)
+
+    run(rd.approve("leave", record.item_id, "admin", "admin_dashboard"))
+
+    _fresh, _ledger, _events, outbox = run(_inspect(record))
+    assert outbox and "by an administrator" in outbox[0].body    # not the assigned manager's name
+
+
+def test_a_manager_decision_is_named_by_the_manager(monkeypatch):
+    _use(monkeypatch, _all_pots(sick=5))
+    record = _leave(leave_type="Sick or Personal Day", days=2, manager_name="Boss Person")
+
+    run(rd.approve("leave", record.item_id, "Boss Person", "manager_dashboard"))
+
+    _fresh, _ledger, _events, outbox = run(_inspect(record))
+    assert outbox and "by Boss Person" in outbox[0].body

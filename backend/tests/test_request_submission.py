@@ -349,3 +349,92 @@ def test_postgres_reminders_respect_the_cutoff_and_the_closed_flag(sp, monkeypat
     # The past-cutoff carry-over had its state row closed so later scans skip it.
     assert run(state_closed(co_old.item_id)) is True
     assert co_maxed.item_id not in [i for _k, i in offered]
+
+
+# ----- an edit holds the version state with a naive timestamp (finding 3) -----
+
+
+def test_an_edit_holds_the_version_state_with_a_naive_timestamp():
+    # request_approval_state.last_emailed_at is a naive DateTime column, so an
+    # aware value would make asyncpg reject the whole edit in production. The
+    # held timestamp must be naive UTC, matching what approval_versions writes.
+    from app.models import RequestApprovalState
+    from app.services.approval_versions import MATERIAL_FIELDS_LEAVE
+
+    before = {k: "x" for k in MATERIAL_FIELDS_LEAVE}
+    after = {**before, "Days": 2}
+    item_id = next(_item_ids)
+    list_id = rs._edit_list_id("leave")
+
+    async def go():
+        async with async_session() as session:
+            await rs._sync_version_state(session, "leave", item_id, 2, before, after)
+            await session.commit()
+        async with async_session() as session:
+            return await session.get(RequestApprovalState, (list_id, str(item_id)))
+
+    state = run(go())
+    assert state is not None and state.current_version == 2
+    assert state.last_emailed_at is not None
+    assert state.last_emailed_at.tzinfo is None                   # naive UTC, so asyncpg accepts the edit
+
+
+# ----- the switch is silent: imported requests continue the old reminder cadence -----
+
+
+def test_imported_requests_keep_their_old_reminder_cadence(sp, monkeypatch):
+    """An old pending request is not reminded just because it moved to Postgres.
+
+    Imported rows carry no reminder history of their own; the old path kept it in
+    request_approval_state. The first sweep after the switch must continue that
+    clock, not restart it from the submission date, and must leave alone a request
+    the old path never emailed a manager about.
+    """
+    from app.models import RequestApprovalState
+    from app.models.mixins import utcnow
+
+    long_ago = utcnow() - timedelta(days=200)                      # submitted long before the switch
+    def naive(moment):
+        """The state table stores naive UTC."""
+        return moment.replace(tzinfo=None)
+
+    # 1) Imported, reminded 3 days ago by the old path: not due for 4 more days.
+    recent = run(_leave_record(item_id=90_000_201, sp_item_id="90000201", created_at=long_ago))
+    # 2) Imported, never reminded, approval email sent 10 days ago: first reminder waits for day 30.
+    fresh = run(_leave_record(item_id=90_000_202, sp_item_id="90000202", created_at=long_ago))
+    # 3) Imported, last reminded 8 days ago: the weekly repeat is due.
+    weekly = run(_leave_record(item_id=90_000_203, sp_item_id="90000203", created_at=long_ago))
+    # 4) Imported, but the old path never emailed a manager (no state row): stays silent.
+    unseen = run(_leave_record(item_id=90_000_204, sp_item_id="90000204", created_at=long_ago))
+    # 5) Made in the app after the switch, 40 days old: reminded on its own clock as before.
+    app_made = run(_leave_record(item_id=90_000_205, created_at=utcnow() - timedelta(days=40)))
+
+    async def seed_states():
+        async with async_session() as session:
+            await session.execute(delete(RequestApprovalState).where(   # a rerun on the same test db starts clean
+                RequestApprovalState.item_id.in_([str(r.item_id) for r in (recent, fresh, weekly, unseen)])
+            ))
+            for record, days_ago, count in ((recent, 3, 2), (fresh, 10, 0), (weekly, 8, 1)):
+                session.add(RequestApprovalState(
+                    list_id=settings.SP_LIST_LEAVE_REQUESTS, item_id=str(record.item_id),
+                    current_version=1, current_snapshot={}, reminders_closed=False,
+                    last_emailed_at=naive(utcnow() - timedelta(days=days_ago)), reminder_count=count,
+                ))
+            await session.commit()
+
+    run(seed_states())
+
+    offered: list = []
+
+    async def fake_queue(session, kind, item_id, today):
+        offered.append(item_id)                                    # who was actually offered a reminder
+        return True
+
+    monkeypatch.setattr(rs, "_queue_reminder", fake_queue)
+    run(rs.queue_due_reminders())
+
+    assert weekly.item_id in offered                               # the old weekly cadence continues
+    assert app_made.item_id in offered                             # an app request is unchanged
+    assert recent.item_id not in offered                           # not restarted from the submission date
+    assert fresh.item_id not in offered                            # first reminder still 30 days from the email
+    assert unseen.item_id not in offered                           # never emailed before, so never reminded now

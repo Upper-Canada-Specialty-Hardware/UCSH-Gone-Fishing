@@ -21,6 +21,7 @@ from app.repositories import factory
 from app.repositories.base import HolidayRepository
 from app.repositories.postgres.holidays import PostgresHolidayRepository
 from app.repositories.sharepoint.holidays import SharePointHolidayRepository
+from app.services import app_settings
 from app.services import holidays as holidays_service
 
 # The same rows expressed both ways: as SharePoint list items, and as Holiday
@@ -174,21 +175,37 @@ def test_company_holiday_lookup_works_off_postgres_rows(monkeypatch, seeded):
 
 
 # --- Factory wiring ---------------------------------------------------------
+#
+# get_holiday_repository() returns a proxy that chooses its backend per call, so
+# the backend is resolved with factory._holiday_backend() rather than read off the
+# returned object's type. The env STORAGE_HOLIDAYS still force-pins Postgres; with
+# it on "sharepoint" the live holidays_storage app setting decides.
 
-def test_factory_returns_postgres_when_the_flag_says_so(monkeypatch):
-    monkeypatch.setattr(factory.settings, "STORAGE_HOLIDAYS", "postgres")
-    assert isinstance(factory.get_holiday_repository(), PostgresHolidayRepository)
+def test_factory_returns_postgres_when_the_env_pins_it(monkeypatch):
+    monkeypatch.setattr(factory.settings, "STORAGE_HOLIDAYS", "postgres")   # env force-pin
+    assert isinstance(asyncio.run(factory._holiday_backend()), PostgresHolidayRepository)
+
+
+def test_factory_returns_postgres_when_the_db_setting_says_so(monkeypatch):
+    # env left at its default; the DB setting the switch writes is what flips it.
+    monkeypatch.setattr(factory.settings, "STORAGE_HOLIDAYS", "sharepoint")
+    asyncio.run(app_settings.set_setting(app_settings.HOLIDAYS_STORAGE, "postgres"))
+    try:
+        assert isinstance(asyncio.run(factory._holiday_backend()), PostgresHolidayRepository)
+    finally:
+        asyncio.run(app_settings.set_setting(app_settings.HOLIDAYS_STORAGE, "sharepoint"))
 
 
 def test_factory_still_defaults_to_sharepoint(monkeypatch):
     monkeypatch.setattr(factory.settings, "STORAGE_HOLIDAYS", "sharepoint")
-    assert isinstance(factory.get_holiday_repository(), SharePointHolidayRepository)
+    asyncio.run(app_settings.set_setting(app_settings.HOLIDAYS_STORAGE, "sharepoint"))
+    assert isinstance(asyncio.run(factory._holiday_backend()), SharePointHolidayRepository)
 
 
 def test_factory_rejects_an_unknown_backend(monkeypatch):
     monkeypatch.setattr(factory.settings, "STORAGE_HOLIDAYS", "mysql")
     with pytest.raises(NotImplementedError) as excinfo:
-        factory.get_holiday_repository()
+        asyncio.run(factory._holiday_backend())
     assert "mysql" in str(excinfo.value)
 
 

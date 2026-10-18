@@ -24,7 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.models.staff import Staff, StaffSupervisor
-from app.repositories.postgres.staff import _lookup_id, _norm_email, apply_sp_fields, staff_query
+from app.repositories.postgres.staff import (
+    ALL_MANAGERS_COLUMN,
+    _lookup_id,
+    _norm_email,
+    apply_sp_fields,
+    staff_query,
+)
 from app.services.employment import is_hourly
 from app.services.legacy_findings import record_finding
 
@@ -35,6 +41,7 @@ CASE_EMPLOYMENT_TYPE_SUSPECT = "employment_type_suspect"
 CASE_USERNAME_AS_NAME = "username_as_name"
 CASE_NO_USER_LINK = "no_user_link"
 CASE_BELOW_ZERO_PREDATES_RULES = "below_zero_predates_rules"
+CASE_EMAIL_CONFLICT = "email_conflict"   # two records share an email; the later one was blanked
 
 # The five pots and their SharePoint columns, for the below-zero detector.
 _POT_COLUMNS = {
@@ -219,15 +226,24 @@ async def staff_sync_step(session: AsyncSession, sync_run) -> dict:
         counts["seen"] += 1
 
         # Keep the email on the first record that claims it; blank it on a later
-        # duplicate so the unique index holds. The person is still imported.
+        # duplicate so the unique index holds. The person is still imported, and
+        # the record whose email was blanked is flagged for HR (both ids kept).
         norm = _norm_email(fields.get("EmailAddress"))
+        email_conflict_with = None                                  # the first record's id, when this is a dup
         if norm and seen_emails.get(norm, sp_id) != sp_id:
-            fields["EmailAddress"] = ""                              # -> NULL, no collision
+            email_conflict_with = seen_emails[norm]
+            fields["EmailAddress"] = ""                             # -> NULL, no collision
             counts["email_conflicts"] += 1
             logger.warning("Staff import: email %s on #%s duplicates #%s; kept on the first",
-                           norm, sp_id, seen_emails[norm])
+                           norm, sp_id, email_conflict_with)
         elif norm:
             seen_emails[norm] = sp_id
+
+        # Replace the supervisor links with exactly what the payload carries: an
+        # absent AllManagers means none, so a manager removed in SharePoint is
+        # removed here too. apply_sp_fields only rebuilds links when a person column
+        # is present, so an empty list is injected to force that branch (#341 fix).
+        fields.setdefault(ALL_MANAGERS_COLUMN, [])
 
         try:
             async with session.begin_nested():                      # one row cannot poison the batch
@@ -248,6 +264,13 @@ async def staff_sync_step(session: AsyncSession, sync_run) -> dict:
         if dropped:
             dropped_columns.update(dropped)
         counts["findings"] += await _run_detectors(session, sp_id, fields, run_id)
+        if email_conflict_with is not None:                         # file the email-conflict finding, both ids kept
+            counts["findings"] += bool(await record_finding(
+                session, CASE_EMAIL_CONFLICT, "staff", None, sp_id,
+                "Two staff records share one email; this record's email was blanked to keep it unique.",
+                {"blanked_sp_id": sp_id, "kept_sp_id": email_conflict_with, "email": norm},
+                run_id,
+            ))
 
     counts["relinked"] = await _relink_supervisors(session)
     counts["dropped_columns"] = len(dropped_columns)

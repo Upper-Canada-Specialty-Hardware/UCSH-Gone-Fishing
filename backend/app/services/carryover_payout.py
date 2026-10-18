@@ -28,7 +28,7 @@ from app.services.audit_trail import (
     write_audit_log,
 )
 from app.repositories.request_store import request_store, requests_in_postgres
-from app.services.switch_pause import raise_if_paused  # refuse writes while the storage switch runs
+from app.services.switch_pause import guarded  # refuse writes mid-switch and count them in flight
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 RECEIVED_EMAIL_ACTION = "request_received_email"
 
 
+@guarded  # refuses mid-switch, and the switch waits for it to finish
 async def process_new_carryover_payout(
     form_data: dict, submitter_email: str, source: str | None = None,
     notify: bool = True,
@@ -58,7 +59,6 @@ async def process_new_carryover_payout(
     Raises:
         SystemPaused: While the storage switch is running (no request is created).
     """
-    await raise_if_paused()                                      # no new request mid-switch
     request_type = form_data.get("type_of_request", "")  # "Carry Over" or "Payout"
     days = float(form_data.get("days", 0))
 
@@ -68,11 +68,16 @@ async def process_new_carryover_payout(
         "SystemState": "Not Processed",
     }
 
-    lookup_id = await _resolve_user_lookup_id(submitter_email)
-    if lookup_id:
-        fields["SubmittedByLookupId"] = lookup_id
+    # SubmittedBy is a SharePoint person column, resolved against the site's User
+    # Information List. Set it only in SharePoint mode: after the switch the typed
+    # row resolves the submitter by EmployeeID and SubmitterEmail, so that list is
+    # never read, not even as a fallback (Postgres is the only source of truth).
+    if not await requests_in_postgres():
+        lookup_id = await _resolve_user_lookup_id(submitter_email)
+        if lookup_id:
+            fields["SubmittedByLookupId"] = lookup_id
     # SubmitterEmail and RequestSource (carryover already matches by email below).
-    fields.update(submitter_columns(submitter_email, source))
+    fields.update(await submitter_columns(submitter_email, source))
 
     # Once requests live in Postgres the typed row needs the submitter's staff id
     # (employee_id is not null), so resolve by email now and refuse a request that
@@ -196,6 +201,11 @@ async def notify_manager_after_failed_admin_approval(request_id: str | int) -> b
     Returns:
         True when the pipeline was run; False when it was not in a state to run.
     """
+    # Postgres mode asks the manager through the outbox (keeps the typed version
+    # and links in step); the direct send queues nothing for an app-made row (#326).
+    if await requests_in_postgres():
+        from app.services.request_submission import queue_reminder
+        return await queue_reminder("carryover_payout", request_id)
     item = await request_store.get_list_item_or_none(settings.SP_LIST_CARRYOVER_PAYOUT, request_id)
     if item is None:
         return False
@@ -542,11 +552,11 @@ async def admin_edit_carryover_payout(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
+@guarded  # refuses mid-switch, and the switch waits for it to finish
 async def approve_carryover_payout(
     request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
 ) -> dict:
     """Process approval — re-validate, apply balance transfer, recalc RAD."""
-    await raise_if_paused()                                      # no approval mid-switch
     from app.services.request_decisions import approve as _pg_approve, decisions_active
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_approve("carryover_payout", request_id, manager_id, channel, link_version)
@@ -690,11 +700,11 @@ async def approve_carryover_payout(
     return {"status": "approved", "balances": balances}
 
 
+@guarded  # refuses mid-switch, and the switch waits for it to finish
 async def refund_carryover_payout(
     request_id: str | int, admin_id: str | int, channel: str = "system",
 ) -> dict:
     """Reverse an approved carryover/payout — restore vacation, subtract from CO/Payout, recalc RAD."""
-    await raise_if_paused()                                      # no refund mid-switch
     from app.services.request_decisions import decisions_active, refund as _pg_refund
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_refund("carryover_payout", request_id, admin_id, channel)
@@ -781,12 +791,12 @@ async def refund_carryover_payout(
     return {"status": "refunded", "balances": balances}
 
 
+@guarded  # refuses mid-switch, and the switch waits for it to finish
 async def reject_carryover_payout(
     request_id: str | int, manager_id: str | int, channel: str = "system",
     link_version: int | None = None, reason: str | None = None,
 ) -> dict:
     """Process rejection."""
-    await raise_if_paused()                                      # no rejection mid-switch
     from app.services.request_decisions import decisions_active, reject as _pg_reject
     if await decisions_active():                                 # one decision path once both are in Postgres
         return await _pg_reject("carryover_payout", request_id, manager_id, channel, link_version, reason)

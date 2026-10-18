@@ -18,6 +18,7 @@ already live in Postgres.
 import logging
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 
 from app.database import async_session
@@ -25,7 +26,7 @@ from app.models.legacy_finding import LegacyFinding
 from app.models.request_record import RequestRecord
 from app.models.sync_run import SyncRun
 from app.services.app_settings import requests_storage, staff_storage
-from app.services.storage_switch import flip_to_postgres
+from app.services.storage_switch import AlreadySwitched, SwitchRunning, start_switch, switch_status
 from app.services.switch_pause import is_paused
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ async def storage_status() -> dict:
         "requests_storage": await requests_storage(),           # "sharepoint" or "postgres"
         "staff_storage": await staff_storage(),                 # kept in step with requests by the flip
         "paused": await is_paused(),                            # true only while a switch is mid-flight
+        "switch": switch_status(),                              # the background flip's state, step and result
         "last_sync": _run_shape(last_sync) if last_sync else None,
         "recent_runs": [_run_shape(run) for run in runs],
         "request_counts": {kind: int(n) for kind, n in kind_rows},   # requests now in Postgres, per kind
@@ -91,20 +93,24 @@ async def storage_status() -> dict:
 
 
 @router.post("/admin/storage/flip")
-async def storage_flip() -> dict:
-    """Run the final sync and switch requests (and staff) to Postgres.
+async def storage_flip() -> JSONResponse:
+    """Start the switch in the background and return at once.
+
+    The flip runs the final sync and settles over a minute or two, so it runs as a
+    background task; this validates it can start and returns 202. The storage status
+    (``GET /admin/storage``, the ``switch`` key) shows its progress and result.
 
     Returns:
-        The result of ``flip_to_postgres`` (the final-sync counts and the new
-        storage).
+        202 with ``{"started": true}`` once the switch task has started.
 
     Raises:
-        HTTPException: 409 when a sync is running, or when requests already live
-            in Postgres ("Already switched"), so the switch cannot start.
+        HTTPException: 409 when the switch is already running, or when requests and
+            staff already live in Postgres ("Already switched").
     """
     try:
-        return await flip_to_postgres()
-    except RuntimeError as e:
-        # Both a busy sync lock and AlreadySwitched (a RuntimeError subclass) map
-        # to 409; the page tells them apart from the storage it reads back.
-        raise HTTPException(status_code=409, detail=str(e))
+        await start_switch()
+    except AlreadySwitched as e:
+        raise HTTPException(status_code=409, detail=str(e))     # both already in Postgres
+    except SwitchRunning as e:
+        raise HTTPException(status_code=409, detail=str(e))     # a flip is already in progress
+    return JSONResponse(content={"started": True}, status_code=202)

@@ -256,7 +256,9 @@ async def run_sharepoint_check_for_item(list_id: str, item_id) -> dict:
         return {}                                              # gone: the scheduled sweep flags deletes
     counts: dict = {}
     async with async_session() as session:
-        run = SyncRun(job="sharepoint_check")
+        # Its own job name, so the scheduled-sweep counter never mistakes a webhook
+        # check for a full sweep and postpones the 30 min / 1 h / daily sweeps (#336 fix).
+        run = SyncRun(job="sharepoint_check_item")
         session.add(run)
         await session.flush()
         try:

@@ -19,7 +19,7 @@ from sqlalchemy import or_, select
 from app.database import async_session
 from app.models.mixins import utcnow
 from app.models.outbox import Outbox
-from app.services.outbox_sender import send_outbox_row
+from app.services.outbox_sender import MAX_OUTBOX_ATTEMPTS, send_outbox_row
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ async def _claim_due(limit: int) -> list[int]:
             select(Outbox)
             .where(
                 Outbox.status.in_(("pending", "failed")),          # never a sent/sending/dropped row
+                Outbox.attempts < MAX_OUTBOX_ATTEMPTS,              # an abandoned row (at the cap) is left alone
                 or_(Outbox.next_attempt_at.is_(None), Outbox.next_attempt_at <= now),  # due now
             )
             .order_by(Outbox.id)

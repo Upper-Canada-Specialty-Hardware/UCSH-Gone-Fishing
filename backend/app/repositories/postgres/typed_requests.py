@@ -389,18 +389,21 @@ class TypedRequestList:
         The leave Title split and the result email both need the employee name,
         and app-made requests arrive with an id but no name. The name is looked
         up from the Staff Directory through the employee service, keyed by the
-        EmployeeID / ManagerID the caller passed. This runs only when SharePoint
-        is connected (``sp_client.site_id`` set), which is true in production and
-        false in every test, so tests make no network call and this is a no-op
-        there. An explicit SubmitterEmail always wins over the looked-up address.
+        EmployeeID / ManagerID the caller passed. It runs when staff live in
+        Postgres (a table read, no network; always true after the switch, when
+        the SharePoint site is never resolved), or before the switch when
+        SharePoint is connected (``sp_client.site_id`` set). Tests that keep
+        staff in SharePoint have no site id, so they make no network call. An
+        explicit SubmitterEmail always wins over the looked-up address.
 
         Args:
             record: The record being written; its name fields are filled in place.
             stored: The incoming SharePoint-named fields (system fields removed).
         """
         from app.graph.sharepoint import sp_client                 # local import: avoid a load-time cycle
-        if getattr(sp_client, "site_id", None) is None:            # SharePoint not reachable (every test)
-            return                                                 # staff record is not knowable: skip, no call
+        from app.repositories.staff_store import staff_in_postgres  # local import: avoid a load-time cycle
+        if not await staff_in_postgres() and getattr(sp_client, "site_id", None) is None:
+            return                                                 # staff in SharePoint and no site: skip, no call
         from app.services.employee import get_employee_by_id       # the existing Staff Directory read
         emp_id = stored.get("EmployeeID") if "EmployeeID" in stored else record.employee_id
         if emp_id and not record.employee_name:                    # only when we still lack the name
@@ -535,6 +538,13 @@ class TypedRequestList:
             fields["EmployeeID"] = record.employee_id
         if record.manager_id is not None:
             fields["ManagerID"] = record.manager_id
+        if record.employment_type is not None:
+            # How the person was paid when the request applied. The balance
+            # display reads this instead of the person's current SalaryHourly, so
+            # an approved request's pots and the hourly vacation counter stay
+            # right even if the person's type later changed (#300). Read-only: it
+            # is never written back, so it never lands in a change row.
+            fields["RequestEmploymentType"] = record.employment_type
         if record.employee_email is not None:
             fields["SubmitterEmail"] = record.employee_email
         if record.department is not None:

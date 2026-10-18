@@ -19,6 +19,18 @@ async def dispatch_change(list_id: str, item: dict):
         list_id: The SharePoint list the change came from.
         item: The changed item as SharePoint sent it.
     """
+    # While the storage switch is pausing writes or running its final sync, a
+    # request-list change must not be auto-processed: a new approval or a computed
+    # day count would land in SharePoint after the final sync has read it and be
+    # lost. The scheduled SharePoint check picks the item up afterwards, so skip and
+    # log it here rather than process it (#335 fix).
+    if is_request_list(list_id):
+        from app.services.storage_switch import switch_is_running
+        from app.services.switch_pause import is_paused
+        if switch_is_running() or await is_paused():
+            logger.info("Storage switch in progress; skipping SharePoint %s item %s", list_id, item.get("id"))
+            return
+
     if await requests_in_postgres() and is_request_list(list_id):
         # The request list is no longer the live source. Anything that still lands
         # there (the Form until it is turned off, or a hand edit) is never imported

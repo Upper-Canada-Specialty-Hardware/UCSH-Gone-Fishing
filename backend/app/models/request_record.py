@@ -114,9 +114,11 @@ class RequestRecord(Base):
     leave_type: Mapped[str | None] = mapped_column(String, nullable=True)            # leave only
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)             # first day, or the date worked (overtime)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)               # last day, leave range only
-    partial_hours: Mapped[float | None] = mapped_column(Numeric(8, 2, asdecimal=False), nullable=True)  # part-day leave
-    days: Mapped[float | None] = mapped_column(Numeric(8, 2, asdecimal=False), nullable=True)           # cost in days
-    hours: Mapped[float | None] = mapped_column(Numeric(8, 2, asdecimal=False), nullable=True)          # overtime hours
+    # Numeric(12, 4): SharePoint balances carry up to 4 decimals (hours / 8, e.g.
+    # 0.1875), so two decimals would round them on import (#335 fix).
+    partial_hours: Mapped[float | None] = mapped_column(Numeric(12, 4, asdecimal=False), nullable=True)  # part-day leave
+    days: Mapped[float | None] = mapped_column(Numeric(12, 4, asdecimal=False), nullable=True)           # cost in days
+    hours: Mapped[float | None] = mapped_column(Numeric(12, 4, asdecimal=False), nullable=True)          # overtime hours
     request_option: Mapped[str | None] = mapped_column(String, nullable=True)        # carry_over / payout
     description: Mapped[str | None] = mapped_column(Text, nullable=True)             # employee-entered text
     bereavement_relation: Mapped[str | None] = mapped_column(String, nullable=True)  # relation, bereavement leave

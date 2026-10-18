@@ -57,28 +57,28 @@ SOURCE_MANAGER = "Manager dashboard"        # a manager logged a sick day for th
 SUBMITTER_PERSON_COLUMNS = ("SubmittedTest", "SubmittedBy")
 
 
-def requests_linked_by_email() -> bool:
+async def requests_linked_by_email() -> bool:
     """Whether new requests can carry SubmitterEmail, so no site membership is needed.
 
     True once requests live in Postgres (a row takes any field), or while they
     are still in SharePoint once REQUEST_EMAIL_COLUMNS_ENABLED says the lists
     have the two columns.
 
-    This is a synchronous helper on the request-building path, so it reads the
-    ``STORAGE_REQUESTS`` environment override rather than the live
-    ``requests_storage`` database setting (which only the async
-    ``requests_in_postgres`` reads). The override is what pins the backend in
-    production, so this stays correct there; a runtime flip of the database
-    setting alone would not reach here.
+    Async because it reads the live ``requests_storage`` database setting through
+    ``requests_in_postgres`` (not just the ``STORAGE_REQUESTS`` environment
+    override), so a runtime switch of the backend reaches every caller: after a
+    dashboard flip to Postgres a released new hire is no longer parked as
+    "waiting_site" and the request page no longer returns 409 for someone who is
+    not on the SharePoint site.
 
     Returns:
         True when a request can name its submitter by email.
     """
-    override = (settings.STORAGE_REQUESTS or "").strip().lower()   # the environment pin, read synchronously
-    return override == "postgres" or settings.REQUEST_EMAIL_COLUMNS_ENABLED
+    from app.repositories.request_store import requests_in_postgres   # local: avoid an import cycle
+    return await requests_in_postgres() or settings.REQUEST_EMAIL_COLUMNS_ENABLED
 
 
-def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
+async def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
     """The extra fields to write on a new request item, when enabled.
 
     Args:
@@ -89,7 +89,7 @@ def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
         {"SubmitterEmail", "RequestSource"} with whatever is known, or an
         empty dict while requests_linked_by_email() is False.
     """
-    if not requests_linked_by_email():
+    if not await requests_linked_by_email():
         return {}                                              # the SharePoint columns may not exist yet
     fields: dict = {}
     if submitter_email:
@@ -214,10 +214,22 @@ async def ensure_request_columns(create: bool) -> dict:
     Returns:
         {"lists": {request_type: {"present": [...], "added": [...],
         "missing": [...], "error": str | None}}, "ready": bool} where ready
-        means every list now has both columns.
+        means every list now has both columns. After the switch:
+        ``{"lists": {}, "ready": True, "switched": True}``.
     """
+    # After the switch requests live in Postgres and the SharePoint lists are
+    # frozen, so there is nothing to check or add; SharePoint is not called.
+    from app.services.sharepoint_cutoff import sharepoint_cut_off
+    if await sharepoint_cut_off():
+        return {"lists": {}, "ready": True, "enabled": settings.REQUEST_EMAIL_COLUMNS_ENABLED, "switched": True}
     if not sp_client.site_id:
         await sp_client.resolve_site_id()                      # lazily, for a cold start
+    # Rehearsal mode never writes to SharePoint, and adding a column changes the
+    # live list, so in rehearsal the add is refused and only the report runs.
+    from app.services.rehearsal import sharepoint_writes_allowed
+    if create and not sharepoint_writes_allowed():
+        logger.info("Rehearsal: not adding request columns to SharePoint")
+        create = False                                         # report only
     report: dict = {}
     for request_type, setting_name in REQUEST_LISTS:
         list_id = getattr(settings, setting_name)

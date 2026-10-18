@@ -17,7 +17,7 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.repositories.postgres.staff import PostgresStaffList
 from app.services.app_settings import staff_storage
-from app.services.switch_pause import raise_if_paused  # refuse staff writes while the storage switch runs
+from app.services.switch_pause import guarded_write, pinned_staff_backend  # refuse + count staff writes mid-switch
 
 SHAREPOINT = "sharepoint"
 POSTGRES = "postgres"
@@ -94,7 +94,12 @@ class StaffStore:
             The Postgres staff adapter when the list is the Staff Directory and
             staff live in Postgres; otherwise sp_client.
         """
-        if is_staff_list(list_id) and await staff_in_postgres():
+        # A guarded write pins the backend for its whole run, so a write that
+        # started before the switch finishes on the same backend; with no guard,
+        # read the live setting.
+        pinned = pinned_staff_backend()
+        in_postgres = pinned if pinned is not None else await staff_in_postgres()
+        if is_staff_list(list_id) and in_postgres:
             return _postgres_staff
         return sp_client
 
@@ -112,8 +117,8 @@ class StaffStore:
 
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
         """Add an item; returns it in the SharePoint item shape."""
-        await raise_if_paused()                                # no staff write mid-switch
-        return await (await self._backend(list_id)).create_list_item(list_id, fields)
+        async with guarded_write():                            # refuse mid-switch; else count in flight
+            return await (await self._backend(list_id)).create_list_item(list_id, fields)
 
     async def update_list_item_fields(
         self, list_id: str, item_id, fields: dict, *,
@@ -141,19 +146,19 @@ class StaffStore:
         Returns:
             The item's fields after the change.
         """
-        await raise_if_paused()                           # no staff write mid-switch
-        backend = await self._backend(list_id)
-        if backend is _postgres_staff:                    # the Postgres staff table takes the extras
-            return await backend.update_list_item_fields(
-                list_id, item_id, fields,
-                links=links, history_source=history_source, history_reason=history_reason,
-            )
-        return await backend.update_list_item_fields(list_id, item_id, fields)
+        async with guarded_write():                       # refuse mid-switch; else count in flight
+            backend = await self._backend(list_id)
+            if backend is _postgres_staff:                # the Postgres staff table takes the extras
+                return await backend.update_list_item_fields(
+                    list_id, item_id, fields,
+                    links=links, history_source=history_source, history_reason=history_reason,
+                )
+            return await backend.update_list_item_fields(list_id, item_id, fields)
 
     async def delete_list_item(self, list_id: str, item_id) -> None:
         """Remove an item for good."""
-        await raise_if_paused()                                # no staff write mid-switch
-        await (await self._backend(list_id)).delete_list_item(list_id, item_id)
+        async with guarded_write():                            # refuse mid-switch; else count in flight
+            await (await self._backend(list_id)).delete_list_item(list_id, item_id)
 
 
 staff_store = StaffStore()
