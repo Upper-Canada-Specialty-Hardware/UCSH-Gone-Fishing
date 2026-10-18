@@ -501,3 +501,153 @@ def test_a_new_request_is_pending_for_admin_and_manager_and_not_stuck(switched):
     assert redo.status_code == 200, redo.text
     assert "missing_manager_lookup" not in redo.json().get("remaining_issues", []), redo.json()
     assert switched == []
+
+
+# ----- identifiers and columns the Postgres rows carry -----
+
+
+def test_an_approval_and_its_refund_write_the_balance_log_the_screens_read(switched):
+    # The admin "What it did to balances" panel and the Audit trail read
+    # BalanceAuditLog; the Postgres decision path must keep writing it.
+    import json
+    from app.services.leave_requests import approve_leave_request, refund_leave_request
+    item_id = _submit_leave(_client(), 40)
+    assert "error" not in run(approve_leave_request(item_id, 20, channel="email_link"))
+    log = json.loads(run(_record("leave", item_id)).extra["BalanceAuditLog"])
+    assert [entry["action"] for entry in log] == ["approve"]
+    step = log[0]["steps"][0]
+    assert step["before"] == {"CurrentOvertimeBalance": 2.0}  # one vacation day spends make-up first
+    assert step["after"] == {"CurrentOvertimeBalance": 1.0}
+
+    assert "error" not in run(refund_leave_request(item_id, "admin", channel="admin_dashboard"))
+    log = json.loads(run(_record("leave", item_id)).extra["BalanceAuditLog"])
+    assert [entry["action"] for entry in log] == ["approve", "refund"]
+    assert log[1]["steps"][0]["after"] == {"CurrentOvertimeBalance": 2.0}   # put back
+    assert switched == []
+
+
+def test_a_carry_over_approval_records_its_new_balance(switched):
+    # The requests table and the export show "New balance" for a carry-over.
+    from app.services import request_decisions
+
+    async def seed():
+        async with async_session() as session:
+            session.add(RequestRecord(
+                kind="carryover_payout", item_id=7001, status="pending", employee_id="10",
+                employee_email="alice@ucsh.com", days=2.0, request_option="carry_over",
+            ))
+            await session.commit()
+    run(seed())
+    result = run(request_decisions.approve("carryover_payout", 7001, "20", "admin_dashboard"))
+    assert result.get("status") == "approved", result
+    extra = run(_record("carryover_payout", 7001)).extra
+    assert extra["NewBalance"] == "{Vacation:8.0, CarryOver:2.0, Payout:0.0}"
+    assert extra["SystemState"] == "Processed"
+    assert switched == []
+
+
+def test_a_request_is_named_by_its_staff_id_when_it_has_no_email():
+    # After the switch the SharePoint user ids no longer resolve, so EmployeeID
+    # (and ManagerID for the manager column) must name the person.
+    from app.routes.dashboard import _PersonNames, _resolve_sp_user_name
+    names = _PersonNames()
+    names.by_staff_id.update({"10": "Alice Salary", "20": "Boss Person"})
+    row = {"EmployeeID": "10", "ManagerID": "20", "SubmittedTestLookupId": 99}
+    assert _resolve_sp_user_name(row, "SubmittedTest", names) == "Alice Salary"
+    assert _resolve_sp_user_name(row, "SubmittedBy", names) == "Alice Salary"
+    assert _resolve_sp_user_name(row, "Manager", names) == "Boss Person"
+    assert _resolve_sp_user_name({"EmployeeID": "77"}, "SubmittedTest", names) == ""
+
+
+def test_an_overlap_is_found_by_staff_id_when_there_is_no_email():
+    from app.services.overlap_detection import find_conflict_for_row
+    day = _future_weekday(10).isoformat()
+    approved = {"id": "1", "fields": {"Status": "Approved", "EmployeeID": "10",
+                                      "StartDate": day, "EndDate": day, "Days": 1}}
+    pending = {"id": "2", "fields": {"Status": "Pending", "EmployeeID": "10",
+                                     "StartDate": day, "EndDate": day, "Days": 1}}
+    other = {"id": "3", "fields": {"Status": "Approved", "EmployeeID": "11",
+                                   "StartDate": day, "EndDate": day, "Days": 1}}
+    conflict = find_conflict_for_row([approved, pending, other], pending)
+    assert conflict and str(conflict["item_id"]) == "1"      # the same person's approved day
+    # A placeholder id from an unmatched import names nobody, so it never matches.
+    ghost_a = {"id": "4", "fields": {"Status": "Approved", "EmployeeID": "spuser:5",
+                                     "StartDate": day, "EndDate": day, "Days": 1}}
+    ghost_b = {"id": "5", "fields": {"Status": "Pending", "EmployeeID": "spuser:5",
+                                     "StartDate": day, "EndDate": day, "Days": 1}}
+    assert find_conflict_for_row([ghost_a, ghost_b], ghost_b) is None
+
+
+def test_old_carry_over_findings_are_kept_but_not_listed(switched):
+    # The pre-app carry-overs with no balance log stay in the table, hidden from
+    # the legacy data screen and its counts; a newer one still shows.
+    from datetime import datetime, timezone
+    from app.services import legacy_findings
+
+    async def seed():
+        async with async_session() as session:
+            session.add(RequestRecord(
+                kind="carryover_payout", item_id=8001, status="approved", employee_id="10",
+                decided_at=datetime(2025, 4, 1, tzinfo=timezone.utc), days=1.0, request_option="carry_over",
+            ))
+            session.add(RequestRecord(
+                kind="carryover_payout", item_id=8002, status="approved", employee_id="10",
+                decided_at=datetime(2026, 5, 1, tzinfo=timezone.utc), days=1.0, request_option="carry_over",
+            ))
+            for item_id in (8001, 8002):
+                await legacy_findings.record_finding(
+                    session, "approved_no_balance_change", "request", "carryover_payout", item_id,
+                    "The request was approved but no balance change was recorded.",
+                    {"has_audit_log": False}, None,
+                )
+            await session.commit()
+    run(seed())
+    listing = run(legacy_findings.list_findings(case="approved_no_balance_change"))
+    assert [f["subject_id"] for f in listing["findings"]] == ["8002"]
+    assert listing["total"] == 1
+    assert run(legacy_findings.counts_by_case())["approved_no_balance_change"] == 1
+
+    async def stored():
+        async with async_session() as session:
+            return (await session.execute(select(LegacyFinding).where(
+                LegacyFinding.case == "approved_no_balance_change"))).scalars().all()
+    assert len(run(stored())) == 2                          # nothing deleted
+
+
+def test_the_switch_points_manager_links_at_staff_ids(monkeypatch):
+    # Imported links carry Microsoft 365 ids; after the flip they carry the staff
+    # id of the person they name, the id every manager picker uses.
+    from app.models.staff import Staff, StaffSupervisor
+    from app.services import storage_switch
+
+    async def seed():
+        async with async_session() as session:
+            boss = Staff(sp_item_id="20", name="Boss Person")
+            alice = Staff(sp_item_id="10", name="Alice Salary", title_link_sp_user_id=345)
+            session.add_all([boss, alice])
+            await session.flush()
+            session.add_all([
+                StaffSupervisor(staff_id=alice.id, relation="manager",
+                                manager_sp_user_id=612, manager_name="Boss Person"),
+                StaffSupervisor(staff_id=alice.id, relation="manager",
+                                manager_sp_user_id=10, manager_name="Gone Away"),
+            ])
+            await session.commit()
+
+    async def links():
+        async with async_session() as session:
+            rows = (await session.execute(select(StaffSupervisor).order_by(StaffSupervisor.id))).scalars().all()
+            alice = (await session.execute(select(Staff).where(Staff.sp_item_id == "10"))).scalar_one()
+            return [(r.manager_name, r.manager_sp_user_id) for r in rows], alice.title_link_sp_user_id
+
+    run(wipe_staff())
+    run(_wipe())
+    try:
+        run(seed())
+        run(storage_switch._flip_settings_to_postgres())
+        pairs, own_link = run(links())
+        assert pairs == [("Boss Person", 20), ("Gone Away", None)]   # 10 would have been Alice's staff id
+        assert own_link == 10
+    finally:
+        run(_wipe())
+        run(wipe_staff())

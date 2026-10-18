@@ -110,24 +110,47 @@ def _extract_lookup_id(fields: dict, field_prefix: str) -> int | None:
     return None
 
 
-def _same_submitter(fields: dict, person_column: str, lookup_id: int | None, email: str) -> bool:
-    """Whether a row belongs to the person identified by a lookup id and/or email.
+def _staff_id_of(fields: dict) -> str:
+    """The row's staff id (EmployeeID), or "" when it has no real one.
 
-    Either identifier is enough: equal lookup ids, or equal SubmitterEmail
-    values. A missing identifier never matches, so two rows that both lack a
-    lookup id are not treated as the same person.
+    An imported request whose submitter never matched a staff record carries a
+    placeholder id ("spuser:..." / "spitem:...") that names nobody, so it is
+    treated as missing and never matches another row.
+
+    Args:
+        fields: The row's fields.
+
+    Returns:
+        The staff id as text, or "".
+    """
+    value = str(fields.get("EmployeeID") or "").strip()
+    return "" if value.startswith(("spuser:", "spitem:")) else value
+
+
+def _same_submitter(fields: dict, person_column: str, lookup_id: int | None, email: str,
+                    employee_id: str = "") -> bool:
+    """Whether a row belongs to the person identified by a lookup id, email or staff id.
+
+    Any one identifier is enough: equal lookup ids, equal SubmitterEmail values,
+    or equal staff ids (EmployeeID). A missing identifier never matches, so two
+    rows that both lack a lookup id are not treated as the same person. The staff
+    id is what still identifies a person with no email after the switch, when
+    SharePoint lookup ids are no longer resolved.
 
     Args:
         fields: The row's SharePoint fields.
         person_column: "SubmittedTest" (leave) or "SubmittedBy" (overtime).
         lookup_id: The person's Microsoft 365 lookup id, or None.
         email: The person's SubmitterEmail, normalised, or "".
+        employee_id: The person's staff id, or "".
 
     Returns:
         True when the row is theirs.
     """
     if lookup_id is not None and _extract_lookup_id(fields, person_column) == lookup_id:
         return True                                            # same Microsoft 365 user
+    if employee_id and _staff_id_of(fields) == employee_id:
+        return True                                            # same staff record
     return bool(email) and submitter_email_of(fields) == email  # same request page email
 
 
@@ -180,6 +203,7 @@ def find_leave_conflict(
     exclude_item_id: str | None = None,
     days: float = 0.0,
     submitter_email: str = "",
+    employee_id: str = "",
 ) -> dict | None:
     """Match a set of dates against leave rows already fetched. No I/O.
 
@@ -228,7 +252,7 @@ def find_leave_conflict(
         if f.get("Status") not in BLOCKING_STATUSES:
             continue
 
-        if not _same_submitter(f, "SubmittedTest", submitter_lookup_id, submitter_email):
+        if not _same_submitter(f, "SubmittedTest", submitter_lookup_id, submitter_email, employee_id):
             continue                                           # someone else's leave
 
         existing_start = _parse_date(f.get("StartDate"))
@@ -309,6 +333,7 @@ def find_overtime_conflict(
     overtime_date: str,
     exclude_item_id: str | None = None,
     submitter_email: str = "",
+    employee_id: str = "",
 ) -> dict | None:
     """Match a date against overtime rows already fetched. No I/O.
 
@@ -339,7 +364,7 @@ def find_overtime_conflict(
         if f.get("Status") not in BLOCKING_STATUSES:
             continue
 
-        if not _same_submitter(f, "SubmittedBy", submitter_lookup_id, submitter_email):
+        if not _same_submitter(f, "SubmittedBy", submitter_lookup_id, submitter_email, employee_id):
             continue                                           # someone else's overtime
 
         existing_date = _parse_date(f.get("StartDate"))
@@ -370,7 +395,8 @@ def find_overtime_conflict_for_row(items: list[dict], item: dict) -> dict | None
     fields = item.get("fields", {})
     submitter_lookup_id = _extract_lookup_id(fields, "SubmittedBy")
     submitter_email = submitter_email_of(fields)               # request page rows may only have this
-    if not submitter_lookup_id and not submitter_email:
+    employee_id = _staff_id_of(fields)                         # what identifies them after the switch
+    if not submitter_lookup_id and not submitter_email and not employee_id:
         return None
     return find_overtime_conflict(
         items,
@@ -378,6 +404,7 @@ def find_overtime_conflict_for_row(items: list[dict], item: dict) -> dict | None
         overtime_date=fields.get("StartDate", ""),
         exclude_item_id=str(item.get("id")),
         submitter_email=submitter_email,
+        employee_id=employee_id,
     )
 
 
@@ -400,7 +427,8 @@ def find_conflict_for_row(items: list[dict], item: dict) -> dict | None:
     fields = item.get("fields", {})
     submitter_lookup_id = _extract_lookup_id(fields, "SubmittedTest")
     submitter_email = submitter_email_of(fields)               # request page rows may only have this
-    if not submitter_lookup_id and not submitter_email:
+    employee_id = _staff_id_of(fields)                         # what identifies them after the switch
+    if not submitter_lookup_id and not submitter_email and not employee_id:
         return None  # nothing to compare against; not evidence of a clash
     return find_leave_conflict(
         items,
@@ -410,6 +438,7 @@ def find_conflict_for_row(items: list[dict], item: dict) -> dict | None:
         exclude_item_id=str(item.get("id")),
         days=_as_days(fields.get("Days")),
         submitter_email=submitter_email,
+        employee_id=employee_id,
     )
 
 
@@ -420,6 +449,7 @@ def find_requests_blocked_by(
     person_column: str,
     matcher,
     submitter_email: str = "",
+    employee_id: str = "",
 ) -> list[tuple[dict, dict]]:
     """Find the employee's pending rows that this approval has just stranded.
 
@@ -440,6 +470,7 @@ def find_requests_blocked_by(
         person_column: The person column that list uses.
         matcher: `find_conflict_for_row` or `find_overtime_conflict_for_row`.
         submitter_email: Their SubmitterEmail, or ""; matches rows by email too.
+        employee_id: Their staff id, or ""; matches rows by EmployeeID too.
 
     Returns:
         (row, conflict) pairs, one per stranded request.
@@ -451,7 +482,7 @@ def find_requests_blocked_by(
             continue
         if str(item.get("id")) == str(approved_item_id):
             continue
-        if not _same_submitter(fields, person_column, submitter_lookup_id, submitter_email):
+        if not _same_submitter(fields, person_column, submitter_lookup_id, submitter_email, employee_id):
             continue                                           # someone else's request
         conflict = matcher(items, item)
         # Blocked by something else entirely, so not news caused by this.

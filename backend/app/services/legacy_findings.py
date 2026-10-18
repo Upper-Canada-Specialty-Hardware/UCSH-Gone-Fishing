@@ -159,6 +159,52 @@ async def record_finding(
         return None                                            # already filed: a no-op
 
 
+async def _hidden_finding_ids(session: AsyncSession) -> list[int]:
+    """Findings kept in the table but not shown on the legacy data screen.
+
+    Old carry-overs and payouts, decided before the app approved anything, were
+    moved by hand or by the April reset and never wrote a balance log, so their
+    "approved but no balance change recorded" finding says nothing. The importer
+    no longer files these (``_old_carryover_without_log``); the ones filed before
+    that rule stay in the table, untouched, and are only left out of the list
+    and the counts. The rule is the importer's: no audit log, and decided (or,
+    with no decision date, created) before the cut-off.
+
+    Args:
+        session: An open session.
+
+    Returns:
+        The ids of the findings to leave out.
+    """
+    from app.models.request_record import RequestRecord          # lazy: the importer imports this module
+    from app.services.request_import import LEGACY_CUTOFF         # lazy: same cycle
+    candidates = (await session.execute(
+        select(LegacyFinding.id, LegacyFinding.subject_id, LegacyFinding.evidence).where(
+            LegacyFinding.case == "approved_no_balance_change",
+            LegacyFinding.kind == "carryover_payout",
+        )
+    )).all()
+    no_log = {
+        subject_id: finding_id for finding_id, subject_id, evidence in candidates
+        if not (evidence or {}).get("has_audit_log")              # a log that shows no move stays visible
+    }
+    if not no_log:
+        return []
+    item_ids = [int(sid) for sid in no_log if str(sid).isdigit()]   # subject_id is the item id as text
+    requests = (await session.execute(
+        select(RequestRecord.item_id, RequestRecord.decided_at, RequestRecord.created_at).where(
+            RequestRecord.kind == "carryover_payout",
+            RequestRecord.item_id.in_(item_ids),
+        )
+    )).all()
+    hidden = []
+    for item_id, decided_at, created_at in requests:
+        when = decided_at or created_at                           # old rows may lack a decision date
+        if when is not None and when.date() < LEGACY_CUTOFF:     # from before the app approved anything
+            hidden.append(no_log[str(item_id)])
+    return hidden
+
+
 async def list_findings(
     case: str | None = None,
     status: str | None = "open",
@@ -187,6 +233,9 @@ async def list_findings(
     if subject:
         conditions.append(LegacyFinding.subject == subject)
     async with async_session() as session:
+        hidden = await _hidden_finding_ids(session)            # old carry-overs: kept, not shown
+        if hidden:
+            conditions.append(LegacyFinding.id.not_in(hidden))
         count_query = select(func.count()).select_from(LegacyFinding)
         page_query = select(LegacyFinding)
         for condition in conditions:                           # same filters on both queries
@@ -217,6 +266,9 @@ async def counts_by_case(status: str | None = "open") -> dict[str, int]:
     if status:
         query = query.where(LegacyFinding.status == status)
     async with async_session() as session:
+        hidden = await _hidden_finding_ids(session)            # old carry-overs: kept, not counted
+        if hidden:
+            query = query.where(LegacyFinding.id.not_in(hidden))
         rows = (await session.execute(query)).all()            # [(case, n), ...]
     counts = {case: 0 for case in vocab.FINDING_CASES}         # start every case at zero
     for case, number in rows:

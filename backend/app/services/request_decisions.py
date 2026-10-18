@@ -508,6 +508,45 @@ async def record_link_opened(kind, item_id, version, channel, actor=None) -> Non
         await session.commit()
 
 
+def _append_audit_entry(request: RequestRecord, action: str, operation: str,
+                        before_pots: dict[str, float], after_pots: dict[str, float]) -> None:
+    """Add one entry to the request's BalanceAuditLog, as the SharePoint path did.
+
+    The ledger is the record of what moved; this copy is for display only. The
+    admin requests screen ("What it did to balances", "Audit trail") and the
+    employee's request history read BalanceAuditLog, so without it every request
+    decided after the switch would show no balance change. Refunds never read it
+    back for a Postgres-decided request (they reverse the ledger rows).
+
+    Args:
+        request: The request being decided; its ``extra`` gets the log.
+        action: "approve" or "refund", the entry's action.
+        operation: The step's plain label, shown on the screen.
+        before_pots: Pot values before, keyed by pot name.
+        after_pots: Pot values after, for the pots that moved only.
+    """
+    import json
+    from app.services.audit_trail import AuditTrailBuilder   # lazy: keeps this module's imports light
+    if not after_pots:
+        return                                                     # nothing moved: no entry, as before
+    builder = AuditTrailBuilder(action)
+    builder.add_step(
+        operation,
+        {POT_COLUMNS[pot]: before_pots.get(pot, 0.0) for pot in after_pots},   # SharePoint column names
+        {POT_COLUMNS[pot]: value for pot, value in after_pots.items()},
+    )
+    extra = dict(request.extra or {})
+    try:
+        entries = json.loads(extra.get("BalanceAuditLog") or "[]")  # an imported row may already have some
+    except (TypeError, ValueError):
+        entries = []                                               # unreadable old log: start a fresh one
+    if not isinstance(entries, list):
+        entries = []
+    entries.append(builder.build_entry())
+    extra["BalanceAuditLog"] = json.dumps(entries)
+    request.extra = extra                                          # a new dict so the JSON change is saved
+
+
 async def approve(kind, item_id, actor, channel, link_version=None, reason=None) -> dict:
     """Approve one request: move the balance, record it, queue the result.
 
@@ -588,6 +627,7 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
                     rows.append({"label": POT_LABEL[pot], "value": f"{before_pots[pot]:g} -> {after_value:g} days"})
                 request.balance_state = "applied"
                 event_type = "balance_applied"
+                _append_audit_entry(request, "approve", "Approved", before_pots, moved)   # for the balance panel
             elif outcome == "counted":                             # hourly vacation: a counter, no pot moves
                 year = _leave_year(request)
                 before_count = await _vacation_taken_for_year(session, request.employee_id, year)
@@ -614,6 +654,16 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             # The pots after this approval (moved holds the new values; empty for
             # a counted or no-balance outcome), for the RequestAllowDate recalc.
             final_pots = {**before_pots, **moved}
+            if request.kind == "carryover_payout" and moved:
+                # The "New balance" the admin requests table and export show, in
+                # the same text the SharePoint path wrote, so old and new rows read alike.
+                extra = dict(request.extra or {})
+                extra["NewBalance"] = (
+                    f"{{Vacation:{final_pots.get('vacation', 0.0)}, "
+                    f"CarryOver:{final_pots.get('carry_over', 0.0)}, "
+                    f"Payout:{final_pots.get('payout', 0.0)}}}"
+                )
+                request.extra = extra                              # a new dict so the JSON change is saved
             await session.commit()
         _wake_sender()                                             # send the result without waiting for the poll
         # Recalc the allow date, and (leave/overtime) tell the employee about any
@@ -761,6 +811,7 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                 pot_writes[pot] = new_value                        # fold the cascade move into the single write
             if pot_writes:
                 await balances.write_pots(session, request.employee_id, pot_writes)
+                _append_audit_entry(request, "refund", "Refunded", before_pots, pot_writes)   # for the balance panel
             # The pots after the reversal and cascade, for the RequestAllowDate recalc below.
             final_pots = {**before_pots, **pot_writes}
 

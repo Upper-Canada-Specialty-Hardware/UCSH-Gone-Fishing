@@ -216,6 +216,7 @@ class _PersonNames(dict):
     def __init__(self):
         super().__init__()
         self.by_email: dict[str, str] = {}                     # lowercase email -> staff name
+        self.by_staff_id: dict[str, str] = {}                  # staff id (as text) -> staff name
 
 
 async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
@@ -256,6 +257,8 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
         email = (fields.get("EmailAddress") or "").strip().lower()
         if email and fields.get("Title"):
             sp_user_to_name.by_email[email] = fields["Title"]
+        if item.get("id") is not None and fields.get("Title"):
+            sp_user_to_name.by_staff_id[str(item["id"])] = fields["Title"]   # for EmployeeID / ManagerID
     # The User Information List only resolves SharePoint person-column lookup ids
     # to names. Read it only while staff live in SharePoint; after the switch the
     # names come from the staff store (by_email above and the typed request
@@ -278,7 +281,9 @@ def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: d
     """Resolve a SP Person/Group lookup field to a display name.
 
     For the submitter columns, a SubmitterEmail on the item wins: it names the
-    submitter even when the person column could not be set.
+    submitter even when the person column could not be set. Next comes the
+    staff id the item carries (EmployeeID, or ManagerID for "Manager"), and
+    only then the SharePoint person-column lookup id.
 
     Args:
         item_data: The request item's fields.
@@ -291,6 +296,16 @@ def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: d
     if field_prefix in SUBMITTER_PERSON_COLUMNS:
         email = submitter_email_of(item_data)
         name = getattr(sp_user_to_name, "by_email", {}).get(email) if email else None
+        if name:
+            return name
+    # The staff id the request carries: EmployeeID for the submitter, ManagerID
+    # for the manager. After the switch the SharePoint user ids below no longer
+    # resolve (that list is never read), so this is how a request without a
+    # SubmitterEmail still finds its person.
+    id_column = "ManagerID" if field_prefix == "Manager" else "EmployeeID"
+    staff_id = item_data.get(id_column)
+    if staff_id is not None:
+        name = getattr(sp_user_to_name, "by_staff_id", {}).get(str(staff_id))
         if name:
             return name
     lookup_id = item_data.get(f"{field_prefix}LookupId")

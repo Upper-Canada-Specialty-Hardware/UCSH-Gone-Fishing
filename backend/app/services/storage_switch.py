@@ -219,14 +219,86 @@ async def _run_final_sync() -> dict:
         raise
 
 
+def _staff_number(row) -> int | None:
+    """A staff row's id as the number the manager pickers use, or None.
+
+    Args:
+        row: A Staff row.
+
+    Returns:
+        ``int(sp_item_id)``, or None when the id is not a number.
+    """
+    try:
+        return int(row.sp_item_id)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _rekey_people_links(session) -> dict:
+    """Point every manager and person link at a staff id instead of a Microsoft 365 id.
+
+    Imported staff rows name their managers (and their own account link) by the
+    Microsoft 365 user id SharePoint stored. After the switch the app has no
+    SharePoint user list, and the manager pickers, the assignment screen and the
+    bulk tools all identify a manager by their staff id. Left alone, the two kinds
+    of small numbers mix: keeping an imported manager while editing a person
+    would look their id up as a staff id and save a blank or wrong name, and team
+    membership is matched by that name. So, in the same transaction as the flip:
+
+    * each manager or supervisor link takes the staff id of the person it names:
+      the linked staff row when the import found one, else the staff row with the
+      same name (the rule the rest of the app matches managers by);
+    * a link whose person is not in the staff table keeps its name and loses its
+      id, so it can never be mistaken for somebody's staff id;
+    * each person's own account link becomes their own staff id.
+
+    Rerunning it gives the same result, since it matches by the linked row or name.
+
+    Args:
+        session: The flip's open session (committed by the caller).
+
+    Returns:
+        ``{"links": n, "unmatched": n}`` for the log line.
+    """
+    from sqlalchemy import select
+    from app.models.staff import Staff, StaffSupervisor          # lazy: keeps this module's imports light
+    staff_rows = (await session.execute(select(Staff).order_by(Staff.id))).scalars().all()
+    by_key = {row.id: row for row in staff_rows}                  # internal key -> row
+    by_name: dict[str, Staff] = {}
+    for row in staff_rows:
+        name = (row.name or "").strip().lower()
+        if name:
+            by_name.setdefault(name, row)                         # first wins on a duplicate name
+    for row in staff_rows:
+        row.title_link_sp_user_id = _staff_number(row)            # their own link: their own staff id
+    links = (await session.execute(select(StaffSupervisor))).scalars().all()
+    unmatched = 0
+    for link in links:
+        target = by_key.get(link.manager_staff_id) if link.manager_staff_id else None
+        if target is None:
+            target = by_name.get((link.manager_name or "").strip().lower())   # match by name
+        if target is None:
+            link.manager_sp_user_id = None                        # not on staff: keep the name, drop the id
+            unmatched += 1
+            continue
+        link.manager_sp_user_id = _staff_number(target)           # the id the pickers use from now on
+        link.manager_staff_id = target.id
+        if not link.manager_name:
+            link.manager_name = target.name                       # fill a blank name from the row
+    return {"links": len(links), "unmatched": unmatched}
+
+
 async def _flip_settings_to_postgres() -> None:
     """Set all three storage settings to Postgres in one transaction (#335 fix).
 
     Writing requests, staff and holidays together means the app never sees one
     domain in Postgres while another is still SharePoint because of a crash
-    between separate commits.
+    between separate commits. The staff manager links are moved to staff ids in
+    the same transaction (see ``_rekey_people_links``).
     """
     async with async_session() as session:
+        rekeyed = await _rekey_people_links(session)          # before the flip lands, same commit
+        logger.info("Manager links moved to staff ids: %s", rekeyed)
         for key in (REQUESTS_STORAGE, STAFF_STORAGE, HOLIDAYS_STORAGE):
             row = await session.get(AppSetting, key)
             if row is None:
