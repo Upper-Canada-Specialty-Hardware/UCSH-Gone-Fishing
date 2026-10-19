@@ -766,3 +766,15 @@ def test_the_switch_queues_no_message_and_reports_what_landed(monkeypatch):
         assert SYNC_STEPS                                     # the real steps were untouched
         run(_wipe())
         run(wipe_staff())
+
+
+def test_a_request_on_a_shared_mailbox_is_named_by_its_staff_id():
+    # Two records share ap@ucsh.com: the staff id on the row names the person,
+    # not whichever record the email happens to map to.
+    from app.routes.dashboard import _PersonNames, _resolve_sp_user_name
+    names = _PersonNames()
+    names.by_email["ap@ucsh.com"] = "Accounts Payable"
+    names.by_staff_id.update({"40": "Accounts Payable", "41": "Kim Clerk"})
+    row = {"EmployeeID": 41.0, "SubmitterEmail": "ap@ucsh.com"}
+    assert _resolve_sp_user_name(row, "SubmittedTest", names) == "Kim Clerk"
+    assert _resolve_sp_user_name({"SubmitterEmail": "ap@ucsh.com"}, "SubmittedTest", names) == "Accounts Payable"

@@ -286,3 +286,25 @@ def test_add_employee_lands_only_in_postgres(clean_db, monkeypatch):
                 select(Staff).where(Staff.sp_item_id == new_id)
             )).scalars().first()
     assert run(read_row()).name == "New Hire"              # the person is in Postgres
+
+
+# --- A rename keeps the manager's team ------------------------------------------
+
+def test_renaming_a_manager_carries_to_every_link_that_names_them(clean_db, monkeypatch):
+    # Teams are read by the manager's name, so a rename after the switch must reach
+    # the links, or the manager's whole team would vanish from their dashboard.
+    from app.repositories.postgres.staff import PostgresStaffList
+    boss = _sp_item("201", Title="Grace Hopper")
+    worker = _sp_item("101", AllManagers=[{"LookupId": 77, "LookupValue": "Grace Hopper"}])
+    _seed(monkeypatch, boss, worker)
+
+    run(PostgresStaffList().update_list_item_fields(
+        settings.SP_LIST_STAFF_DIRECTORY, "201", {"Title": "Grace Murray Hopper"},
+    ))
+
+    _row, links, _wb, _changes = run(_links_wb_changes("101"))
+    manager = [link for link in links if link.relation == "manager"]
+    assert [link.manager_name for link in manager] == ["Grace Murray Hopper"]
+    items = run(PostgresStaffList().get_list_items(settings.SP_LIST_STAFF_DIRECTORY))
+    worker_fields = next(i["fields"] for i in items if i["id"] == "101")
+    assert worker_fields["AllManagers"][0]["LookupValue"] == "Grace Murray Hopper"   # what team views read

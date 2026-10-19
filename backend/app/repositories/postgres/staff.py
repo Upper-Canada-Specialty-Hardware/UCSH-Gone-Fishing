@@ -18,7 +18,7 @@ import logging
 from datetime import date, datetime, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -536,6 +536,37 @@ async def apply_sp_fields(
     return dropped
 
 
+async def _carry_rename_to_links(session: AsyncSession, row: Staff, old_name: str) -> None:
+    """After a rename, update every manager link that names this person.
+
+    Teams are read by the manager's name (the AllManagers entries, as SharePoint
+    stored them), so a renamed manager would otherwise lose their whole team.
+    Links already tied to this person's staff row follow the new name; a link
+    added after the switch with no staff row yet, but carrying the old name, is
+    tied to this row as well. Staff names are unique, so the old name can only
+    mean this person.
+
+    Args:
+        session: The open session; committed by the caller.
+        row: The staff row just written.
+        old_name: Its name before the write, trimmed.
+    """
+    new_name = (row.name or "").strip()
+    if not old_name or not new_name or old_name == new_name or row.id is None:
+        return                                            # no rename, or a row not yet saved
+    await session.execute(
+        update(StaffSupervisor)
+        .where(or_(
+            StaffSupervisor.manager_staff_id == row.id,   # links already tied to this person
+            (StaffSupervisor.manager_staff_id.is_(None))
+            & (func.lower(func.trim(StaffSupervisor.manager_name)) == old_name.lower()),
+        ))
+        .values(manager_name=new_name, manager_staff_id=row.id)
+        .execution_options(synchronize_session="fetch")    # keep loaded links in step
+    )
+    logger.info("Staff #%s renamed; manager links now read %r", row.sp_item_id, new_name)
+
+
 def _manager_names(row: Staff) -> list[str]:
     """The current manager display names on a staff row, for the change history.
 
@@ -734,8 +765,10 @@ class PostgresStaffList:
                 before_fields = to_sp_fields(row)         # the record as it stands
                 before_managers = _manager_names(row)     # current manager names
                 name_now = row.name or ""                 # name at the time of the change
+            old_name = (row.name or "").strip()           # to carry a rename onto manager links
             await apply_sp_fields(session, row, fields, links=links)
             row.sp_modified = utcnow()                    # an app edit is modified now
+            await _carry_rename_to_links(session, row, old_name)
             if history_source:                            # record history in the same transaction
                 for column, old, new in _write_history_rows(
                     before_fields, fields, links, before_managers
