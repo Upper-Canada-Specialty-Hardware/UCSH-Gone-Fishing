@@ -308,3 +308,26 @@ def test_renaming_a_manager_carries_to_every_link_that_names_them(clean_db, monk
     items = run(PostgresStaffList().get_list_items(settings.SP_LIST_STAFF_DIRECTORY))
     worker_fields = next(i["fields"] for i in items if i["id"] == "101")
     assert worker_fields["AllManagers"][0]["LookupValue"] == "Grace Murray Hopper"   # what team views read
+
+
+# --- A staff save tells open dashboards -------------------------------------------
+
+def test_a_staff_save_signals_every_open_dashboard(clean_db, monkeypatch):
+    # Saving a person must reach every live reader as a staff_changed signal, so
+    # manager team cards and the admin staff table follow without a reload.
+    from app.repositories.postgres.staff import PostgresStaffList
+    from app.services.event_bus import STAFF_CHANGED, event_bus, sse_signal
+    _seed(monkeypatch, _sp_item("301", Title="Ada Lovelace"))
+
+    queue = event_bus.subscribe()                                # stands in for one open dashboard
+    try:
+        run(PostgresStaffList().update_list_item_fields(
+            settings.SP_LIST_STAFF_DIRECTORY, "301", {"CurrentVacationBalance": 4},
+        ))
+        payload = queue.get_nowait()
+    finally:
+        event_bus.unsubscribe(queue)
+
+    assert payload == {"signal": STAFF_CHANGED, "staff_id": "301"}
+    # The stream sends it as a named event with no id, so it never moves a resume point.
+    assert sse_signal(payload) == 'event: staff_changed\ndata: {"staff_id": "301"}\n\n'

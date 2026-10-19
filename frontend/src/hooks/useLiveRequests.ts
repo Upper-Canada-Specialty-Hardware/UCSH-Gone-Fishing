@@ -59,6 +59,8 @@ function mergeEvent(rows: any[], ev: LiveEvent): any[] {
  * @param options.enabled - Open the connection only once the page is ready.
  * @param options.onEvent - Called for every event, so a page can also refresh
  *   its pending queue on a decision.
+ * @param options.onStaffChange - Called with a staff id whenever a staff record
+ *   is added, edited or removed, so a page can re-read the staff figures it shows.
  * @returns The current connection status, for a small notice.
  */
 export function useLiveRequests(options: {
@@ -66,16 +68,19 @@ export function useLiveRequests(options: {
   setRows: Dispatch<SetStateAction<any[]>>;
   enabled?: boolean;
   onEvent?: (ev: LiveEvent) => void;
+  onStaffChange?: (staffId: string) => void;
 }): { status: LiveStatus } {
-  const { scope, setRows, enabled = true, onEvent } = options;
+  const { scope, setRows, enabled = true, onEvent, onStaffChange } = options;
   const [status, setStatus] = useState<LiveStatus>('connecting');
 
   // Kept in refs so the long-lived stream and timers never close over stale
   // state, and so changing handlers does not reopen the connection.
   const setRowsRef = useRef(setRows);
   const onEventRef = useRef(onEvent);
+  const onStaffChangeRef = useRef(onStaffChange);
   setRowsRef.current = setRows;
   onEventRef.current = onEvent;
+  onStaffChangeRef.current = onStaffChange;
 
   useEffect(() => {
     if (!enabled) return;
@@ -139,6 +144,16 @@ export function useLiveRequests(options: {
       // The server sends one every 15 s while nothing else flows; each proves the
       // stream is alive, so a quiet stream is never mistaken for a dead one.
       source.addEventListener('heartbeat', () => { if (!closed) armDead(); });
+      // A staff record changed (added, edited, removed): the page re-reads its staff figures.
+      source.addEventListener('staff_changed', (e) => {
+        if (closed) return;
+        armDead();                                         // a message means the stream is alive
+        try {
+          onStaffChangeRef.current?.(String(JSON.parse((e as MessageEvent).data).staff_id));
+        } catch {
+          /* a malformed frame is skipped */
+        }
+      });
       source.addEventListener('request_event', (e) => {
         if (closed) return;
         armDead();                                         // a message means the stream is alive

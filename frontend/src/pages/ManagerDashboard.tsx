@@ -175,9 +175,20 @@ export default function ManagerDashboard() {
           .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
           .catch(() => { /* the cards keep their figures until the next load */ });
       }
-    }, 600);
+    }, 300);
   }, []);
-  useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+  // A staff record changed (a new hire added, an edit, a balance move): re-read
+  // the team cards, debounced so a burst of saves costs one read.
+  const staffRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onStaffChange = useCallback(() => {
+    if (staffRefresh.current) clearTimeout(staffRefresh.current);
+    staffRefresh.current = setTimeout(() => {
+      getTeamMembers()
+        .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
+        .catch(() => { /* the cards keep their figures until the next change */ });
+    }, 300);
+  }, []);
+  useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   useEffect(() => {
     let cancelled = false;

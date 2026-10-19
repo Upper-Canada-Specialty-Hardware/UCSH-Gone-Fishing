@@ -18,7 +18,6 @@ import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
 import AdminPasswordCard from '../components/admin/AdminPasswordCard';
-import LegacyDataScreen from '../components/admin/LegacyDataScreen';
 import { Enter, leaveDelay } from '../components/Motion';
 import { AdminSkeleton } from '../components/Skeletons';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
@@ -64,7 +63,6 @@ const SCREEN_TITLES: Record<string, string> = {
   stuck: 'Stuck requests',
   emails: 'Email log',
   checks: 'Data checks',
-  legacy: 'Legacy data',
   password: 'Admin password',
 };
 
@@ -465,9 +463,20 @@ export default function AdminDashboard() {
       const full = needFullList.current;
       needFullList.current = false;
       void (full ? reloadRequests() : reloadDerived());
-    }, 2000);
+    }, 500);
   }, [reloadDerived, reloadRequests]);
-  useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+  // A staff record changed (added, edited, a balance moved): re-read the staff
+  // figures, debounced so a burst of saves costs one read.
+  const staffRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onStaffChange = useCallback(() => {
+    if (staffRefresh.current) clearTimeout(staffRefresh.current);
+    staffRefresh.current = setTimeout(() => {
+      getAdminBalances()
+        .then((r) => setEmployees(r.data.employees || []))
+        .catch(() => { /* the table keeps its figures until the next change */ });
+    }, 300);
+  }, []);
+  useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
@@ -515,7 +524,6 @@ export default function AdminDashboard() {
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
       { key: 'checks', label: 'Data checks' },
-      { key: 'legacy', label: 'Legacy data' },
       { key: 'password', label: 'Admin password' },
     ] },
   ];
@@ -640,12 +648,6 @@ export default function AdminDashboard() {
               )}
 
               {tab === 'holidays' && <HolidaysManager />}
-
-              {tab === 'legacy' && (
-                <LegacyDataScreen
-                  onNotify={(message, severity) => setSnack({ open: true, message, severity })}
-                />
-              )}
 
               {tab === 'password' && <AdminPasswordCard />}
               </Enter>

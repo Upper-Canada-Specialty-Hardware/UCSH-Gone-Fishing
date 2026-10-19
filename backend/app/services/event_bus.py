@@ -18,6 +18,12 @@ A reader ``subscribe()``s to get an ``asyncio.Queue`` the bus pushes payloads
 onto, and ``unsubscribe()``s when its connection closes. The bus only ever
 dispatches events newer than ``_last_id``, which starts at the newest event at
 startup; a connection replays older history itself through its Last-Event-ID.
+
+Staff changes ride the same bus as a lighter "signal": a staff record saved in
+the app fires ``pg_notify('staff_changes', <staff id>)`` and the bus hands each
+reader ``{"signal": "staff_changed", "staff_id": ...}``. A signal has no row
+and no history, so it is never replayed; a page that hears one simply re-reads
+the staff figures it shows.
 """
 import asyncio
 import json
@@ -34,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 # How often the SQLite/fallback path checks request_events for new rows.
 POLL_SECONDS = 2
+# The Postgres channel a staff save notifies, and the signal name readers get.
+STAFF_NOTIFY_CHANNEL = "staff_changes"
+STAFF_CHANGED = "staff_changed"
 # Reconnect backoff for the Postgres listener: grows, then holds at the cap.
 RECONNECT_MIN_SECONDS = 1
 RECONNECT_MAX_SECONDS = 30
@@ -220,6 +229,17 @@ class EventBus:
             self._task = None
         self._subscribers.clear()
 
+    def publish_signal(self, signal: str, **data) -> None:
+        """Hand every reader a signal at once: a change with no timeline row.
+
+        Args:
+            signal: The signal name, sent to the browser as the event name.
+            **data: The few values the signal carries (a staff id, say).
+        """
+        payload = {"signal": signal, **data}
+        for queue in list(self._subscribers):            # a snapshot: a reader may unsubscribe mid-loop
+            queue.put_nowait(payload)
+
     async def _dispatch(self, payloads: list[dict]) -> None:
         """Push a batch of payloads to every subscriber.
 
@@ -309,6 +329,11 @@ class EventBus:
                     wake.set()                            # just wake the loop; it reads the table itself
 
                 await connection.add_listener(NOTIFY_CHANNEL, _on_notify)
+
+                def _on_staff_notify(_conn, _pid, _channel, staff_id):   # the payload is the staff id
+                    self.publish_signal(STAFF_CHANGED, staff_id=str(staff_id))
+
+                await connection.add_listener(STAFF_NOTIFY_CHANNEL, _on_staff_notify)
                 await self.poll_once()                   # replay anything missed before this connect
                 backoff = RECONNECT_MIN_SECONDS          # a clean connect resets the backoff
                 while self._running:
@@ -334,6 +359,43 @@ class EventBus:
 
 # The one bus for the process; started in main.py's lifespan.
 event_bus = EventBus()
+
+
+async def announce_staff_change(staff_id) -> None:
+    """Tell every open dashboard a staff record changed. Best effort, never raises.
+
+    Called after a staff save commits. On Postgres it sends a NOTIFY, so every
+    app process hears it through its listener; elsewhere (SQLite in tests and
+    local dev) it signals this process's readers directly.
+
+    Args:
+        staff_id: The changed person's staff id.
+    """
+    try:
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy import text                        # local: only this path needs it
+            async with async_session() as session:
+                await session.execute(
+                    text(f"SELECT pg_notify('{STAFF_NOTIFY_CHANNEL}', :staff_id)"), {"staff_id": str(staff_id)}
+                )
+                await session.commit()                         # NOTIFY is delivered at commit
+        else:
+            event_bus.publish_signal(STAFF_CHANGED, staff_id=str(staff_id))
+    except Exception:  # noqa: BLE001 - a missed notice only delays a screen, never a save
+        logger.exception("Could not announce a staff change for #%s", staff_id)
+
+
+def sse_signal(payload: dict) -> str:
+    """Format one signal as a server-sent-events message named after it.
+
+    Args:
+        payload: A signal from publish_signal ({"signal": ..., ...}).
+
+    Returns:
+        The SSE text block. It carries no id, so it never moves a reader's resume point.
+    """
+    data = {k: v for k, v in payload.items() if k != "signal"}   # the name rides as the event name
+    return f"event: {payload['signal']}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
 def sse_message(payload: dict) -> str:

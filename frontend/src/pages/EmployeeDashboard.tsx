@@ -1,7 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
-import { staffCacheKey } from '../api/intake';
+import { loadSession, staffCacheKey } from '../api/intake';
 import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
@@ -220,9 +220,17 @@ export default function EmployeeDashboard() {
           setRequests(reqRes.data.requests || []);         // fresh Taken-from chips and status
         })
         .catch(() => { /* the merged rows stay; balances refresh on the next event */ });
-    }, 1500);
+    }, 400);
   }, []);
-  useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+  // Their own staff record changed (an admin edit, a balance correction): re-read
+  // the balances and profile. Another person's change is ignored.
+  const onStaffChange = useCallback((staffId: string) => {
+    if (staffId !== String(loadSession()?.uid ?? '')) return;
+    getMyBalances()
+      .then((r) => { setBalances(r.data.balances); setEmployee(r.data.employee); })
+      .catch(() => { /* the figures stay until the next change */ });
+  }, []);
+  useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   useEffect(() => {
     let cancelled = false;

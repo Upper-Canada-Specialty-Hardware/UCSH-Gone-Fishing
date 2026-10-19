@@ -50,6 +50,7 @@ from app.services.event_bus import (
     event_bus,
     fetch_events,
     sse_message,
+    sse_signal,
 )
 from app.services.request_live_reads import WIRE_TO_STORED
 
@@ -261,6 +262,9 @@ async def _stream(viewer: _Viewer, start_after: int, resuming: bool):
                 # comment to the page, so only a real event resets its dead-stream
                 # timer; a comment let every quiet stream be dropped after 45 s.
                 yield "event: heartbeat\ndata: {}\n\n"          # keep the connection, the proxy and the reader alive
+                continue
+            if "signal" in payload:                             # a staff change: no row, no id
+                yield sse_signal(payload)                      # every reader re-reads what it shows
                 continue
             pid = int(payload["id"])
             if pid in seen:

@@ -609,6 +609,16 @@ def _write_history_rows(
     return rows
 
 
+async def _announce(item_id) -> None:
+    """Tell open dashboards this person changed, after the save committed.
+
+    Args:
+        item_id: The person's staff id.
+    """
+    from app.services.event_bus import announce_staff_change   # lazy: the bus imports the request models
+    await announce_staff_change(item_id)
+
+
 def _not_found(item_id) -> httpx.HTTPStatusError:
     """The 404 Graph raises for a missing item, so callers handle it the same way.
 
@@ -728,6 +738,7 @@ class PostgresStaffList:
             await apply_sp_fields(session, row, fields)
             row.sp_modified = row.sp_modified or utcnow()  # a fresh row is modified now
             await session.commit()
+        await _announce(new_id)                           # open dashboards show the new person
         return await self.get_list_item(list_id, new_id)
 
     async def update_list_item_fields(
@@ -783,6 +794,7 @@ class PostgresStaffList:
                         source=history_source,
                     ))
             await session.commit()
+        await _announce(item_id)                          # open dashboards show the change
         return (await self.get_list_item(list_id, item_id))["fields"]
 
     async def delete_list_item(self, list_id: str, item_id) -> None:
@@ -801,6 +813,7 @@ class PostgresStaffList:
                 raise _not_found(item_id)
             await session.delete(row)
             await session.commit()
+        await _announce(item_id)                          # open dashboards drop the person
 
 
 def staff_query():
