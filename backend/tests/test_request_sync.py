@@ -646,6 +646,48 @@ def test_staff_index_first_wins_on_a_duplicate_email(sp):
     assert run(_record("leave", 70)).employee_id == "40"         # the first record wins
 
 
+def test_staff_index_shared_email_goes_to_the_lowest_id_whatever_the_read_order(sp):
+    # SharePoint lists staff in id order and SharePoint mode took the first match,
+    # so a shared email resolves to the lowest id even when a read returns them reversed.
+    sp.lists[STAFF] = [
+        {"id": "41", "fields": {"Title": "Second Dup", "EmailAddress": "dup@ucsh.com", "SalaryHourly": "Salary"}},
+        {"id": "40", "fields": {"Title": "First Dup", "EmailAddress": "dup@ucsh.com", "SalaryHourly": "Salary"}},
+    ]
+    sp.lists[LEAVE] = [sp_item(71, leave_fields(lookup=999, submitter_email="dup@ucsh.com"))]
+    run(import_requests())
+    assert run(_record("leave", 71)).employee_id == "40"
+
+
+def test_staff_index_matches_the_site_user_by_name_as_sharepoint_mode_did(sp):
+    # No email on the request: the site user's display name picks the staff record,
+    # as resolve_person_field did, even when that user's site email is someone else's.
+    sp.lists[USERS].append({"id": "104", "fields": {"Title": "Bob Hourly", "EMail": "alice@ucsh.com"}})
+    sp.lists[LEAVE] = [sp_item(72, leave_fields(lookup=104))]
+    run(import_requests())
+    assert run(_record("leave", 72)).employee_id == "20"         # Bob by name, not Alice by email
+
+
+def test_staff_index_falls_back_to_the_site_users_email_when_nothing_else_matches(sp):
+    # The site user's name is a login no staff record carries: the email names them,
+    # so a row SharePoint mode could not place still gets an owner, not a fallback id.
+    sp.lists[LEAVE] = [sp_item(73, leave_fields(lookup=103))]  # "j.doe", jdoe@ucsh.com
+    run(import_requests())
+    assert run(_record("leave", 73)).employee_id == "30"
+
+
+def test_staff_index_shared_email_keeps_sharepoint_modes_pick_over_the_name(sp):
+    # A shared email beats the person column, as it did in SharePoint mode: the
+    # balance that request moved was the first record's, so the row stays with it.
+    sp.lists[STAFF] = [
+        {"id": "40", "fields": {"Title": "Accounts Desk", "EmailAddress": "ap@ucsh.com", "SalaryHourly": "Salary"}},
+        {"id": "41", "fields": {"Title": "Real Person", "EmailAddress": "ap@ucsh.com", "SalaryHourly": "Salary"}},
+    ]
+    sp.lists[USERS].append({"id": "105", "fields": {"Title": "Real Person", "EMail": "ap@ucsh.com"}})
+    sp.lists[LEAVE] = [sp_item(74, leave_fields(lookup=105, submitter_email="ap@ucsh.com"))]
+    run(import_requests())
+    assert run(_record("leave", 74)).employee_id == "40"
+
+
 def test_detector_pending_unprocessed(sp):
     # A pending row the old pipeline never finished (no days or no manager) is
     # flagged; one with both is quiet (item 7).

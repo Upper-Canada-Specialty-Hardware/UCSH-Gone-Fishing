@@ -115,6 +115,25 @@ def _when(value) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+def _staff_id_text(value) -> str:
+    """A staff id as the Staff Directory keys it: "377" for 377, 377.0 or "377.0".
+
+    SharePoint's number column returns EmployeeID as a float, so a plain digit
+    check missed it and the row fell through to the email and name steps.
+
+    Args:
+        value: The raw EmployeeID (int, float or text), not blank.
+
+    Returns:
+        The whole-number text, or the value as text when it is not a whole number.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)                                       # not a number: keep it as given
+    return str(int(number)) if number.is_integer() else str(value)
+
+
 def _extract_lookup_id(fields: dict, column: str) -> int | None:
     """The SharePoint user id in a person column, in either shape Graph uses.
 
@@ -149,24 +168,35 @@ class StaffIndex:
 
     Args:
         staff_by_id: Staff Directory item id (str) -> record.
-        staff_by_email: Lower-case email -> staff record.
+        staff_by_email: Lower-case email -> staff record (the lowest id when shared).
         user_email: SharePoint user id -> that user's email (lower case).
         user_name: SharePoint user id -> that user's display name.
+        staff_by_name: Lower-case staff name -> staff record (the lowest id when
+            shared). Optional so older callers keep working; empty means no name step.
     """
 
-    def __init__(self, staff_by_id, staff_by_email, user_email, user_name):
+    def __init__(self, staff_by_id, staff_by_email, user_email, user_name, staff_by_name=None):
         self.staff_by_id = staff_by_id
         self.staff_by_email = staff_by_email
         self.user_email = user_email
         self.user_name = user_name
+        self.staff_by_name = staff_by_name or {}
 
     def resolve(self, kind: str, fields: dict) -> tuple[dict | None, str]:
-        """Match a request to its staff record by id, then email, never by name.
+        """Match a request to the staff record SharePoint mode charged it to.
 
-        The order is: the request's ``EmployeeID`` as a staff id, then its
-        ``SubmitterEmail``, then the person column's user mapped to an email
-        through the site's user list. Display-name matching is never used, as
-        two people can share a name and names get renamed.
+        The order copies the rule the SharePoint-mode app used when it approved
+        a request and moved balances (``resolve_request_submitter``), so each
+        imported row lands on the same person whose balance it changed:
+
+        1. the request's ``EmployeeID`` as a staff id (carry-over and payout);
+        2. its ``SubmitterEmail``, the first staff record with that email;
+        3. the person column's site user, by display name, to the first staff
+           record with that name (``resolve_person_field``).
+
+        Only when all three miss does a fourth step run: the site user's email
+        to a staff record. SharePoint mode never used it, so it only names rows
+        that otherwise belonged to nobody, and never moves a row between people.
 
         Args:
             kind: The request kind, which picks the person column.
@@ -184,7 +214,7 @@ class StaffIndex:
         # 1. EmployeeID as a Staff Directory item id (carry-over/payout carries it).
         emp_id = fields.get("EmployeeID")
         if emp_id not in (None, ""):
-            staff = self.staff_by_id.get(str(int(emp_id)) if str(emp_id).isdigit() else str(emp_id))
+            staff = self.staff_by_id.get(_staff_id_text(emp_id))   # 377.0 and "377" both find 377
             if staff:
                 return staff, display_name
 
@@ -193,7 +223,12 @@ class StaffIndex:
         if email and email in self.staff_by_email:
             return self.staff_by_email[email], display_name
 
-        # 3. The person column's site user, mapped to an email, then to staff.
+        # 3. The person column's site user, by display name, as SharePoint mode matched it.
+        name = display_name.strip().lower()
+        if name and name in self.staff_by_name:
+            return self.staff_by_name[name], display_name
+
+        # 4. Rows SharePoint mode could not place: the site user's email to staff.
         if lookup_id is not None:
             user_email = self.user_email.get(lookup_id, "")
             if user_email and user_email in self.staff_by_email:
@@ -209,13 +244,21 @@ async def build_staff_index() -> StaffIndex:
         A StaffIndex built from one read of each list.
     """
     staff_items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # Lowest id first: SharePoint lists items in id order, and SharePoint mode took
+    # the first match, so a shared email or name resolves to the same record here.
+    staff_items = sorted(staff_items, key=lambda i: (0, int(i["id"])) if str(i["id"]).isdigit() else (1, 0))
     by_id: dict[str, dict] = {}
     by_email: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
     for item in staff_items:
         by_id[str(item["id"])] = item                           # staff id -> record
-        email = (item.get("fields", {}).get("EmailAddress") or "").strip().lower()
+        f = item.get("fields", {})
+        email = (f.get("EmailAddress") or "").strip().lower()
         if email and email not in by_email:
-            by_email[email] = item                              # first record wins, as the staff import does
+            by_email[email] = item                              # first record wins, as SharePoint mode did
+        name = (f.get("Title") or "").strip().lower()
+        if name and name not in by_name:
+            by_name[name] = item                                # first record wins, as get_employee_by_name does
     user_email: dict[int, str] = {}
     user_name: dict[int, str] = {}
     # A failed User Information List read is NOT swallowed: without it a submitter
@@ -230,7 +273,7 @@ async def build_staff_index() -> StaffIndex:
         f = user.get("fields", {})
         user_email[int(uid)] = (f.get("EMail") or "").strip().lower()   # Graph spells it EMail
         user_name[int(uid)] = f.get("Title") or ""
-    return StaffIndex(by_id, by_email, user_email, user_name)
+    return StaffIndex(by_id, by_email, user_email, user_name, by_name)
 
 
 # ----- the balance audit log -----
@@ -512,7 +555,7 @@ def _fallback_employee_id(fields: dict, person_col: str, sp_item_id: str) -> str
     """
     emp = fields.get("EmployeeID")
     if emp not in (None, ""):
-        return str(int(emp)) if str(emp).isdigit() else str(emp)
+        return _staff_id_text(emp)                              # the id even when its record is gone
     lookup = _extract_lookup_id(fields, person_col)
     if lookup is not None:
         return f"spuser:{lookup}"                              # the site user who submitted
