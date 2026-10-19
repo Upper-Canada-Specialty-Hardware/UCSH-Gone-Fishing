@@ -375,7 +375,35 @@ async def _refuse(session, request, channel, actor, version, why, reason) -> Non
     log_step(request, "refused", channel=channel, actor=actor, why=why)
 
 
-def _decider_phrase(request: RequestRecord) -> str:
+async def _decider_name(request: RequestRecord) -> str | None:
+    """The name of the manager who actually decided, when it is not the assigned one.
+
+    Any manager on the person's list can decide from their own dashboard or link,
+    and since #342 the assigned manager may be a stand-in, so the decider is read
+    from the recorded actor rather than assumed to be ``manager_name`` (#371).
+
+    Args:
+        request: The decided request, with ``decided_by`` set.
+
+    Returns:
+        The decider's staff name, or None when the decider is the assigned
+        manager, an admin, or cannot be found (the caller then falls back).
+    """
+    actor = (request.decided_by or "").strip()
+    if not actor.isdigit() or actor == str(request.manager_id or ""):
+        return None                                                # admin, unknown, or the assigned manager
+    try:
+        from app.config import settings
+        from app.repositories.staff_store import staff_store
+        item = await staff_store.get_list_item_or_none(settings.SP_LIST_STAFF_DIRECTORY, actor)
+    except Exception:  # noqa: BLE001 - a name lookup must never block the result message
+        logger.exception("Decider lookup failed for %s #%s", request.kind, request.item_id)
+        return None
+    name = ((item or {}).get("fields") or {}).get("Title") or ""  # the decider's display name
+    return name.strip() or None
+
+
+def _decider_phrase(request: RequestRecord, decider_name: str | None = None) -> str:
     """The " by <who>" clause for a result message, naming who actually decided.
 
     The decision records the actor and the channel it came from. An admin
@@ -387,6 +415,8 @@ def _decider_phrase(request: RequestRecord) -> str:
 
     Args:
         request: The decided request, with ``decided_by`` / ``decided_channel`` set.
+        decider_name: The deciding manager's name when they are not the assigned
+            manager (from ``_decider_name``), else None.
 
     Returns:
         ``" by <name>"`` when a decider is known, or ``""`` when none is.
@@ -395,12 +425,16 @@ def _decider_phrase(request: RequestRecord) -> str:
     channel = request.decided_channel or ""
     if actor.lower() == "admin" or channel == "admin_dashboard":   # an admin acted, not the manager
         return " by an administrator"
+    if decider_name:                                               # another manager on the list decided
+        return f" by {decider_name}"
     if request.manager_name:                                       # a manager decided on their own channel
         return f" by {request.manager_name}"
     return ""
 
 
-def _result_context(request: RequestRecord, outcome_word: str, rows: list[dict], note: str) -> tuple[str, str, str]:
+def _result_context(
+    request: RequestRecord, outcome_word: str, rows: list[dict], note: str, decider_name: str | None = None,
+) -> tuple[str, str, str]:
     """Build the result email subject, HTML body and SMS text from the step.
 
     Args:
@@ -408,6 +442,7 @@ def _result_context(request: RequestRecord, outcome_word: str, rows: list[dict],
         outcome_word: "Approved", "Rejected" or "Refunded".
         rows: Balance lines ``[{"label", "value"}]`` for the email table.
         note: A closing sentence, or "".
+        decider_name: The deciding manager's name when not the assigned one.
 
     Returns:
         ``(subject, html, sms_text)``.
@@ -415,7 +450,7 @@ def _result_context(request: RequestRecord, outcome_word: str, rows: list[dict],
     name = request.employee_name or "there"
     label = KIND_LABEL.get(request.kind, "Request")
     heading = f"{label} Request: {outcome_word}"
-    decided_by = _decider_phrase(request)
+    decided_by = _decider_phrase(request, decider_name)
     verb = {"Approved": "has been approved", "Rejected": "was not approved", "Refunded": "has been refunded"}[outcome_word]
     intro = f"Hi {name}, your {label.lower()} request #{request.item_id} {verb}{decided_by}."
     subject = f"{request.employee_name or 'Staff'} - {label} Request: {outcome_word}"
@@ -648,7 +683,8 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             await append_event(session, request, "approved", channel, actor, {}, approved_key)
             outcome_key = step_key(kind, request.item_id, event_type, version)
             event = await append_event(session, request, event_type, channel, actor, {"note": note}, outcome_key)
-            subject, html, sms_text = _result_context(request, "Approved", rows, note)
+            decider_name = await _decider_name(request)             # who really decided (#371)
+            subject, html, sms_text = _result_context(request, "Approved", rows, note, decider_name)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "approved", channel=channel, actor=actor, outcome=event_type)
             # The pots after this approval (moved holds the new values; empty for
@@ -714,7 +750,8 @@ async def reject(kind, item_id, actor, channel, link_version=None, reason=None) 
             rejected_key = step_key(kind, request.item_id, "rejected", version)
             event = await append_event(session, request, "rejected", channel, actor, {"reason": reason}, rejected_key)
             note = reason or "The request was not approved."
-            subject, html, sms_text = _result_context(request, "Rejected", [], note)
+            decider_name = await _decider_name(request)             # who really decided (#371)
+            subject, html, sms_text = _result_context(request, "Rejected", [], note, decider_name)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "rejected", channel=channel, actor=actor)
             await session.commit()
@@ -822,7 +859,8 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
             reversed_key = step_key(kind, request.item_id, "balance_reversed", version)
             event = await append_event(session, request, "balance_reversed", channel, actor, {}, reversed_key)
             note = "" if rows else "This request used no balance, so nothing was reversed."
-            subject, html, sms_text = _result_context(request, "Refunded", rows, note)
+            decider_name = await _decider_name(request)             # who really decided (#371)
+            subject, html, sms_text = _result_context(request, "Refunded", rows, note, decider_name)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "refunded", channel=channel, actor=actor)
             await session.commit()

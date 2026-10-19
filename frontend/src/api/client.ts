@@ -228,3 +228,23 @@ export const setCarryoverPayoutWindow = (start: string | null, end: string | nul
   api.put<CarryoverWindow>('/admin/carryover-payout', { start, end });
 export const exportCarryoverPayout = () =>
   api.get<Blob>('/admin/carryover-payout/export', { responseType: 'blob' });
+
+// Admin - #370: pending requests whose managers are all on vacation, so nobody
+// can approve them until a manager is back. The admin approves/rejects them here
+// with the usual admin approve/reject calls above.
+/** One manager of a stuck request, and the date they are back. */
+export interface VacationCoverManager {
+  name: string;
+  back: string;   // "Nov 10, 2026"
+}
+/** A pending request no manager can approve because all its managers are off. */
+export interface VacationCoverRequest {
+  request_type: string;   // "leave" / "overtime" / "carryover-payout", for the action calls
+  id: string;
+  employee_name: string;
+  what: string;           // the leave type, overtime hours, or carry-over/payout word
+  when: string;           // the dates, or the day count for carry-over/payout
+  managers: VacationCoverManager[];
+}
+export const getAdminVacationCover = () =>
+  api.get<{ requests: VacationCoverRequest[] }>('/admin/vacation-cover');

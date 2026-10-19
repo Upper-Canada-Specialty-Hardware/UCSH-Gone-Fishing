@@ -15,6 +15,8 @@ interface Props {
   stuckCount: number;
   /** Staff records with a setup problem. */
   setupCount: number;
+  /** Pending requests whose managers are all on vacation (#370). */
+  vacationCount: number;
   /** Open a screen by key. */
   onGo: (key: string) => void;
 }
@@ -26,7 +28,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The home screen.
  */
-export default function AdminHome({ pending, heldCount, stuckCount, setupCount, onGo }: Props) {
+export default function AdminHome({ pending, heldCount, stuckCount, setupCount, vacationCount, onGo }: Props) {
   const theme = useTheme();
   // Oldest first: these are the ones a manager is sitting on.
   const oldest = [...pending].sort((a, b) => (daysWaiting(b) ?? 0) - (daysWaiting(a) ?? 0));
@@ -35,6 +37,7 @@ export default function AdminHome({ pending, heldCount, stuckCount, setupCount, 
   // The four things HR checks, with a line saying why each matters right now.
   const tiles = [
     { key: 'pending', label: 'Waiting on a manager', n: pending.length, note: maxWait ? `oldest waiting ${maxWait} day${maxWait === 1 ? '' : 's'}` : 'nothing waiting' },
+    { key: 'vacation', label: 'Managers on vacation', n: vacationCount, note: vacationCount ? 'every manager off, nobody can approve' : 'none stuck' },
     { key: 'held', label: 'New hires to add', n: heldCount, note: heldCount ? 'their requests wait until they are added' : 'nobody waiting' },
     { key: 'setup', label: 'Setup problems', n: setupCount, note: setupCount ? 'these would stop a request reaching a manager' : 'every record checks out' },
     { key: 'stuck', label: 'Stuck requests', n: stuckCount, note: stuckCount ? 'not fully processed' : 'none' },

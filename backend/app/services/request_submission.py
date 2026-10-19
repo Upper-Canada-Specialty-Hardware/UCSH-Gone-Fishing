@@ -49,6 +49,7 @@ from app.services.employment import (
 from app.services.request_decisions import _wake_sender, decisions_active
 from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
 from app.services.request_submitter import resolve_request_submitter
+from app.services.vacation_cover import choose_available_manager, today_toronto
 from app import templates_render as tr
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,53 @@ def _set_identity(record: RequestRecord, employee: dict | None, manager: dict | 
     if manager is not None:
         record.manager_id = str(manager["id"])                      # the deciding manager
         record.manager_name = manager.get("fields", {}).get("Title") or record.manager_name
+
+
+def _assign_manager(record: RequestRecord, manager: dict | None) -> None:
+    """Point the request at the manager who was actually asked (the stand-in) (#369).
+
+    When the first manager on the list is off, the ask goes to the next available
+    one, who becomes the request's assigned manager, so the dashboards and the
+    result email (#371) name whoever really has it. Leaves the assignment as it
+    was when no manager is available (everyone is off).
+
+    Args:
+        record: The request row to update in place.
+        manager: The manager now holding the request, or None to leave it as is.
+    """
+    if manager is None:
+        return                                                      # everyone off: keep the nominal assignment
+    record.manager_id = str(manager["id"])                          # the manager actually asked
+    record.manager_name = (manager.get("fields") or {}).get("Title") or record.manager_name
+
+
+async def _record_reroute(session, record: RequestRecord, chosen: dict | None,
+                          skipped: list[dict], channel: str, event_suffix: str) -> None:
+    """Record that the approval ask was routed past off managers to a stand-in (#369).
+
+    Adds a ``sent_to_manager`` timeline event naming the manager asked and the off
+    managers skipped over (each with the date they are back), so the request's
+    timeline shows the move. Recorded only when a later manager stood in for off
+    earlier ones; a plain first-manager ask and an all-off request add nothing
+    here (an all-off request is surfaced by the admin cover list instead).
+
+    Args:
+        session: The open session the caller commits.
+        record: The rerouted request.
+        chosen: The manager the ask went to, or None when everyone is off.
+        skipped: The off managers passed over (from ``choose_available_manager``).
+        channel: Where the routing happened (the submission or reminder channel).
+        event_suffix: A tag that keeps the event's key unique per routing moment
+            (the submission, an edit's version, or the reminder's date).
+    """
+    if chosen is None or not skipped:
+        return                                                      # no stand-in happened: nothing to record
+    key = step_key(record.kind, record.item_id, "sent_to_manager", record.approval_version,
+                   suffix=f"reroute:{event_suffix}")
+    await append_event(
+        session, record, "sent_to_manager", channel, None,
+        {"manager": record.manager_name, "skipped": skipped}, key,
+    )
 
 
 async def _enqueue_notifications(session, record, employee, managers, *, event, suffix=None,
@@ -588,8 +636,15 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     fields = TypedRequestList(kind)._item_shape(record)["fields"]  # SharePoint shape for the resolve fallback
     employee = await _resolve_employee(record, fields)
     managers = await get_all_managers_for_employee(employee) if employee else []
-    manager = managers[0] if managers else None
-    _set_identity(record, employee, manager, channel or _channel_from_source(record))
+    # Route past any first managers who are off today: the ask goes to the first
+    # manager not on approved full-day leave, who becomes the assigned manager
+    # (#369). When everyone is off, no one is asked and the first manager stays
+    # the nominal assignee (the admin cover list surfaces it, #370).
+    chosen, skipped = (
+        await choose_available_manager(session, managers, today_toronto()) if managers else (None, [])
+    )
+    assigned = chosen or (managers[0] if managers else None)
+    _set_identity(record, employee, assigned, channel or _channel_from_source(record))
 
     version = record.approval_version
     submitted_key = step_key(kind, record.item_id, "submitted", version)
@@ -618,7 +673,11 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
             return True
 
     if employee is not None and managers:                         # queue the manager ask and the receipt
-        await _enqueue_notifications(session, record, employee, managers, event=event)
+        # Only the chosen manager is asked; an all-off request passes [] here, so
+        # _enqueue_notifications still sends the receipt but no manager email.
+        await _enqueue_notifications(session, record, employee, [chosen] if chosen else [], event=event)
+        await _record_reroute(session, record, chosen, skipped,
+                              record.submitted_channel or "system", "submit")
     elif employee is not None:                                    # no manager resolved: send the receipt only
         logger.warning("No manager for %s #%s; receipt queued, manager not asked", kind, record.item_id)
         emp_fields = employee.get("fields", {})
@@ -697,8 +756,16 @@ async def _queue_reminder(session, kind, item_id, today) -> bool:
     if not managers:
         return False                                              # nobody to remind
     from app.models.mixins import utcnow
-    suffix = (today or date.today()).isoformat()
-    await _enqueue_notifications(session, record, employee, managers, event=None, suffix=suffix)
+    on_date = today or date.today()
+    # Re-decide on the reminder's own day: a request moves on when its manager
+    # leaves and goes back to them when they return (#369). The reminder goes to
+    # whoever is available; when everyone is off, [] queues nothing and the request
+    # stays on the admin cover list (#370).
+    chosen, skipped = await choose_available_manager(session, managers, on_date)
+    _assign_manager(record, chosen)                               # the request follows whoever is asked
+    suffix = on_date.isoformat()
+    await _enqueue_notifications(session, record, employee, [chosen] if chosen else [], event=None, suffix=suffix)
+    await _record_reroute(session, record, chosen, skipped, "system", suffix)
     record.reminder_count = (record.reminder_count or 0) + 1      # bookkeeping for the cadence
     record.last_reminder_at = utcnow()
     log_step(record, "reminder_sent", suffix=suffix)
@@ -961,6 +1028,12 @@ async def apply_admin_edit(kind, item_id, before, after, reason, *,
         adapter = TypedRequestList(kind)
         employee = await _resolve_employee(record, adapter._item_shape(record)["fields"])
         managers = await get_all_managers_for_employee(employee) if employee else []
+        # Re-ask only the first available manager, so an edit routes past off
+        # managers the same way a submission does (#369).
+        chosen, skipped = (
+            await choose_available_manager(session, managers, today_toronto()) if managers else (None, [])
+        )
+        _assign_manager(record, chosen)                          # the edit's re-ask follows whoever is asked
 
         await adapter._resolve_people(record, after)             # keep names in step in production (no-op in tests)
         adapter._apply_fields(record, after)                     # write the edited values onto the typed columns
@@ -976,7 +1049,10 @@ async def apply_admin_edit(kind, item_id, before, after, reason, *,
         edited_key = step_key(kind, record.item_id, "edited", new_version)
         event = await append_event(session, record, "edited", channel, actor, {"reason": reason}, edited_key)
         if employee is not None and managers:                    # ask the manager again with the new links, no receipt
-            await _enqueue_notifications(session, record, employee, managers, event=event, include_receipt=False)
+            await _enqueue_notifications(
+                session, record, employee, [chosen] if chosen else [], event=event, include_receipt=False,
+            )
+            await _record_reroute(session, record, chosen, skipped, channel, f"edit:v{new_version}")
         log_step(record, "edited", actor=actor, version=new_version)
         await session.commit()
     _wake_sender()                                               # deliver the new manager links without waiting
