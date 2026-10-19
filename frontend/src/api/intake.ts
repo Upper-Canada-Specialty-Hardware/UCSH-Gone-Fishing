@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { BelowZero } from '../utils/employment';
+import { dropLaunchCache } from './launchCache';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -159,6 +160,17 @@ export function clearSession(): void {
   } catch {
     /* nothing to clear */
   }
+  void dropLaunchCache('staff');                 // the saved dashboard data goes with the sign-in
+}
+
+/**
+ * The key this sign-in's dashboard data is saved under for a fast relaunch.
+ *
+ * @returns "<role>:<uid>" (e.g. "manager:368"), or null when nobody is signed in.
+ */
+export function staffCacheKey(): string | null {
+  const session = loadSession();
+  return session ? `${session.role}:${session.uid}` : null;
 }
 
 /**

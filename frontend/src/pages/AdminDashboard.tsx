@@ -23,6 +23,7 @@ import LegacyDataScreen from '../components/admin/LegacyDataScreen';
 import { Enter, leaveDelay } from '../components/Motion';
 import { AdminSkeleton } from '../components/Skeletons';
 import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
+import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
 import {
   getAdminBalances,
   getAdminPending,
@@ -80,6 +81,21 @@ const VIEW_SCREEN: Record<RequestView, string> = { pending: 'pending', held: 'he
  *
  * @returns The admin dashboard.
  */
+/** Where the admin launch data is saved on this device. */
+const ADMIN_CACHE_KEY = 'admin';
+
+/** Everything the admin dashboard loads at launch, as saved for the next launch. */
+interface AdminSnapshot {
+  employees: any[];
+  pending: any[];
+  requests: any[];
+  stuck: any[];
+  setup: EmployeeSetupSummary | null;
+  stats: any;
+  processing_enabled: boolean;
+  held: HeldRow[];
+}
+
 export default function AdminDashboard() {
   const params = useParams();
   const navigate = useNavigate();
@@ -136,7 +152,23 @@ export default function AdminDashboard() {
   useEffect(() => {
     let cancelled = false;
 
+    /** Put one snapshot of the launch data on screen. */
+    const show = (s: AdminSnapshot) => {
+      setEmployees(s.employees);
+      setPending(s.pending);
+      setRequests(s.requests);
+      setStuckRequests(s.stuck);
+      setEmployeeSetup(s.setup);
+      setStats(s.stats);
+      setProcessingEnabled(s.processing_enabled);
+      setHeldRows(s.held);
+      setLoading(false);
+    };
+
     const loadData = async () => {
+      // A relaunch paints the last data at once; the fresh load below replaces it.
+      const cached = await readLaunchCache<AdminSnapshot>(ADMIN_CACHE_KEY);
+      if (cached && !cancelled) show(cached);
       while (!cancelled) {
         try {
           const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes, heldRes] = await Promise.all([
@@ -151,15 +183,18 @@ export default function AdminDashboard() {
             getHeldRequests(false).catch(() => ({ data: { held: [] } })),
           ]);
           if (cancelled) return;
-          setEmployees(balRes.data.employees || []);
-          setPending(pendRes.data.pending || []);
-          setRequests(reqRes.data.requests || []);
-          setStuckRequests(stuckRes.data.stuck || []);
-          setEmployeeSetup(setupRes.data);
-          setStats(statsRes.data);
-          setProcessingEnabled(configRes.data.processing_enabled || false);
-          setHeldRows(heldRes.data.held || []);
-          setLoading(false);
+          const fresh: AdminSnapshot = {
+            employees: balRes.data.employees || [],
+            pending: pendRes.data.pending || [],
+            requests: reqRes.data.requests || [],
+            stuck: stuckRes.data.stuck || [],
+            setup: setupRes.data,
+            stats: statsRes.data,
+            processing_enabled: configRes.data.processing_enabled || false,
+            held: heldRes.data.held || [],
+          };
+          show(fresh);
+          void writeLaunchCache(ADMIN_CACHE_KEY, fresh);   // the head start for the next launch
           return;
         } catch {
           await new Promise((r) => setTimeout(r, 5000));

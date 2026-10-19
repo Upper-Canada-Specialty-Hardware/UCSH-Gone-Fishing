@@ -1,5 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
+import { staffCacheKey } from '../api/intake';
 import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
@@ -179,6 +181,13 @@ function initials(name: string): string {
  *
  * @returns The employee dashboard.
  */
+/** Everything the employee dashboard loads at launch, as saved for the next launch. */
+interface EmployeeSnapshot {
+  balances: any;
+  employee: any;
+  requests: any[];
+}
+
 export default function EmployeeDashboard() {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -217,14 +226,42 @@ export default function EmployeeDashboard() {
   const { status: liveStatus } = useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   useEffect(() => {
-    Promise.all([getMyBalances(), getMyRequests()])
-      .then(([balRes, reqRes]) => {
-        setBalances(balRes.data.balances);
-        setEmployee(balRes.data.employee);
-        setRequests(reqRes.data.requests || []);
-      })
-      .catch((err) => setError(err.response?.data?.detail || 'Failed to load data'))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const cacheKey = staffCacheKey();                   // "employee:<id>", or null when signed out
+    let painted = false;                                // a saved snapshot is already on screen
+
+    /** Put one snapshot of the launch data on screen. */
+    const show = (s: EmployeeSnapshot) => {
+      setBalances(s.balances);
+      setEmployee(s.employee);
+      setRequests(s.requests);
+      setLoading(false);
+    };
+
+    const load = async () => {
+      // A relaunch paints the last data at once; the fresh load below replaces it.
+      const cached = cacheKey ? await readLaunchCache<EmployeeSnapshot>(cacheKey) : null;
+      if (cached && !cancelled) { show(cached); painted = true; }
+      try {
+        const [balRes, reqRes] = await Promise.all([getMyBalances(), getMyRequests()]);
+        if (cancelled) return;
+        const fresh: EmployeeSnapshot = {
+          balances: balRes.data.balances,
+          employee: balRes.data.employee,
+          requests: reqRes.data.requests || [],
+        };
+        show(fresh);
+        if (cacheKey) void writeLaunchCache(cacheKey, fresh);   // the head start for the next launch
+      } catch (err: any) {
+        if (cancelled) return;
+        // With saved data on screen, a failed refresh keeps it rather than blanking the page.
+        if (!painted) setError(err.response?.data?.detail || 'Failed to load data');
+        setLoading(false);
+      }
+    };
+
+    void load();
+    return () => { cancelled = true; };
   }, []);
 
   // The requests in three groups for the overview.

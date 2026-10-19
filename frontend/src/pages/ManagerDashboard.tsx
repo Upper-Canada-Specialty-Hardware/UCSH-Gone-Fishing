@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
+import { staffCacheKey } from '../api/intake';
 import {
   Alert, Box, Button, Paper, Snackbar, Tab, Tabs, TextField, Typography,
 } from '@mui/material';
@@ -105,6 +107,17 @@ function GroupBanner({ label, count }: { label: string; count: number }) {
  *
  * @returns The manager dashboard.
  */
+/** Everything the manager dashboard loads at launch, as saved for the next launch. */
+interface ManagerSnapshot {
+  manager_name: string;
+  members: any[];
+  can_log_sick_days: boolean;
+  pending: any[];
+  requests: any[];
+  calendar: any[];
+  processing_enabled: boolean;
+}
+
 export default function ManagerDashboard() {
   const theme = useTheme();
   const params = useParams();
@@ -168,25 +181,57 @@ export default function ManagerDashboard() {
   const { status: liveStatus } = useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   useEffect(() => {
-    Promise.all([
-      getMyBalances(),
-      getTeamMembers(),
-      getTeamPending(),
-      getTeamRequests(),
-      getTeamCalendar(),
-      getConfig(),
-    ])
-      .then(([profileRes, membersRes, pendingRes, reqRes, calRes, configRes]) => {
-        setManagerName(profileRes.data.employee?.name || '');
-        setMembers((membersRes.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
-        setCanLogSickDays(Boolean(membersRes.data.can_log_sick_days));
-        setPending(pendingRes.data.pending || []);
-        setRequests(reqRes.data.requests || []);
-        setCalendarEvents(calRes.data.events || []);
-        setProcessingEnabled(configRes.data.processing_enabled || false);
-      })
-      .catch((err) => setError(err.response?.data?.detail || 'Failed to load data'))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const cacheKey = staffCacheKey();                   // "manager:<id>", or null when signed out
+    let painted = false;                                // a saved snapshot is already on screen
+
+    /** Put one snapshot of the launch data on screen. */
+    const show = (s: ManagerSnapshot) => {
+      setManagerName(s.manager_name);
+      setMembers(s.members);
+      setCanLogSickDays(s.can_log_sick_days);
+      setPending(s.pending);
+      setRequests(s.requests);
+      setCalendarEvents(s.calendar);
+      setProcessingEnabled(s.processing_enabled);
+      setLoading(false);
+    };
+
+    const load = async () => {
+      // A relaunch paints the last data at once; the fresh load below replaces it.
+      const cached = cacheKey ? await readLaunchCache<ManagerSnapshot>(cacheKey) : null;
+      if (cached && !cancelled) { show(cached); painted = true; }
+      try {
+        const [profileRes, membersRes, pendingRes, reqRes, calRes, configRes] = await Promise.all([
+          getMyBalances(),
+          getTeamMembers(),
+          getTeamPending(),
+          getTeamRequests(),
+          getTeamCalendar(),
+          getConfig(),
+        ]);
+        if (cancelled) return;
+        const fresh: ManagerSnapshot = {
+          manager_name: profileRes.data.employee?.name || '',
+          members: (membersRes.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')),
+          can_log_sick_days: Boolean(membersRes.data.can_log_sick_days),
+          pending: pendingRes.data.pending || [],
+          requests: reqRes.data.requests || [],
+          calendar: calRes.data.events || [],
+          processing_enabled: configRes.data.processing_enabled || false,
+        };
+        show(fresh);
+        if (cacheKey) void writeLaunchCache(cacheKey, fresh);   // the head start for the next launch
+      } catch (err: any) {
+        if (cancelled) return;
+        // With saved data on screen, a failed refresh keeps it rather than blanking the page.
+        if (!painted) setError(err.response?.data?.detail || 'Failed to load data');
+        setLoading(false);
+      }
+    };
+
+    void load();
+    return () => { cancelled = true; };
   }, []);
 
   /**

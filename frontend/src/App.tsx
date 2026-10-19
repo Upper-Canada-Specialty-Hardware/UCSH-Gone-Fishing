@@ -1,12 +1,14 @@
-import { ReactNode } from 'react';
+import { ReactNode, Suspense, lazy } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { Container } from '@mui/material';
 import { ColorModeProvider } from './colorMode';
 import { Enter, MotionProvider } from './components/Motion';
 import TopBar from './components/TopBar';
-import EmployeeDashboard from './pages/EmployeeDashboard';
-import ManagerDashboard from './pages/ManagerDashboard';
-import AdminDashboard from './pages/AdminDashboard';
+// Each dashboard is its own download, fetched only when its page opens, so the
+// landing and request pages do not wait on the admin and manager code.
+const EmployeeDashboard = lazy(() => import('./pages/EmployeeDashboard'));
+const ManagerDashboard = lazy(() => import('./pages/ManagerDashboard'));
+const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
 import { canSeeTeam, loadSession, saveLinkSession, setAfterSignIn, setSignInNotice } from './api/intake';
@@ -141,6 +143,8 @@ export default function App() {
       <MotionProvider>
       <VersionWatcher />
       <HashRouter>
+        {/* Nothing shows for the moment a dashboard's code is fetched; its own skeleton follows. */}
+        <Suspense fallback={null}>
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/request" element={<Navigate to="/my/request" replace />} />
@@ -157,6 +161,7 @@ export default function App() {
           <Route path="/expired" element={<Ended />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </HashRouter>
       </MotionProvider>
     </ColorModeProvider>

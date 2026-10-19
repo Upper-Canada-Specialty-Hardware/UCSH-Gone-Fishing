@@ -4,6 +4,8 @@
  * as the X-Admin-Session header on every /admin call (see client.ts).
  */
 
+import { dropLaunchCache } from './launchCache';
+
 const KEY = 'admin_session';                     // localStorage: lasts 30 days on this device
 export const ADMIN_SIGNED_OUT = 'admin-signed-out';   // window event: the server refused the session
 
@@ -52,7 +54,7 @@ export function saveAdminSession(session: AdminSession): void {
   memory = session;
 }
 
-/** Forget this device's session (sign out). */
+/** Forget this device's session (sign out), and the admin data saved for a fast launch. */
 export function clearAdminSession(): void {
   try {
     localStorage.removeItem(KEY);
@@ -60,6 +62,7 @@ export function clearAdminSession(): void {
     /* nothing stored */
   }
   memory = null;
+  void dropLaunchCache('admin');                 // the next admin signs in to fresh data only
 }
 
 /**
