@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import {
-  Autocomplete, Box, Button, Chip, IconButton, MenuItem, Stack, TextField,
+  Autocomplete, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  IconButton, MenuItem, Stack, TextField,
   ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
@@ -15,7 +16,7 @@ import { STATUS_COLOR } from '../dataGridDefaults';
 import { ManagerOption } from '../AddEmployee';
 import { requestAmount, requestKind, requestWhat, requestWhen } from '../../utils/requestText';
 import { Enter } from '../Motion';
-import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord } from '../../api/staff';
+import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord, archiveStaff } from '../../api/staff';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 import { isHourly } from '../../utils/employment';
 
@@ -109,7 +110,7 @@ const HISTORY_LABELS: Record<string, string> = {
   Extension: 'Extension', Birthday: 'Birthday', Location: 'Location', Department: 'Department',
   SalaryHourly: 'Salary or hourly', Supervisor: 'Supervisor (text)', SystemCheck: 'System check',
   RequestAllowDate: 'Can book vacation until', Comments: 'Comments', TitleLink: 'Person link',
-  SupervisorLink: 'Supervisor link', AllManagers: 'Managers',
+  SupervisorLink: 'Supervisor link', AllManagers: 'Managers', Archived: 'Archived',
 };
 
 /** A person-link edit value: the chosen user id (or null to clear) and the name. */
@@ -165,6 +166,9 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [editingKey, setEditingKey] = useState<string | null>(null);  // which field is open in its inline editor
+  const [archiveOpen, setArchiveOpen] = useState(false);         // the archive confirmation dialog (#119)
+  const [archiveReason, setArchiveReason] = useState('');        // required reason for the archive
+  const [archiving, setArchiving] = useState(false);             // archive request in flight
 
   // The saved managers are {sp_user_id, name}; the editor works in names, so keep
   // a names list and fold their ids into the name -> id map used on save.
@@ -270,6 +274,34 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
   /** Undo every unsaved change. */
   const cancel = () => { setEdits({}); setReason(''); setEditingKey(null); };
 
+  // The person's still-pending requests, shown in the archive dialog so the admin
+  // knows they stay pending (they are not auto-rejected) and an admin will still
+  // need to handle them (#119).
+  const pendingRequests = useMemo(
+    () => requests.filter((r) => String(r.Status || '').toLowerCase() === 'pending'),
+    [requests],
+  );
+
+  /** Archive this person: they drop out of every list and can no longer make
+   *  requests, while their record stays. Needs a reason (#119). */
+  const doArchive = async () => {
+    if (!archiveReason.trim()) return;                         // a reason is required
+    setArchiving(true);
+    try {
+      await archiveStaff(record.employee_id, archiveReason.trim());
+      onNotify('The person was archived.', 'success');
+      setArchiveOpen(false);
+      setArchiveReason('');
+      onSaved();                                               // refresh the dashboard's balances list
+      onBack();                                                // return to the table; they are no longer listed
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      onNotify(typeof detail === 'string' ? detail : 'The person could not be archived.', 'error');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   // hourly (current or edited type): Sick is the only balance, vacation is a
   // counter, and Make-up/Carry-over/Payout do not apply (#300).
   const hourlyStaff = isHourly(String(fieldValue('salary_hourly')));
@@ -340,11 +372,23 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
               <span>{(currentDept || 'No department')} · {currentLoc || 'No location'}</span>
             </Stack>
           </Box>
-          <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" justifyContent="flex-end">
+          <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" justifyContent="flex-end" alignItems="center">
             {fieldValue('salary_hourly') && <Chip size="small" label={String(fieldValue('salary_hourly'))} />}
             {!currentMgrs.length && <Chip size="small" color="error" variant="outlined" label="No manager" />}
             {fieldValue('system_check') === 'Editing' && <Chip size="small" color="warning" variant="outlined" label="System check: Editing" />}
             {setupProblems.map((p) => <Chip key={p} size="small" color="error" variant="outlined" label={p} />)}
+            {/* Archive a departed person (#119): removes them from every list, keeps their record. */}
+            <Tooltip title={processingEnabled ? '' : 'Archiving is off while the system is in reporting-only mode.'}>
+              <span>
+                <Button
+                  size="small" color="error" variant="outlined"
+                  disabled={!processingEnabled}
+                  onClick={() => { setArchiveReason(''); setArchiveOpen(true); }}
+                >
+                  Archive
+                </Button>
+              </span>
+            </Tooltip>
           </Stack>
         </Box>
 
@@ -449,6 +493,46 @@ export default function PersonProfile({ record, requests, users, setupProblems, 
           </Stack>
         </Box>
       )}
+
+      {/* Archive confirmation (#119): a required reason, and the pending requests
+          that will stay pending so the admin knows to handle them. */}
+      <Dialog open={archiveOpen} onClose={() => !archiving && setArchiveOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Archive {currentName || 'this person'}?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            They will drop out of every staff list, team, picker, report and approval route, and can no longer
+            make requests. Their past requests and history stay on record, and you can restore them later.
+          </Typography>
+          {pendingRequests.length > 0 && (
+            <Box sx={{ mb: 2, p: 1.5, borderRadius: 1.5, bgcolor: 'action.hover' }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                {pendingRequests.length === 1 ? '1 request is still pending' : `${pendingRequests.length} requests are still pending`}
+                {' '}and will stay pending:
+              </Typography>
+              <Stack component="ul" sx={{ m: 0, pl: 2.5 }} spacing={0.25}>
+                {pendingRequests.slice(0, 8).map((r, i) => (
+                  <Typography key={i} component="li" variant="caption" color="text.secondary">
+                    {requestKind(r)} · {requestWhen(r)}
+                  </Typography>
+                ))}
+              </Stack>
+            </Box>
+          )}
+          <TextField
+            autoFocus fullWidth size="small" value={archiveReason}
+            onChange={(e) => setArchiveReason(e.target.value)}
+            label="Reason (required)"
+            placeholder="e.g. Left the company on Oct 31"
+            inputProps={{ 'aria-label': 'Reason for archiving' }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setArchiveOpen(false)} disabled={archiving}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={doArchive} disabled={archiving || !archiveReason.trim()}>
+            {archiving ? 'Archiving...' : 'Archive'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 

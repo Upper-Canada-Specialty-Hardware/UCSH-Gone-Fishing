@@ -38,6 +38,7 @@ from app.routes.approval import HANDLERS
 from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.request_live_reads import indexed_request_items
 from app.repositories.staff_store import staff_store, staff_in_postgres  # Staff Directory reads/writes follow staff_storage
+from app.repositories.postgres.staff import is_archived  # tells an archived staff record from an active one (#119)
 from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 
 logger = logging.getLogger(__name__)
@@ -223,8 +224,13 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     """Fetch Staff Directory and User Information List.
     Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts;
     sp_user_to_name also carries ``by_email`` (see _PersonNames).
+
+    Archived people (#119) are kept in the name/id maps so a past request still
+    resolves their name in the request tables, but they are left out of
+    ``mgr_to_emp_names``: an archived person is no longer anyone's active report,
+    so they never appear in a manager's team views.
     """
-    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY, include_archived=True)
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
     mgr_to_emp_names: dict[str, set[str]] = {}
@@ -240,9 +246,10 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
             except (ValueError, TypeError):
                 pass
 
-        # Build manager → employee mapping from AllManagers
+        # Build manager → employee mapping from AllManagers, but skip an archived
+        # employee: they are out of every team, so they are not a report here (#119).
         emp_name = name.strip()
-        if emp_name:
+        if emp_name and not is_archived(fields):
             all_managers = fields.get("AllManagers")
             if all_managers and isinstance(all_managers, list):
                 for entry in all_managers:

@@ -103,9 +103,26 @@ class StaffStore:
             return _postgres_staff
         return sp_client
 
-    async def get_list_items(self, list_id: str, **kwargs) -> list[dict]:
-        """Every item of a list (see sp_client.get_list_items)."""
-        return await (await self._backend(list_id)).get_list_items(list_id, **kwargs)
+    async def get_list_items(self, list_id: str, *, include_archived: bool = False, **kwargs) -> list[dict]:
+        """Every item of a list (see sp_client.get_list_items).
+
+        ``include_archived`` (#119) only means anything for the Staff Directory on
+        the Postgres backend, where it keeps archived people in the result; it is
+        passed only there. SharePoint has no archive concept, so it is dropped for
+        sp_client and the behaviour is unchanged.
+
+        Args:
+            list_id: The SharePoint list id the caller passed.
+            include_archived: True to keep archived staff (Postgres staff only).
+            **kwargs: The other sp_client.get_list_items options (select/top/...).
+
+        Returns:
+            The list items in the SharePoint item shape.
+        """
+        backend = await self._backend(list_id)
+        if backend is _postgres_staff:                    # the Postgres staff table understands the flag
+            return await backend.get_list_items(list_id, include_archived=include_archived, **kwargs)
+        return await backend.get_list_items(list_id, **kwargs)   # SharePoint: no archive concept
 
     async def get_list_item(self, list_id: str, item_id) -> dict:
         """One item; raises a 404 HTTPStatusError when missing."""

@@ -134,6 +134,18 @@ class Staff(Base, TimestampMixin):
     sp_modified: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sp_created: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- archive (#119): a departed employee kept on record but out of every list ---
+    # When set, the person is archived: they drop out of every staff listing, team,
+    # picker, report and approval route and can no longer make a request, while
+    # their past requests and history stay on record. Null means active. Indexed
+    # because every default staff listing now filters on "archived_at IS NULL".
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Why they were archived, required when archiving; kept for the record and the
+    # archived list. Cleared on restore.
+    archived_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Who archived them (the admin channel today), for the archived list. Cleared on restore.
+    archived_by: Mapped[str | None] = mapped_column(String, nullable=True)
+
     # The manager and supervisor links; deleted with the person.
     supervisors: Mapped[list["StaffSupervisor"]] = relationship(
         back_populates="staff",

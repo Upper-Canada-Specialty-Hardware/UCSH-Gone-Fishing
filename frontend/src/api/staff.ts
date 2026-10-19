@@ -104,3 +104,68 @@ export interface StaffExportPayload {
  */
 export const exportStaff = (payload: StaffExportPayload) =>
   api.post<Blob>('/admin/staff/export', payload, { responseType: 'blob' });
+
+/*
+ * Archive, restore and list departed employees (#119). An archived person drops
+ * out of every list, team, picker, report and approval route and can no longer
+ * make requests, while their past requests and history stay on record.
+ */
+
+/** One request left pending when a person was archived, for the confirmation. */
+export interface ArchivePendingRequest {
+  /** 'leave', 'overtime' or 'carryover-payout'. */
+  request_type: string;
+  /** The request item id. */
+  item_id: string;
+}
+
+/** What POST /admin/staff/{id}/archive returns. */
+export interface ArchiveResult {
+  status: string;
+  employee_id: string;
+  name: string;
+  /** Requests left pending on purpose, so the admin knows to handle them. */
+  pending_requests: ArchivePendingRequest[];
+}
+
+/** One archived person, as GET /admin/staff/archived returns them. */
+export interface ArchivedPerson {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  location: string;
+  /** When they were archived, an ISO 8601 UTC string. */
+  archived_at: string;
+  /** Why they were archived. */
+  archived_reason: string;
+  /** Who archived them (the admin channel). */
+  archived_by: string;
+}
+
+/**
+ * Archive a departed employee, with a required reason.
+ *
+ * @param id - Staff Directory item id.
+ * @param reason - Why they are being archived.
+ * @returns The archive result, including any pending requests left behind.
+ */
+export const archiveStaff = (id: string, reason: string) =>
+  api.post<ArchiveResult>(`/admin/staff/${id}/archive`, { reason });
+
+/**
+ * Restore an archived employee back into the Staff Directory.
+ *
+ * @param id - Staff Directory item id.
+ * @returns The restore result ({status, employee_id, name}).
+ */
+export const restoreStaff = (id: string) =>
+  api.post(`/admin/staff/${id}/restore`, {});
+
+/**
+ * The archived people, for the staff screen's archived list.
+ *
+ * @returns The axios response ({archived: ArchivedPerson[]}).
+ */
+export const getArchivedStaff = () =>
+  api.get<{ archived: ArchivedPerson[] }>('/admin/staff/archived');

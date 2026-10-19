@@ -11,8 +11,9 @@ import DownloadIcon from '@mui/icons-material/Download';
 import { EmployeeSetupSummary } from '../EmployeeSetupList';
 import { ManagerOption } from '../AddEmployee';
 import { getManagerAssignments, getSpUsers } from '../../api/client';
-import { getStaffRecord, StaffRecord } from '../../api/staff';
+import { getStaffRecord, StaffRecord, getArchivedStaff, restoreStaff, ArchivedPerson } from '../../api/staff';
 import { isHourly } from '../../utils/employment';
+import { formatInstantDay } from '../../utils/dates';
 import { Enter } from '../Motion';
 import PersonProfile from './PersonProfile';
 import StaffExportDialog, { ExportPerson } from './StaffExportDialog';
@@ -113,6 +114,34 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
   const [record, setRecord] = useState<StaffRecord | null>(null);       // their fetched record
   const [recordLoading, setRecordLoading] = useState(false);
   const [spUsers, setSpUsers] = useState<ManagerOption[]>([]);          // people for the pickers
+  const [archived, setArchived] = useState<ArchivedPerson[]>([]);       // departed people (#119)
+  const [archivedOpen, setArchivedOpen] = useState(false);             // the archived list, collapsed by default
+  const [restoringId, setRestoringId] = useState<string | null>(null);  // a restore in flight
+
+  // The archived people, for the collapsible list at the foot of the screen.
+  const loadArchived = useCallback(() => {
+    getArchivedStaff()
+      .then((r) => setArchived(r.data.archived || []))
+      .catch(() => setArchived([]));                        // the list just stays empty
+  }, []);
+  useEffect(() => { loadArchived(); }, [loadArchived]);
+
+  /** Restore one archived person, then refresh the archived list and the table. */
+  const doRestore = async (id: string) => {
+    setRestoringId(id);
+    try {
+      await restoreStaff(id);
+      onNotify('The person was restored.', 'success');
+      loadArchived();                                        // drop them from the archived list
+      onReload?.();                                          // bring them back into the staff table
+      loadManagers();                                        // their managers column follows
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      onNotify(typeof detail === 'string' ? detail : 'The person could not be restored.', 'error');
+    } finally {
+      setRestoringId(null);
+    }
+  };
 
   // Manager names by employee id; /admin/balances does not carry them.
   const [managersById, setManagersById] = useState<Record<string, string[]> | null>(null);
@@ -201,6 +230,7 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
   const reloadRecord = async () => {
     onReload?.();                                           // dashboard balances + requests
     loadManagers();                                        // the row's managers column
+    loadArchived();                                        // a person just archived appears in the list (#119)
     if (!openId) return;
     try {
       const res = await getStaffRecord(openId);            // the profile's own record
@@ -322,6 +352,59 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
         <Box sx={{ p: 1.5, borderTop: 1, borderColor: 'divider' }}>
           <Typography variant="body2" color="text.secondary">Showing {rows.length} of {people.length} people ({salariedRows.length} salaried, {hourlyRows.length} hourly)</Typography>
         </Box>
+      </Paper>
+
+      {/* Archived people (#119): departed staff, out of the tables above. Collapsed
+          by default; Restore brings one back into the Staff Directory. */}
+      <Paper sx={{ overflow: 'hidden' }}>
+        <Box
+          role="button" tabIndex={0} aria-expanded={archivedOpen}
+          onClick={() => setArchivedOpen((o) => !o)}
+          onKeyDown={(e) => { if (e.key === 'Enter') setArchivedOpen((o) => !o); }}
+          sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.75, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
+        >
+          <Typography sx={{ fontWeight: 700 }}>Archived</Typography>
+          <Chip size="small" label={archived.length} />
+          <Box sx={{ flex: 1 }} />
+          <Typography variant="caption" color="text.secondary">{archivedOpen ? 'Hide' : 'Show'}</Typography>
+        </Box>
+        <Collapse in={archivedOpen}>
+          {archived.length === 0 ? (
+            <Typography color="text.secondary" sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>Nobody is archived.</Typography>
+          ) : (
+            <Table size="small" sx={{ tableLayout: 'fixed', borderTop: 1, borderColor: 'divider', '& td, & th': { borderColor: 'divider', overflowWrap: 'anywhere', whiteSpace: 'normal' } }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Employee</TableCell>
+                  <TableCell>Archived</TableCell>
+                  <TableCell>Reason</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {archived.map((a) => (
+                  <TableRow key={a.id}>
+                    <TableCell>
+                      <Typography sx={{ fontWeight: 600 }}>{a.name}</Typography>
+                      <Typography variant="caption" color="text.secondary">{a.department || 'No department'} · {a.location || 'No location'}</Typography>
+                    </TableCell>
+                    {/* The archive date read as "Nov 2, 2026". */}
+                    <TableCell>{a.archived_at ? formatInstantDay(a.archived_at) : ''}</TableCell>
+                    <TableCell>{a.archived_reason || ''}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        size="small" variant="outlined"
+                        onClick={() => doRestore(a.id)} disabled={restoringId === a.id}
+                      >
+                        {restoringId === a.id ? 'Restoring...' : 'Restore'}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </Collapse>
       </Paper>
 
       <StaffExportDialog
