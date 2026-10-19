@@ -26,6 +26,7 @@ import logging
 import time
 from collections import Counter, defaultdict
 
+import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 SHADOW_BUDGET_SECONDS = 240     # per shadow run: the rest waits for the next run, five minutes later
 FINAL_BUDGET_SECONDS = 600      # in the switch: well inside its 15-minute pause
 READ_CONCURRENCY = 6            # version reads in flight at once; Graph throttles above this
+READ_ATTEMPTS = 3               # tries per version read before leaving it for the next run
+READ_BACKOFF_SECONDS = 2.0      # wait before a retry, doubled each time
+TRANSIENT_STATUS = (429, 500, 502, 503, 504)   # Graph answers worth trying again
 HISTORY_CHANNEL = "import"      # the channel these rows are written under (the SharePoint importer)
 HISTORY_REASON = "SharePoint version"   # field-history rows this step owns start with this
 LEDGER_KEY_PREFIX = "history:"  # ledger keys this step owns
@@ -96,20 +100,54 @@ def _as_request(record: RequestRecord) -> dict:
     }
 
 
-async def _read_all(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], list[dict]]:
+async def _read_versions(list_id: str, item_id: str) -> list[dict] | None:
+    """One item's versions, tried again on a timeout or a busy Graph.
+
+    One slow answer must not fail the whole sync run (the run is one
+    transaction, so its staff and request copies would roll back too). After
+    READ_ATTEMPTS the item is left for the next run instead.
+
+    Args:
+        list_id: The list the item is on.
+        item_id: The item's id.
+
+    Returns:
+        The versions, or None when every try failed.
+
+    Raises:
+        httpx.HTTPStatusError: For a non-transient answer (403 and the like),
+            which retrying cannot fix.
+    """
+    for attempt in range(READ_ATTEMPTS):
+        try:
+            return await sp_client.get_item_versions(list_id, item_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in TRANSIENT_STATUS:
+                raise                                          # a real refusal: let the run fail loudly
+            problem = f"HTTP {e.response.status_code}"
+        except httpx.TransportError as e:                      # timeouts, dropped connections
+            problem = type(e).__name__
+        if attempt + 1 < READ_ATTEMPTS:
+            await asyncio.sleep(READ_BACKOFF_SECONDS * 2 ** attempt)   # 2 s, then 4 s
+    logger.warning("History step: versions of item %s on list %s not read (%s); left for the next run",
+                   item_id, list_id, problem)
+    return None
+
+
+async def _read_all(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], list[dict] | None]:
     """Read many items' versions at once, a few in flight at a time.
 
     Args:
         pairs: ``(list id, item id)`` to read.
 
     Returns:
-        ``{(list id, item id): versions}``.
+        ``{(list id, item id): versions}``; None for an item that could not be read.
     """
     gate = asyncio.Semaphore(READ_CONCURRENCY)
 
     async def one(pair):
         async with gate:
-            return pair, await sp_client.get_item_versions(*pair)
+            return pair, await _read_versions(*pair)
 
     return dict(await asyncio.gather(*(one(p) for p in pairs)))
 
@@ -205,16 +243,23 @@ async def _person(session: AsyncSession, employee_id: str, records: list[Request
     steps: list[bh.BalanceStep] = []
     used: set[int] = set()
     since = None                                               # when their staff history begins
+    staff_unread = False                                       # their staff history could not be read this run
     if wanting and employee_id.isdigit():                      # a staff record to read
-        staff_versions = await sp_client.get_item_versions(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
-        steps = bh.balance_steps(staff_versions)
-        since = bh.history_start(staff_versions)
-        taken = await _used_versions(session, employee_id)    # writes an earlier run already gave out
-        used = {i for i, step in enumerate(steps) if step.version in taken}
+        staff_versions = await _read_versions(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+        if staff_versions is None:
+            staff_unread = True                                # matching waits for the next run
+        else:
+            steps = bh.balance_steps(staff_versions)
+            since = bh.history_start(staff_versions)
+            taken = await _used_versions(session, employee_id)    # writes an earlier run already gave out
+            used = {i for i, step in enumerate(steps) if step.version in taken}
 
     # Oldest first, so an earlier approval claims its write before a later one could.
     for record in sorted(records, key=lambda r: r.decided_at or r.created_at):
         item_versions = versions.get((LIST_FOR_KIND[record.kind], record.sp_item_id), [])
+        if item_versions is None or (staff_unread and record in wanting):
+            counts["unread"] += 1                              # not stamped, so the next run reads it again
+            continue
         await session.execute(delete(RequestChange).where(       # this step's rows only, then a fresh copy
             RequestChange.request_id == record.id,
             RequestChange.channel == HISTORY_CHANNEL,
@@ -273,7 +318,8 @@ async def import_history(session: AsyncSession, budget_seconds: float) -> dict:
             await _person(session, person, by_person[person], versions, ledgers, counts)
         await session.flush()                                  # keep the session's pending writes small
         done += len(group)
-    counts["remaining"] = sum(len(by_person[p]) for p in people[done:])
+    # Still to read: the people not reached, plus any request a failed read left behind.
+    counts["remaining"] = sum(len(by_person[p]) for p in people[done:]) + counts["unread"]
     return dict(counts)
 
 

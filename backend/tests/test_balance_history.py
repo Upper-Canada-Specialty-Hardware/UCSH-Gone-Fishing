@@ -302,3 +302,35 @@ def test_a_missing_item_has_no_versions_but_throttling_still_raises(monkeypatch,
     else:
         with pytest.raises(httpx.HTTPStatusError):
             run(sharepoint.sp_client.get_item_versions("list", 5))
+
+
+def test_a_slow_read_is_tried_again_and_a_dead_one_waits_for_the_next_run(clean, monkeypatch):
+    import httpx
+    monkeypatch.setattr(step, "READ_BACKOFF_SECONDS", 0)
+    _seed(7006, status="pending")                              # field history only
+    _seed(7007, status="pending")
+    tries = {"7006": 0, "7007": 0}
+
+    async def get_item_versions(list_id, item_id):
+        tries[str(item_id)] += 1
+        if str(item_id) == "7007" or tries["7006"] < 3:        # 7006 answers on its third try; 7007 never does
+            raise httpx.ReadTimeout("slow")
+        return [version(1, 0, Status="Pending"), version(3, 5, Status="Pending", Days=2)]
+    monkeypatch.setattr(step.sp_client, "get_item_versions", get_item_versions)
+
+    counts = _import()                                         # no exception: the run carries on
+    assert counts["unread"] == 1 and counts["remaining"] == 1
+    assert _row(7006)[0].extra["sp_history"]["version"] == "3.0"
+    assert "sp_history" not in _row(7007)[0].extra             # unstamped, so the next run reads it again
+    assert tries == {"7006": 3, "7007": step.READ_ATTEMPTS}
+
+
+def test_a_refused_read_still_fails_the_run(clean, monkeypatch):
+    import httpx
+    _seed(7008, status="pending")
+
+    async def get_item_versions(list_id, item_id):
+        raise httpx.HTTPStatusError("no", request=None, response=_Response(403))
+    monkeypatch.setattr(step.sp_client, "get_item_versions", get_item_versions)
+    with pytest.raises(httpx.HTTPStatusError):                 # a permissions change is not hidden
+        _import()
