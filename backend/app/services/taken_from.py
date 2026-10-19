@@ -21,6 +21,7 @@ employee once and stamps the key onto a list of rows.
 import logging
 from datetime import date
 
+from app.models.request_vocab import LEGACY_LEAVE_TYPE  # the retired "Work from Home"
 from app.services.audit_trail import extract_approval_deltas
 from app.services.employment import (
     VACATION,
@@ -283,6 +284,11 @@ def _none() -> dict:
 # Request ids per IN (...) query: well under every driver's bind-parameter limit.
 _LEDGER_CHUNK = 1000
 
+# balance_state values that mean "approved, but nothing proves a pot moved": the
+# importer's verdict on a SharePoint request with no usable audit log. Such a row
+# has no ledger rows, which must read as "Not recorded", never "No balance used".
+UNPROVEN_STATES = ("not_applied", "legacy_unknown")
+
 
 def _to_key(item_id) -> int | None:
     """A request's item_id as an int, or None when it is not a number."""
@@ -305,8 +311,8 @@ async def _load_ledgers(keys: set[tuple[str, int]]) -> dict[tuple[str, int], tup
             "carryover_payout").
 
     Returns:
-        ``{(kind, item_id): (decided_at, [(pot, change, reason), ...])}``; a key
-        with no request row is left out, so the caller reads it as unrecorded.
+        ``{(kind, item_id): (decided_at, [(pot, change, reason), ...], balance_state)}``;
+        a key with no request row is left out, so the caller reads it as unrecorded.
     """
     from sqlalchemy import select
     from app.database import async_session
@@ -324,12 +330,13 @@ async def _load_ledgers(keys: set[tuple[str, int]]) -> dict[tuple[str, int], tup
             for i in range(0, len(item_ids), _LEDGER_CHUNK):
                 chunk = item_ids[i:i + _LEDGER_CHUNK]
                 rows = (await session.execute(
-                    select(RequestRecord.id, RequestRecord.item_id, RequestRecord.decided_at)
+                    select(RequestRecord.id, RequestRecord.item_id, RequestRecord.decided_at,
+                           RequestRecord.balance_state)
                     .where(RequestRecord.kind == kind, RequestRecord.item_id.in_(chunk))
                 )).all()
-                for record_id, item_id, decided_at in rows:
+                for record_id, item_id, decided_at, balance_state in rows:
                     by_record_id[record_id] = (kind, item_id)
-                    loaded[(kind, item_id)] = (decided_at, [])   # ledger rows filled below
+                    loaded[(kind, item_id)] = (decided_at, [], balance_state)   # ledger rows filled below
         record_ids = list(by_record_id)
         for i in range(0, len(record_ids), _LEDGER_CHUNK):    # every ledger row, chunked
             chunk = record_ids[i:i + _LEDGER_CHUNK]
@@ -534,8 +541,17 @@ async def attach_taken_from(
                 if loaded is None:                      # no request row behind it
                     row["taken_from"] = {"state": "unrecorded", "pieces": []}
                 else:
-                    decided_at, ledger = loaded
-                    row["taken_from"] = _ledger_taken_from(ledger, decided_at, status, today)
+                    decided_at, ledger, balance_state = loaded
+                    found = _ledger_taken_from(ledger, decided_at, status, today)
+                    # No ledger rows on an imported approval whose audit log was
+                    # missing: the pots may well have moved, there is just no
+                    # record of which. Say so, unless the kind costs nothing
+                    # (the retired Work from Home never touched a balance).
+                    if (found["state"] == "none" and balance_state in UNPROVEN_STATES
+                            and row.get("LeaveType") != LEGACY_LEAVE_TYPE
+                            and _costs_balance(row, request_type, emp_fields)):
+                        found = {"state": "unrecorded", "pieces": []}
+                    row["taken_from"] = found
             else:
                 # Pending, or still on SharePoint: the pure function reads the
                 # row's SharePoint fields (merged in by the endpoint) directly.

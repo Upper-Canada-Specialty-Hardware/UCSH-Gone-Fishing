@@ -58,15 +58,6 @@ function statusTone(theme: Theme, status: string): { color: string; bg: string }
   return { color: p.warning.main, bg: t.warnSoft };   // Pending and anything else
 }
 
-/** "today" / "yesterday" / "N days ago" from a YYYY-MM-DD created date. */
-function agoText(created: string): string {
-  if (!created) return '';
-  const [y, m, d] = created.split('-').map(Number);
-  const then = new Date(y, m - 1, d).getTime();
-  const days = Math.round((Date.now() - then) / 86400000);
-  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-}
-
 /** The totals line for a set of rows, by list. */
 function totalsText(rows: Row[]): string {
   const parts: string[] = [];
@@ -182,7 +173,7 @@ export default function RequestsTable(props: Props) {
       case 'status': return <StatusCell r={r} theme={theme} />;
       case 'stage': return r.stage ? <Box component="span" sx={{ color: 'text.secondary' }}>{r.stage}</Box> : '-';
       case 'mgr': return r.manager ? `${r.manager}${r.managers.length > 1 ? ` +${r.managers.length - 1}` : ''}` : <Box sx={{ color: 'error.main' }}>None</Box>;
-      case 'created': return <Box component="span" title={formatInstantDay(r.created)}>{agoText(r.created)}</Box>;   // created is an instant; tooltip shows its day
+      case 'created': return formatInstantDay(r.created) || '-';   // the day it was created, e.g. "Oct 14, 2026"
       case 'approved': return r.approved ? formatInstantDay(r.approved) : <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;   // decided-at instant
       case 'start': return formatDay(r.start) || '-';     // calendar date
       case 'end': return formatDay(r.end) || '-';         // calendar date

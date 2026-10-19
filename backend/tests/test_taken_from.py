@@ -391,7 +391,8 @@ def test_admin_stuck_requests_carry_taken_from(mounted, monkeypatch):
 # After the switch: a decided request reads taken_from from the ledger (finding 5)
 # ---------------------------------------------------------------------------
 
-async def _insert_decided(kind, item_id, status, ledger_rows):
+async def _insert_decided(kind, item_id, status, ledger_rows,
+                          balance_state="applied", leave_type="Sick or Personal Day"):
     """Insert one decided request plus its balance_ledger rows, and return nothing.
 
     Args:
@@ -399,13 +400,15 @@ async def _insert_decided(kind, item_id, status, ledger_rows):
         item_id: The item_id people and links use.
         status: The lower-case lifecycle status ("approved" / "refunded").
         ledger_rows: ``[(pot, change, before, after, reason)]`` to insert.
+        balance_state: The request's balance_state (the importer's verdict).
+        leave_type: The leave type stored on the request.
     """
     async with async_session() as session:
         record = RequestRecord(
             kind=kind, item_id=item_id, status=status, employee_id="7",
             employee_name="Pat Staff", employee_email="pat@ucsh.com",
-            leave_type="Sick or Personal Day", start_date=date(2026, 11, 2),
-            days=2.0, approval_version=1, balance_state="applied",
+            leave_type=leave_type, start_date=date(2026, 11, 2),
+            days=2.0, approval_version=1, balance_state=balance_state,
             decided_at=datetime(2026, 11, 2, 15, 0, tzinfo=timezone.utc),
         )
         session.add(record)
@@ -450,6 +453,30 @@ def test_approved_postgres_request_reads_taken_from_from_the_ledger(monkeypatch,
 
     assert rows[0]["taken_from"]["state"] == "recorded"
     assert rows[0]["taken_from"]["pieces"] == [{"pot": "sick", "days": -2.0, "year": None}]
+
+
+@pytest.mark.parametrize("leave_type, balance_state, expected", [
+    ("Vacation", "not_applied", "unrecorded"),        # imported, audit log missing: unknown, not "nothing"
+    ("Vacation", "legacy_unknown", "unrecorded"),     # an old approval: same
+    ("Work from Home", "not_applied", "none"),       # the retired type never moved a balance
+    ("Bereavement", "no_balance", "none"),           # costs nothing by rule
+])
+def test_an_imported_approval_with_no_ledger_is_not_recorded_rather_than_free(
+    monkeypatch, _clean_requests, leave_type, balance_state, expected,
+):
+    # An imported SharePoint approval whose audit log was missing has no ledger
+    # rows. That means nobody knows which pots moved, so it must read "Not
+    # recorded"; "No balance used" is kept for kinds that really cost nothing.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    item_id = next(_ledger_item_ids)
+    _run(_insert_decided("leave", item_id, "approved", [], balance_state=balance_state, leave_type=leave_type))
+
+    rows = [{"id": str(item_id), "request_type": "leave", "Status": "Approved",
+             "LeaveType": leave_type, "employee_name": "Pat Staff"}]
+    _run(attach_taken_from(rows, employee_fields=EMP, today=TODAY))
+
+    assert rows[0]["taken_from"] == {"state": expected, "pieces": []}
 
 
 def test_refunded_postgres_request_still_shows_what_the_approval_took(monkeypatch, _clean_requests):
