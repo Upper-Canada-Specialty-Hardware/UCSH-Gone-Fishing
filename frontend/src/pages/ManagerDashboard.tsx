@@ -9,7 +9,7 @@ import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
 import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
-import SplitRequestHistory from '../components/admin/SplitRequestHistory';
+import RequestsHistoryTable from '../components/RequestsHistoryTable';
 import AddEmployee from '../components/AddEmployee';
 import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
@@ -691,10 +691,15 @@ export default function ManagerDashboard() {
       )}
 
       {tab === 'history' && (
-        // minWidth 0 lets this grid item shrink below the table's natural width; overflow hidden keeps the page from widening.
-        <Paper sx={{ p: 2, minWidth: 0, overflow: 'hidden' }}>
-          <SplitRequestHistory requests={requests} showEmployee timelineScope="team" />
-        </Paper>
+        // minWidth 0 lets this item shrink below the table's natural width; the
+        // table is the admin requests table in "team" mode: a Person column,
+        // approve/reject on a row still waiting on this manager, and a
+        // team-scoped Excel export. Salaried and hourly split into their own
+        // tables (#338). The live stream already loaded here updates a row's
+        // status in place after a decision.
+        <Box sx={{ minWidth: 0 }}>
+          <RequestsHistoryTable requests={requests} mode="team" timelineScope="team" processingEnabled={processingEnabled} />
+        </Box>
       )}
 
       {tab === 'add' && (

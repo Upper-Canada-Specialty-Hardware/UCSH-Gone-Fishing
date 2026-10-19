@@ -192,6 +192,42 @@ export function priorityOrder(src: Src | 'all'): string[] {
   return [...COLUMN_SETS[src]].sort((a, b) => PRIORITY.indexOf(a) - PRIORITY.indexOf(b));
 }
 
+/** Which dashboard a requests table is drawn on; it sets the columns and the row actions. */
+export type TableMode = 'admin' | 'mine' | 'team';
+
+// The employee "my requests" table (#359): all three lists in one table, no
+// Person column (every row is this employee) and no action column, because an
+// employee may not approve, reject, refund, delete or cancel their own request.
+const MINE_COLUMNS = ['id', 'kind', 'what', 'when', 'amount', 'taken', 'status', 'stage', 'mgr', 'created'];
+// The manager team table (#360): a Person column, and an action column that
+// offers only approve/reject on a request still waiting on this manager. Refund
+// and delete stay admin-only, so they are deliberately not in this set.
+const TEAM_COLUMNS = ['id', 'kind', 'person', 'what', 'when', 'amount', 'taken', 'status', 'stage', 'created', 'quick'];
+
+/**
+ * The columns a table shows, by the dashboard it is on.
+ *
+ * @param mode - 'admin' (the per-list admin sets), 'mine' or 'team'.
+ * @param src - The admin list switch value; ignored for 'mine' and 'team'.
+ * @returns The column keys in display order.
+ */
+export function columnsFor(mode: TableMode, src: Src | 'all'): string[] {
+  if (mode === 'mine') return MINE_COLUMNS;
+  if (mode === 'team') return TEAM_COLUMNS;
+  return COLUMN_SETS[src];
+}
+
+/**
+ * A table's columns ordered most-important-first, for the no-sideways-scroll fit.
+ *
+ * @param mode - 'admin', 'mine' or 'team'.
+ * @param src - The admin list switch value; ignored for 'mine' and 'team'.
+ * @returns The set's keys sorted by drop priority.
+ */
+export function priorityOrderFor(mode: TableMode, src: Src | 'all'): string[] {
+  return [...columnsFor(mode, src)].sort((a, b) => PRIORITY.indexOf(a) - PRIORITY.indexOf(b));
+}
+
 /** The assumed width of each column, for the fit hook. */
 export const COLUMN_WIDTHS: Record<string, number> = Object.fromEntries(
   Object.entries(COLUMNS).map(([k, c]) => [k, c.width]),
