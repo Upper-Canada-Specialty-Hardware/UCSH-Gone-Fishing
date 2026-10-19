@@ -206,6 +206,7 @@ from app.routes.events import router as events_router
 from app.routes.admin_auth import public_router as admin_sign_in_router, router as admin_password_router
 from app.routes.admin_legacy import router as admin_legacy_router
 from app.routes.admin_archive import router as admin_archive_router
+from app.routes.admin_vacation_cover import router as admin_vacation_cover_router
 from app.services.admin_auth import admin_guard
 
 # Every /api/dashboard/admin/* call needs an admin session (#228). The guard
@@ -247,6 +248,9 @@ app.include_router(admin_legacy_router, prefix="/api/dashboard", tags=["dashboar
 # Archive, restore and list departed employees (#119): same prefix and admin
 # password as the other /admin/* write endpoints.
 app.include_router(admin_archive_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The pending requests whose managers are all on vacation (#370): same prefix and
+# admin password as the other admin screens.
+app.include_router(admin_vacation_cover_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])
