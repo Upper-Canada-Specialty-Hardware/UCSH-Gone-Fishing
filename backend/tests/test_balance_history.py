@@ -52,6 +52,14 @@ def test_steps_are_the_writes_that_moved_a_pot_in_version_order():
     assert steps[0].version == 3.0 and steps[0].deltas == {"vacation": -1.0}
 
 
+def test_a_write_that_moved_a_placeholder_balance_is_not_evidence():
+    # One Staff Directory record held 100,000,000,000 days of Make-Up for months.
+    versions = [staff(1, 0, mu=1e11), staff(2, 10, mu=1e11 - 1.5),   # out of the placeholder: dropped
+                staff(3, 20, vac=4, mu=1e11 - 1.5)]                  # a real vacation move beside it: kept
+    steps = bh.balance_steps(versions)
+    assert [s.version for s in steps] == [3.0] and steps[0].deltas == {"vacation": -1.0}
+
+
 def test_the_approval_moment_is_when_status_first_read_approved():
     versions = [version(1, 0, Status="Pending"), version(2, 5, by="Dave Powell", Status="Approved"),
                 version(3, 9, Status="Approved")]

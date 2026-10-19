@@ -38,6 +38,12 @@ SYSTEM_FIELDS = {
     "DocIcon", "_IsRecord", "BalanceAuditLog",        # the audit log is JSON noise; its moves go to the ledger
 }
 
+# A balance this large is a placeholder someone typed into the Staff Directory
+# (one record held 100,000,000,000 days of Make-Up for months), not a real
+# balance; real ones stay near 100. A write that moved a placeholder pot is not
+# evidence of anything, and its numbers do not fit the ledger's columns.
+PLACEHOLDER_DAYS = 10_000
+
 TOLERANCE = 0.002                      # days: 0.5 h of overtime is 0.0625 d, so this is well inside a real gap
 RUN_SECONDS = 120                      # a few writes this close together are one approval
 # A leave approved before its request item's history begins (the lists were
@@ -134,7 +140,8 @@ def balance_steps(staff_versions: list[dict]) -> list[BalanceStep]:
 
     Returns:
         One BalanceStep per consecutive pair of versions where a pot changed,
-        oldest first. Edits that touched no pot are dropped.
+        oldest first. Edits that touched no pot are dropped, and so are writes
+        that moved a pot holding a placeholder (``PLACEHOLDER_DAYS`` or more).
     """
     steps = []
     ordered = _ordered(staff_versions)
@@ -142,8 +149,12 @@ def balance_steps(staff_versions: list[dict]) -> list[BalanceStep]:
         before = {pot: _number((older.get("fields") or {}).get(col)) for col, pot in POT_FOR_COLUMN.items()}
         after = {pot: _number((newer.get("fields") or {}).get(col)) for col, pot in POT_FOR_COLUMN.items()}
         step = BalanceStep(float(newer["id"]), _when(newer["lastModifiedDateTime"]), _author(newer), before, after)
-        if step.deltas:                                       # a write that moved no pot is not a balance step
-            steps.append(step)
+        moved = step.deltas
+        if not moved:
+            continue                                          # a write that moved no pot is not a balance step
+        if any(max(abs(before[pot]), abs(after[pot])) >= PLACEHOLDER_DAYS for pot in moved):
+            continue                                          # a placeholder pot moved: not a real balance change
+        steps.append(step)
     return steps
 
 
