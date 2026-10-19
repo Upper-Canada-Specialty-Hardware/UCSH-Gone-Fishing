@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Button, MenuItem, Paper, Snackbar, TextField } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import SplitRequestsTable from './admin/SplitRequestsTable';
@@ -52,6 +52,21 @@ function parseDate(s: string): Date {
   return new Date(y, m - 1, d);                         // month is 0-based
 }
 
+/**
+ * Where another tab wants the table to land (#361): one request opened, or a
+ * kind and status filtered. Each click passes a new object, so the same target
+ * can be asked for twice in a row.
+ */
+export interface HistoryFocus {
+  /** Open this request: its url-form type and id. */
+  request_type?: string;
+  id?: string | number;
+  /** Filter to this kind label (falls back to a search when the label is not a filter option). */
+  kind_label?: string;
+  /** Filter to this status pill value ("Approved", "Pending" ...). */
+  status?: string;
+}
+
 /** What the shared history table needs. */
 interface Props {
   /** The requests as /me/requests or /team/requests returns them. */
@@ -62,6 +77,8 @@ interface Props {
   timelineScope: LiveScope;
   /** Whether writes are allowed; gates the manager's approve/reject (team only). */
   processingEnabled?: boolean;
+  /** Where another tab asked the table to land, or null. */
+  focus?: HistoryFocus | null;
 }
 
 /**
@@ -70,7 +87,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The toolbar, the status pills and the requests table in a card.
  */
-export default function RequestsHistoryTable({ requests, mode, timelineScope, processingEnabled = false }: Props) {
+export default function RequestsHistoryTable({ requests, mode, timelineScope, processingEnabled = false, focus = null }: Props) {
   const theme = useTheme();
   const [query, setQuery] = useState('');                                    // the search box text
   const [statusView, setStatusView] = useState('all');                       // the active status pill
@@ -111,6 +128,29 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
     if (kind !== 'all' && r.kindLabel !== kind) return false;
     return inRange(r);
   }, [query, statusView, kind, inRange]);
+
+  // A click on another tab (#361) lands here: open one request, or filter to a
+  // kind and status. Runs when a new focus object arrives; rows that are not
+  // loaded yet simply leave the filters as they are.
+  useEffect(() => {
+    if (!focus) return;                                                     // nothing asked for
+    setRange('any');                                                        // never hide the target by date
+    if (focus.id != null && focus.request_type) {
+      const hit = allRows.find((r) => r.request_type === focus.request_type && r.id === String(focus.id));
+      setQuery('');                                                         // clear anything that could hide it
+      setKind('all');
+      setStatusView('all');
+      if (hit) setOpenKey(hit.key);                                         // open its detail
+      return;
+    }
+    if (focus.kind_label) {
+      if (kindOptions.includes(focus.kind_label)) { setKind(focus.kind_label); setQuery(''); }
+      else { setKind('all'); setQuery(focus.kind_label); }                  // not a filter option: search for it
+    }
+    if (focus.status) setStatusView(focus.status);                          // e.g. approved, for Trends totals
+    setOpenKey(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
 
   // The rows on screen: filtered, then sorted by the active column.
   const shown = useMemo(() => {

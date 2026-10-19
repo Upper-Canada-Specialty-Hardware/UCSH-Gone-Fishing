@@ -9,7 +9,7 @@ import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
 import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
-import RequestsHistoryTable from '../components/RequestsHistoryTable';
+import RequestsHistoryTable, { HistoryFocus } from '../components/RequestsHistoryTable';
 import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
 import AddEmployee from '../components/AddEmployee';
 import DecisionCard from '../components/manager/DecisionCard';
@@ -123,6 +123,17 @@ export default function ManagerDashboard() {
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'today';
   /** Open a tab (changes the url). @param k - Tab key. */
   const go = useCallback((k: TabKey) => navigate(`/team/${k}`), [navigate]);
+  // Where History should land when another tab opens it (#361); a new object per click.
+  const [historyFocus, setHistoryFocus] = useState<HistoryFocus | null>(null);
+  /**
+   * Switch to History, opened on one request or filtered (#361).
+   *
+   * @param target - The request or filter to land on.
+   */
+  const openHistory = useCallback((target: HistoryFocus) => {
+    setHistoryFocus({ ...target });                     // a fresh object so a repeat click re-applies
+    go('history');
+  }, [go]);
 
   // Opened from an "add this new hire" email: go straight to Add employee.
   // Runs on arrival only; later tab changes are the manager's own.
@@ -544,7 +555,7 @@ export default function ManagerDashboard() {
           requestedFilter={teamFilterReq}
           onFilterApplied={() => setTeamFilterReq(null)}
           onLogSickDay={() => setSickDialogOpen(true)}
-          onOpenHistory={() => go('history')}
+          onOpenHistory={(r: any) => openHistory({ request_type: r?.request_type, id: r?.id })}
           onRefresh={refreshTeam}
           onNotify={(message, severity) => setSnack({ open: true, message, severity })}
         />
@@ -572,7 +583,7 @@ export default function ManagerDashboard() {
                 // Each kind's row opens the team's requests in History (#361).
                 return rows.map(([label, v, k], i) => (
                   <Box
-                    key={label} component="button" type="button" onClick={() => go('history')}
+                    key={label} component="button" type="button" onClick={() => openHistory({ kind_label: label, status: 'Approved' })}
                     aria-label={`Open ${label} requests in History`}
                     sx={{
                       display: 'grid', gridTemplateColumns: 'minmax(0, 150px) minmax(0, 1fr) 48px', gap: 1.5, alignItems: 'center',
@@ -617,7 +628,7 @@ export default function ManagerDashboard() {
         // tables (#338). The live stream already loaded here updates a row's
         // status in place after a decision.
         <Box sx={{ minWidth: 0 }}>
-          <RequestsHistoryTable requests={requests} mode="team" timelineScope="team" processingEnabled={processingEnabled} />
+          <RequestsHistoryTable requests={requests} mode="team" timelineScope="team" processingEnabled={processingEnabled} focus={historyFocus} />
         </Box>
       )}
 
