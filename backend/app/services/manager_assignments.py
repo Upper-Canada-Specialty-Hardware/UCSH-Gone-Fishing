@@ -111,17 +111,26 @@ async def get_staff_as_sp_users() -> list[dict]:
     return users
 
 
-async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[int]) -> dict:
+async def update_employee_managers(
+    employee_id: int, manager_sp_user_ids: list[int],
+    history_source: str = "system",
+    history_reason: str = "Updated from the manager assignment screen.",
+) -> dict:
     """Update the AllManagers field on a single Staff Directory record.
 
     Routed through ``staff_store``, so the change lands in Postgres when staff live
-    there (recording one ``system`` history row) and goes straight to SharePoint
-    otherwise, byte for byte as before.
+    there (recording one history row with ``history_source``/``history_reason``) and
+    goes straight to SharePoint otherwise, byte for byte as before.
 
     Args:
         employee_id: Staff Directory item id of the person whose managers change.
         manager_sp_user_ids: The SharePoint user ids of the approving managers; an
             empty list clears them.
+        history_source: Which channel to record the AllManagers change under in the
+            history; ``"system"`` for the admin assignment screen (the default),
+            ``"manager_dashboard"`` when a manager adds or removes themselves (#363).
+        history_reason: The reason stored with that history row, naming who made the
+            change for a manager-dashboard edit.
 
     Returns:
         ``{"id", "name", "managers"}`` with the managers resolved to names.
@@ -147,8 +156,8 @@ async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[i
     await staff_store.update_list_item_fields(
         settings.SP_LIST_STAFF_DIRECTORY, employee_id, update_fields,
         links=links,
-        history_source="system",                         # a manager-assignment change
-        history_reason="Updated from the manager assignment screen.",
+        history_source=history_source,                   # "system", or a manager's own team (#363)
+        history_reason=history_reason,
     )
     logger.info("Updated AllManagers for employee %s: %s", employee_id, manager_sp_user_ids)
 

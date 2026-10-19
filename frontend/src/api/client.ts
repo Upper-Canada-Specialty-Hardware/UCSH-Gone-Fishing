@@ -260,3 +260,67 @@ export interface VacationCoverRequest {
 }
 export const getAdminVacationCover = () =>
   api.get<{ requests: VacationCoverRequest[] }>('/admin/vacation-cover');
+
+// Manager — control over their own team (#362, #363). A manager edits a
+// teammate's balances/entitlements with a reason, and adds or removes people on
+// their team. Every change is recorded under the manager's name server-side.
+
+/** One addable person the picker lists. */
+export interface AddableMember {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  location: string;
+  employment_type: string;
+  system_check: string;
+}
+
+/**
+ * Change one teammate's balances and entitlements, with a required reason (#362).
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @param payload - The balance-pot wire keys to change and the reason.
+ * @returns The save result (what changed, whether history was recorded).
+ */
+export const updateTeamEntitlements = (
+  employeeId: string, payload: { changes: Record<string, number>; reason: string },
+) => api.patch(`/team/members/${employeeId}/entitlements`, payload);
+
+/**
+ * Staff the manager may still add (everyone not already on their team) (#363).
+ *
+ * @returns ``{ people: AddableMember[] }`` in name order.
+ */
+export const getAddableMembers = () =>
+  api.get<{ people: AddableMember[] }>('/team/addable');
+
+/**
+ * One teammate's managers and whether anyone else would remain (#363). Read
+ * before the remove confirmation so the UI can warn about an orphaned person.
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @returns ``{ id, name, managers, has_other_manager }``.
+ */
+export const getTeamMemberManagers = (employeeId: string) =>
+  api.get<{ id: string; name: string; managers: string[]; has_other_manager: boolean }>(
+    `/team/members/${employeeId}/managers`,
+  );
+
+/**
+ * Add a person to the calling manager's team (#363).
+ *
+ * @param employeeId - Staff Directory id of the person to add.
+ * @returns ``{ id, name, managers, added }``.
+ */
+export const addTeamMember = (employeeId: string) =>
+  api.post(`/team/members/${employeeId}`);
+
+/**
+ * Remove the calling manager from a teammate, leaving any other managers (#363).
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @returns ``{ id, name, managers, removed, has_other_manager }``.
+ */
+export const removeTeamMember = (employeeId: string) =>
+  api.delete(`/team/members/${employeeId}`);
