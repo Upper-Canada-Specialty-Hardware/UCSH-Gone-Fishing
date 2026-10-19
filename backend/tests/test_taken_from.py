@@ -392,7 +392,7 @@ def test_admin_stuck_requests_carry_taken_from(mounted, monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def _insert_decided(kind, item_id, status, ledger_rows,
-                          balance_state="applied", leave_type="Sick or Personal Day"):
+                          balance_state="applied", leave_type="Sick or Personal Day", extra=None):
     """Insert one decided request plus its balance_ledger rows, and return nothing.
 
     Args:
@@ -402,6 +402,7 @@ async def _insert_decided(kind, item_id, status, ledger_rows,
         ledger_rows: ``[(pot, change, before, after, reason)]`` to insert.
         balance_state: The request's balance_state (the importer's verdict).
         leave_type: The leave type stored on the request.
+        extra: The request's extra JSON (the history step's verdict lives there).
     """
     async with async_session() as session:
         record = RequestRecord(
@@ -409,7 +410,7 @@ async def _insert_decided(kind, item_id, status, ledger_rows,
             employee_name="Pat Staff", employee_email="pat@ucsh.com",
             leave_type=leave_type, start_date=date(2026, 11, 2),
             days=2.0, approval_version=1, balance_state=balance_state,
-            decided_at=datetime(2026, 11, 2, 15, 0, tzinfo=timezone.utc),
+            decided_at=datetime(2026, 11, 2, 15, 0, tzinfo=timezone.utc), extra=extra,
         )
         session.add(record)
         await session.commit()
@@ -477,6 +478,22 @@ def test_an_imported_approval_with_no_ledger_is_not_recorded_rather_than_free(
     _run(attach_taken_from(rows, employee_fields=EMP, today=TODAY))
 
     assert rows[0]["taken_from"] == {"state": expected, "pieces": []}
+
+
+def test_an_approval_the_history_could_not_prove_says_why(monkeypatch, _clean_requests):
+    # The history step (#357) keeps why it found nothing; the row passes it on
+    # so the column can say it plainly instead of a bare "Not recorded".
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    item_id = next(_ledger_item_ids)
+    _run(_insert_decided("leave", item_id, "approved", [], balance_state="legacy_unknown", leave_type="Vacation",
+                         extra={"sp_history": {"version": "4.0", "balance": "before_records"}}))
+
+    rows = [{"id": str(item_id), "request_type": "leave", "Status": "Approved",
+             "LeaveType": "Vacation", "employee_name": "Pat Staff"}]
+    _run(attach_taken_from(rows, employee_fields=EMP, today=TODAY))
+
+    assert rows[0]["taken_from"] == {"state": "unrecorded", "pieces": [], "reason": "before_records"}
 
 
 def test_refunded_postgres_request_still_shows_what_the_approval_took(monkeypatch, _clean_requests):

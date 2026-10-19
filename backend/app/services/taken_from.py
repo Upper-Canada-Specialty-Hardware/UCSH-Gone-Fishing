@@ -311,8 +311,10 @@ async def _load_ledgers(keys: set[tuple[str, int]]) -> dict[tuple[str, int], tup
             "carryover_payout").
 
     Returns:
-        ``{(kind, item_id): (decided_at, [(pot, change, reason), ...], balance_state)}``;
-        a key with no request row is left out, so the caller reads it as unrecorded.
+        ``{(kind, item_id): (decided_at, [(pot, change, reason), ...], balance_state, gap)}``,
+        gap being why SharePoint's history could not prove the movement (#357),
+        or None; a key with no request row is left out, so the caller reads it
+        as unrecorded.
     """
     from sqlalchemy import select
     from app.database import async_session
@@ -331,12 +333,14 @@ async def _load_ledgers(keys: set[tuple[str, int]]) -> dict[tuple[str, int], tup
                 chunk = item_ids[i:i + _LEDGER_CHUNK]
                 rows = (await session.execute(
                     select(RequestRecord.id, RequestRecord.item_id, RequestRecord.decided_at,
-                           RequestRecord.balance_state)
+                           RequestRecord.balance_state, RequestRecord.extra)
                     .where(RequestRecord.kind == kind, RequestRecord.item_id.in_(chunk))
                 )).all()
-                for record_id, item_id, decided_at, balance_state in rows:
+                for record_id, item_id, decided_at, balance_state, extra in rows:
                     by_record_id[record_id] = (kind, item_id)
-                    loaded[(kind, item_id)] = (decided_at, [], balance_state)   # ledger rows filled below
+                    gap = ((extra or {}).get("sp_history") or {}).get("balance")   # matched / refunded / a gap code
+                    gap = None if gap in ("matched", "refunded") else gap
+                    loaded[(kind, item_id)] = (decided_at, [], balance_state, gap)   # ledger rows filled below
         record_ids = list(by_record_id)
         for i in range(0, len(record_ids), _LEDGER_CHUNK):    # every ledger row, chunked
             chunk = record_ids[i:i + _LEDGER_CHUNK]
@@ -541,7 +545,7 @@ async def attach_taken_from(
                 if loaded is None:                      # no request row behind it
                     row["taken_from"] = {"state": "unrecorded", "pieces": []}
                 else:
-                    decided_at, ledger, balance_state = loaded
+                    decided_at, ledger, balance_state, gap = loaded
                     found = _ledger_taken_from(ledger, decided_at, status, today)
                     # No ledger rows on an imported approval whose audit log was
                     # missing: the pots may well have moved, there is just no
@@ -551,6 +555,8 @@ async def attach_taken_from(
                             and row.get("LeaveType") != LEGACY_LEAVE_TYPE
                             and _costs_balance(row, request_type, emp_fields)):
                         found = {"state": "unrecorded", "pieces": []}
+                        if gap:
+                            found["reason"] = gap               # why SharePoint's history could not say (#357)
                     row["taken_from"] = found
             else:
                 # Pending, or still on SharePoint: the pure function reads the

@@ -98,6 +98,41 @@ class SharePointClient:
                 return None
             raise
 
+    async def get_item_versions(self, list_id: str, item_id: str | int) -> list[dict]:
+        """Every kept version of one list item, newest first, with its fields (#357).
+
+        Read only. SharePoint keeps a version each time an item is written, so a
+        request's versions show when it was approved and by whom, and a staff
+        record's versions show its balances before and after every write.
+
+        Args:
+            list_id: The list the item is on.
+            item_id: The item's id.
+
+        Returns:
+            Graph listItemVersion objects (``id``, ``lastModifiedDateTime``,
+            ``lastModifiedBy``, ``fields``); empty when the item is gone (404)
+            or the id is not a SharePoint id (400).
+
+        Raises:
+            httpx.HTTPStatusError: For any other failure (throttling, an outage).
+            SharePointReadTruncated: When the versions run past the page limit.
+        """
+        url = f"{self._list_path(list_id)}/items/{item_id}/versions"
+        versions: list[dict] = []
+        try:
+            for _ in range(MAX_PAGES):
+                data = await graph_client.get(url)
+                versions.extend(data.get("value", []))
+                url = data.get("@odata.nextLink")              # absolute, with its own query
+                if not url:
+                    return versions
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (400, 404):           # gone, or not an item id at all
+                return []
+            raise
+        raise SharePointReadTruncated(f"versions of item {item_id} on list {list_id} ran past {MAX_PAGES} pages")
+
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
         # Rehearsal mode must not change SharePoint; reads stay open, writes skip
         # with a log line and a harmless empty result (#339).

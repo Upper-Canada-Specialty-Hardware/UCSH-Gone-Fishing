@@ -251,6 +251,28 @@ def test_audit_log_becomes_ledger_rows(sp):
     assert rows[0].idempotency_key == "import:leave:1:ledger:0"
 
 
+def test_the_import_stamps_the_sharepoint_version_and_keeps_what_the_history_found(sp):
+    # The history step (#357) reads an item again only when its version moves,
+    # and a re-import must not undo the balance state it set.
+    sp.lists[LEAVE] = [sp_item(1, leave_fields(status="Approved", approved="2026-06-02", _UIVersionString="3.0"))]
+    run(import_requests())
+    record = run(_record("leave", 1))
+    assert record.extra["sp_version"] == "3.0" and record.balance_state == "not_applied"
+
+    async def found_by_history():
+        async with async_session() as session:
+            row = (await session.execute(select(RequestRecord).where(RequestRecord.id == record.id))).scalar_one()
+            row.extra = {**row.extra, "sp_history": {"version": "3.0", "balance": "matched"}}
+            row.balance_state = "applied"
+            await session.commit()
+    run(found_by_history())
+    sp.lists[LEAVE] = [sp_item(1, leave_fields(status="Approved", approved="2026-06-02", _UIVersionString="4.0"),
+                               modified="2026-06-03T10:00:00Z")]
+    run(import_requests())
+    record = run(_record("leave", 1))
+    assert record.extra["sp_version"] == "4.0" and record.balance_state == "applied"
+
+
 # ----- detectors (each fires on its case and stays quiet on a clean case) -----
 
 

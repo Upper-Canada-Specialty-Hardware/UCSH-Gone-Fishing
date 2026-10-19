@@ -107,8 +107,15 @@ export default function TakenFrom({ value, compact }: Props) {
       {segments.map((s, i) => {
         let chips: ReactNode;
         if (s.type === 'add') {
-          // Overtime: "+0.4 added to Make-Up".
-          chips = <Chip kind={potKind(s.pot)} amount={`+${fmtDays(s.days)}`} label={`added to ${potLabel(s.pot, null)}`} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />;
+          // Overtime: "+0.4 added to Make-Up", and "1 paid off negative vacation" when some went there.
+          chips = (
+            <>
+              <Chip kind={potKind(s.pot)} amount={`+${fmtDays(s.days)}`} label={`added to ${potLabel(s.pot, null)}`} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />
+              {s.covered > 0 && (
+                <Chip kind="vacation" amount={fmtDays(s.covered)} label="paid off negative vacation" projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />
+              )}
+            </>
+          );
         } else if (s.type === 'move') {
           // Carry-over/payout: vacation moving into the pot, e.g. "3 vacation -> 2026 carry-over".
           chips = (

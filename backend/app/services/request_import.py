@@ -87,6 +87,8 @@ POT_FOR_BALANCE = {
     "CarryOver": "carry_over",
     "Payout": "payout",
 }
+# What the history step (#357) found -> the balance state it proves.
+HISTORY_STATES = {"matched": "applied", "refunded": "reversed"}
 # Leave types that never move a balance (bereavement and jury duty).
 NO_COST_LEAVE = ("Bereavement", "Jury Duty")
 
@@ -709,6 +711,12 @@ async def _import_item(
     if fields.get("Managertxt"):
         record.manager_name = fields["Managertxt"]              # the manager's plain-text name
 
+    # The SharePoint version this copy reflects, so the history step (#357) reads
+    # an item's version history again only when the item has changed since.
+    extra = dict(record.extra or {})
+    extra["sp_version"] = str((sp_item.get("fields") or {}).get("_UIVersionString") or "") or None
+    record.extra = extra
+
     # Original timestamps, so created_at reflects when SharePoint received it.
     record.created_at = _when(sp_item.get("createdDateTime")) or record.created_at or utcnow()
     record.updated_at = _when(sp_item.get("lastModifiedDateTime")) or record.updated_at or record.created_at
@@ -749,6 +757,11 @@ async def _import_item(
     no_balance = _no_balance_type(kind, record.leave_type, record.employment_type)
     hourly_vac = _hourly_vacation(kind, record.leave_type, record.employment_type)
     record.balance_state = _balance_state(record.status, record.legacy, no_balance, hourly_vac, audit)
+    # The history step (#357) found this approval's balance writes in the staff
+    # history and posted them to the ledger; a later import must not undo that.
+    found = ((record.extra or {}).get("sp_history") or {}).get("balance")
+    if not audit.net_changed and found in HISTORY_STATES:
+        record.balance_state = HISTORY_STATES[found]
     if record.decided_at is not None and record.decided_by is None:
         record.decided_by = record.manager_name                 # best available decider for a legacy row
 

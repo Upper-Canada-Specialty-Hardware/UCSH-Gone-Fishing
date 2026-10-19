@@ -41,7 +41,17 @@ export interface TakenFromValue {
   counted_days?: number;
   /** Set on a projected row when approving would take the floor below zero (#300). */
   below_zero?: BelowZero | null;
+  /** Why an old approval's movement could not be found in SharePoint's history (#357). */
+  reason?: 'no_staff_record' | 'before_records' | 'ambiguous' | 'no_match';
 }
+
+/** What an unrecorded old approval says, by why its history could not prove it (#357). */
+const UNRECORDED_TEXT: Record<string, string> = {
+  before_records: 'Approved before records began',
+  no_staff_record: 'No staff record to check',
+  ambiguous: 'Several balance changes fit; none picked',
+  no_match: 'No matching balance change found',
+};
 
 /** The display order pieces read in: the spending cascade, then payout last (mirrors the backend). */
 const POT_ORDER: Pot[] = ['sick', 'make_up', 'carry_over', 'vacation', 'payout'];
@@ -118,7 +128,7 @@ export function fmtDays(days: number): string {
 /** One rendered unit of a taken_from value; the component draws each as one or two chips. */
 export type TakenSegment =
   | { type: 'taken'; pot: Pot; days: number; year: number | null }        // days taken out of a pot
-  | { type: 'add'; pot: Pot; days: number }                               // overtime added to Make-Up
+  | { type: 'add'; pot: Pot; days: number; covered: number }              // overtime added to Make-Up; covered = part that paid off negative vacation
   | { type: 'move'; days: number; toPot: Pot; toYear: number | null };    // vacation moved into carry-over/payout
 
 /**
@@ -134,9 +144,17 @@ function segmentsOf(pieces: TakenPiece[]): TakenSegment[] {
   const move = pieces.find((p) => (p.pot === 'carry_over' || p.pot === 'payout') && p.days > 0);
   if (move) return [{ type: 'move', days: move.days, toPot: move.pot, toYear: move.year }];
 
-  // Overtime: a positive make_up piece added to the Make-Up pot.
-  const add = pieces.find((p) => p.pot === 'make_up' && p.days > 0);
-  if (add) return [{ type: 'add', pot: 'make_up', days: add.days }];
+  // Overtime: days added to Make-Up. When the person's vacation was below zero,
+  // the new Make-Up days pay that off first, so the net movement is vacation up
+  // and Make-Up up by less (or not at all); both together are what was earned.
+  // Make-Up's net change is signed: paying off vacation can also use Make-Up days
+  // the person already had, so Make-Up can even drop; vacation's rise is what was paid off.
+  const madeUp = pieces.find((p) => p.pot === 'make_up')?.days ?? 0;
+  const covered = pieces.find((p) => p.pot === 'vacation' && p.days > 0)?.days ?? 0;   // only overtime raises vacation
+  if (madeUp > 0 || covered > 0) {
+    const earned = Math.round((madeUp + covered) * 1000) / 1000;   // the overtime's own value in days
+    return [{ type: 'add', pot: 'make_up', days: earned, covered }];
+  }
 
   // Otherwise every negative piece is days taken out of that pot, already in cascade order.
   return pieces.filter((p) => p.days < 0).map((p) => ({ type: 'taken', pot: p.pot, days: p.days, year: p.year }));
@@ -161,7 +179,10 @@ export function describeTakenFrom(value: TakenFromValue | null | undefined): Tak
   const pieces = value?.pieces ?? [];
 
   if (state === 'none') return { kind: 'message', text: 'No balance used' };
-  if (state === 'unrecorded') return { kind: 'message', text: 'Not recorded' };
+  if (state === 'unrecorded') {
+    // An old approval says why SharePoint's history could not show its movement.
+    return { kind: 'message', text: (value?.reason && UNRECORDED_TEXT[value.reason]) || 'Not recorded' };
+  }
   // An hourly vacation is counted as "taken this year", not spent: one neutral chip, no pots (#300).
   if (state === 'counted') return { kind: 'counted', days: value?.counted_days ?? 0 };
   // A pending carry-over/payout that would push vacation below zero returns no pieces: it is auto-refused.

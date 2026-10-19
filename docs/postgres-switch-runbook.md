@@ -35,7 +35,7 @@ Rehearsal mode is on (`REHEARSAL_MODE=true`):
 Admin dashboard, storage card, **Switch to Postgres**, then confirm in the panel. What happens:
 1. New requests, approvals, rejections, refunds and staff edits are paused. Anyone who tries gets "The system is being updated. Please try again in a minute."
 2. The switch waits for anything already in flight to finish (up to 2 minutes; if something is still running then, the switch fails and nothing changes).
-3. The final sync copies SharePoint's latest requests, staff and company holidays into Postgres. If any part of it fails, the switch stops and nothing changes.
+3. The final sync copies SharePoint's latest requests, staff and company holidays into Postgres, and each request's SharePoint version history: every field change it went through (its history tab), and, for an old approval with no balance record, the balance writes it made, found in the person's Staff Directory history. If any part of it fails, the switch stops and nothing changes.
 4. The Graph webhook subscriptions are deleted (in rehearsal only the database rows go; no live subscription is touched).
 5. In one transaction: every staff manager and supervisor link is moved from its Microsoft 365 user id to the staff id of the person it names, and requests, staff and holidays all switch to Postgres.
 6. The pause ends. If anything fails, the pause also expires by itself after 15 minutes.
@@ -46,13 +46,13 @@ The switch sends no email or text and reprocesses no request. The final sync onl
 
 Every line the switch writes starts with `Switch:`. A clean run reads, in order:
 - `Switch: started`, then `Switch: step waiting_in_flight`, `Switch: step final_sync`;
-- one `Switch: final sync <step>: {...}` line per copy step (requests, staff, holidays), each with its counts and `errors: 0`;
+- one `Switch: final sync <step>: {...}` line per copy step (staff, requests, history, holidays), each with its counts and `errors: 0`. The history line counts `requests_read`, `field_changes`, `matched`, one `not_matched_<reason>` per reason, and `remaining: 0`;
 - `Switch: step switching`, `Switch: removed N SharePoint webhook subscription(s)`;
 - `Switch: manager links moved to staff ids: {'links': N, 'unmatched': N}` (unmatched = managers who are not on staff);
 - `Switch: Postgres now holds {...}`: requests per kind, pending per kind, staff, holidays, manager links, and `messages_queued_by_switch: 0`;
 - `Switch: complete`.
 
-A failure logs `Switch: FAILED, nothing was switched: <reason>` and leaves every setting on SharePoint. After a good run there must be no `SharePoint call refused` line.
+A failure logs `Switch: FAILED, nothing was switched: <reason>` and leaves every setting on SharePoint. One expected failure: the version history is copied a slice at a time by the shadow sync (about 4 minutes of every 5-minute run), and the first full copy takes about 50 minutes. Switching before it has caught up fails with "SharePoint history is still being copied: N requests left" once the final sync has spent 10 minutes on it; wait and try again. After a good run there must be no `SharePoint call refused` line.
 
 The switch runs in the background; the storage card shows its progress and, if it fails, the reason and a "Try again" button.
 
