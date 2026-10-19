@@ -346,9 +346,49 @@ export const getHeldStatus = (statusToken: string) =>
  * @throws AxiosError 400 with a reason, 401 sign-in expired, 409 not routable yet, 503 off.
  */
 export const submitMyRequest = (session: EmployeeSession, type: RequestType, form: Record<string, unknown>) =>
-  dashboard.post(`/me/requests/${type}`, form, {
-    params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
-  });
+  dashboard.post<{ status: string; request_type: string; item_id: string; status_token: string | null }>(
+    `/me/requests/${type}`, form, {
+      params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+    });
+
+/** One step of a request page submission, as the status endpoint reports it. */
+export interface ProgressStep {
+  /** True once the step has happened. */
+  done: boolean;
+  /** When it happened (ISO 8601), or null while it is still waiting. */
+  at: string | null;
+}
+
+/** Where a request sent from the request page stands, for the page that sent it (#364). */
+export interface RequestProgress {
+  /** The request's lifecycle state, lower case (pending, approved, rejected, ...). */
+  status: string;
+  /** The deciding manager's name, once it is known. */
+  manager_name: string;
+  /** True once there is nothing left to wait for (decided and the result email sent). */
+  finished: boolean;
+  steps: {
+    /** The approval ask reached the manager. */
+    sent_to_manager: ProgressStep;
+    /** A manager approved or rejected; "result" says which once done. */
+    decided: ProgressStep & { result: 'approved' | 'rejected' | null };
+    /** How the balance moved on approval; "effect" says which once done. */
+    balance: ProgressStep & { effect: 'applied' | 'counted' | 'no_balance_used' | null };
+    /** The decision email went to the employee. */
+    result_sent: ProgressStep;
+  };
+}
+
+/**
+ * Ask how a request sent from the request page is going, so its "what happens
+ * next" steps update on their own (#364).
+ *
+ * @param statusToken - The status_token the submit response returned.
+ * @returns The request's progress.
+ * @throws AxiosError 401 when the token is bad, 404 when the request is gone.
+ */
+export const getRequestStatus = (statusToken: string) =>
+  intake.get<RequestProgress>('/request-status', { params: { token: statusToken } });
 
 /** Balances in the dashboard's shape. */
 export interface Balances {

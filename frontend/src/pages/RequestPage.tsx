@@ -20,9 +20,10 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, EmployeeSession, HeldStatus, RequestType, SignInChoice, VerifiedEmail,
-  clearSession, errorText, getHeldStatus, getRequestTypes, holdRequest, loadNewHire, loadSession, requestCode,
-  saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
+  Balances, EmployeeSession, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
+  clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, holdRequest, loadNewHire,
+  loadSession, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
+  takeSignInNotice, verifyCode,
 } from '../api/intake';
 
 /**
@@ -38,6 +39,71 @@ type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request'
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
 const HELD_POLL_MS = 3000;   // how often a new hire's waiting page asks whether their request went through
+const STATUS_POLL_MS = 3000; // how often a sent request's page asks how it is going (#364)
+const STATUS_POLL_CAP_MS = 30 * 60 * 1000;   // stop following after half an hour, even if nothing decided it
+
+/**
+ * A timestamp as a short local clock time (e.g. "2:45 PM"), shown beside a
+ * finished step.
+ *
+ * @param iso - The ISO 8601 time the step happened, or null while it waits.
+ * @returns The clock time, or undefined when there is no usable time.
+ */
+function stepTime(iso: string | null): string | undefined {
+  if (!iso) return undefined;                        // still waiting: no time to show
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return undefined;   // unparseable: show nothing
+  return when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * The title for the balance step once it is done, by how the balance moved.
+ *
+ * @param effect - "applied", "counted", "no_balance_used", or null.
+ * @returns A plain-words title.
+ */
+function balanceTitle(effect: 'applied' | 'counted' | 'no_balance_used' | null): string {
+  if (effect === 'counted') return 'Your vacation was counted';       // hourly vacation: a counter, no pot moves
+  if (effect === 'no_balance_used') return 'No balance was used';      // bereavement, jury duty, hourly overtime
+  return 'Your balance was updated';                                   // a pot was spent or credited
+}
+
+/**
+ * The "what happens next" points for a signed-in employee's request, driven by
+ * the live progress once it is known (#364). Before the first poll answers
+ * (progress is null), it reads as the plain just-sent list.
+ *
+ * @param progress - The latest status from the server, or null before the first poll.
+ * @returns The points, in order, each with its done state and time.
+ */
+function staffNextSteps(progress: RequestProgress | null): NextItem[] {
+  const manager = progress?.manager_name || 'your manager';   // filled in once the send names them
+  const steps = progress?.steps;
+  // The request is routed to the manager at submit, so this is done from the
+  // start; the event just fills in the name and the exact time.
+  const sent: NextItem = {
+    title: `Sent to ${manager}`,
+    note: stepTime(steps?.sent_to_manager.at ?? null) || 'Just now',
+    done: true,
+  };
+  const result = steps?.decided.result ?? null;
+  const decided: NextItem = steps?.decided.done
+    ? {
+        title: result === 'rejected' ? `${manager} rejected it` : `${manager} approved it`,
+        note: stepTime(steps.decided.at),
+        done: true,
+      }
+    : { title: 'They approve or reject', note: 'From the email, a text reply or their dashboard' };
+  const emailed: NextItem = steps?.result_sent.done
+    ? { title: 'You got an email with the decision', note: stepTime(steps.result_sent.at), done: true }
+    : { title: 'You get an email with the decision' };
+  // A rejection moves no balance, so the balance point is left out once rejected.
+  if (result === 'rejected') return [sent, decided, emailed];
+  const balance: NextItem = steps?.balance.done
+    ? { title: balanceTitle(steps.balance.effect), note: stepTime(steps.balance.at), done: true }
+    : { title: 'Your balance updates', note: 'When it is approved' };
+  return [sent, decided, balance, emailed];
+}
 
 /** The steps in the order they come, for which way a change of step slides. */
 const STEP_ORDER: Step[] = ['email', 'code', 'choose', 'form', 'done'];
@@ -173,6 +239,8 @@ export default function RequestPage() {
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
   const [heldToken, setHeldToken] = useState('');              // signed token to ask how the held request is going
   const [heldStatus, setHeldStatus] = useState<HeldStatus>('waiting');   // what that request is doing now
+  const [myToken, setMyToken] = useState('');                  // signed token to follow a sent request's progress (#364)
+  const [progress, setProgress] = useState<RequestProgress | null>(null);   // that request's latest progress
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
@@ -277,6 +345,34 @@ export default function RequestPage() {
     };
   }, [step, heldToken, heldStatus]);
 
+  // A signed-in employee's sent request follows itself the same way (#364): ask
+  // every few seconds while the done page is open, so the steps fill in as the
+  // manager approves or rejects by email, text or dashboard. It stops once the
+  // request is finished, and gives up after a cap so it never polls forever.
+  useEffect(() => {
+    if (step !== 'done' || !session || !myToken || progress?.finished) return;   // nothing to follow
+    let live = true;
+    let timer: ReturnType<typeof setInterval>;
+    const deadline = Date.now() + STATUS_POLL_CAP_MS;   // half an hour from when following began
+    /** Ask once; a failed or refused ask simply leaves the steps as they are. */
+    const ask = () => {
+      if (!live) return;
+      if (Date.now() > deadline) { clearInterval(timer); return; }   // past the cap: stop following
+      if (document.hidden) return;                      // a background tab waits until it is looked at
+      getRequestStatus(myToken)
+        .then(({ data }) => { if (live) setProgress(data); })
+        .catch(() => { /* retried on the next tick; a 401/404 just keeps the plain steps */ });
+    };
+    ask();                                              // ask straight away, not only after the first interval
+    timer = setInterval(ask, STATUS_POLL_MS);
+    document.addEventListener('visibilitychange', ask); // coming back to the tab asks straight away
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', ask);
+    };
+  }, [step, session, myToken, progress?.finished]);
+
   // Count down to when a new code may be asked for.
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -346,10 +442,12 @@ export default function RequestPage() {
     if (!session) return;
     setError(''); setBusy(true);
     try {
-      await submitMyRequest(session, type, buildRequestBody(type, values));
+      const res = await submitMyRequest(session, type, buildRequestBody(type, values));
       clearDraft();                                   // submitted: no draft to keep
       setHeldWith('');
       setHeldToken('');                               // a staff request has nothing to wait on
+      setMyToken(res.data.status_token || '');        // follow this request's progress (#364)
+      setProgress(null);                              // the first poll fills it in
       setDoneText('Your request was sent to your manager. You will get an email when it is approved or rejected.');
       setStep('done');
     } catch (err: any) {
@@ -413,6 +511,8 @@ export default function RequestPage() {
     }
     setValues({ ...EMPTY_REQUEST });
     clearDraft();                                       // fresh form: drop the old draft
+    setMyToken('');                                     // stop following the request just finished (#364)
+    setProgress(null);
     setError('');
     setStep('form');
   };
@@ -451,11 +551,7 @@ export default function RequestPage() {
       ? { title: `Sent to ${heldWith || 'your supervisor'}`, note: 'Just now', done: true }
       : { title: 'Your request goes to them', note: 'Automatically' },
     { title: 'You get an email with the decision' },
-  ] : [
-    { title: 'Sent to your manager', note: 'Just now', done: true },
-    { title: 'They approve or reject', note: 'From the email, a text reply or their dashboard' },
-    { title: 'You get an email', note: 'Your balance changes when it is approved' },
-  ];
+  ] : staffNextSteps(progress);   // a sent request's points follow its real progress (#364)
 
   const dir = useDirection(step === 'newhire' ? 2 : STEP_ORDER.indexOf(step));
   const big = { py: 1.5, fontSize: 15 } as const;                                       // the main buttons' size

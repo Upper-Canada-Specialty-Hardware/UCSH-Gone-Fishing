@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.routes import self_service
-from app.services import request_intake
+from app.services import request_intake, request_status
 from app.services.dashboard_tokens import generate_dashboard_token
 
 PAT = {"id": "7", "fields": {"Title": "Pat Q Staff", "EmailAddress": "pat@ucsh.com"}}
@@ -68,7 +68,12 @@ def test_a_vacation_request_is_created_for_the_signed_in_employee(client):
     response = _submit(client, "leave", VACATION)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "submitted", "request_type": "leave", "item_id": "500"}
+    # The response carries a signed status_token naming this request, so the page
+    # can follow its progress without a sign-in (#364).
+    assert response.json() == {
+        "status": "submitted", "request_type": "leave", "item_id": "500",
+        "status_token": request_status.request_status_token("leave", 500),
+    }
     kind, form_data, email, source = client.created[0]
     assert (kind, email, source) == ("leave", "pat@ucsh.com", "Request page")
     assert form_data["start_date"] == "2026-11-02" and form_data["end_date"] == "2026-11-04"
