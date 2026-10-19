@@ -7,8 +7,9 @@ import RequestTimelineDialog from '../RequestTimelineDialog';
 import { hasAuditLog } from '../dataGridDefaults';
 import { DIAGNOSTIC_LABELS } from './requestRows';
 import {
-  COLUMNS, COLUMN_SETS, COLUMN_WIDTHS, Row, Src, amountText, num, priorityOrder, refDate, whenText,
+  COLUMNS, COLUMN_WIDTHS, Row, Src, TableMode, amountText, columnsFor, num, priorityOrderFor, refDate, whenText,
 } from './requestTable';
+import { LiveScope } from '../../api/events';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 import { useFitColumns } from './useFitColumns';
 
@@ -44,6 +45,12 @@ interface Props {
   empty: string;
   /** A line under the table naming the dropped columns or the card fallback. */
   onFitNote: (note: string) => void;
+  /** Which dashboard the table is on; sets its columns and row actions (default 'admin'). */
+  mode?: TableMode;
+  /** Whether rows carry a selection checkbox; off for the read-only employee/manager tables (default true). */
+  selectable?: boolean;
+  /** Which timeline endpoint the opened request reads ('admin' by default; 'me'/'team' for the dashboards). */
+  timelineScope?: LiveScope;
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -98,8 +105,11 @@ function groupKey(r: Row, group: string): string {
 export default function RequestsTable(props: Props) {
   const { rows, src, sort, onSort, sortable, group, openKey, onToggleOpen, selected, processingEnabled, busyKey, leaving, actions, empty, onFitNote } = props;
   const theme = useTheme();
-  const cols = COLUMN_SETS[src];
-  const fit = useFitColumns(priorityOrder(src), COLUMN_WIDTHS);
+  const mode = props.mode ?? 'admin';                // 'admin' keeps every behaviour exactly as before
+  const selectable = props.selectable ?? true;       // the read-only dashboards drop the checkbox column
+  const timelineScope = props.timelineScope ?? 'admin';
+  const cols = columnsFor(mode, src);                 // admin = the per-list set; mine/team = their own set
+  const fit = useFitColumns(priorityOrderFor(mode, src), COLUMN_WIDTHS);
   const hidden = useMemo(() => new Set(fit.hidden), [fit.hidden]);
   const cards = fit.cards;
 
@@ -183,7 +193,7 @@ export default function RequestsTable(props: Props) {
       case 'hdays': return <Box component="span" sx={{ color: 'text.secondary' }}>{num((r.hours || 0) / 8, 3)}</Box>;
       case 'newbal': return r.newBalance || <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;
       case 'sysstate': return <Box component="span" sx={{ color: r.sysState === 'Processed' ? 'text.secondary' : 'warning.main' }}>{r.sysState}</Box>;
-      case 'quick': return <QuickActions r={r} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} />;
+      case 'quick': return <QuickActions r={r} mode={mode} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} />;
       default: return '';
     }
   };
@@ -213,20 +223,23 @@ export default function RequestsTable(props: Props) {
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleOpen(r.key); } }}
                     sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '6px 12px', p: '12px 14px', cursor: 'pointer', bgcolor: open ? theme.tokens.primarySoft : selected.has(r.key) ? alpha(theme.palette.secondary.main, 0.12) : 'transparent' }}
                   >
-                    <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />
-                      {cell(r, 'person')}
-                    </Box>
+                    {/* The card header holds the selection box and the person; each is shown only when this mode has it, so "my requests" (no person, no selection) skips the header entirely. */}
+                    {(selectable || cols.includes('person')) && (
+                      <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 1 }}>
+                        {selectable && <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />}
+                        {cols.includes('person') && cell(r, 'person')}
+                      </Box>
+                    )}
                     {cols.filter((k) => k !== 'person' && k !== 'quick').map((k) => (
                       <Box key={k} sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
                         <Box sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '.04em' }}>{COLUMNS[k].label}</Box>
                         {cell(r, k)}
                       </Box>
                     ))}
-                    <Box sx={{ gridColumn: '1 / -1' }}>{cell(r, 'quick')}</Box>
+                    {cols.includes('quick') && <Box sx={{ gridColumn: '1 / -1' }}>{cell(r, 'quick')}</Box>}
                   </Box>
                   <Collapse in={open} unmountOnExit>
-                    <Box sx={{ bgcolor: theme.tokens.primarySoft, px: 2, pb: 2 }}><RequestDetail r={r} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
+                    <Box sx={{ bgcolor: theme.tokens.primarySoft, px: 2, pb: 2 }}><RequestDetail r={r} mode={mode} timelineScope={timelineScope} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
                   </Collapse>
                 </Box>
               );
@@ -240,15 +253,17 @@ export default function RequestsTable(props: Props) {
 
   // ---- Table layout ----
   const visibleCols = cols.filter((k) => !hidden.has(k));          // skip hidden cells, do not render them
-  const colSpan = visibleCols.length + 2;                          // + selection + chevron
+  const colSpan = visibleCols.length + 1 + (selectable ? 1 : 0);   // + chevron, + selection when shown
   return (
     <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky header and toolbar working (#294 S9) */}
       <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
         <Box component="thead">
           <Box component="tr">
-            <Box component="th" sx={{ ...headCellSx, width: 34, pr: 0 }}>
-              <Checkbox size="small" checked={allChecked} indeterminate={someChecked} onChange={(e) => props.onSelectAll(shownKeys, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select all ${shownKeys.length} requests` }} />
-            </Box>
+            {selectable && (
+              <Box component="th" sx={{ ...headCellSx, width: 34, pr: 0 }}>
+                <Checkbox size="small" checked={allChecked} indeterminate={someChecked} onChange={(e) => props.onSelectAll(shownKeys, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select all ${shownKeys.length} requests` }} />
+              </Box>
+            )}
             <Box component="th" sx={{ ...headCellSx, width: 24 }} />
             {visibleCols.map((k) => {
               const c = COLUMNS[k];
@@ -290,9 +305,11 @@ export default function RequestsTable(props: Props) {
                       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleOpen(r.key); } }}
                       sx={{ cursor: 'pointer', opacity: isLeaving(r) ? 0 : 1, transform: isLeaving(r) ? 'translateX(16px)' : 'none', transition: 'opacity .25s, transform .25s', bgcolor: open ? theme.tokens.primarySoft : selected.has(r.key) ? alpha(theme.palette.secondary.main, 0.12) : 'transparent', '&:hover': { bgcolor: open ? theme.tokens.primarySoft : theme.tokens.hover } }}
                     >
-                      <Box component="td" sx={{ ...bodyCellSx, width: 34, pr: 0, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
-                        <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />
-                      </Box>
+                      {selectable && (
+                        <Box component="td" sx={{ ...bodyCellSx, width: 34, pr: 0, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
+                          <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />
+                        </Box>
+                      )}
                       <Box component="td" sx={{ ...bodyCellSx, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
                         <Box component="span" sx={{ display: 'inline-block', width: 18, color: open ? 'primary.main' : 'text.secondary', transition: 'transform .3s', transform: open ? 'rotate(90deg)' : 'none' }}>›</Box>
                       </Box>
@@ -308,7 +325,7 @@ export default function RequestsTable(props: Props) {
                     <Box component="tr">
                       <Box component="td" colSpan={colSpan} sx={{ p: 0, borderBottom: `1px solid ${theme.tokens.line}`, bgcolor: open ? theme.tokens.primarySoft : 'transparent' }}>
                         <Collapse in={open} unmountOnExit>
-                          <Box sx={{ px: { xs: 2, md: '42px' }, pt: 0.5, pb: 2.25 }}><RequestDetail r={r} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
+                          <Box sx={{ px: { xs: 2, md: '42px' }, pt: 0.5, pb: 2.25 }}><RequestDetail r={r} mode={mode} timelineScope={timelineScope} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
                         </Collapse>
                       </Box>
                     </Box>
@@ -373,10 +390,12 @@ function StatusCell({ r, theme }: { r: Row; theme: Theme }) {
   );
 }
 
-/** The row-level quick actions: approve/reject a pending one, refund an approved one. */
-function QuickActions({ r, processingEnabled, busy, actions }: { r: Row; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+/** The row-level quick actions: approve/reject a pending one, refund an approved one (admin only). */
+function QuickActions({ r, mode, processingEnabled, busy, actions }: { r: Row; mode: TableMode; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const stop = (e: React.MouseEvent) => e.stopPropagation();
-  if (r.status === 'Approved') {
+  if (mode === 'mine') return null;                 // the employee table is read-only: no actions
+  // Refund in the row is an admin-only action; the manager team table never shows it.
+  if (mode === 'admin' && r.status === 'Approved') {
     return <Button size="small" variant="outlined" color="inherit" disabled={busy || !processingEnabled} onClick={(e) => { stop(e); actions.refund(r); }} sx={{ fontSize: 12.5 }}>Refund</Button>;
   }
   if (r.status !== 'Pending' || r.source === 'stuck') return null;
@@ -401,16 +420,20 @@ function Field({ label, value, wide }: { label: string; value: ReactNode; wide?:
 
 /**
  * The opened request: every column of its list on the left, what it did to the
- * person's balances on the right, and the actions the admin dashboard has today
- * plus Delete. The actions call the dashboard's existing handlers unchanged.
+ * person's balances on the right, and the actions for this dashboard. On the
+ * admin table that is the full set (approve/reject/edit/refund/reprocess/audit
+ * plus Delete); on the manager team table only approve/reject; on the employee
+ * table none. The actions call the dashboard's existing handlers unchanged.
  *
  * @param props.r - The row.
+ * @param props.mode - Which dashboard this is on; decides the actions and the raw-log button.
+ * @param props.timelineScope - Which timeline endpoint "View full timeline" reads.
  * @param props.processingEnabled - Whether writes are allowed.
  * @param props.busy - Whether an action is already running on this row.
  * @param props.actions - The handlers.
  * @returns The detail panel.
  */
-function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+function RequestDetail({ r, mode, timelineScope, processingEnabled, busy, actions }: { r: Row; mode: TableMode; timelineScope: LiveScope; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const theme = useTheme();
   const [timelineOpen, setTimelineOpen] = useState(false);   // the full timeline dialog (#329, #332)
   const listName = r.src === 'leave' ? 'Leave Requests' : r.src === 'mu' ? 'Overtime Requests Data' : 'CarryOver_Payout_Data';
@@ -443,13 +466,13 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           <Field label="Location" value={r.loc} />
           {r.src !== 'co' && <Field label={r.src === 'mu' ? 'Overtime details' : 'Title'} value={r.title} wide />}
         </Box>
-        <DetailActions r={r} stuck={stuck} processingEnabled={processingEnabled} busy={busy} actions={actions} />
-        {/* The request's full timeline and, for admins, its field history (#329, #332). */}
+        <DetailActions r={r} mode={mode} stuck={stuck} processingEnabled={processingEnabled} busy={busy} actions={actions} />
+        {/* The request's full timeline; the field history inside it is admin-only (#329, #332). */}
         <Button size="small" variant="text" onClick={() => setTimelineOpen(true)} sx={{ justifySelf: 'start' }}>View full timeline</Button>
         <RequestTimelineDialog
           open={timelineOpen}
           onClose={() => setTimelineOpen(false)}
-          scope="admin"
+          scope={timelineScope}
           requestType={r.request_type}
           itemId={r.id}
         />
@@ -470,7 +493,7 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
             <Box component="h3" sx={{ m: 0, fontSize: 16, display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'baseline', fontFamily: theme.tokens.display }}>
               What it did to balances<Box component="small" sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 400, fontFamily: 'inherit' }}>BalanceAuditLog</Box>
             </Box>
-            <BalanceSteps r={r} onAudit={() => actions.audit(r)} />
+            <BalanceSteps r={r} showRawLog={mode === 'admin'} onAudit={() => actions.audit(r)} />
           </>
         )}
       </Box>
@@ -478,9 +501,22 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
   );
 }
 
-/** The actions shown in the opened request, by its state. */
-function DetailActions({ r, stuck, processingEnabled, busy, actions }: { r: Row; stuck: boolean; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+/** The actions shown in the opened request, by its state and the dashboard it is on. */
+function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r: Row; mode: TableMode; stuck: boolean; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const writeOff = !processingEnabled;
+  // The employee table is read-only.
+  if (mode === 'mine') return null;
+  // The manager team table offers only approve/reject on a waiting request; refund,
+  // edit, reminders, reprocess and delete stay admin-only (#360).
+  if (mode === 'team') {
+    if (r.status !== 'Pending' || r.source === 'stuck') return null;
+    return (
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+        <Button size="small" variant="contained" color="success" disabled={busy || writeOff} onClick={() => actions.approve(r)}>Approve</Button>
+        <Button size="small" variant="outlined" color="error" disabled={busy || writeOff} onClick={() => actions.reject(r)}>Reject</Button>
+      </Box>
+    );
+  }
   return (
     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
       {stuck ? (
@@ -506,7 +542,7 @@ function DetailActions({ r, stuck, processingEnabled, busy, actions }: { r: Row;
 }
 
 /** The balance audit log as numbered steps, or a message when there is none. */
-function BalanceSteps({ r, onAudit }: { r: Row; onAudit: () => void }) {
+function BalanceSteps({ r, showRawLog, onAudit }: { r: Row; showRawLog: boolean; onAudit: () => void }) {
   const theme = useTheme();
   let steps: { op: string; field: string; before: number; after: number }[] = [];
   if (r.auditLog) {
@@ -542,7 +578,8 @@ function BalanceSteps({ r, onAudit }: { r: Row; onAudit: () => void }) {
           </Box>
         </Box>
       ))}
-      <Button size="small" variant="text" onClick={onAudit} sx={{ justifySelf: 'start' }}>Show the raw log</Button>
+      {/* The raw audit-log JSON is an admin-only tool; the employee/manager tables show only the steps. */}
+      {showRawLog && <Button size="small" variant="text" onClick={onAudit} sx={{ justifySelf: 'start' }}>Show the raw log</Button>}
     </Box>
   );
 }

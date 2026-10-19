@@ -228,3 +228,16 @@ export const setCarryoverPayoutWindow = (start: string | null, end: string | nul
   api.put<CarryoverWindow>('/admin/carryover-payout', { start, end });
 export const exportCarryoverPayout = () =>
   api.get<Blob>('/admin/carryover-payout/export', { responseType: 'blob' });
+
+// #360 - manager History tab: download the team requests on screen as an .xlsx.
+// The route is a /team path, so the dashboard sign-in token (added by the
+// interceptor above) authorises it; it is scoped to the manager's team by the
+// data the client sends, which only ever comes from /team/requests.
+/**
+ * Download the team requests the manager is viewing as an .xlsx (one sheet per list).
+ *
+ * @param requests - The request items as /team/requests returns them.
+ * @returns The axios response, with a Blob body.
+ */
+export const exportTeamRequests = (requests: any[]) =>
+  api.post<Blob>('/team/requests/export', { requests }, { responseType: 'blob' });

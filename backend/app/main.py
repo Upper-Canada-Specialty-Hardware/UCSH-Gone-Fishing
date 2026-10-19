@@ -197,6 +197,7 @@ from app.routes.webhooks import router as webhooks_router
 from app.routes.twilio import router as twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.admin_requests import router as admin_requests_router
+from app.routes.team_export import router as team_export_router
 from app.routes.admin_storage import router as admin_storage_router
 from app.routes.email_api_log import router as email_api_log_router
 from app.routes.intake import router as intake_router
@@ -218,6 +219,11 @@ app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"]
 # The admin requests screen's new, delete, preview and export endpoints (#278),
 # in their own module but behind the same admin password at the same prefix.
 app.include_router(admin_requests_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The manager History tab's team-scoped Excel export (#360): its own module at
+# the same prefix. It is a /team path, so ADMIN_GUARD (which only checks /admin
+# paths) does not gate it; its own AuthUser dependency restricts it to a
+# manager or admin.
+app.include_router(team_export_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # Where requests are stored, and the switch to Postgres (#335): same prefix and
 # admin password as the other admin write endpoints.
 app.include_router(admin_storage_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)

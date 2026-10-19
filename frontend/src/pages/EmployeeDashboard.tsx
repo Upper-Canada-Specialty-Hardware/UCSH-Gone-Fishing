@@ -5,7 +5,7 @@ import { loadSession, staffCacheKey } from '../api/intake';
 import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
-import RequestHistory from '../components/RequestHistory';
+import RequestsHistoryTable from '../components/RequestsHistoryTable';
 import TakenFrom from '../components/TakenFrom';
 import { Kpi, Panel } from '../components/Panels';
 import { MonthlyBars } from '../components/manager/Charts';
@@ -445,10 +445,12 @@ export default function EmployeeDashboard() {
       )}
 
       {tab === 'history' && (
-        // minWidth 0 and overflow hidden keep the table scrolling inside the card, never the page.
-        <Paper sx={{ p: 2, minWidth: 0, overflow: 'hidden' }}>
-          <RequestHistory requests={requests} />
-        </Paper>
+        // minWidth 0 lets this item shrink below the table's natural width; the
+        // table (RequestsHistoryTable) is the admin requests table in read-only
+        // "mine" mode and keeps itself inside the card, never widening the page.
+        <Box sx={{ minWidth: 0 }}>
+          <RequestsHistoryTable requests={requests} mode="mine" timelineScope="me" />
+        </Box>
       )}
       </Enter>
     </Box>
