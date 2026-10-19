@@ -182,7 +182,7 @@ export default function ManagerDashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    const cacheKey = staffCacheKey();                   // "manager:<id>", or null when signed out
+    const cacheKey = staffCacheKey('team');             // "team:manager:<id>", or null when signed out
     let painted = false;                                // a saved snapshot is already on screen
 
     /** Put one snapshot of the launch data on screen. */
@@ -200,7 +200,10 @@ export default function ManagerDashboard() {
     const load = async () => {
       // A relaunch paints the last data at once; the fresh load below replaces it.
       const cached = cacheKey ? await readLaunchCache<ManagerSnapshot>(cacheKey) : null;
-      if (cached && !cancelled) { show(cached); painted = true; }
+      // Only a snapshot of this view's shape is shown; anything else waits for the fresh load.
+      const usable = cached && Array.isArray(cached.members) && Array.isArray(cached.pending)
+        && Array.isArray(cached.requests) && Array.isArray(cached.calendar);
+      if (usable && !cancelled) { show(cached); painted = true; }
       try {
         const [profileRes, membersRes, pendingRes, reqRes, calRes, configRes] = await Promise.all([
           getMyBalances(),

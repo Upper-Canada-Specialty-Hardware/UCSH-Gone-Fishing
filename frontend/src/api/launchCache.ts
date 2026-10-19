@@ -5,9 +5,10 @@
  * Stored in IndexedDB (the admin requests list is several MB, past what
  * localStorage holds). Every read and write is best effort: a private window,
  * blocked storage or a missing database just means no head start, never an
- * error. Entries are keyed by who is signed in ("admin", "manager:<id>",
- * "employee:<id>"), so one person never sees another's cached data, and they
- * are dropped when that sign-in ends.
+ * error. Entries are keyed by the view and who is signed in ("admin",
+ * "team:manager:<id>", "me:manager:<id>", "me:employee:<id>"), so one person
+ * never sees another's cached data and one view never loads another's, and
+ * they are dropped when that sign-in ends.
  */
 
 const DB_NAME = 'ucsh-launch-cache';

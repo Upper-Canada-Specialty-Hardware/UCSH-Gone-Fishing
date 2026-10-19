@@ -178,13 +178,18 @@ export function clearSession(): void {
 }
 
 /**
- * The key this sign-in's dashboard data is saved under for a fast relaunch.
+ * The key one dashboard's data is saved under for a fast relaunch.
  *
- * @returns "<role>:<uid>" (e.g. "manager:368"), or null when nobody is signed in.
+ * A manager signs in once but opens two dashboards (their team and their own
+ * requests), each saving a different shape, so the view is part of the key;
+ * keyed by the sign-in alone, one view would load the other's data and break.
+ *
+ * @param view - Which dashboard: 'team' (manager) or 'me' (own requests).
+ * @returns "<view>:<role>:<uid>" (e.g. "team:manager:368"), or null when nobody is signed in.
  */
-export function staffCacheKey(): string | null {
+export function staffCacheKey(view: 'team' | 'me'): string | null {
   const session = loadSession();
-  return session ? `${session.role}:${session.uid}` : null;
+  return session ? `${view}:${session.role}:${session.uid}` : null;
 }
 
 /**

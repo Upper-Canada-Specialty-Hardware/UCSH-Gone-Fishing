@@ -227,7 +227,7 @@ export default function EmployeeDashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    const cacheKey = staffCacheKey();                   // "employee:<id>", or null when signed out
+    const cacheKey = staffCacheKey('me');               // "me:<role>:<id>", or null when signed out
     let painted = false;                                // a saved snapshot is already on screen
 
     /** Put one snapshot of the launch data on screen. */
@@ -241,7 +241,9 @@ export default function EmployeeDashboard() {
     const load = async () => {
       // A relaunch paints the last data at once; the fresh load below replaces it.
       const cached = cacheKey ? await readLaunchCache<EmployeeSnapshot>(cacheKey) : null;
-      if (cached && !cancelled) { show(cached); painted = true; }
+      // Only a snapshot of this view's shape is shown; anything else waits for the fresh load.
+      const usable = cached && cached.balances && cached.employee && Array.isArray(cached.requests);
+      if (usable && !cancelled) { show(cached); painted = true; }
       try {
         const [balRes, reqRes] = await Promise.all([getMyBalances(), getMyRequests()]);
         if (cancelled) return;
