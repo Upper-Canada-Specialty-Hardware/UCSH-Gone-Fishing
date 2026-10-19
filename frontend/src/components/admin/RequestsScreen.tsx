@@ -137,7 +137,7 @@ export default function RequestsScreen(props: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [fitNote, setFitNote] = useState('');
 
-  // Open one request focused, from the Legacy data screen (?open=<row key>). Only
+  // Open one request focused, from a deep link (?open=<row key>). Only
   // the All requests view uses it; the key is history-<request type>-<id>.
   const [searchParams, setSearchParams] = useSearchParams();
   const focusKey = view === 'all' ? searchParams.get('open') : null;
@@ -420,7 +420,7 @@ export default function RequestsScreen(props: Props) {
       <Paper sx={{ overflow: 'clip' }}>  {/* clip, not hidden, so the toolbar and table header can stick (#294 S9) */}
         <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, held: props.held.filter((h) => OPEN_HELD.includes(h.status)).length, stuck: props.stuck.length }} />
 
-        {/* Focused on one request (from the Legacy data screen): a banner to clear it. */}
+        {/* Focused on one request (from a deep link): a banner to clear it. */}
         {focusKey && (
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: '10px 14px', borderBottom: `1px solid ${theme.tokens.line}`, bgcolor: theme.tokens.primarySoft }}>
             <Typography sx={{ fontSize: 13.5, fontWeight: 600, flex: 1, minWidth: 180 }}>

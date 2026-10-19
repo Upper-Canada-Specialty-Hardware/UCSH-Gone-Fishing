@@ -43,7 +43,7 @@ reads and feeds the pure core.
 import logging
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.database import async_session
@@ -584,6 +584,31 @@ def build_validation_report(
         ),
         bad_status="warn",
     ))
+
+    # --- Employment type fits the record ---
+    # Hourly staff get no vacation grant and bank no vacation (#300), so a
+    # vacation grant or a positive vacation bank on an hourly record means the
+    # employment type, or those values, are wrong. A negative vacation balance
+    # is left alone: hourly BC staff carry one from before the hourly rules.
+    if is_hourly(employee_fields):
+        vacation_grant = _as_float(employee_fields.get("DefaultYearlyVacationDays"))   # hourly: should be 0
+        vacation_bank = _as_float(employee_fields.get("CurrentVacationBalance"))       # hourly: never above 0
+        salaried_values = []                                      # each salaried value found, in words
+        if vacation_grant > 0:
+            salaried_values.append(f"a yearly vacation grant of {vacation_grant:g} days")
+        if vacation_bank > 0:
+            salaried_values.append(f"a vacation balance of {vacation_bank:g} days")
+        checks.append(_measured(
+            "employment_type_fits", "balances",
+            label="Salaried vacation values on an hourly record",
+            actual=len(salaried_values), expected=0, comparison="equals",
+            ok_detail="The record is hourly and carries no salaried vacation values.",
+            bad_detail=(
+                f"The record is {(employee_fields.get('SalaryHourly') or '').strip()} but has "
+                + " and ".join(salaried_values)
+                + ", which only salaried staff carry."
+            ),
+        ))
 
     # --- Per-leave-type dry runs (current year) ---
     for code, leave_type, days in LEAVE_TYPE_CASES:
@@ -1621,6 +1646,78 @@ def _creator_email(record: dict) -> str | None:
     return (user.get("email") or "").strip().lower() or None
 
 
+# Leave types that never move a balance: the two the app spends nothing on, plus
+# the retired "Work from Home", still approved through the old form.
+UNMOVED_SKIP_LEAVE_TYPES = ("Bereavement", "Jury Duty", "Work from Home")
+# How many requests the unmoved-balance detail names before "and N more".
+UNMOVED_NAMED = 5
+
+
+async def approved_requests_without_balance_change() -> dict[str, list[dict]]:
+    """Recent approved requests whose balance never moved, by staff id.
+
+    Only requests decided on or after the legacy cut-off count: older ones
+    predate the current balance rules, so a missing move says nothing about
+    them. A request counts when it is approved, its balance state is still
+    ``not_applied`` (it should have moved a pot and did not), and its leave type
+    is one that costs days.
+
+    Returns:
+        Staff id -> that person's requests, each {"kind", "item_id",
+        "leave_type", "decided"} (decided is a date), newest first.
+    """
+    from app.models.request_record import RequestRecord          # lazy: keeps this module's imports light
+    from app.services.request_import import LEGACY_CUTOFF          # lazy: the importer imports the staff store
+    when = func.coalesce(RequestRecord.decided_at, RequestRecord.created_at)   # old rows may lack a decided date
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(RequestRecord.employee_id, RequestRecord.kind, RequestRecord.item_id,
+                   RequestRecord.leave_type, when)
+            .where(
+                RequestRecord.status == "approved",
+                RequestRecord.balance_state == "not_applied",      # should have moved a pot; nothing recorded
+                or_(RequestRecord.leave_type.is_(None),            # overtime and carry-over carry no leave type
+                    RequestRecord.leave_type.not_in(UNMOVED_SKIP_LEAVE_TYPES)),
+                RequestRecord.employee_id.is_not(None),
+            )
+            .order_by(when.desc())
+        )).all()
+    by_person: dict[str, list[dict]] = {}
+    for employee_id, kind, item_id, leave_type, decided in rows:
+        # The cut-off is applied here, on the date alone, so it reads the same on
+        # Postgres and SQLite (their stored datetimes compare differently).
+        if decided is None or decided.date() < LEGACY_CUTOFF:
+            continue                                               # undated, or before the current rules
+        by_person.setdefault(str(employee_id), []).append({
+            "kind": kind, "item_id": item_id, "leave_type": leave_type,
+            "decided": decided.date() if decided else None,
+        })
+    return by_person
+
+
+def _unmoved_check(unmoved: list[dict]) -> dict:
+    """The setup row for approved requests that never moved a balance.
+
+    Args:
+        unmoved: The person's requests from approved_requests_without_balance_change.
+
+    Returns:
+        One failing check naming the first few requests.
+    """
+    labels = []
+    for r in unmoved[:UNMOVED_NAMED]:
+        what = r["leave_type"] or ("overtime" if r["kind"] == "overtime" else "carry-over or payout")
+        day = r["decided"]                                        # a date, or None
+        when = f", {day:%b} {day.day}, {day.year}" if day else "" # "Sep 29, 2026", portable (no %-d)
+        labels.append(f"{r['kind'].replace('_', ' ')} #{r['item_id']} ({what}{when})")
+    more = len(unmoved) - UNMOVED_NAMED
+    return _check(
+        "approved_balance_unmoved", "balances", "fail",
+        f"{len(unmoved)} approved request(s) never moved a balance: "
+        + "; ".join(labels) + (f"; and {more} more." if more > 0 else "."),
+    )
+
+
 def build_setup_row(
     *,
     record: dict,
@@ -1632,6 +1729,7 @@ def build_setup_row(
     sample_start: date,
     sample_end: date,
     today: date,
+    unmoved: list[dict] | None = None,
 ) -> dict:
     """Grade one Staff Directory record from already-fetched data. No I/O.
 
@@ -1651,6 +1749,8 @@ def build_setup_row(
         sample_start: First day of the sample range for the day calculation.
         sample_end: Last day of that range.
         today: The date the sweep is running.
+        unmoved: This person's approved requests that never moved a balance
+            (see ``approved_requests_without_balance_change``), or None.
 
     Returns:
         {"employee_id", "employee_name", "department", "location", "fails",
@@ -1699,6 +1799,8 @@ def build_setup_row(
     )
 
     kept = [c for c in report["checks"] if c["category"] in SETUP_LIST_CATEGORIES]
+    if unmoved:                                                    # approved, should have moved a pot, did not
+        kept.append(_unmoved_check(unmoved))
     return {
         "employee_id": employee_id,
         "employee_name": name,
@@ -1745,6 +1847,7 @@ async def validate_all_employee_setups() -> dict:
     holidays_by_province = _group_holidays_by_province(holiday_items)
     sample_start, sample_end = _sample_weekday_range()
     today = date.today()
+    unmoved_by_person = await approved_requests_without_balance_change()   # one read for everyone
 
     flagged = [
         row for row in (
@@ -1758,6 +1861,7 @@ async def validate_all_employee_setups() -> dict:
                 sample_start=sample_start,
                 sample_end=sample_end,
                 today=today,
+                unmoved=unmoved_by_person.get(str(record.get("id", ""))),
             )
             for record in staff
         )

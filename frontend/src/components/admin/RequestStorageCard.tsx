@@ -227,9 +227,6 @@ export default function RequestStorageCard({ processingEnabled }: { processingEn
               {status.last_sync.error ? ` (error: ${status.last_sync.error})` : ''}.
             </Typography>
           )}
-          <Typography variant="body2" color="text.secondary">
-            {status.open_findings} open finding{status.open_findings === 1 ? '' : 's'} on the Legacy data screen.
-          </Typography>
 
           {running ? (
             // A switch is under way: the current step, a spinner, and a disabled button.

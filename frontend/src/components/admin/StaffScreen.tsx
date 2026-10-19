@@ -104,7 +104,7 @@ interface Props {
  */
 export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onReload, onNotify }: Props) {
   const theme = useTheme();
-  const [searchParams] = useSearchParams();                             // ?open=<id> from the Legacy data screen
+  const [searchParams] = useSearchParams();                             // ?open=<id> from a deep link
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Record<string, string[]>>({});   // filter key -> chosen values
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -188,7 +188,7 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
     }
   };
 
-  // Opened from the Legacy data screen with ?open=<id>: show that person's
+  // Opened from a deep link with ?open=<id>: show that person's
   // profile at once. Runs when the param changes, so closing the profile by hand
   // (the param stays) does not spring it back open.
   useEffect(() => {

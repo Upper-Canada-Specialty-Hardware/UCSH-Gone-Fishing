@@ -63,6 +63,14 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'A yearly entitlement is missing',
     fix: 'Set their yearly vacation and sick entitlements in the Staff Directory so their annual grant can be worked out.',
   },
+  employment_type_fits: {
+    title: 'Employment type looks wrong',
+    fix: 'The record says hourly but carries salaried vacation values. If they are salaried, change their employment type; if they are hourly, clear the vacation grant and balance in the person panel.',
+  },
+  approved_balance_unmoved: {
+    title: 'An approved request never moved a balance',
+    fix: 'Open each request named above and check their balances. Correct the balance with the usual edit if the days were never taken off.',
+  },
   requests_missing_days: {
     title: 'A request never got its days worked out',
     fix: 'Reprocess the request from Stuck Requests. Until then it is hidden from every dashboard and nobody can action it.',
