@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from app.config import settings
 
 from app.graph.email import send_email
-from app.services import email_codes, held_requests
+from app.services import email_codes, held_requests, request_status
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.dashboard_tokens import generate_dashboard_token
 from app.services.employee import get_employee_by_email, get_employees_by_email, is_manager
@@ -368,6 +368,36 @@ async def held_status(token: str = Query(...)):
     found = await held_requests.held_request_status(held_id) if held_id is not None else None
     if found is None:
         raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
+    return found
+
+
+@router.get("/request-status")
+async def request_status_endpoint(token: str = Query(...)):
+    """How a request sent from the request page is going, for the page that sent it.
+
+    Public, but only for the one request its signed token names (#364). The
+    normal submit response (routes/self_service.py) hands the page this token;
+    the page asks every few seconds and shows each step done with its time, so an
+    approval by email, text or dashboard shows without a sign-in or a refresh.
+
+    Args:
+        token: The status_token the submit response returned.
+
+    Returns:
+        {"status", "manager_name", "finished", "steps": {...}} for that request
+        (see services/request_status.py).
+
+    Raises:
+        HTTPException: 401 for a forged or malformed token; 404 when the request
+            it names does not exist (e.g. on the SharePoint path).
+    """
+    reference = request_status.request_ref_from_status_token(token)
+    if reference is None:
+        raise HTTPException(status_code=401, detail="This status link is not valid.")
+    kind, item_id = reference
+    found = await request_status.request_progress(kind, item_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Request not found.")
     return found
 
 
