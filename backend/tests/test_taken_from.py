@@ -487,6 +487,49 @@ def test_approved_postgres_hourly_vacation_reads_as_counted(monkeypatch, _clean_
     assert rows[0]["taken_from"] == {"state": "counted", "pieces": [], "counted_days": 2.0}
 
 
+def test_many_decided_rows_load_their_ledgers_in_a_few_queries(monkeypatch, _clean_requests):
+    # The admin requests list holds thousands of decided rows. Each must still get
+    # its own ledger, across kinds, while the reads stay a handful of queries
+    # instead of two per row (two per row made that list take over 30 seconds).
+    from sqlalchemy import event
+    from app.database import engine
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    leave_ids = [next(_ledger_item_ids) for _ in range(5)]
+    overtime_id = next(_ledger_item_ids)
+    for item_id in leave_ids:                            # five leave rows, one sick day each
+        _run(_insert_decided("leave", item_id, "approved",
+                             [("sick", -1.0, 5.0, 4.0, f"approved leave #{item_id}")]))
+    _run(_insert_decided("overtime", overtime_id, "approved",
+                         [("make_up", 0.5, 0.0, 0.5, f"approved overtime #{overtime_id}")]))
+    missing_id = next(_ledger_item_ids)                  # no request row behind this one
+
+    rows = [{"id": str(i), "request_type": "leave", "Status": "Approved",
+             "employee_name": "Pat Staff"} for i in leave_ids]
+    rows.append({"id": str(overtime_id), "request_type": "overtime", "Status": "Approved",
+                 "employee_name": "Pat Staff"})
+    rows.append({"id": str(missing_id), "request_type": "leave", "Status": "Approved",
+                 "employee_name": "Pat Staff"})
+
+    statements = []
+    def _count(conn, cursor, statement, *args):          # every SQL statement sent
+        statements.append(statement)
+    event.listen(engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        _run(attach_taken_from(rows, employee_fields=EMP, today=TODAY))
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _count)
+
+    for row in rows[:5]:                                 # each leave row reads its own ledger
+        assert row["taken_from"]["state"] == "recorded"
+        assert row["taken_from"]["pieces"] == [{"pot": "sick", "days": -1.0, "year": None}]
+    assert rows[5]["taken_from"]["state"] == "recorded"  # the overtime row, its own kind
+    assert rows[5]["taken_from"]["pieces"][0]["pot"] == "make_up"
+    assert rows[6]["taken_from"] == {"state": "unrecorded", "pieces": []}
+    ledger_reads = [q for q in statements if "balance_ledger" in q or "FROM requests" in q]
+    assert len(ledger_reads) <= 3                        # one per kind, one for the ledger
+
+
 # ---------------------------------------------------------------------------
 # The pending projection follows the request's stamped employment type (finding 5)
 # ---------------------------------------------------------------------------

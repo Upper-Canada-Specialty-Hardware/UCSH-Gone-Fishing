@@ -280,45 +280,90 @@ def _none() -> dict:
     return {"state": "none", "pieces": []}
 
 
-async def _ledger_taken_from(kind: str, item_id, status: str, today: date) -> dict:
+# Request ids per IN (...) query: well under every driver's bind-parameter limit.
+_LEDGER_CHUNK = 1000
+
+
+def _to_key(item_id) -> int | None:
+    """A request's item_id as an int, or None when it is not a number."""
+    try:
+        return int(item_id)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _load_ledgers(keys: set[tuple[str, int]]) -> dict[tuple[str, int], tuple]:
+    """Load many decided requests' ledger rows in a few queries, not two per row.
+
+    The admin requests list holds thousands of decided requests; reading each
+    one's ledger on its own connection made that list take over half a minute.
+    This reads the request rows per kind, then every ledger row for them, in
+    chunks, and groups the result by request.
+
+    Args:
+        keys: ``(kind, item_id)`` pairs, kind as stored ("leave", "overtime",
+            "carryover_payout").
+
+    Returns:
+        ``{(kind, item_id): (decided_at, [(pot, change, reason), ...])}``; a key
+        with no request row is left out, so the caller reads it as unrecorded.
+    """
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models.balance_ledger import BalanceLedger
+    from app.models.request_record import RequestRecord
+    if not keys:                                            # nothing decided: no reads
+        return {}
+    ids_by_kind: dict[str, list[int]] = {}
+    for kind, item_id in keys:                              # one query per kind, not per row
+        ids_by_kind.setdefault(kind, []).append(item_id)
+    by_record_id: dict[int, tuple[str, int]] = {}           # requests.id -> (kind, item_id)
+    loaded: dict[tuple[str, int], tuple] = {}
+    async with async_session() as session:
+        for kind, item_ids in ids_by_kind.items():
+            for i in range(0, len(item_ids), _LEDGER_CHUNK):
+                chunk = item_ids[i:i + _LEDGER_CHUNK]
+                rows = (await session.execute(
+                    select(RequestRecord.id, RequestRecord.item_id, RequestRecord.decided_at)
+                    .where(RequestRecord.kind == kind, RequestRecord.item_id.in_(chunk))
+                )).all()
+                for record_id, item_id, decided_at in rows:
+                    by_record_id[record_id] = (kind, item_id)
+                    loaded[(kind, item_id)] = (decided_at, [])   # ledger rows filled below
+        record_ids = list(by_record_id)
+        for i in range(0, len(record_ids), _LEDGER_CHUNK):    # every ledger row, chunked
+            chunk = record_ids[i:i + _LEDGER_CHUNK]
+            rows = (await session.execute(
+                select(BalanceLedger.request_id, BalanceLedger.pot, BalanceLedger.change, BalanceLedger.reason)
+                .where(BalanceLedger.request_id.in_(chunk))
+            )).all()
+            for request_id, pot, change, reason in rows:
+                loaded[by_record_id[request_id]][1].append((pot, change, reason))
+    return loaded
+
+
+def _ledger_taken_from(ledger: list[tuple], decided_at, status: str, today: date) -> dict:
     """taken_from for a decided Postgres request, built from its balance_ledger rows.
 
     The Postgres decision path never writes BalanceAuditLog; the pots it moved are
-    the request's ``balance_ledger`` rows instead. This reads them and builds the
-    same pieces the audit-log path builds, so an approved request reads as
-    ``recorded``, a refunded one as ``refunded`` (still showing what the approval
-    did, not the net zero after reversal), and an hourly vacation as ``counted``
-    (a ``vacation_taken`` row, no pot moved). The employment type stamped on the
+    the request's ``balance_ledger`` rows instead. This builds the same pieces the
+    audit-log path builds, so an approved request reads as ``recorded``, a
+    refunded one as ``refunded`` (still showing what the approval did, not the net
+    zero after reversal), and an hourly vacation as ``counted`` (a
+    ``vacation_taken`` row, no pot moved). The employment type stamped on the
     request is implicit here: the ledger already records exactly what that type
-    caused, so no current-SalaryHourly read is needed.
+    caused, so no current-SalaryHourly read is needed. Pure: the rows are loaded
+    by ``_load_ledgers``.
 
     Args:
-        kind: The request kind ("leave", "overtime", "carryover_payout").
-        item_id: The request's item_id.
+        ledger: The request's ``(pot, change, reason)`` ledger rows.
+        decided_at: When the request was decided, or None.
         status: The request's trimmed Status ("Approved" or "Refunded").
         today: Today in Toronto, the fallback change date.
 
     Returns:
         ``{"state", "pieces", ...}`` as ``taken_from_for`` returns.
     """
-    from sqlalchemy import select
-    from app.database import async_session
-    from app.models.balance_ledger import BalanceLedger
-    from app.models.request_record import RequestRecord
-    try:
-        key = int(item_id)
-    except (TypeError, ValueError):
-        return {"state": "unrecorded", "pieces": []}
-    async with async_session() as session:
-        record = (await session.execute(
-            select(RequestRecord).where(RequestRecord.kind == kind, RequestRecord.item_id == key)
-        )).scalars().first()
-        if record is None:
-            return {"state": "unrecorded", "pieces": []}
-        ledger = (await session.execute(
-            select(BalanceLedger.pot, BalanceLedger.change, BalanceLedger.reason)
-            .where(BalanceLedger.request_id == record.id)
-        )).all()
     # Only the approval's own rows: a refund writes reversal and cascade rows
     # (reason starts "refund"), which would net the approval to zero.
     approval = [(pot, float(change)) for pot, change, reason in ledger
@@ -334,7 +379,7 @@ async def _ledger_taken_from(kind: str, item_id, status: str, today: date) -> di
         field = FIELD_FOR_POT.get(pot)
         if field:
             deltas[field] = deltas.get(field, 0.0) + change
-    change_day = record.decided_at.date() if record.decided_at else today   # for the CO/PO year
+    change_day = decided_at.date() if decided_at else today   # for the CO/PO year
     state = "refunded" if status == "Refunded" else "recorded"
     return {"state": state, "pieces": _pieces_from_deltas(deltas, change_day)}
 
@@ -461,6 +506,17 @@ async def attach_taken_from(
             logger.exception("taken_from: could not load the Staff Directory")
             name_to_item = {}
 
+    # Load every decided row's ledger up front, in a few queries, not two per row.
+    ledgers: dict[tuple[str, int], tuple] = {}
+    if postgres:
+        decided = set()
+        for row in rows:
+            if (row.get("Status") or "").strip() in ("Approved", "Refunded"):
+                key = _to_key(row.get("id"))
+                if key is not None:                     # a non-numeric id reads as unrecorded
+                    decided.add((row.get("request_type", "").replace("-", "_"), key))
+        ledgers = await _load_ledgers(decided)
+
     for row in rows:
         try:
             emp_fields = employee_fields                # the single-employee shortcut
@@ -474,7 +530,12 @@ async def attach_taken_from(
                 # Decided on Postgres: read the ledger, which is authoritative and
                 # already reflects the employment type stamped at decision time.
                 kind = request_type.replace("-", "_")   # "carryover-payout" -> "carryover_payout"
-                row["taken_from"] = await _ledger_taken_from(kind, row.get("id"), status, today)
+                loaded = ledgers.get((kind, _to_key(row.get("id"))))
+                if loaded is None:                      # no request row behind it
+                    row["taken_from"] = {"state": "unrecorded", "pieces": []}
+                else:
+                    decided_at, ledger = loaded
+                    row["taken_from"] = _ledger_taken_from(ledger, decided_at, status, today)
             else:
                 # Pending, or still on SharePoint: the pure function reads the
                 # row's SharePoint fields (merged in by the endpoint) directly.
