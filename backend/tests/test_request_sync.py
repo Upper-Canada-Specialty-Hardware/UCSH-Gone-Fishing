@@ -730,3 +730,14 @@ def test_absent_fields_are_cleared_on_reimport(sp):
     run(import_requests())
     second = run(_record("leave", 300))
     assert second.end_date is None and second.days is None and second.manager_name is None
+
+
+def test_an_employee_id_whose_record_is_gone_is_kept_as_whole_number_text(sp):
+    # SharePoint sends EmployeeID as a float; when that staff record no longer
+    # exists the row keeps the id it names, as "458", never "458.0", on every run.
+    sp.lists[CARRYOVER] = [sp_item(80, {"TypeofRequest": "Payout", "Days": 1, "Status": "Approved",
+                                        "EmployeeID": 458.0})]
+    run(import_requests())
+    assert run(_record("carryover_payout", 80)).employee_id == "458"
+    run(import_requests())                                       # a rerun leaves it the same
+    assert run(_record("carryover_payout", 80)).employee_id == "458"

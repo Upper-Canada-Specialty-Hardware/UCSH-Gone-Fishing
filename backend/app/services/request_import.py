@@ -671,6 +671,13 @@ async def _import_item(
         record.employment_type = employment_type(sf) or None    # "" -> None, keeps the CHECK happy
         record.location = sf.get("Location") or record.location
         record.department = sf.get("Department") or record.department
+    elif fields.get("EmployeeID") not in (None, ""):
+        # The row names its own staff id, but that record is gone: keep the id the
+        # row carries (as "458", never "458.0"), since nothing can name it better.
+        record.employee_id = _staff_id_text(fields["EmployeeID"])
+        if not previously_matched:
+            record.employee_name = display_name or None
+            record.employee_email = (fields.get("SubmitterEmail") or "").strip().lower() or None
     elif previously_matched:
         pass                                                    # keep the earlier match; do not downgrade
     else:
@@ -692,6 +699,10 @@ async def _import_item(
     if staff is not None:
         record.employee_id = str(staff["id"])
         record.employee_email = (staff.get("fields", {}).get("EmailAddress") or "").strip().lower() or None
+    elif fields.get("EmployeeID") not in (None, ""):
+        record.employee_id = _staff_id_text(fields["EmployeeID"])   # the row's own id, whole-number text
+        if previously_matched:
+            record.employee_email = preserved_email
     elif previously_matched:
         record.employee_id = preserved_id                      # the adapter's EmployeeID must not override it
         record.employee_email = preserved_email
