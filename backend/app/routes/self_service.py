@@ -15,6 +15,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
+from app.repositories.postgres.staff import is_archived   # refuse an archived submitter (#119)
 from app.routes.dashboard import AuthUser, _format_balances
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
@@ -67,6 +68,13 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
     employee = await get_employee_by_id(user.user_id)
     if not employee:
         raise HTTPException(status_code=404, detail="Your staff record could not be found.")
+    # An archived person (left the company) cannot make a request, even holding an
+    # old signed link (#119).
+    if is_archived(employee.get("fields", {})):
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been archived and can no longer submit requests. Contact HR.",
+        )
 
     # Without SubmitterEmail (requests still in SharePoint, columns not there),
     # the only link from a request back to its person is the person column,

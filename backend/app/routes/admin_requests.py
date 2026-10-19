@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.database import async_session
 from app.models.request_deletion import RequestDeletion
+from app.repositories.postgres.staff import is_archived   # refuse an archived person a new request (#119)
 from app.repositories.request_store import request_store
 # The same creation, validation, preview and approval pieces every other way
 # of making a request uses, so an admin-made request is identical to a normal one.
@@ -181,6 +182,13 @@ async def admin_new_request(body: NewRequestBody):
     employee = await get_employee_by_id(body.employee_id)      # the person it is for
     if not employee:
         raise HTTPException(status_code=404, detail="That employee is not in the Staff Directory.")
+    # An archived person has left: a request cannot be made for them (#119). They
+    # are not in the picker, so this guards a stale id or a crafted call.
+    if is_archived(employee.get("fields", {})):
+        raise HTTPException(
+            status_code=409,
+            detail="That person is archived, so a request cannot be made for them.",
+        )
 
     # Pending notifies the manager; Approved suppresses that email and approves below.
     notify = status == "Pending"

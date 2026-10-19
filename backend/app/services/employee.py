@@ -73,10 +73,43 @@ async def get_employees_by_email(email: str) -> list[dict]:
 async def get_employee_by_id(item_id: str | int) -> dict | None:
     try:
         # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+        # A single-id lookup is never filtered, so an archived person still resolves (#119).
         return await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
     except Exception:
         logger.warning("Employee not found by ID: %s", item_id)
         return None
+
+
+async def email_belongs_to_archived(email: str) -> bool:
+    """Whether every staff record on this email is archived (#119).
+
+    The default directory read leaves archived people out, so ``get_employees_by_email``
+    cannot see them; this read keeps them, to tell "archived, refuse" apart from
+    "not on staff, new-hire path". A shared mailbox with even one active record is
+    not treated as archived, so that record still signs in.
+
+    Args:
+        email: The address, matched case-insensitively.
+
+    Returns:
+        True when at least one record carries the address and all of them are
+        archived; False when none match or any active record carries it.
+    """
+    from app.repositories.postgres.staff import is_archived   # local: avoids importing it app-wide
+    from app.repositories.staff_store import staff_in_postgres
+    if not await staff_in_postgres():                       # no archive concept on SharePoint
+        return False
+    items = await staff_store.get_list_items(
+        settings.SP_LIST_STAFF_DIRECTORY, include_archived=True
+    )
+    target = email.strip().lower()
+    matched = [
+        item for item in items
+        if (item.get("fields", {}).get("EmailAddress") or "").strip().lower() == target
+    ]
+    if not matched:                                          # nobody on this address at all
+        return False
+    return all(is_archived(item.get("fields", {})) for item in matched)
 
 
 async def get_all_managers_for_employee(employee: dict) -> list[dict]:

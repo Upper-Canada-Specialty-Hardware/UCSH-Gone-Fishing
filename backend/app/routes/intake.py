@@ -32,7 +32,12 @@ from app.graph.email import send_email
 from app.services import email_codes, held_requests, request_status
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.dashboard_tokens import generate_dashboard_token
-from app.services.employee import get_employee_by_email, get_employees_by_email, is_manager
+from app.services.employee import (
+    email_belongs_to_archived,
+    get_employee_by_email,
+    get_employees_by_email,
+    is_manager,
+)
 from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
@@ -208,7 +213,7 @@ async def verify_code(body: VerifyRequest):
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.error)
 
-    people = await get_employees_by_email(email)
+    people = await get_employees_by_email(email)            # active records only (archived filtered out)
     if len(people) > 1:
         # A shared mailbox: whoever controls it may sign in as any record on it,
         # so each gets its own token and the page asks which one this is.
@@ -218,6 +223,15 @@ async def verify_code(body: VerifyRequest):
         }
     if people:
         return {"status": "employee", **await _signed_in_as(people[0])}
+
+    # No active record. If an archived one carries this address, the person has
+    # left: refuse with a plain message rather than send them down the new-hire
+    # path (#119). An archived person cannot make a request.
+    if await email_belongs_to_archived(email):
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been archived. Contact HR if you think this is a mistake.",
+        )
 
     # Not on staff yet: prove the address was verified for the new-hire path.
     return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}

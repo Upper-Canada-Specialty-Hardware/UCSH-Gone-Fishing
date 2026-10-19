@@ -39,6 +39,25 @@ RELATION_SUPERVISOR = "supervisor_link"  # the single SupervisorLink person
 # so an app-made id and a SharePoint-made id can never be the same number.
 APP_STAFF_ID_START = 1_000_000
 
+# Archive columns (#119), given SharePoint-style names so the item shape carries
+# them and the store's write path maps them like any other column. Staff live in
+# Postgres only, so these never reach a real SharePoint list.
+ARCHIVED_AT_COLUMN = "ArchivedAt"            # when the person was archived (ISO), or None
+ARCHIVED_REASON_COLUMN = "ArchivedReason"    # why, required when archiving
+ARCHIVED_BY_COLUMN = "ArchivedBy"            # who did it (the admin channel)
+
+
+def is_archived(fields: dict) -> bool:
+    """Whether a staff record's rebuilt fields show it as archived (#119).
+
+    Args:
+        fields: A staff record's SharePoint-shaped ``fields`` dict.
+
+    Returns:
+        True when ``ArchivedAt`` is set (the person is archived), else False.
+    """
+    return bool(fields.get(ARCHIVED_AT_COLUMN))   # a set timestamp means archived
+
 # Text/choice columns: SharePoint column -> Staff model attribute. Emitted as ""
 # when blank so a caller's ``.get(col, "").strip()`` never meets a None.
 _TEXT_COLUMNS = {
@@ -309,6 +328,11 @@ def to_sp_fields(row: Staff) -> dict:
     fields["RequestAllowDate"] = row.request_allow_date.isoformat() if row.request_allow_date else None
     fields["Modified"] = _iso_dt(row.sp_modified)
     fields["Created"] = _iso_dt(row.sp_created)
+    # Archive state (#119): the timestamp as ISO (None when active), plus the
+    # reason and actor as "" when blank so a caller's .strip() is always safe.
+    fields[ARCHIVED_AT_COLUMN] = _iso_dt(row.archived_at)
+    fields[ARCHIVED_REASON_COLUMN] = row.archived_reason or ""
+    fields[ARCHIVED_BY_COLUMN] = row.archived_by or ""
     # The person's own Microsoft 365 link, when set.
     if row.title_link_sp_user_id is not None:
         fields["TitleLinkLookupId"] = row.title_link_sp_user_id
@@ -372,6 +396,12 @@ def scalar_updates(fields: dict) -> tuple[dict, list[str]]:
             values[_SP_TIMESTAMP_COLUMNS[column]] = _parse_dt(value)
         elif column == "Extension":
             values["extension"] = _int(value)
+        elif column == ARCHIVED_AT_COLUMN:                # archive (#119): tz-aware, None clears it
+            values["archived_at"] = _parse_dt(value)
+        elif column == ARCHIVED_REASON_COLUMN:
+            values["archived_reason"] = None if value in (None, "") else str(value)
+        elif column == ARCHIVED_BY_COLUMN:
+            values["archived_by"] = None if value in (None, "") else str(value)
         elif column == "TitleLinkLookupId":
             values["title_link_sp_user_id"] = _lookup_id(value)
         elif column in (ALL_MANAGERS_COLUMN, "SupervisorLinkLookupId", "SupervisorLink", "id",
@@ -655,20 +685,32 @@ class PostgresStaffList:
     staff, and nothing is written back to SharePoint.
     """
 
-    async def get_list_items(self, list_id: str, select=None, **kwargs) -> list[dict]:
+    async def get_list_items(self, list_id: str, select=None, include_archived: bool = False, **kwargs) -> list[dict]:
         """Every staff row in the SharePoint item shape, oldest id first.
+
+        Archived people (#119) are left out by default, so every staff listing,
+        team, picker, report and approval route that reads the directory through
+        the store drops them without each caller having to filter. The archived
+        list and the history views that need them pass ``include_archived=True``.
+        Single-person lookups (``get_list_item``) are never filtered, so a past
+        request still resolves an archived person's name.
 
         Args:
             list_id: The Staff Directory list id (kept for the same call shape).
             select: When given, only these fields are returned (plus id).
+            include_archived: True to return archived people as well (the archived
+                list and history name resolution); default False leaves them out.
             **kwargs: filter/expand/top are accepted and ignored, as the
                 Postgres read returns every row in the one shape callers expect.
 
         Returns:
             The rows as ``{"id","fields"}`` dicts.
         """
+        query = staff_query()
+        if not include_archived:                          # default: active people only
+            query = query.where(Staff.archived_at.is_(None))
         async with async_session() as session:
-            rows = (await session.execute(staff_query())).scalars().all()
+            rows = (await session.execute(query)).scalars().all()
             items = [item_shape(row) for row in rows]     # built while the session is open
         if select:                                        # $select keeps only the named columns
             keep = set(select) | {"id"}
