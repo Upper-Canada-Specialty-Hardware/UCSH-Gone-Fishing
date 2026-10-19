@@ -322,7 +322,20 @@ export const holdRequest = (body: {
   supervisor_email?: string;
   request_type: RequestType;
   form: Record<string, unknown>;
-}) => intake.post('/held', body);
+}) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held', body);
+
+/** Where a held request stands, as the waiting page shows it. */
+export type HeldStatus = 'waiting' | 'sent' | 'cancelled';
+
+/**
+ * Ask how a held request is going, so the waiting page can update on its own.
+ *
+ * @param statusToken - The status_token holdRequest returned.
+ * @returns The status and the supervisor it waits on.
+ * @throws AxiosError 404 when the token is bad or the request is gone.
+ */
+export const getHeldStatus = (statusToken: string) =>
+  intake.get<{ status: HeldStatus; supervisor_name: string }>('/held/status', { params: { token: statusToken } });
 
 /**
  * Submit a request as the signed-in employee.

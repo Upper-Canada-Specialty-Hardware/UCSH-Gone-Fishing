@@ -23,6 +23,8 @@ Emails go through send_email, so they move with it from one email service to
 the next with no change here.
 """
 
+import hashlib
+import hmac
 import html
 import logging
 from dataclasses import dataclass
@@ -563,6 +565,61 @@ async def cancel_held_request(held_id: int) -> bool:
         row.status = "cancelled"
         await session.commit()
     return True
+
+
+# ----- the new hire's waiting page -----
+
+def held_status_token(held_id: int) -> str:
+    """A signed token that lets the page that held a request ask how it is going.
+
+    The page that held the request keeps this, so it can show "sent to your
+    supervisor" the moment they add the person, without a sign-in.
+
+    Args:
+        held_id: The held_requests row id.
+
+    Returns:
+        "<id>.<signature>": the id plus an HMAC over it, so no other id can be asked about.
+    """
+    message = f"held-status:{held_id}".encode()                # its own prefix: never valid as another token
+    signature = hmac.new(settings.APPROVAL_LINK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    return f"{held_id}.{signature}"
+
+
+def held_id_from_status_token(token: str) -> int | None:
+    """The held request id a status token names, when its signature checks out.
+
+    Args:
+        token: A token from held_status_token.
+
+    Returns:
+        The id, or None for a malformed or forged token.
+    """
+    head, _, _ = (token or "").partition(".")                  # "<id>.<signature>"
+    if not head.isdigit():
+        return None                                            # not a token at all
+    held_id = int(head)
+    # Constant-time compare, so the signature cannot be guessed one byte at a time.
+    return held_id if hmac.compare_digest(token, held_status_token(held_id)) else None
+
+
+async def held_request_status(held_id: int) -> dict | None:
+    """Where one held request stands, in the words the waiting page needs.
+
+    Args:
+        held_id: The held_requests row id.
+
+    Returns:
+        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}, or
+        None when there is no such row. Every open status (held, waiting_site,
+        releasing, failed) reads as waiting: to the person it is still on its way.
+    """
+    async with async_session() as session:
+        row = await session.get(HeldRequest, held_id)
+    if row is None:
+        return None
+    status = {"released": "sent", "cancelled": "cancelled"}.get(row.status, "waiting")
+    return {"status": status, "supervisor_name": row.supervisor_name}
 
 
 async def held_request_email(held_id: int) -> str | None:

@@ -196,6 +196,33 @@ def test_holding_through_the_endpoint(client, world):
     assert response.status_code == 200 and response.json()["supervisor_name"] == "Sam Boss"
 
 
+def test_the_waiting_page_sees_its_request_go_through(client, world):
+    # The page that held the request polls its status, so it says "sent" the
+    # moment the supervisor adds the person, with no reload and no sign-in.
+    email = _email()
+    body = {"verified": email_codes.sign_verified_email(email), "first_name": "Lee", "last_name": "New", "department": "Installation",
+            "supervisor_id": "3", "request_type": "leave", "form": VACATION}
+    token = client.post("/api/intake/held", json=body).json()["status_token"]
+
+    waiting = client.get("/api/intake/held/status", params={"token": token})
+    assert waiting.json() == {"status": "waiting", "supervisor_name": "Sam Boss"}
+
+    world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
+    asyncio.run(held_requests.release_held_requests(email))     # what Add Employee runs
+    sent = client.get("/api/intake/held/status", params={"token": token})
+    assert sent.json() == {"status": "sent", "supervisor_name": "Sam Boss"}
+
+
+def test_a_status_token_only_opens_its_own_request(client, world):
+    row = _hold(_email())
+    other = _hold(_email())
+    token = held_requests.held_status_token(row.id)
+    forged = f"{other.id}.{token.partition('.')[2]}"              # another id with this signature
+    for bad in (forged, "nonsense", "", f"{row.id}."):
+        assert client.get("/api/intake/held/status", params={"token": bad}).status_code == 404
+    assert held_requests.held_id_from_status_token(token) == row.id
+
+
 def test_someone_added_since_they_verified_is_sent_back_to_sign_in(client, world):
     email = _email()
     world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}

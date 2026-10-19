@@ -13,6 +13,8 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  to pick from, a typed search for the supervisor in one, then
                  hold a request until the supervisor adds the person
                  (services/held_requests.py).
+* GET /held/status - how one held request is going, for the page that held
+                 it; needs the signed status token POST /held returned.
 
 Mailbox control is the identity proof. Sending goes through send_email, so
 whichever email service that routes to (SMTP2GO today; the UCSH mailer for
@@ -316,7 +318,8 @@ async def hold(body: HeldRequestBody):
         body: The verified-email token, name, department, supervisor and form.
 
     Returns:
-        {"status": "held", "supervisor_name"}.
+        {"status": "held", "supervisor_name", "status_token"}: the token lets
+        the page ask GET /held/status how the request is going.
 
     Raises:
         HTTPException: 401 for a bad token; 409 when the address is on staff
@@ -337,7 +340,35 @@ async def hold(body: HeldRequestBody):
         )
     except (held_requests.HoldError, RequestFormError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": "held", "supervisor_name": row.supervisor_name}
+    return {
+        "status": "held", "supervisor_name": row.supervisor_name,
+        "status_token": held_requests.held_status_token(row.id),   # the waiting page polls with it
+    }
+
+
+@router.get("/held/status")
+async def held_status(token: str = Query(...)):
+    """How a held request is going, for the page that held it.
+
+    Public, but only for the one request its signed token names: the answer is
+    the status and the supervisor the person already chose, nothing more. The
+    page asks every few seconds, so it says "sent" the moment the supervisor
+    adds the person.
+
+    Args:
+        token: The status_token POST /held returned.
+
+    Returns:
+        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}.
+
+    Raises:
+        HTTPException: 404 for a bad token or a request that no longer exists.
+    """
+    held_id = held_requests.held_id_from_status_token(token)
+    found = await held_requests.held_request_status(held_id) if held_id is not None else None
+    if found is None:
+        raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
+    return found
 
 
 def _render_code_email(code: str) -> str:

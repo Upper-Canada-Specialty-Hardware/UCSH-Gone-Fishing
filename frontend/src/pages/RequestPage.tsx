@@ -20,8 +20,8 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, EmployeeSession, RequestType, SignInChoice, VerifiedEmail,
-  clearSession, errorText, getRequestTypes, holdRequest, loadNewHire, loadSession, requestCode,
+  Balances, EmployeeSession, HeldStatus, RequestType, SignInChoice, VerifiedEmail,
+  clearSession, errorText, getHeldStatus, getRequestTypes, holdRequest, loadNewHire, loadSession, requestCode,
   saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
@@ -37,6 +37,7 @@ import {
 type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
+const HELD_POLL_MS = 3000;   // how often a new hire's waiting page asks whether their request went through
 
 /** The steps in the order they come, for which way a change of step slides. */
 const STEP_ORDER: Step[] = ['email', 'code', 'choose', 'form', 'done'];
@@ -170,6 +171,8 @@ export default function RequestPage() {
   const [resendIn, setResendIn] = useState(0);
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
+  const [heldToken, setHeldToken] = useState('');              // signed token to ask how the held request is going
+  const [heldStatus, setHeldStatus] = useState<HeldStatus>('waiting');   // what that request is doing now
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
@@ -246,6 +249,34 @@ export default function RequestPage() {
     return () => { live = false; };
   }, [session, doneText]);
 
+  // A new hire's waiting page follows its held request: ask every few seconds,
+  // and once the supervisor adds them (or an admin cancels it) say so at once.
+  useEffect(() => {
+    if (step !== 'done' || !heldToken || heldStatus !== 'waiting') return;   // nothing to follow
+    let live = true;
+    /** Ask once; a failed ask is simply tried again on the next tick. */
+    const ask = () => {
+      if (document.hidden) return;                     // a background tab waits until it is looked at
+      getHeldStatus(heldToken)
+        .then(({ data }) => {
+          if (!live || data.status === 'waiting') return;
+          setHeldWith(data.supervisor_name);
+          setHeldStatus(data.status);                   // stops this effect: the answer is final
+          setDoneText(data.status === 'sent'
+            ? `${data.supervisor_name} added you to the staff list, so your request was sent to them. You will get an email when it is approved or rejected.`
+            : 'This request was cancelled. If you still need it, start again with your email.');
+        })
+        .catch(() => { /* retried on the next tick */ });
+    };
+    const timer = setInterval(ask, HELD_POLL_MS);
+    document.addEventListener('visibilitychange', ask); // coming back to the tab asks straight away
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', ask);
+    };
+  }, [step, heldToken, heldStatus]);
+
   // Count down to when a new code may be asked for.
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -318,6 +349,7 @@ export default function RequestPage() {
       await submitMyRequest(session, type, buildRequestBody(type, values));
       clearDraft();                                   // submitted: no draft to keep
       setHeldWith('');
+      setHeldToken('');                               // a staff request has nothing to wait on
       setDoneText('Your request was sent to your manager. You will get an email when it is approved or rejected.');
       setStep('done');
     } catch (err: any) {
@@ -351,6 +383,8 @@ export default function RequestPage() {
       });
       clearDraft();                                     // held: no draft to keep
       setHeldWith(res.data.supervisor_name);
+      setHeldToken(res.data.status_token);              // lets the page follow it from here
+      setHeldStatus('waiting');
       saveNewHire(null);                                // held: a refresh must not send it twice
       setDoneText(
         `You are not in the Staff Directory yet, so we asked ${res.data.supervisor_name} to add you. `
@@ -406,10 +440,16 @@ export default function RequestPage() {
   }));
 
   // What happens next, shown once the request is sent or saved.
+  // A new hire's list moves on by itself once their supervisor adds them.
+  const added = heldStatus === 'sent';
   const next: NextItem[] = held ? [
-    { title: 'Saved', note: 'Just now', done: true },
-    { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
-    { title: 'Your request goes to them', note: 'Automatically' },
+    { title: 'Saved', note: added ? 'Earlier' : 'Just now', done: true },
+    added
+      ? { title: `${heldWith || 'Your supervisor'} added you to the staff list`, note: 'Just now', done: true }
+      : { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
+    added
+      ? { title: `Sent to ${heldWith || 'your supervisor'}`, note: 'Just now', done: true }
+      : { title: 'Your request goes to them', note: 'Automatically' },
     { title: 'You get an email with the decision' },
   ] : [
     { title: 'Sent to your manager', note: 'Just now', done: true },
@@ -578,7 +618,9 @@ export default function RequestPage() {
                   bgcolor: t.tokens.okSoft, color: 'success.main',
                   animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
                 })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
-                <Heading>{held ? 'Request saved' : 'Request sent'}</Heading>
+                <Heading>
+                  {!held || added ? 'Request sent' : heldStatus === 'cancelled' ? 'Request cancelled' : 'Request saved'}
+                </Heading>
                 <Lead>{doneText}</Lead>
                 <NextSteps items={next} />
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
