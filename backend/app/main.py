@@ -6,6 +6,7 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 
@@ -147,6 +148,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="UCSH Out of Office", lifespan=lifespan)
+
+# Compress responses over 1 KB: the admin requests list is several MB of JSON,
+# which gzip shrinks about tenfold. The live-updates stream (text/event-stream)
+# is left uncompressed by the middleware itself, so its events are not held back.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # CORS — allow dashboard frontend
 cors_origins = [o for o in [settings.DASHBOARD_FRONTEND_URL] if o]

@@ -503,6 +503,37 @@ def test_a_new_request_is_pending_for_admin_and_manager_and_not_stuck(switched):
 # ----- identifiers and columns the Postgres rows carry -----
 
 
+def test_admin_stats_and_pending_count_postgres_rows_in_the_database(switched):
+    # After the switch the stats are counted by the database and the pending
+    # queues read only pending rows; both must still agree with what was submitted.
+    from app.services.leave_requests import approve_leave_request
+    admin = _client()
+    approved = _submit_leave(admin, 70)
+    waiting = _submit_leave(admin, 71)
+    assert "error" not in run(approve_leave_request(approved, 20, channel="email_link"))
+
+    stats = admin.get("/api/dashboard/admin/stats").json()
+    by_status = stats["leave_by_status"]
+    assert by_status.get("Approved", 0) >= 1 and by_status.get("Pending", 0) >= 1
+    assert stats["total_requests"]["leave"] == sum(by_status.values())   # totals add up
+
+    pending = admin.get("/api/dashboard/admin/pending").json()["pending"]
+    ids = {str(p["id"]) for p in pending}
+    assert str(waiting) in ids and str(approved) not in ids   # only the one still waiting
+    assert all(p.get("Status") == "Pending" for p in pending)
+    assert switched == []
+
+
+def test_large_responses_are_compressed(switched):
+    # The admin requests list runs to megabytes of JSON; it must go out gzipped.
+    admin = _client()
+    for days in (72, 73, 74):
+        _submit_leave(admin, days)
+    resp = admin.get("/api/dashboard/admin/requests", headers={"Accept-Encoding": "gzip"})
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") == "gzip"
+
+
 def test_an_approval_and_its_refund_write_the_balance_log_the_screens_read(switched):
     # The admin "What it did to balances" panel and the Audit trail read
     # BalanceAuditLog; the Postgres decision path must keep writing it.

@@ -688,7 +688,7 @@ async def team_pending(user: AuthUser):
 
     # Leave — check submitter in my_employees (dynamic manager lookup)
     try:
-        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+        items = await _pending_source("leave", settings.SP_LIST_LEAVE_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch leave items for team pending")
         items = []
@@ -707,7 +707,7 @@ async def team_pending(user: AuthUser):
 
     # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
     try:
-        items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+        items = await _pending_source("overtime", settings.SP_LIST_OVERTIME_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch overtime items for team pending")
         items = []
@@ -727,7 +727,7 @@ async def team_pending(user: AuthUser):
 
     # Carryover/Payout — check submitter in my_employees
     try:
-        items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        items = await _pending_source("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:
         logger.exception("Failed to fetch carryover items for team pending")
         items = []
@@ -1329,7 +1329,7 @@ async def admin_pending():
         (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout"),
     ]:
         try:
-            items = await request_store.get_list_items(list_id)
+            items = await _pending_source(req_type, list_id)   # only pending rows on Postgres
             for item in items:
                 f = item.get("fields", {})
                 if f.get("Status") != "Pending":
@@ -1345,6 +1345,26 @@ async def admin_pending():
     # Reuse the staff map already built above to project each pending row.
     await attach_taken_from(pending, staff_by_name=staff_by_name)
     return {"pending": pending}
+
+
+async def _pending_source(request_type: str, list_id: str) -> list[dict]:
+    """The items a pending view filters: pending rows only on Postgres.
+
+    On Postgres an indexed query returns just the pending rows, instead of every
+    request ever made (thousands) for the caller to throw most away. On
+    SharePoint the list cannot be filtered server side, so the whole list comes
+    back as before. Callers still check Status themselves, so both paths agree.
+
+    Args:
+        request_type: The url-form kind ("leave", "overtime", "carryover-payout").
+        list_id: The SharePoint list id (SharePoint path only).
+
+    Returns:
+        Items in the Graph list-item shape.
+    """
+    if await requests_in_postgres():
+        return await indexed_request_items(request_type, status="pending")
+    return await request_store.get_list_items(list_id)
 
 
 # ============================
@@ -1626,13 +1646,31 @@ async def admin_send_dashboard_link(target_id: str):
     return {"status": "sent", "email": email}
 
 
+async def _status_counts_postgres() -> dict[str, dict[str, int]]:
+    """Request counts per kind and status, counted by the database.
+
+    Returns:
+        ``{stored kind: {Status as the wire shows it: count}}``, e.g.
+        ``{"leave": {"Approved": 3000, "Pending": 16}}``.
+    """
+    from sqlalchemy import func, select
+    from app.database import async_session
+    from app.models.request_record import RequestRecord
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(RequestRecord.kind, RequestRecord.status, func.count())
+            .group_by(RequestRecord.kind, RequestRecord.status)
+        )).all()
+    counts: dict[str, dict[str, int]] = {}
+    for kind, status, n in rows:
+        label = status.capitalize() if status else "Unknown"      # the same casing the item shape uses
+        counts.setdefault(kind, {})
+        counts[kind][label] = counts[kind].get(label, 0) + int(n)
+    return counts
+
+
 @router.get("/admin/stats")
 async def admin_stats():
-
-    # Gather counts
-    leave_items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
-    overtime_items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
-    carryover_items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
 
     def _count_by_status(items):
         counts = {}
@@ -1640,6 +1678,17 @@ async def admin_stats():
             status = item.get("fields", {}).get("Status", "Unknown")
             counts[status] = counts.get(status, 0) + 1
         return counts
+
+    if await requests_in_postgres():
+        # Count in the database rather than loading every request to count it.
+        by_kind = await _status_counts_postgres()
+        leave_by = by_kind.get("leave", {})
+        overtime_by = by_kind.get("overtime", {})
+        carryover_by = by_kind.get("carryover_payout", {})
+    else:
+        leave_by = _count_by_status(await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS))
+        overtime_by = _count_by_status(await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS))
+        carryover_by = _count_by_status(await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT))
 
     # Department breakdown from staff directory
     staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
@@ -1660,13 +1709,13 @@ async def admin_stats():
 
     return {
         "total_requests": {
-            "leave": len(leave_items),
-            "overtime": len(overtime_items),
-            "carryover_payout": len(carryover_items),
+            "leave": sum(leave_by.values()),
+            "overtime": sum(overtime_by.values()),
+            "carryover_payout": sum(carryover_by.values()),
         },
-        "leave_by_status": _count_by_status(leave_items),
-        "overtime_by_status": _count_by_status(overtime_items),
-        "carryover_by_status": _count_by_status(carryover_items),
+        "leave_by_status": leave_by,
+        "overtime_by_status": overtime_by,
+        "carryover_by_status": carryover_by,
         "department_summary": dept_summary,
     }
 
