@@ -196,6 +196,7 @@ from app.routes.approval import router as approval_router
 from app.routes.webhooks import router as webhooks_router
 from app.routes.twilio import router as twilio_router
 from app.routes.dashboard import router as dashboard_router
+from app.routes.team_manage import router as team_manage_router
 from app.routes.admin_requests import router as admin_requests_router
 from app.routes.admin_storage import router as admin_storage_router
 from app.routes.email_api_log import router as email_api_log_router
@@ -215,6 +216,10 @@ app.include_router(health_router)
 app.include_router(intake_router, prefix="/api/intake", tags=["intake"])
 app.include_router(forms_router, prefix="/api/forms", tags=["forms"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# A manager's control over their own team: change a teammate's balances and
+# entitlements, and add or remove people (#362, #363). Token-authenticated /team
+# routes; the admin guard only gates /admin paths, so it passes these through.
+app.include_router(team_manage_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # The admin requests screen's new, delete, preview and export endpoints (#278),
 # in their own module but behind the same admin password at the same prefix.
 app.include_router(admin_requests_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)

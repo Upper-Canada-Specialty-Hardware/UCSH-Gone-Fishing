@@ -556,7 +556,8 @@ def _link_payload(field_changes: list[dict], fields_in: dict) -> dict | None:
 
 
 async def apply_entitlement_changes(
-    employee_id: str, requested: dict, reason: str, fields: dict | None = None
+    employee_id: str, requested: dict, reason: str, fields: dict | None = None,
+    source: str = "admin_dashboard",
 ) -> dict:
     """Apply balance/entitlement and Staff Directory field changes, with a reason.
 
@@ -570,10 +571,14 @@ async def apply_entitlement_changes(
     Args:
         employee_id: Staff Directory item id of the person being edited.
         requested: snake_case wire key -> new numeric value (the balance pots).
-        reason: Why HR made the change; required and stored with the history.
+        reason: Why the change was made; required and stored with the history.
         fields: snake_case wire key -> new value for the Staff Directory text,
             choice and person fields (see ``TEXT_FIELDS``/``PERSON_FIELDS`` and
             the managers key). Optional; omitted means no directory-field edits.
+        source: Which channel recorded the change in the history; the admin
+            dashboard by default, ``"manager_dashboard"`` when a manager edits
+            their own teammate (#362). Kept within the ``StaffChange.source``
+            column's 24-character limit by the caller.
 
     Returns:
         ``{"employee_id", "name", "changed": [...], "history_recorded": bool}``,
@@ -660,6 +665,7 @@ async def apply_entitlement_changes(
                 name,
                 [(c["column"], c["before"], c["after"]) for c in changes],
                 reason,
+                source=source,                        # admin, or a manager's own team (#362)
             )
         except Exception:                            # history must not undo the save
             logger.exception(                        # keep the detail in the logs
@@ -707,6 +713,7 @@ async def apply_entitlement_changes(
                     name,
                     [("RequestAllowDate", rad_moved[0], rad_moved[1])],
                     "Recomputed automatically after a balance change.",
+                    source=source,                    # same channel as the edit that caused it
                 )
             except Exception:                         # best-effort, like the main log
                 logger.exception(

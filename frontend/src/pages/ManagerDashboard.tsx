@@ -1,31 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
 import { staffCacheKey } from '../api/intake';
 import {
-  Alert, Box, Button, Paper, Snackbar, Tab, Tabs, TextField, Typography,
+  Alert, Box, Button, Paper, Snackbar, Tab, Tabs, Typography,
 } from '@mui/material';
 import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
 import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
 import SplitRequestHistory from '../components/admin/SplitRequestHistory';
+import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
 import AddEmployee from '../components/AddEmployee';
-import KindPill from '../components/KindPill';
 import DecisionCard from '../components/manager/DecisionCard';
 import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
-import EventBusyIcon from '@mui/icons-material/EventBusy';
 import {
-  AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, riseAt, staggerChildren, useDirection,
+  AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, staggerChildren, useDirection,
 } from '../components/Motion';
 import { TeamSkeleton } from '../components/Skeletons';
 import PillToggle from '../components/PillToggle';
-import { InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline, VacationRings } from '../components/manager/Charts';
+import { InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline } from '../components/manager/Charts';
 import {
   absencesFrom, approveSummary, clashesFor, daysOffByMonth, inPerDay, insights, offThisWeek, totalsByKind, workingDays,
 } from '../components/manager/teamStats';
 import { kindColor, RequestKind } from '../constants/leaveColors';
-import { addDays, dayKey, formatDayRange, mondayOf, today } from '../utils/dates';
+import { addDays, dayKey, mondayOf, today } from '../utils/dates';
 import { firstName, teamColors, teamLabeler } from '../utils/personColor';
 import { daysWaiting, shortDate } from '../utils/requestText';
 import {
@@ -41,7 +40,6 @@ import {
   logSickDay,
 } from '../api/client';
 import { greeting } from '../utils/greeting';
-import { isHourly } from '../utils/employment';
 import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
 
@@ -71,27 +69,27 @@ type TabKey = typeof TABS[number];
 const MONTH_LEGEND: [string, RequestKind][] = [['Vacation', 'vacation'], ['Sick', 'sick'], ['Other', 'bereavement']];
 
 /**
- * Initials for an avatar.
+ * A tile wrapper that turns a read-only KPI into a button opening what it shows
+ * (the people on the Team tab, or the Trends tab) (#361).
  *
- * @param name - The full name.
- * @returns Up to two letters.
+ * @param props.label - The accessible action label.
+ * @param props.onClick - What the tile opens.
+ * @param props.children - The KPI tile.
+ * @returns The clickable tile.
  */
-function initials(name: string): string {
-  return name.split(' ').map((w) => w[0]).slice(0, 2).join('');
-}
-
-/**
- * A full-width banner heading one group of team cards in the balances grid.
- *
- * @param props.label - "Salaried" or "Hourly".
- * @param props.count - How many people are in the group.
- * @returns The banner, spanning every grid column.
- */
-function GroupBanner({ label, count }: { label: string; count: number }) {
+function TileLink({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
   return (
-    <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'baseline', gap: 1, pt: 0.5 }}>
-      <Typography sx={{ fontWeight: 700 }}>{label}</Typography>
-      <Typography variant="caption" color="text.secondary">{count} {count === 1 ? 'person' : 'people'}</Typography>
+    <Box
+      component="button" type="button" aria-label={label} onClick={onClick}
+      sx={{
+        p: 0, border: 0, background: 'none', font: 'inherit', textAlign: 'left', cursor: 'pointer',
+        display: 'grid', borderRadius: 2,
+        '& > *': { height: '100%' },                        // the KPI paper fills the button
+        '&:hover > *': { borderColor: 'primary.main' },
+        '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
+      }}
+    >
+      {children}
     </Box>
   );
 }
@@ -136,8 +134,9 @@ export default function ManagerDashboard() {
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');
   // Today's decision queue starts folded to its oldest few; this reveals the rest.
   const [queueExpanded, setQueueExpanded] = useState(false);
-  // The Team tab's name filter, applied to the rings and the member cards.
-  const [teamSearch, setTeamSearch] = useState('');
+  // A filter a Today tile asks the Team tab to apply (with a nonce so clicking
+  // the same tile again re-applies it); the Team tab owns its own search (#361).
+  const [teamFilterReq, setTeamFilterReq] = useState<RequestedTeamFilter | null>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -321,96 +320,22 @@ export default function ManagerDashboard() {
   }, [monthly]);
   const notes = useMemo(() => insights(members, absences, labelOf), [members, absences, labelOf]);
   const calFrom = mondayOf(today());                     // the calendar shows four weeks from this Monday
-  // The Team tab's members after the name filter, matched on the typed text.
-  const q = teamSearch.trim().toLowerCase();
-  const teamShown = q ? members.filter((mem) => (mem.name || '').toLowerCase().includes(q)) : members;
   const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
 
-  // Team balances split by type (#300, #338): salaried keeps every pot; hourly
-  // shows Sick and the vacation-taken counter only. isHourly reads the wire flag.
-  const salariedShown = teamShown.filter((mem) => !isHourly(mem.balances));
-  const hourlyShown = teamShown.filter((mem) => isHourly(mem.balances));
+  /** Pull the team again after a manager change (balances, add, remove) so the
+   *  cards and the waiting count follow it at once (#362, #363). */
+  const refreshTeam = useCallback(() => {
+    getTeamMembers()
+      .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
+      .catch(() => { /* the cards keep their figures until the next change */ });
+    getTeamPending().then((r) => setPending(r.data.pending || [])).catch(() => { /* stale queue until next load */ });
+  }, []);
 
-  /**
-   * One team member's balance card, matching each type's rules.
-   *
-   * @param mem - The member and their balances.
-   * @param k - The card's index in its group, for the entrance stagger.
-   * @returns The animated card.
-   */
-  const renderMemberCard = (mem: any, k: number) => {
-    const b = mem.balances || {};
-    // Their next time away from today on, approved or asked.
-    const nextOff = absences
-      .filter((a) => a.who === mem.name && a.end >= today())
-      .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
-    const bc = isHourly(b);                            // hourly: Sick plus a vacation counter
-    /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
-    const line = (label: string, v: number, of?: number) => (
-      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-        <Typography variant="body2" color="text.secondary">{label}</Typography>
-        <Typography variant="body2" sx={{ fontWeight: 700, color: v < 0 ? 'error.main' : 'text.primary' }}>{v}{of ? ` of ${of}` : ''}</Typography>
-      </Box>
-    );
-    return (
-      <m.div
-        key={mem.id}
-        layout
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.96, transition: EXIT }}
-        style={{ display: 'grid' }}
-      >
-        {/* A card lifts slightly under the pointer so it reads as one object. */}
-        <Paper sx={{
-          p: 2, display: 'grid', gap: 0.75, alignContent: 'start', ...riseAt(k, { step: 40, max: 8 }),
-          transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
-          '&:hover': { transform: 'translateY(-2px)', borderColor: theme.tokens.line2 },
-        }}>
-          <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center', mb: 0.5 }}>
-            <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(mem.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
-              {initials(mem.name)}
-            </Box>
-            <Box sx={{ minWidth: 0 }}>
-              {/* Wrap a long name onto a second line instead of cutting it off. */}
-              <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{mem.name}</Typography>
-              <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
-            </Box>
-          </Box>
-          {bc ? (
-            <>
-              {/* Vacation is a counter here, not a balance: no "of", with a caption. */}
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
-                <Typography variant="body2" sx={{ fontWeight: 700 }}>{b.vacation_taken ?? 0}</Typography>
-              </Box>
-              <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>This year. Counted, not a balance.</Typography>
-              {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
-            </>
-          ) : (
-            <>
-              {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
-              {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
-              {line('Make-Up', b.overtime ?? 0)}
-              {line('Carry Over', b.carryover ?? 0)}
-            </>
-          )}
-          <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>
-            {nextOff ? (
-              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Typography variant="body2" color="text.secondary">Next off</Typography>
-                <KindPill kind={nextOff.kind} label={nextOff.label} />
-                <Typography variant="body2">
-                  {/* Full day format; formatDayRange shows one date when start == end. */}
-                  {formatDayRange(dayKey(nextOff.start), dayKey(nextOff.end))}{nextOff.pending ? ' (asked)' : ''}
-                </Typography>
-              </Box>
-            ) : <Typography variant="body2" color="text.secondary">No time off booked.</Typography>}
-          </Box>
-        </Paper>
-      </m.div>
-    );
-  };
+  /** Open the Team tab with a tile's filter applied. @param key - The filter. */
+  const openTeamFiltered = useCallback((key: RequestedTeamFilter['key']) => {
+    setTeamFilterReq({ key, nonce: Date.now() });         // nonce so the same tile re-applies
+    go('team');
+  }, [go]);
 
   if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
@@ -455,16 +380,25 @@ export default function ManagerDashboard() {
       <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
+          {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
-            <Kpi label="Waiting on you" value={String(waiting.length)} note={waiting.length ? `oldest ${oldest} day${oldest === 1 ? '' : 's'}` : 'nothing waiting'} warn={oldest > 7} />
-            <Kpi label="Off this week" value={String(offThisWeek(names, absences))} note={`of ${members.length} on the team`} />
-            <Kpi
-              label="Average time to approve"
-              value={approve.avg === null ? '-' : `${approve.avg.toFixed(1)} d`}
-              note={approve.avg === null ? 'no approvals in 90 days' : 'last 90 days'}
-              spark={approve.months.map((m) => m.avg)}
-            />
-            <Kpi label="Days off taken this year" value={String(Math.round(daysOffTotal * 10) / 10)} note="approved leave, team total" spark={cumulative} />
+            <TileLink label="Open the people waiting on you" onClick={() => openTeamFiltered('waiting')}>
+              <Kpi label="Waiting on you" value={String(waiting.length)} note={waiting.length ? `oldest ${oldest} day${oldest === 1 ? '' : 's'}` : 'nothing waiting'} warn={oldest > 7} />
+            </TileLink>
+            <TileLink label="Open who is off this week" onClick={() => openTeamFiltered('off')}>
+              <Kpi label="Off this week" value={String(offThisWeek(names, absences))} note={`of ${members.length} on the team`} />
+            </TileLink>
+            <TileLink label="Open Trends" onClick={() => go('trends')}>
+              <Kpi
+                label="Average time to approve"
+                value={approve.avg === null ? '-' : `${approve.avg.toFixed(1)} d`}
+                note={approve.avg === null ? 'no approvals in 90 days' : 'last 90 days'}
+                spark={approve.months.map((m) => m.avg)}
+              />
+            </TileLink>
+            <TileLink label="Open Trends" onClick={() => go('trends')}>
+              <Kpi label="Days off taken this year" value={String(Math.round(daysOffTotal * 10) / 10)} note="approved leave, team total" spark={cumulative} />
+            </TileLink>
           </Box>
 
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1.1fr) minmax(0, 1fr)' }, alignItems: 'start' }}>
@@ -596,48 +530,24 @@ export default function ManagerDashboard() {
       )}
 
       {tab === 'team' && (
-        <>
-          {/* Name filter on the left; the sick-day action sits with it, the team area
-              being where picking a team member to log for belongs. */}
-          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
-            <TextField
-              label="Search by name" value={teamSearch} onChange={(e) => setTeamSearch(e.target.value)}
-              size="small" placeholder="Start typing a name" sx={{ flex: '1 1 240px', maxWidth: 360 }}
-            />
-            {/* Shown only where the manager's location is enabled; off in reporting-only mode. */}
-            {canLogSickDays && (
-              <Button
-                variant="contained" startIcon={<EventBusyIcon />} sx={{ ml: { sm: 'auto' } }}
-                disabled={!processingEnabled} onClick={() => setSickDialogOpen(true)}
-              >
-                Log sick day
-              </Button>
-            )}
-          </Box>
-          {/* Vacation left is a salaried figure; hourly staff have a counter, not a balance. */}
-          {salariedShown.length > 0 && (
-            <Panel title="Vacation left"><VacationRings members={salariedShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
-          )}
-          {/* A search fades out the people who no longer match while the rest slide together.
-              With both types present the cards split into a Salaried and an Hourly band. */}
-          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', position: 'relative' }}>
-            <AnimatePresence mode="popLayout" initial={false}>
-            {salariedShown.length > 0 && hourlyShown.length > 0
-              ? [
-                  <GroupBanner key="band-salaried" label="Salaried" count={salariedShown.length} />,
-                  ...salariedShown.map((mem, k) => renderMemberCard(mem, k)),
-                  <GroupBanner key="band-hourly" label="Hourly" count={hourlyShown.length} />,
-                  ...hourlyShown.map((mem, k) => renderMemberCard(mem, k)),
-                ]
-              : teamShown.map((mem, k) => renderMemberCard(mem, k))}
-            <m.div key="add" layout style={{ display: 'grid' }}>
-              <Button variant="outlined" onClick={() => go('add')} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px` }}>
-                + Add a new hire
-              </Button>
-            </m.div>
-            </AnimatePresence>
-          </Box>
-        </>
+        // The whole Team tab lives in its own component (#361): tiles that filter,
+        // Cards or Table, and a person panel that changes balances (#362) and adds
+        // or removes people (#363). It is drawn from the team data already loaded.
+        <TeamTab
+          members={members}
+          requests={requests}
+          pending={pending}
+          absences={absences}
+          colorOf={colorOf}
+          processingEnabled={processingEnabled}
+          canLogSickDays={canLogSickDays}
+          requestedFilter={teamFilterReq}
+          onFilterApplied={() => setTeamFilterReq(null)}
+          onLogSickDay={() => setSickDialogOpen(true)}
+          onOpenHistory={() => go('history')}
+          onRefresh={refreshTeam}
+          onNotify={(message, severity) => setSnack({ open: true, message, severity })}
+        />
       )}
 
       {tab === 'trends' && (
@@ -659,8 +569,17 @@ export default function ManagerDashboard() {
               {(() => {
                 const rows = totalsByKind(requests, year);
                 const top = Math.max(1, ...rows.map((r) => r[1]));   // the longest bar fills the track
+                // Each kind's row opens the team's requests in History (#361).
                 return rows.map(([label, v, k], i) => (
-                  <Box key={label} sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 150px) minmax(0, 1fr) 48px', gap: 1.5, alignItems: 'center' }}>
+                  <Box
+                    key={label} component="button" type="button" onClick={() => go('history')}
+                    aria-label={`Open ${label} requests in History`}
+                    sx={{
+                      display: 'grid', gridTemplateColumns: 'minmax(0, 150px) minmax(0, 1fr) 48px', gap: 1.5, alignItems: 'center',
+                      width: '100%', border: 0, background: 'none', font: 'inherit', textAlign: 'left', cursor: 'pointer', px: 0, py: 0.5,
+                      borderRadius: 1, '&:hover': { bgcolor: theme.tokens.hover },
+                    }}
+                  >
                     <Typography variant="body2" color="text.secondary">{label}</Typography>
                     <Box sx={{ height: 10, borderRadius: 999, bgcolor: theme.tokens.hover, overflow: 'hidden' }}>
                       <Box
