@@ -239,7 +239,7 @@ async def _stream(viewer: _Viewer, start_after: int, resuming: bool):
             False for a fresh reader (no history).
 
     Yields:
-        SSE message blocks and heartbeat comment lines.
+        SSE message blocks, including a ``heartbeat`` event when nothing else flows.
     """
     queue = event_bus.subscribe()                              # start buffering live events at once
     try:
@@ -257,7 +257,10 @@ async def _stream(viewer: _Viewer, start_after: int, resuming: bool):
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
             except asyncio.TimeoutError:
-                yield ": heartbeat\n\n"                         # keep the connection and the proxy alive
+                # A named event, not a ": comment" line: a browser never hands a
+                # comment to the page, so only a real event resets its dead-stream
+                # timer; a comment let every quiet stream be dropped after 45 s.
+                yield "event: heartbeat\ndata: {}\n\n"          # keep the connection, the proxy and the reader alive
                 continue
             pid = int(payload["id"])
             if pid in seen:

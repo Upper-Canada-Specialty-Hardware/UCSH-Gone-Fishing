@@ -12,13 +12,14 @@ import {
 export type LiveStatus = 'connecting' | 'live' | 'reconnecting' | 'polling';
 
 // A dead stream shows no error but stops sending; after this long with nothing,
-// including the server's heartbeats, we give up on it and poll instead.
+// including the server's 15-second heartbeats, we give up on it and poll instead.
 const DEAD_MS = 45000;
-// How often the polling fallback asks for events it missed.
-const POLL_MS = 15000;
+// How often the polling fallback asks for events it missed; short, so even the
+// fallback keeps pages within a few seconds of each other.
+const POLL_MS = 5000;
 // While polling, how often to try the stream again (an admin ticket expires,
 // so a stream the browser could not resume is reopened with a fresh one).
-const RETRY_STREAM_MS = 60000;
+const RETRY_STREAM_MS = 20000;
 
 /**
  * Merge one event's row into the loaded rows by (request_type, item_id).
@@ -131,9 +132,13 @@ export function useLiveRequests(options: {
       source.onopen = () => { if (!closed) { stopPolling(); setStatus('live'); armDead(); } };
       // The server's first message says where "now" is, so a later resume starts there.
       source.addEventListener('ready', (e) => {
+        armDead();                                         // the stream is up and talking
         const id = Number((e as MessageEvent).lastEventId);
         if (!Number.isNaN(id)) lastId = Math.max(lastId ?? 0, id);
       });
+      // The server sends one every 15 s while nothing else flows; each proves the
+      // stream is alive, so a quiet stream is never mistaken for a dead one.
+      source.addEventListener('heartbeat', () => { if (!closed) armDead(); });
       source.addEventListener('request_event', (e) => {
         if (closed) return;
         armDead();                                         // a message means the stream is alive

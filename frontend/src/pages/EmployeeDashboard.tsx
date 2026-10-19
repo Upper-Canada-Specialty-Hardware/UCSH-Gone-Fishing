@@ -15,7 +15,6 @@ import { STATUS_COLOR } from '../components/dataGridDefaults';
 import { getMyBalances, getMyRequests } from '../api/client';
 import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
-import LiveNotice from '../components/LiveNotice';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
@@ -223,7 +222,7 @@ export default function EmployeeDashboard() {
         .catch(() => { /* the merged rows stay; balances refresh on the next event */ });
     }, 1500);
   }, []);
-  const { status: liveStatus } = useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+  useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   useEffect(() => {
     let cancelled = false;
@@ -313,7 +312,6 @@ export default function EmployeeDashboard() {
   const managers = String(employee?.managers || '').split(',').map((s) => s.trim()).filter(Boolean);
   return (
     <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
-      <LiveNotice status={liveStatus} />
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
           {/* Same greeting as the manager and admin dashboards, by this device's clock. */}

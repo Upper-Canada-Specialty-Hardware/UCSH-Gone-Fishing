@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Typography, Paper, Alert, Snackbar, Stack } from '@mui/material';
 import TopBar from '../components/TopBar';
-import LiveNotice from '../components/LiveNotice';
 import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
 import AdminNav, { NavGroup } from '../components/admin/AdminNav';
@@ -468,7 +467,7 @@ export default function AdminDashboard() {
       void (full ? reloadRequests() : reloadDerived());
     }, 2000);
   }, [reloadDerived, reloadRequests]);
-  const { status: liveStatus } = useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+  useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   const handleReprocess = useCallback(async (id: string, reason: string) => {
     setActionLoading(`reprocess-${id}`);
@@ -536,7 +535,6 @@ export default function AdminDashboard() {
           component="main"
           sx={{ flex: 1, minWidth: 0, px: { xs: 2, sm: 3, lg: 4 }, py: { xs: 2, sm: 3 }, display: 'grid', gap: 2.5, alignContent: 'start', gridTemplateColumns: 'minmax(0, 1fr)' }}
         >
-          <LiveNotice status={liveStatus} />
           {loading ? (
             <AdminSkeleton screen={tab} table={!!REQUEST_VIEWS[tab]} title={tab !== 'home' ? SCREEN_TITLES[tab] : undefined} />
           ) : (

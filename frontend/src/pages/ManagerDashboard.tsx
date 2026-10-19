@@ -44,7 +44,6 @@ import { greeting } from '../utils/greeting';
 import { isHourly } from '../utils/employment';
 import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
-import LiveNotice from '../components/LiveNotice';
 
 /**
  * A new hire's details left by the supervisor's "add this person" email link
@@ -178,7 +177,7 @@ export default function ManagerDashboard() {
       }
     }, 600);
   }, []);
-  const { status: liveStatus } = useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
+  useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent });
 
   useEffect(() => {
     let cancelled = false;
@@ -412,7 +411,6 @@ export default function ManagerDashboard() {
 
   return (
     <Box sx={{ display: 'grid', gap: 2.5, animation: `${KF.fade} .24s ease-out both` }}>
-      <LiveNotice status={liveStatus} />
       {/* Greeting, what is waiting, the team's size, and the new-hire shortcut. */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 240 }}>
