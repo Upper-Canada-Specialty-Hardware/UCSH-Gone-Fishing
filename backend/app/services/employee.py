@@ -50,6 +50,26 @@ async def get_employee_by_email(email: str) -> dict | None:
     return None
 
 
+async def get_employees_by_email(email: str) -> list[dict]:
+    """Every staff record carrying an email, in Staff Directory order.
+
+    One mailbox can genuinely belong to two records (a shared desk such as
+    Accounts Payable and the person who reads it), so sign-in asks which one.
+
+    Args:
+        email: The address, matched case-insensitively.
+
+    Returns:
+        The matching records (``{"id", "fields"}``); empty when none match.
+    """
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)   # one read of the directory
+    target = email.strip().lower()
+    return [
+        item for item in items
+        if (item.get("fields", {}).get("EmailAddress") or "").strip().lower() == target
+    ]
+
+
 async def get_employee_by_id(item_id: str | int) -> dict | None:
     try:
         # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).

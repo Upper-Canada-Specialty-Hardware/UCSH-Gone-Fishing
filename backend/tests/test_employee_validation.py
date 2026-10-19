@@ -877,3 +877,17 @@ def test_module_makes_no_write_or_notify_calls():
     called = _called_function_names(source)
     leaked = called & FORBIDDEN_CALLS
     assert not leaked, f"validation module must not call writers/notifiers: {leaked}"
+
+
+def test_a_shared_mailbox_is_not_reported_as_a_different_person():
+    # Two real records on one mailbox: the round-trip lands on the other record,
+    # which carries the same email, so this is a shared desk, not a mis-wiring.
+    other = {"id": "40", "fields": {"Title": "Accounts Payable", "EmailAddress": "AP@ucsh.com"}}
+    verdict = ev._identity_verdict("41", "ap@ucsh.com", 12, other)
+    assert verdict["status"] == "pass"
+    assert "shared with Accounts Payable" in verdict["detail"]
+
+
+def test_a_different_person_with_another_email_still_fails():
+    other = {"id": "40", "fields": {"Title": "Someone Else", "EmailAddress": "else@ucsh.com"}}
+    assert ev._identity_verdict("41", "ap@ucsh.com", 12, other)["status"] == "fail"

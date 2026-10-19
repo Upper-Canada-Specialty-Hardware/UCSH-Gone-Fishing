@@ -41,7 +41,6 @@ CASE_EMPLOYMENT_TYPE_SUSPECT = "employment_type_suspect"
 CASE_USERNAME_AS_NAME = "username_as_name"
 CASE_NO_USER_LINK = "no_user_link"
 CASE_BELOW_ZERO_PREDATES_RULES = "below_zero_predates_rules"
-CASE_EMAIL_CONFLICT = "email_conflict"   # two records share an email; the later one was blanked
 
 # The five pots and their SharePoint columns, for the below-zero detector.
 _POT_COLUMNS = {
@@ -225,17 +224,15 @@ async def staff_sync_step(session: AsyncSession, sync_run) -> dict:
         fields = dict(item.get("fields", {}))
         counts["seen"] += 1
 
-        # Keep the email on the first record that claims it; blank it on a later
-        # duplicate so the unique index holds. The person is still imported, and
-        # the record whose email was blanked is flagged for HR (both ids kept).
+        # A shared email is kept on every record that carries it: some mailboxes
+        # really belong to two records (a shared desk and the person who reads it),
+        # and the request page asks which one is signing in. Only counted, so the
+        # storage screen still shows how many records share one.
         norm = _norm_email(fields.get("EmailAddress"))
-        email_conflict_with = None                                  # the first record's id, when this is a dup
         if norm and seen_emails.get(norm, sp_id) != sp_id:
-            email_conflict_with = seen_emails[norm]
-            fields["EmailAddress"] = ""                             # -> NULL, no collision
             counts["email_conflicts"] += 1
-            logger.warning("Staff import: email %s on #%s duplicates #%s; kept on the first",
-                           norm, sp_id, email_conflict_with)
+            logger.info("Staff import: #%s shares email %s with #%s; kept on both",
+                        sp_id, norm, seen_emails[norm])
         elif norm:
             seen_emails[norm] = sp_id
 
@@ -264,13 +261,6 @@ async def staff_sync_step(session: AsyncSession, sync_run) -> dict:
         if dropped:
             dropped_columns.update(dropped)
         counts["findings"] += await _run_detectors(session, sp_id, fields, run_id)
-        if email_conflict_with is not None:                         # file the email-conflict finding, both ids kept
-            counts["findings"] += bool(await record_finding(
-                session, CASE_EMAIL_CONFLICT, "staff", None, sp_id,
-                "Two staff records share one email; this record's email was blanked to keep it unique.",
-                {"blanked_sp_id": sp_id, "kept_sp_id": email_conflict_with, "email": norm},
-                run_id,
-            ))
 
     counts["relinked"] = await _relink_supervisors(session)
     counts["dropped_columns"] = len(dropped_columns)

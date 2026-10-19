@@ -82,15 +82,28 @@ function humanize(key: string): string {
  */
 function finalSyncLines(fs: FinalSync | null): string[] {
   if (!fs) return [];
-  return Object.entries(fs).map(([step, value]) => {
-    if (value && typeof value === 'object') {
-      const parts = Object.entries(value as Record<string, unknown>)
-        .filter(([k]) => k !== 'error_ids')               // ids are listed separately
-        .map(([k, v]) => `${humanize(k)} ${Array.isArray(v) ? v.length : v}`);
-      return `${humanize(step)}: ${parts.join(', ')}`;
-    }
-    return `${humanize(step)}: ${value}`;
-  });
+  return Object.entries(fs).map(([step, value]) => `${humanize(step)}: ${countsText(value)}`);
+}
+
+/**
+ * One count, or a group of counts, as words. Groups nest (the requests step
+ * counts each request kind), so a group is written inside brackets rather than
+ * shown as "[object Object]".
+ *
+ * @param value - A number, text, a list (shown as its length) or a group.
+ * @returns E.g. "Leave (Created 3, Updated 2), Overtime (Created 0, Updated 1)".
+ */
+function countsText(value: unknown): string {
+  if (Array.isArray(value)) return String(value.length);              // a list of ids: how many
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([k]) => k !== 'error_ids')                            // ids are listed separately
+      .map(([k, v]) => (v && typeof v === 'object' && !Array.isArray(v)
+        ? `${humanize(k)} (${countsText(v)})`                        // a nested group, bracketed
+        : `${humanize(k)} ${countsText(v)}`))
+      .join(', ');
+  }
+  return String(value);
 }
 
 /**

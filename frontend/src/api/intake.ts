@@ -23,6 +23,20 @@ export interface EmployeeSession {
   email: string;
 }
 
+/**
+ * One staff record on a shared mailbox, as /verify lists them for the person to
+ * pick: who it is, where they work, and that record's own signed token.
+ */
+export interface SignInChoice {
+  name: string;
+  department: string;
+  location: string;
+  role: string;
+  uid: string;
+  token: string;
+  exp: string;
+}
+
 /** The token /verify returns for an address on no staff record. */
 export interface VerifiedEmail {
   email: string;
@@ -260,7 +274,8 @@ export const requestCode = (email: string) => intake.post('/code', { email });
  *
  * @param email - The same address.
  * @param code - The 6 digits typed.
- * @returns {status: "employee", name, role, uid, token, exp} or {status: "unknown", verified}.
+ * @returns {status: "employee", name, role, uid, token, exp}; {status: "choose", people}
+ *   when several staff records share the address; or {status: "unknown", verified}.
  * @throws AxiosError 400 with a readable reason when the code is wrong or expired.
  */
 export const verifyCode = (email: string, code: string) =>

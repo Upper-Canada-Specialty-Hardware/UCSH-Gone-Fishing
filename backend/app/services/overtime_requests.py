@@ -6,14 +6,13 @@ from app.graph.sharepoint import sp_client
 from app.graph.email import send_email, send_email_with_dashboard
 from app.services.sms import send_sms
 from app.services.employee import (
-    get_employee_by_email,
     get_employee_by_id,
     get_all_managers_for_employee,
     map_location_to_province,
 )
 # Who a request is for: SubmitterEmail first, then the SubmittedBy person column.
 from app.services.request_submitter import (
-    UnknownSubmitter,
+    new_request_submitter,
     resolve_request_submitter,
     submitter_columns,
 )
@@ -63,7 +62,7 @@ logger = logging.getLogger(__name__)
 @guarded  # refuses mid-switch, and the switch waits for it to finish
 async def process_new_overtime_request(
     form_data: dict, submitter_email: str, source: str | None = None,
-    notify: bool = True,
+    notify: bool = True, employee_id: str | int | None = None,
 ) -> dict:
     """Create the SharePoint overtime item, assign its manager, ask for approval.
 
@@ -75,6 +74,8 @@ async def process_new_overtime_request(
         notify: True asks the manager for approval, as a normal submission
             does. False assigns the manager but skips that email, so an admin
             can create and approve the request in one step (#283).
+        employee_id: The submitter's staff id when the caller knows it (a signed-in
+            person). It wins over the email, which two staff records can share.
 
     Returns:
         The created SharePoint item.
@@ -106,11 +107,7 @@ async def process_new_overtime_request(
     # matches nobody rather than writing a half-formed row (#324). SharePoint mode
     # is unchanged: there EmployeeID is not written on the overtime list.
     if await requests_in_postgres():
-        submitter = await get_employee_by_email(submitter_email)
-        if not submitter:
-            raise UnknownSubmitter(
-                f"No staff record was found for {submitter_email}, so the request was not created."
-            )
+        submitter = await new_request_submitter(submitter_email, employee_id)   # the chosen person when the email is shared
         fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
 
     # No duplicate check here, deliberately — a clash with an already-approved

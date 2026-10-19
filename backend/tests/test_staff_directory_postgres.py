@@ -201,15 +201,14 @@ def test_import_builds_supervisor_links_and_relinks_by_name(clean_db, monkeypatc
 
 # --- Duplicate email and supervisor-link replacement (#341) -------------------
 
-def test_duplicate_email_blanks_the_later_and_files_a_conflict_finding(clean_db, monkeypatch):
-    # Two records claim one email: the first keeps it, the later one's email is
-    # blanked so the unique index holds, and an email_conflict finding is filed
-    # against the later record carrying both ids and the shared email.
+def test_a_shared_email_is_kept_on_both_records(clean_db, monkeypatch):
+    # Two records genuinely share one mailbox (a shared desk and the person who
+    # reads it): both keep the email, the share is counted, and no finding is filed.
     first = _sp_item("101", EmailAddress="dup@ucsh.com")
     later = _sp_item("202", Title="Bob Builder", EmailAddress="dup@ucsh.com")
     _fake_list(monkeypatch, [first, later])
     counts = _import([first, later])
-    assert counts["email_conflicts"] == 1                      # the later record was flagged a dup
+    assert counts["email_conflicts"] == 1                      # counted for the storage screen
 
     async def read():
         async with async_session() as session:
@@ -220,13 +219,9 @@ def test_duplicate_email_blanks_the_later_and_files_a_conflict_finding(clean_db,
             return rows, finding
     rows, finding = run(read())
 
-    assert rows["101"].email == "dup@ucsh.com"                 # the first keeps the email
-    assert (rows["202"].email or "") == ""                     # the later one is blanked to NULL
-    assert finding is not None
-    assert finding.subject_id == "202"                         # filed against the blanked record
-    assert finding.evidence["blanked_sp_id"] == "202"
-    assert finding.evidence["kept_sp_id"] == "101"
-    assert finding.evidence["email"] == "dup@ucsh.com"
+    assert rows["101"].email == "dup@ucsh.com"
+    assert rows["202"].email == "dup@ucsh.com"                 # no longer blanked
+    assert finding is None
 
 
 def test_reimport_without_managers_removes_the_manager_link(clean_db, monkeypatch):

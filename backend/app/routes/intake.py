@@ -30,7 +30,7 @@ from app.graph.email import send_email
 from app.services import email_codes, held_requests
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.dashboard_tokens import generate_dashboard_token
-from app.services.employee import get_employee_by_email, is_manager
+from app.services.employee import get_employee_by_email, get_employees_by_email, is_manager
 from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,10 @@ async def verify_code(body: VerifyRequest):
         For a Staff Directory employee: {"status": "employee", "name", and the
         dashboard token fields role/uid/token/exp}. role is "manager" when
         someone lists them as a manager (it opens My team as well as their own
-        pages), otherwise "employee". For anyone else:
+        pages), otherwise "employee". When more than one Staff Directory record
+        carries the address (a shared mailbox): {"status": "choose", "people":
+        [one employee answer per record, plus "department" and "location"]}, so
+        the page asks which person is signing in. For anyone else:
         {"status": "unknown", "verified": {email, exp, token}}.
 
     Raises:
@@ -203,20 +206,42 @@ async def verify_code(body: VerifyRequest):
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.error)
 
-    employee = await get_employee_by_email(email)
-    if employee is not None:
-        name = employee.get("fields", {}).get("Title", "")
-        role = "manager" if await _manages_anyone(name) else "employee"
-        # Same signed token the emailed dashboard links carry; 30 days by default.
-        session_token = generate_dashboard_token(role, employee["id"])
+    people = await get_employees_by_email(email)
+    if len(people) > 1:
+        # A shared mailbox: whoever controls it may sign in as any record on it,
+        # so each gets its own token and the page asks which one this is.
         return {
-            "status": "employee",
-            "name": name,
-            **session_token,                                   # role, uid, token, exp
+            "status": "choose",
+            "people": [await _signed_in_as(employee) for employee in people],
         }
+    if people:
+        return {"status": "employee", **await _signed_in_as(people[0])}
 
     # Not on staff yet: prove the address was verified for the new-hire path.
     return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
+
+
+async def _signed_in_as(employee: dict) -> dict:
+    """The sign-in answer for one staff record: who they are, plus their token.
+
+    Args:
+        employee: The staff record (``{"id", "fields"}``).
+
+    Returns:
+        {"name", "department", "location", role, uid, token, exp}. role is
+        "manager" when someone lists them as a manager, otherwise "employee".
+    """
+    fields = employee.get("fields", {})
+    name = fields.get("Title", "")
+    role = "manager" if await _manages_anyone(name) else "employee"
+    # Same signed token the emailed dashboard links carry; 30 days by default.
+    session_token = generate_dashboard_token(role, employee["id"])
+    return {
+        "name": name,
+        "department": fields.get("Department") or "",          # tells two records apart on the chooser
+        "location": fields.get("Location") or "",
+        **session_token,                                       # role, uid, token, exp
+    }
 
 
 @router.get("/departments")

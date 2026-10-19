@@ -28,6 +28,7 @@ from app.graph.sharepoint import sp_client
 from app.repositories.staff_store import staff_in_postgres
 from app.services.employee import (
     get_employee_by_email,
+    get_employee_by_id,
     resolve_person_field,
     resolve_person_field_name,
 )
@@ -109,6 +110,36 @@ def submitter_email_of(fields: dict) -> str:
         The lowercase address, or "" for requests made before the column.
     """
     return (fields.get(SUBMITTER_EMAIL_COLUMN) or "").strip().lower()
+
+
+async def new_request_submitter(submitter_email: str, employee_id: str | int | None = None) -> dict:
+    """The staff record a new request is for: the given staff id, else the email.
+
+    Two staff records can share one mailbox (Accounts Payable and the person who
+    reads it, for example). The request page asks such a person which record they
+    are and signs them in as that one, so its staff id is passed here and wins;
+    re-resolving by email alone would always pick the first record.
+
+    Args:
+        submitter_email: The submitter's address.
+        employee_id: The signed-in person's staff id, when the caller knows it.
+
+    Returns:
+        The staff record (``{"id", "fields"}``).
+
+    Raises:
+        UnknownSubmitter: When neither the id nor the email finds anyone.
+    """
+    if employee_id not in (None, ""):
+        employee = await get_employee_by_id(employee_id)        # the person chosen at sign-in
+        if employee:
+            return employee
+    employee = await get_employee_by_email(submitter_email) if submitter_email else None
+    if not employee:
+        raise UnknownSubmitter(
+            f"No staff record was found for {submitter_email}, so the request was not created."
+        )
+    return employee
 
 
 async def resolve_request_submitter(fields: dict, person_column: str) -> dict | None:

@@ -1050,6 +1050,14 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
         )}
     if str(resolved.get("id")) != str(employee_id):
         other = resolved.get("fields", {}).get("Title", "")
+        other_email = (resolved.get("fields", {}).get("EmailAddress") or "").strip().lower()
+        if other_email == email.lower():
+            # A shared mailbox (e.g. Accounts Payable and the person who reads it):
+            # both records are real, and the request page asks which one signs in.
+            return {"status": "pass", "account_count": 1, "lookup_id": lookup_id, "detail": (
+                f"This email is shared with {other} (#{resolved.get('id')}). The request "
+                "page asks which of them is signing in, so each gets their own requests."
+            )}
         return {"status": "fail", "account_count": 1, "lookup_id": lookup_id, "detail": (
             f"Their email/name matches a different person in the directory "
             f"({other}, #{resolved.get('id')}), not this record."

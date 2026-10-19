@@ -22,7 +22,7 @@ from app.services.approval_versions import (
     MATERIAL_FIELDS_CARRYOVER_PAYOUT,
 )
 from app.services.leave_requests import _resolve_user_lookup_id
-from app.services.request_submitter import UnknownSubmitter, submitter_columns
+from app.services.request_submitter import new_request_submitter, submitter_columns
 from app.services.audit_trail import (
     AuditTrailBuilder,
     write_audit_log,
@@ -40,7 +40,7 @@ RECEIVED_EMAIL_ACTION = "request_received_email"
 @guarded  # refuses mid-switch, and the switch waits for it to finish
 async def process_new_carryover_payout(
     form_data: dict, submitter_email: str, source: str | None = None,
-    notify: bool = True,
+    notify: bool = True, employee_id: str | int | None = None,
 ) -> dict:
     """Create the SharePoint carryover/payout item, assign its manager, validate.
 
@@ -52,6 +52,8 @@ async def process_new_carryover_payout(
         notify: True runs the approval pipeline (asks the manager), as a normal
             submission does. False assigns the manager and its ids but skips
             that pipeline, so an admin can create and approve it at once (#283).
+        employee_id: The submitter's staff id when the caller knows it (a signed-in
+            person). It wins over the email, which two staff records can share.
 
     Returns:
         The created SharePoint item.
@@ -84,11 +86,7 @@ async def process_new_carryover_payout(
     # matches nobody rather than writing a half-formed row (#324). SharePoint mode
     # is unchanged: there EmployeeID is written later by auto_assign_manager.
     if await requests_in_postgres():
-        submitter = await get_employee_by_email(submitter_email)
-        if not submitter:
-            raise UnknownSubmitter(
-                f"No staff record was found for {submitter_email}, so the request was not created."
-            )
+        submitter = await new_request_submitter(submitter_email, employee_id)   # the chosen person when the email is shared
         fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
 
     item = await request_store.create_list_item(settings.SP_LIST_CARRYOVER_PAYOUT, fields)

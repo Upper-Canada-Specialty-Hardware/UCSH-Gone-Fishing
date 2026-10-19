@@ -20,7 +20,7 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, EmployeeSession, RequestType, VerifiedEmail,
+  Balances, EmployeeSession, RequestType, SignInChoice, VerifiedEmail,
   clearSession, errorText, getRequestTypes, holdRequest, loadNewHire, loadSession, requestCode,
   saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
@@ -34,12 +34,12 @@ import {
  * - newhire-request: then pick a form and fill it in
  * - done: submitted (or held for a new hire)
  */
-type Step = 'email' | 'code' | 'form' | 'newhire' | 'newhire-request' | 'done';
+type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
 
 /** The steps in the order they come, for which way a change of step slides. */
-const STEP_ORDER: Step[] = ['email', 'code', 'form', 'done'];
+const STEP_ORDER: Step[] = ['email', 'code', 'choose', 'form', 'done'];
 
 /** A new step slides in from the side the person moved towards; the old one leaves the other way. */
 const STEP_MOTION = {
@@ -100,6 +100,7 @@ function ResendRing() {
 const STEP_LABELS: Record<Step, string> = {
   email: 'Your email',
   code: 'The code we email you',
+  choose: 'Which person you are',
   form: 'Your request',
   newhire: 'About you',
   'newhire-request': 'Your request',
@@ -161,6 +162,7 @@ export default function RequestPage() {
   const [code, setCode] = useState('');
   const [session, setSession] = useState<EmployeeSession | null>(null);
   const [verified, setVerified] = useState<VerifiedEmail | null>(null);
+  const [choices, setChoices] = useState<SignInChoice[]>([]);   // the records on a shared mailbox, to pick from
   const [values, setValues] = useState<RequestValues>({ ...EMPTY_REQUEST });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -278,9 +280,10 @@ export default function RequestPage() {
     try {
       const res = await verifyCode(email.trim(), code.trim());
       if (res.data.status === 'employee') {
-        const signedIn: EmployeeSession = { ...res.data, email: email.trim().toLowerCase() };
-        saveSession(signedIn);                          // 30 days on this device
-        navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
+        signInAs(res.data);
+      } else if (res.data.status === 'choose') {
+        setChoices(res.data.people);                    // a shared mailbox: ask which record this is
+        setStep('choose');
       } else {
         saveNewHire(res.data.verified);                 // the code is used up; this tab keeps the 24-hour pass
         navigate('/new-hire', { replace: true });
@@ -291,6 +294,20 @@ export default function RequestPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  /**
+   * Keep the signed-in record on this device and go on to the person's pages.
+   *
+   * @param person - The record signed in as: the only one on the address, or the one picked.
+   */
+  const signInAs = (person: Omit<EmployeeSession, 'email'>) => {
+    const signedIn: EmployeeSession = {
+      name: person.name, role: person.role, uid: person.uid, token: person.token, exp: person.exp,
+      email: email.trim().toLowerCase(),
+    };
+    saveSession(signedIn);                              // 30 days on this device
+    navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
   };
 
   /** Submit as the signed-in employee. */
@@ -379,7 +396,9 @@ export default function RequestPage() {
 
   // The steps in the side panel: a new hire's third step is about them, not just the request.
   const held = step === 'newhire' || step === 'newhire-request' || (step === 'done' && !session);
-  const order: Step[] = held ? ['email', 'code', 'newhire', 'newhire-request', 'done'] : ['email', 'code', 'form', 'done'];
+  const order: Step[] = held
+    ? ['email', 'code', 'newhire', 'newhire-request', 'done']
+    : step === 'choose' ? ['email', 'code', 'choose', 'form', 'done'] : ['email', 'code', 'form', 'done'];   // the pick shows only when asked
   const at = order.indexOf(step);
   const steps: StepItem[] = order.map((k, i) => ({
     label: STEP_LABELS[k],
@@ -461,6 +480,31 @@ export default function RequestPage() {
                       {resendIn > 0 ? `Send a new code (${resendIn}s)` : 'Send a new code'}
                     </Link>
                   </Box>
+                </Box>
+              </>
+            )}
+
+            {step === 'choose' && (
+              <>
+                <Heading>Which person are you?</Heading>
+                <Lead>More than one staff record uses {email.trim()}. Pick yours: your requests and balances follow it.</Lead>
+                <Box sx={{ display: 'grid', gap: 1.25 }}>
+                  {choices.map((person) => (
+                    <Button key={person.uid} variant="outlined" size="large" onClick={() => signInAs(person)}
+                      sx={{ justifyContent: 'flex-start', textAlign: 'left', py: 1.5, px: 2, textTransform: 'none' }}>
+                      <Box sx={{ display: 'grid', minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 600, fontSize: 15 }}>{person.name}</Typography>
+                        {(person.department || person.location) && (
+                          <Typography variant="body2" color="text.secondary">
+                            {[person.department, person.location].filter(Boolean).join(' · ')}
+                          </Typography>
+                        )}
+                      </Box>
+                    </Button>
+                  ))}
+                </Box>
+                <Box>
+                  <Link component="button" variant="body2" onClick={() => { setStep('email'); setChoices([]); setError(''); }}>Use a different email</Link>
                 </Box>
               </>
             )}

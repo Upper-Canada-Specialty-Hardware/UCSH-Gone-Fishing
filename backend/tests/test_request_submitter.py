@@ -191,3 +191,36 @@ def test_a_failing_list_is_reported_without_stopping_the_others(monkeypatch):
     assert report["lists"]["overtime"]["error"] == "403 Forbidden"
     assert report["lists"]["leave"]["present"] == ["SubmitterEmail", "RequestSource"]
     assert not report["ready"]
+
+
+# ----- a new request's submitter, when two records share an email -----
+
+DESK = {"id": "3", "fields": {"Title": "Accounts Desk", "EmailAddress": "pat@ucsh.com"}}
+
+
+def test_a_new_request_keeps_the_record_chosen_at_sign_in(directory, monkeypatch):
+    # Pat's email also sits on an older shared-desk record; the id from sign-in wins.
+    async def by_id(item_id):
+        return {"3": DESK, "7": PAT}.get(str(item_id))
+
+    monkeypatch.setattr(request_submitter, "get_employee_by_id", by_id)
+    assert asyncio.run(request_submitter.new_request_submitter("pat@ucsh.com", "7")) is PAT
+    assert directory["email"] == 0                             # never re-matched by email
+
+
+def test_a_new_request_without_an_id_falls_back_to_the_email(directory, monkeypatch):
+    async def by_id(item_id):
+        return None                                            # a stale id finds nobody
+
+    monkeypatch.setattr(request_submitter, "get_employee_by_id", by_id)
+    assert asyncio.run(request_submitter.new_request_submitter("pat@ucsh.com", None)) is PAT
+    assert asyncio.run(request_submitter.new_request_submitter("pat@ucsh.com", "99")) is PAT
+
+
+def test_a_new_request_for_nobody_is_refused(directory, monkeypatch):
+    async def by_id(item_id):
+        return None
+
+    monkeypatch.setattr(request_submitter, "get_employee_by_id", by_id)
+    with pytest.raises(request_submitter.UnknownSubmitter):
+        asyncio.run(request_submitter.new_request_submitter("nobody@ucsh.com", None))

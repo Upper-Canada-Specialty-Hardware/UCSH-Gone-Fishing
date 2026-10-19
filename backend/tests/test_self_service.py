@@ -29,6 +29,7 @@ def client(monkeypatch):
     app.include_router(self_service.router, prefix="/api/dashboard")
     test_client = TestClient(app)
     test_client.created = []
+    test_client.employee_ids = []                              # the staff id each creation was told
     test_client.linked = True
     monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", True)
@@ -40,8 +41,9 @@ def client(monkeypatch):
         return 12 if test_client.linked else None
 
     def recorder(kind):
-        async def create(form_data, email, source=None, notify=True):
+        async def create(form_data, email, source=None, notify=True, employee_id=None):
             test_client.created.append((kind, form_data, email, source))
+            test_client.employee_ids.append(employee_id)
             return {"id": "500"}
         return create
 
@@ -71,6 +73,7 @@ def test_a_vacation_request_is_created_for_the_signed_in_employee(client):
     assert (kind, email, source) == ("leave", "pat@ucsh.com", "Request page")
     assert form_data["start_date"] == "2026-11-02" and form_data["end_date"] == "2026-11-04"
     assert (form_data["first_name"], form_data["last_name"]) == ("Pat", "Q Staff")
+    assert client.employee_ids == ["7"]                        # the signed-in record, not a re-match by email
 
 
 def test_a_partial_day_is_one_date_measured_in_hours(client):

@@ -90,11 +90,12 @@ class Staff(Base, TimestampMixin):
 
     # --- identity and contact (Title / EmailAddress / CellNumber / Extension) ---
     name: Mapped[str | None] = mapped_column(String, nullable=True)                 # Title
-    # EmailAddress, stored normalised (trimmed, lower case); indexed and unique so
-    # the by-email match (#265) is a direct hit. Unique allows many NULLs on both
-    # SQLite and Postgres, so people without an email never collide; a blank email
-    # is stored as NULL rather than "" to keep that true.
-    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True, unique=True)
+    # EmailAddress, stored normalised (trimmed, lower case); indexed so the by-email
+    # match (#265) is a direct hit. Not unique: two records can genuinely share one
+    # mailbox (a shared desk such as Accounts Payable and the person who reads it),
+    # and the request page asks which one is signing in (Alembic 0023 dropped the
+    # constraint). A blank email is stored as NULL rather than "".
+    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     cell_number: Mapped[str | None] = mapped_column(String, nullable=True)          # CellNumber
     extension: Mapped[int | None] = mapped_column(Integer, nullable=True)           # Extension (number column)
     birthday: Mapped[date | None] = mapped_column(Date, nullable=True)              # Birthday (date part only)
