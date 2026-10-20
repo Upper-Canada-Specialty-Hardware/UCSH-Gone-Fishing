@@ -388,6 +388,32 @@ def test_field_plan_blank_name_is_refused():
         se.plan_field_changes({"Title": "Dana Lee"}, {}, {"name": "   "})
 
 
+def test_field_plan_tidies_name_department_and_email_on_edit():
+    """An edited name/department collapses spaces; an email loses spaces + case."""
+    changes = se.plan_field_changes(
+        {"Title": "Dana Lee", "Department": "Sales", "EmailAddress": "dana@ucsh.com"},
+        {},
+        {"name": "Glenn  Clarke ", "department": " Ware  house ", "email": "Glenn@UCSH.com"},
+    )
+    by_field = {c["field"]: c for c in changes}
+    assert by_field["name"]["after"] == "Glenn Clarke"        # doubled/trailing space squeezed
+    assert by_field["name"]["sp"] == {"Title": "Glenn Clarke"}
+    assert by_field["department"]["after"] == "Ware house"
+    assert by_field["email"]["after"] == "glenn@ucsh.com"     # spaces gone, lower-cased
+    assert by_field["email"]["sp"] == {"EmailAddress": "glenn@ucsh.com"}
+
+
+def test_field_plan_retyping_a_name_clears_a_stored_trailing_space():
+    """Stored "Glenn Clarke " retyped as "Glenn Clarke" is a real change, so it saves."""
+    changes = se.plan_field_changes({"Title": "Glenn Clarke "}, {}, {"name": "Glenn Clarke"})
+    assert changes and changes[0]["sp"] == {"Title": "Glenn Clarke"}   # the stray space is written away
+
+
+def test_field_plan_an_already_tidy_name_is_still_a_no_op():
+    """Sending back the same tidy name changes nothing."""
+    assert se.plan_field_changes({"Title": "Dana Lee"}, {}, {"name": "Dana Lee"}) == []
+
+
 def test_field_plan_unknown_key_is_refused():
     """A key that is neither a pot nor a known field raises."""
     with pytest.raises(ValueError):

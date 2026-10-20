@@ -21,14 +21,13 @@ from app.config import settings
 from app.repositories.staff_store import staff_store, staff_in_postgres
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
-    get_employee_by_email,
-    get_employee_by_name,
     map_location_to_province,
 )
 from app.services.balance import recalculate_request_allow_date
 from app.services.employment import HOURLY, HOURLY_BC, HOURLY_TYPES, SALARY
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.manager_assignments import update_employee_managers
+from app.services.staff_cleanup import clean_email, clean_employee_form, collapse_whitespace
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +81,11 @@ def build_employee_fields(form_data: dict) -> dict:
     Raises:
         EmployeeValidationError: On any invalid or missing input.
     """
-    name = (form_data.get("title") or "").strip()
+    name = collapse_whitespace(form_data.get("title"))  # trims ends + squeezes doubled/NBSP spaces
     if not name:
         raise EmployeeValidationError("A name is required.")
 
-    email = (form_data.get("email_address") or "").strip()
+    email = clean_email(form_data.get("email_address"))  # no spaces anywhere, lower-cased
     if not email:
         raise EmployeeValidationError("An email address is required.")
 
@@ -97,7 +96,7 @@ def build_employee_fields(form_data: dict) -> dict:
         )
     map_location_to_province(location)  # cannot raise given the check above; kept as the single source of truth
 
-    department = (form_data.get("department") or "").strip()
+    department = collapse_whitespace(form_data.get("department"))  # same tidy as the name
     if not department:
         raise EmployeeValidationError("A department is required.")
 
@@ -148,6 +147,37 @@ def build_employee_fields(form_data: dict) -> dict:
     return fields
 
 
+async def find_directory_clashes(name: str, email: str) -> dict:
+    """Existing staff records that clash with this name or email, loosely matched.
+
+    One read of the Staff Directory (through the store, so it follows
+    ``staff_storage``). The comparison runs both sides through the same cleaner,
+    so a stored name with a trailing or doubled space (the Glenn Clarke case)
+    still counts as the same person, and an email clashes regardless of case or
+    stray spaces. The first match for each is returned, which is the record the
+    request path would also resolve to.
+
+    Args:
+        name: The new hire's name, already cleaned.
+        email: The new hire's email, already cleaned.
+
+    Returns:
+        ``{"name": <record or None>, "email": <record or None>}`` - the first
+        existing record whose cleaned name (resp. email) equals the input.
+    """
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # one directory read
+    name_key = collapse_whitespace(name).lower()     # case-insensitive, space-tidied name key
+    email_key = clean_email(email)                   # already lower + space-free
+    found = {"name": None, "email": None}            # first hit for each, or None
+    for item in items:                               # scan once, filling both in a single pass
+        fields = item.get("fields", {})
+        if found["name"] is None and name_key and collapse_whitespace(fields.get("Title", "")).lower() == name_key:
+            found["name"] = item                     # same person by name
+        if found["email"] is None and email_key and clean_email(fields.get("EmailAddress", "")) == email_key:
+            found["email"] = item                    # same person by email
+    return found
+
+
 async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> dict:
     """Create a fully set-up Staff Directory record and return it.
 
@@ -168,16 +198,20 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     """
     fields = build_employee_fields(form_data)
 
+    # One directory read answers both duplicate questions, loosely matched so a
+    # stored name with a stray space does not sneak a second record past us.
+    clashes = await find_directory_clashes(fields["Title"], fields["EmailAddress"])
+
     # The name is how a request is routed back to a person, so a second record
     # with the same name would make routing ambiguous for both.
-    if await get_employee_by_name(fields["Title"]):
+    if clashes["name"]:
         raise EmployeeValidationError(
             f"An employee named '{fields['Title']}' already exists in the directory."
         )
 
     # The email is now how requests from the request page find this person, so
     # a second record with the same email would make that ambiguous too.
-    if await get_employee_by_email(fields["EmailAddress"]):
+    if clashes["email"]:
         raise EmployeeValidationError(
             f"An employee with the email {fields['EmailAddress']} already exists in the directory."
         )
@@ -218,3 +252,117 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     # backend the create landed in).
     record = await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
     return {**record, "notices": notices}
+
+
+def _problem(code: str, level: str, title: str, detail: str) -> dict:
+    """One entry for the check endpoint's problems list.
+
+    Args:
+        code: Stable identifier the frontend can key wording off.
+        level: ``"block"`` (the create route will refuse it) or ``"warn"``
+            (worth telling the person, but the create still goes through).
+        title: Short plain-language summary.
+        detail: The specifics, written for whoever is adding the person.
+
+    Returns:
+        A ``{"code", "level", "title", "detail"}`` dict.
+    """
+    return {"code": code, "level": level, "title": title, "detail": detail}
+
+
+async def check_employee(
+    form_data: dict, *, has_supervisor: bool, supervisor_unlinked: bool
+) -> dict:
+    """Dry-run the add-employee checks without writing anything.
+
+    Produces the cleaned form, the list of fields cleaning changed, and every
+    problem the create would hit. Blocks are the four things the create route
+    refuses outright (an invalid form, a duplicate name, a duplicate email, no
+    supervisor); warns are the softer notices the create only reports (an email
+    not yet on the SharePoint site, a supervisor not linked to Microsoft 365, no
+    holidays for the person's province). Nothing here writes: it reads the
+    directory, the Microsoft 365 user list and the holiday list only.
+
+    Args:
+        form_data: The submitted form, snake_case keys (the same body the create
+            route takes).
+        has_supervisor: Whether the caller resolved at least one supervisor for
+            this new hire (the admin picks them; the manager route uses the
+            signed-in manager).
+        supervisor_unlinked: Whether a supervisor was named but does not resolve
+            to a Microsoft 365 account, so a request could not record them.
+
+    Returns:
+        ``{"cleaned": {...}, "changes": [{"field","before","after"}, ...],
+        "problems": [{"code","level","title","detail"}, ...]}``.
+    """
+    cleaned, changes = clean_employee_form(form_data)   # tidy the identity fields, note what moved
+    problems: list[dict] = []                           # blocks and warns, in the order found
+
+    # The form must assemble into a valid record first; without that every later
+    # check would be guessing. A failure here is the single blocking problem.
+    try:
+        fields = build_employee_fields(form_data)       # cleans + validates, no I/O
+    except EmployeeValidationError as e:
+        problems.append(_problem(
+            "invalid_form", "block", "Some details still need fixing", str(e),
+        ))
+        return {"cleaned": cleaned, "changes": changes, "problems": problems}
+
+    # Loosely-matched duplicates: the same two refusals the create makes.
+    clashes = await find_directory_clashes(fields["Title"], fields["EmailAddress"])
+    if clashes["name"]:
+        problems.append(_problem(
+            "same_name", "block", "That name is already in the directory",
+            f"An employee named '{fields['Title']}' already exists, so requests "
+            "could route to the wrong person. Use a distinguishing name.",
+        ))
+    if clashes["email"]:
+        problems.append(_problem(
+            "same_email", "block", "That email is already in the directory",
+            f"An employee with the email {fields['EmailAddress']} already exists, "
+            "so request-page submissions could not tell them apart.",
+        ))
+
+    # A record with no supervisor has nobody to approve its requests.
+    if not has_supervisor:
+        problems.append(_problem(
+            "no_supervisor", "block", "No supervisor chosen",
+            "Choose at least one supervisor so this person's requests have "
+            "someone to approve them.",
+        ))
+
+    # --- warnings: the create still goes through, but these are worth knowing ---
+
+    # Not being on the SharePoint site's user list is only meaningful while staff
+    # live in SharePoint; once in Postgres there is no such list (mirrors the
+    # notice create_employee attaches).
+    if not await staff_in_postgres() and not await _resolve_user_lookup_id(fields["EmailAddress"]):
+        problems.append(_problem(
+            "email_not_linked", "warn", "Email not linked to the SharePoint site yet",
+            f"{fields['EmailAddress']} is not on the site's user list. They can "
+            "use the request page now; the Microsoft Form works once they have a "
+            "Microsoft 365 account and have opened the site.",
+        ))
+
+    # A supervisor who does not resolve to a Microsoft 365 account cannot be
+    # recorded against a request, so nobody would be asked to approve it.
+    if supervisor_unlinked:
+        problems.append(_problem(
+            "supervisor_unlinked", "warn", "Supervisor not linked to Microsoft 365",
+            "The chosen supervisor does not resolve to a Microsoft 365 account, "
+            "so a request could not record them as the approver.",
+        ))
+
+    # No holidays for the province means every weekday is counted as a workday,
+    # which over-deducts leave. Location already validated above, so this maps.
+    from app.services.holidays import get_holidays_for_province   # lazy: avoids an import cycle
+    province = map_location_to_province(fields["Location"])        # safe: build_employee_fields passed
+    if not await get_holidays_for_province(province):
+        problems.append(_problem(
+            "no_holidays", "warn", f"No holidays set for {province}",
+            f"The {province} calendar has no holidays, so every weekday counts as "
+            "a workday when their leave is calculated.",
+        ))
+
+    return {"cleaned": cleaned, "changes": changes, "problems": problems}

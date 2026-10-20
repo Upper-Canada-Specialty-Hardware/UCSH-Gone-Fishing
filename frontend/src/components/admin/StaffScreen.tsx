@@ -18,6 +18,17 @@ import { Enter } from '../Motion';
 import PersonProfile from './PersonProfile';
 import StaffExportDialog, { ExportPerson } from './StaffExportDialog';
 
+/**
+ * A name in the form two spellings of it are compared in: trimmed, spaces
+ * squeezed to one, lower case.
+ *
+ * @param name - A staff or request name; blank when missing.
+ * @returns The comparison key.
+ */
+function nameKey(name: unknown): string {
+  return String(name ?? '').replace(/\s+/g, ' ').trim().toLowerCase();  // same rule as the server's name match
+}
+
 /** One person as /admin/balances returns them, plus their managers once loaded. */
 interface Person {
   id: string;
@@ -241,7 +252,10 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
   };
 
   const openPersonSummary = people.find((p) => p.id === openId) || null;
-  const theirRequests = openPersonSummary ? requests.filter((r) => r.employee_name === openPersonSummary.name) : [];
+  // Match the person's requests by name ignoring case and spacing, so a stored
+  // name with a stray space ("Glenn Clarke ") still finds its requests.
+  const theirKey = openPersonSummary ? nameKey(openPersonSummary.name) : '';
+  const theirRequests = openPersonSummary ? requests.filter((r) => nameKey(r.employee_name) === theirKey) : [];
 
   // The person's record follows the live-balance row while the full record loads.
   if (openId && record) {

@@ -99,17 +99,87 @@ def test_a_non_numeric_balance_is_refused():
         build_employee_fields({**GOOD, "vacation_balance": "lots"})
 
 
+# ----- the identity fields are cleaned on assembly -----
+
+def test_names_and_emails_are_tidied_when_assembled():
+    # A trailing space, a doubled space and a non-breaking space in the name all
+    # collapse; the email loses its spaces and folds to lower case. This is the
+    # Glenn Clarke case: "Glenn Clarke " would otherwise never match.
+    fields = build_employee_fields({
+        **GOOD,
+        "title": "  Glenn  Clarke ",
+        "email_address": "  Glenn@UCSH.com ",
+        "department": "  Ware   house ",
+    })
+    assert fields["Title"] == "Glenn Clarke"
+    assert fields["EmailAddress"] == "glenn@ucsh.com"
+    assert fields["Department"] == "Ware house"
+
+
+def test_a_name_that_is_only_whitespace_is_refused():
+    # Collapsing a space-only name leaves "", which is still no name.
+    with pytest.raises(EmployeeValidationError):
+        build_employee_fields({**GOOD, "title": "   "})
+
+
+# ----- loose duplicate detection -----
+
+def test_find_directory_clashes_matches_despite_spacing_and_case(monkeypatch):
+    stored = [{
+        "id": "1",
+        "fields": {"Title": "Glenn Clarke", "EmailAddress": "glenn@ucsh.com"},
+    }]
+
+    async def _items(list_id):
+        return stored
+
+    monkeypatch.setattr(ec.staff_store, "get_list_items", _items)
+
+    # A doubled space in the name and a capitalised email still resolve to #1.
+    found = asyncio.run(ec.find_directory_clashes("glenn  clarke", "GLENN@ucsh.com"))
+    assert found["name"]["id"] == "1"
+    assert found["email"]["id"] == "1"
+
+    # A genuinely different person clashes with neither.
+    clear = asyncio.run(ec.find_directory_clashes("Dana Reed", "dana@ucsh.com"))
+    assert clear["name"] is None and clear["email"] is None
+
+
+def test_a_loosely_duplicate_name_is_refused_before_anything_is_written(monkeypatch):
+    # The stored record carries a trailing space; the typed one ("New Hire")
+    # does not. They are the same person, so the real loose lookup must catch it
+    # and the create must refuse before writing anything.
+    wrote = {"created": False}
+
+    async def _items(list_id, **kwargs):
+        return [{"id": "1", "fields": {"Title": "New Hire ", "EmailAddress": "other@ucsh.com"}}]
+
+    async def _create(list_id, fields):
+        wrote["created"] = True
+        return {"id": "777", "fields": fields}
+
+    monkeypatch.setattr(ec.staff_store, "get_list_items", _items)
+    monkeypatch.setattr(sharepoint_module.sp_client, "create_list_item", _create)
+
+    with pytest.raises(EmployeeValidationError, match="already exists"):
+        asyncio.run(create_employee(GOOD, [501]))
+
+    assert wrote["created"] is False
+
+
 # ----- the async wrapper -----
 
 def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=False):
     """Fake the wrapper's SharePoint touchpoints and capture the writes."""
     calls = {"created": None, "managers": None, "rad": None}
 
-    async def _get_by_name(name):
-        return {"id": "9", "fields": {"Title": name}} if name_exists else None
-
-    async def _get_by_email(email):
-        return {"id": "8", "fields": {"EmailAddress": email}} if email_exists else None
+    async def _clashes(name, email):
+        # The single loose duplicate lookup create_employee now makes: one hit
+        # per flag, in the {"id", "fields"} record shape it returns.
+        return {
+            "name": {"id": "9", "fields": {"Title": name}} if name_exists else None,
+            "email": {"id": "8", "fields": {"EmailAddress": email}} if email_exists else None,
+        }
 
     async def _resolve(email):
         return 501 if email_resolves else None
@@ -127,8 +197,7 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=
     async def _get_item(list_id, item_id):
         return {"id": str(item_id), "fields": calls["created"] or {}}
 
-    monkeypatch.setattr(ec, "get_employee_by_name", _get_by_name)
-    monkeypatch.setattr(ec, "get_employee_by_email", _get_by_email)
+    monkeypatch.setattr(ec, "find_directory_clashes", _clashes)
     monkeypatch.setattr(ec, "_resolve_user_lookup_id", _resolve)
     # Default storage is SharePoint, so the store delegates to the shared sp_client
     # object; patch it there so the create and re-read are faked in that mode.

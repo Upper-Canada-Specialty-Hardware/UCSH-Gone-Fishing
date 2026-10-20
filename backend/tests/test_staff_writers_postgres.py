@@ -240,10 +240,9 @@ def test_add_employee_lands_only_in_postgres(clean_db, monkeypatch):
     # nothing is written to SharePoint or queued for it.
     monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
 
-    async def none_(*a, **k):
-        return None
-    monkeypatch.setattr(ec, "get_employee_by_name", none_)
-    monkeypatch.setattr(ec, "get_employee_by_email", none_)
+    async def no_clash(name, email):
+        return {"name": None, "email": None}               # nobody already in the directory
+    monkeypatch.setattr(ec, "find_directory_clashes", no_clash)
 
     async def fake_resolve(email):
         return 501                                         # linked to the site -> no notice
