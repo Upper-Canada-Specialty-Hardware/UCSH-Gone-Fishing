@@ -30,7 +30,9 @@ grids and the audit dialog.
 import logging
 
 from app.config import settings
-from app.repositories.request_store import request_store
+from app.repositories.postgres.staff import is_archived  # refuse an archived person (#119)
+from app.repositories.request_store import request_store, requests_in_postgres
+from app.repositories.staff_store import staff_in_postgres
 from app.services.business_days import calculate_business_days
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
@@ -98,14 +100,8 @@ def is_assigned_to(employee_fields: dict, manager_name: str) -> bool:
     Returns:
         True when the manager is one of the employee's supervisors.
     """
-    all_managers = employee_fields.get("AllManagers")
-    if not all_managers or not isinstance(all_managers, list):  # no supervisors at all
-        return False
-    for entry in all_managers:
-        name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""  # Graph's person shape
-        if name and name == manager_name:
-            return True
-    return False
+    from app.services.manager_match import lists_manager   # one rule for who manages whom (#376)
+    return lists_manager(employee_fields, manager_name)     # by id when known, else by name
 
 
 def build_sick_day_fields(form_data: dict, employee_name: str, manager_name: str) -> dict:
@@ -227,7 +223,12 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         raise SickDayOnBehalfError("That employee could not be found in the Staff Directory.")
     emp_fields = employee["fields"]
     employee_name = (emp_fields.get("Title") or "").strip()
-    if not is_assigned_to(emp_fields, manager_name):  # assignment gate
+    if is_archived(emp_fields):  # archived people are out of every route (#119)
+        raise SickDayOnBehalfError(
+            f"{employee_name} has been archived, so a sick day cannot be logged for them."
+        )
+    from app.services.manager_match import manager_name_of   # name + link ids (#376)
+    if not is_assigned_to(emp_fields, await manager_name_of(manager)):  # assignment gate, by id or name
         raise SickDayOnBehalfError(
             f"{employee_name} is not assigned to you, so you cannot log a sick day for them."
         )
@@ -252,18 +253,25 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         )
     fields["Days"] = days
 
-    # The request is recorded in the employee's name: approval resolves the
-    # employee from this person field, so it must resolve or nothing works.
-    submitter_lookup_id = await _resolve_user_lookup_id(emp_fields.get("EmailAddress", ""))
-    if not submitter_lookup_id:
-        raise SickDayOnBehalfError(
-            f"{employee_name}'s email does not resolve to a Microsoft 365 account, "
-            "so the request cannot be recorded in their name."
-        )
-    fields["SubmittedTestLookupId"] = submitter_lookup_id
+    # The request is recorded in the employee's name. In SharePoint mode approval
+    # resolves the employee from the SubmittedTest person field, so it must
+    # resolve to a Microsoft 365 account or nothing works. Once staff live in
+    # Postgres there is no site user list: resolution is by staff id (EmployeeID,
+    # stamped below) and SubmitterEmail, so the lookup id is not required (#265).
+    if await staff_in_postgres():
+        submitter_lookup_id = None
+    else:
+        submitter_lookup_id = await _resolve_user_lookup_id(emp_fields.get("EmailAddress", ""))
+        if not submitter_lookup_id:
+            raise SickDayOnBehalfError(
+                f"{employee_name}'s email does not resolve to a Microsoft 365 account, "
+                "so the request cannot be recorded in their name."
+            )
+    if submitter_lookup_id:
+        fields["SubmittedTestLookupId"] = submitter_lookup_id
     # SubmitterEmail and RequestSource, like every other intake path, so the
     # request resolves by email too and reads as logged from the manager screen.
-    fields.update(submitter_columns(emp_fields.get("EmailAddress", ""), SOURCE_MANAGER))
+    fields.update(await submitter_columns(emp_fields.get("EmailAddress", ""), SOURCE_MANAGER))
 
     # Same rule as a manager approving by hand: approved leave on any of these
     # dates blocks it. Checked before creation so a clash leaves nothing behind.
@@ -280,12 +288,28 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
             f"{describe_leave_conflict(conflict)}"
         )
 
-    manager_lookup_id = await _resolve_user_lookup_id(mgr_fields.get("EmailAddress", ""))
-    if not manager_lookup_id:  # approval does not need it; the stamp just omits the Manager
-        logger.warning(
-            "Manager %s has no Microsoft 365 lookup id; sick day for %s will carry no Manager field",
-            manager_name, employee_name,
-        )
+    # The acting manager stamped onto the request. On Postgres a manager is their
+    # own staff id (#265), which is exactly manager_id, so no Microsoft 365 user
+    # list is read; after the switch that list must never be touched, even as a
+    # fallback. On SharePoint it is still resolved from the user list as before.
+    if await staff_in_postgres():
+        try:
+            manager_lookup_id = int(manager_id)            # the signed-in manager's staff id
+        except (TypeError, ValueError):
+            manager_lookup_id = None                       # non-numeric id: leave the Manager field unstamped
+    else:
+        manager_lookup_id = await _resolve_user_lookup_id(mgr_fields.get("EmailAddress", ""))
+        if not manager_lookup_id:  # approval does not need it; the stamp just omits the Manager
+            logger.warning(
+                "Manager %s has no Microsoft 365 lookup id; sick day for %s will carry no Manager field",
+                manager_name, employee_name,
+            )
+
+    # Once requests live in Postgres the typed row needs the employee's staff id
+    # (employee_id is not null); the employee is already resolved above, so stamp it
+    # before the write. SharePoint mode is unchanged (EmployeeID is not on the list).
+    if await requests_in_postgres():
+        fields["EmployeeID"] = str(employee_id)
 
     # request_store, not SharePoint directly: request lists may live in Postgres.
     item = await request_store.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, fields)
@@ -300,7 +324,19 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         settings.SP_LIST_LEAVE_REQUESTS, request_id, _manager_stamp(emp_fields, manager_lookup_id),
     )
 
-    result = await approve_leave_request(request_id, manager_id)  # the shared, exactly-once path
+    # In Postgres mode record the submission (the submitted event and the
+    # employment type the approval reads) before approving it on the spot. notify
+    # is False: the manager is logging it, so no approval email or text is queued;
+    # the approval itself queues the employee's result (#324).
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("leave", request_id, channel="manager_dashboard", notify=False, actor=manager_name)
+
+    # channel="manager_dashboard"; the shared, exactly-once approval path. The
+    # channel must be one of request_vocab.CHANNELS, or the Postgres decision
+    # path's CHECK constraint rejects the approve; a sick day logged from the
+    # team screen is a manager-dashboard action, so that is the channel.
+    result = await approve_leave_request(request_id, manager_id, "manager_dashboard")
     if "error" in result:
         # The request exists, Pending, with days and a manager, so it shows in
         # the manager's Pending list and can be approved from there.

@@ -4,7 +4,9 @@ import {
   MenuItem, Paper, Snackbar, Switch, TextField, Typography,
 } from '@mui/material';
 import { Theme, useTheme } from '@mui/material/styles';
+import { useSearchParams } from 'react-router-dom';
 import KindPill from '../KindPill';
+import RequestTimelineDialog from '../RequestTimelineDialog';
 import AuditTrailDialog from '../AuditTrailDialog';
 import PillToggle from '../PillToggle';
 import { CountUp } from '../Motion';
@@ -12,7 +14,8 @@ import { DIAGNOSTIC_LABELS, HELD_STATUS_LABEL, HeldRow, OPEN_HELD, RequestView }
 import {
   COLUMN_SETS, FilterDef, Row, SRC_META, Src, columnValue, filterDefs, num, refDate, searchText, toRow, whenText,
 } from './requestTable';
-import RequestsTable, { TableActions } from './RequestsTable';
+import { TableActions } from './RequestsTable';
+import SplitRequestsTable from './SplitRequestsTable';
 import RequestsCalendar from './RequestsCalendar';
 import { useFitColumns } from './useFitColumns';
 import DeleteRequestDialog from './DeleteRequestDialog';
@@ -26,6 +29,19 @@ const UNDO_MS = 8000;
 /** A request's identity across views: its list and item id, never the view it was read in. */
 function delKey(r: Row): string {
   return `${r.request_type}-${r.id}`;                    // so deleting in Pending also hides it in All (#294 S10)
+}
+
+/**
+ * Split a focus row key into the request type and item id for the timeline
+ * fallback. The key is history-<request type>-<numeric id>; the id is anchored
+ * at the end so a hyphenated type like carryover-payout parses correctly.
+ *
+ * @param key - The focus row key from the `open` query param.
+ * @returns The url-form request type and id, or null when it does not parse.
+ */
+function parseFocusKey(key: string): { type: string; id: string } | null {
+  const m = /^history-(.+)-(\d+)$/.exec(key);
+  return m ? { type: m[1], id: m[2] } : null;
 }
 
 /** The view pills, left to right, with the label each shows. */
@@ -121,6 +137,16 @@ export default function RequestsScreen(props: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [fitNote, setFitNote] = useState('');
 
+  // Open one request focused, from a deep link (?open=<row key>). Only
+  // the All requests view uses it; the key is history-<request type>-<id>.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusKey = view === 'all' ? searchParams.get('open') : null;
+  const [focusTimelineOpen, setFocusTimelineOpen] = useState(false);   // the fallback timeline when the row is not loaded
+  /** Clear the focus and show the whole list again. */
+  const clearFocus = useCallback(() => {
+    setSearchParams((p) => { p.delete('open'); return p; }, { replace: true });
+  }, [setSearchParams]);
+
   // Dialogs.
   const [deleteRows, setDeleteRows] = useState<Row[] | null>(null);
   const [newOpen, setNewOpen] = useState(false);
@@ -191,6 +217,25 @@ export default function RequestsScreen(props: Props) {
     if (view === 'stuck') return props.stuck.map((r) => toRow(r, 'stuck'));
     return props.requests.map((r) => toRow(r, 'history'));           // 'all'
   }, [view, props.pending, props.stuck, props.requests]);
+
+  // The focused row (when ?open names one that is loaded), and its type/id for
+  // the timeline fallback when it is not. Either way the toolbar is hidden and a
+  // "Show all requests" banner is shown while focused.
+  const focusRow = useMemo(() => (focusKey ? allRows.find((r) => r.key === focusKey) || null : null), [focusKey, allRows]);
+  const focusParts = focusKey ? parseFocusKey(focusKey) : null;
+
+  // Focusing a row opens it, switches to the table and scrolls it into view.
+  // Keyed on the row key, not the row object: a live update rebuilds the rows,
+  // and re-running here would reopen a row the admin had just closed.
+  const focusRowKey = focusRow?.key ?? null;
+  useEffect(() => {
+    if (!focusKey || !focusRowKey) return;
+    setMode('table');
+    setOpenKey(focusRowKey);
+    requestAnimationFrame(() => requestAnimationFrame(() => {        // wait for the table to lay out
+      document.getElementById(`req-row-${focusRowKey}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }));
+  }, [focusKey, focusRowKey]);
 
   // Rows left after the list switch and the optimistic deletes (the filter options read these).
   const scoped = useMemo(() => allRows.filter((r) => !deletedKeys.has(delKey(r)) && (srcSel === 'all' || r.src === srcSel)), [allRows, deletedKeys, srcSel]);
@@ -375,6 +420,18 @@ export default function RequestsScreen(props: Props) {
       <Paper sx={{ overflow: 'clip' }}>  {/* clip, not hidden, so the toolbar and table header can stick (#294 S9) */}
         <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, held: props.held.filter((h) => OPEN_HELD.includes(h.status)).length, stuck: props.stuck.length }} />
 
+        {/* Focused on one request (from a deep link): a banner to clear it. */}
+        {focusKey && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: '10px 14px', borderBottom: `1px solid ${theme.tokens.line}`, bgcolor: theme.tokens.primarySoft }}>
+            <Typography sx={{ fontSize: 13.5, fontWeight: 600, flex: 1, minWidth: 180 }}>
+              {focusRow ? 'Showing one request.' : 'That request is not in the list loaded here.'}
+            </Typography>
+            <Button size="small" variant="outlined" color="inherit" onClick={clearFocus}>Show all requests</Button>
+          </Box>
+        )}
+
+        {/* The list switch, stat strip, toolbar and filters are hidden while focused. */}
+        {!focusKey && (<>
         {/* The list switch and a line naming that SharePoint list. */}
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.25, alignItems: 'center', p: '12px 14px', borderBottom: `1px solid ${theme.tokens.line}` }}>
           <PillToggle name="req-src" label="Which list" value={srcSel} onChange={(v) => setSrcSel(v)} options={SRC_OPTIONS} />
@@ -465,13 +522,25 @@ export default function RequestsScreen(props: Props) {
             <Button size="small" variant="text" onClick={() => setFilters({})}>Clear all</Button>
           </Box>
         )}
+        </>)}
 
-        {/* Table or calendar. */}
-        {mode === 'cal' ? (
-          <RequestsCalendar rows={shown} holidays={holidays} onOpenRequest={openInTable} />
+        {/* Table or calendar; or, when the focused request is not loaded, a note
+            and a link to its timeline. When focused on a loaded row only that row
+            shows; otherwise the searched/filtered/sorted list does. */}
+        {focusKey && !focusRow ? (
+          <Box sx={{ p: 3, display: 'grid', gap: 1.5, justifyItems: 'start' }}>
+            <Typography color="text.secondary">
+              {focusParts ? `Request ${focusParts.id} ` : 'This request '}is not in the list loaded here (it may be filtered out, closed, or not yet synced). You can still read its history.
+            </Typography>
+            {focusParts && (
+              <Button variant="outlined" onClick={() => setFocusTimelineOpen(true)}>View the request timeline</Button>
+            )}
+          </Box>
+        ) : mode === 'cal' ? (
+          <RequestsCalendar rows={focusRow ? [focusRow] : shown} holidays={holidays} onOpenRequest={openInTable} />
         ) : (
-          <RequestsTable
-            rows={shown}
+          <SplitRequestsTable
+            rows={focusRow ? [focusRow] : shown}
             src={srcSel}
             sort={sort}
             onSort={onSort}
@@ -491,12 +560,23 @@ export default function RequestsScreen(props: Props) {
           />
         )}
 
-        {/* Footer: what the view is, and which columns stepped aside. */}
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'space-between', alignItems: 'center', p: '10px 14px', fontSize: 13, color: 'text.secondary', borderTop: `1px solid ${theme.tokens.line}` }}>
-          <span>{footNote(view, props.stats)}</span>
-          <span>{mode === 'table' ? fitNote : ''}</span>
-        </Box>
+        {/* Footer: what the view is, and which columns stepped aside (hidden while focused). */}
+        {!focusKey && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'space-between', alignItems: 'center', p: '10px 14px', fontSize: 13, color: 'text.secondary', borderTop: `1px solid ${theme.tokens.line}` }}>
+            <span>{footNote(view, props.stats)}</span>
+            <span>{mode === 'table' ? fitNote : ''}</span>
+          </Box>
+        )}
       </Paper>
+
+      {/* The focused request's timeline, shown when its row is not in the loaded list. */}
+      <RequestTimelineDialog
+        open={focusTimelineOpen}
+        onClose={() => setFocusTimelineOpen(false)}
+        scope="admin"
+        requestType={focusParts?.type ?? null}
+        itemId={focusParts?.id ?? null}
+      />
 
       <DeleteRequestDialog rows={deleteRows} onClose={() => setDeleteRows(null)} onConfirm={(reason, refund) => { if (deleteRows) startDelete(deleteRows, reason, refund); }} />
 
@@ -718,8 +798,7 @@ function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel }: {
   held: HeldRow[]; actionLoading: string | null; onAdd: (h: HeldRow) => void; onRetry: (id: number) => Promise<void>; onCancel: (id: number) => Promise<void>;
 }) {
   const theme = useTheme();
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const fit = useFitColumns(wrapRef, HELD_PRIORITY, HELD_WIDTHS);
+  const fit = useFitColumns(HELD_PRIORITY, HELD_WIDTHS);
   const hidden = new Set(fit.hidden);
   const headSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', fontSize: 12.5, fontWeight: 700, color: 'text.secondary', bgcolor: theme.tokens.hover } as const;
   const cellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', verticalAlign: 'top' } as const;
@@ -746,10 +825,14 @@ function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel }: {
 
   if (!held.length) return <Typography color="text.secondary" sx={{ p: 3 }}>Nothing is waiting.</Typography>;
 
+  // Before the first measure: a light placeholder, so the container (and its
+  // ref) is in the DOM to be measured without laying out every column at a guess.
+  if (!fit.measured) return <Box ref={fit.ref} sx={{ overflow: 'clip', minHeight: 120 }} aria-hidden />;
+
   // Cards on a phone: each held request a labelled block, person and actions full width.
   if (fit.cards) {
     return (
-      <Box ref={wrapRef} sx={{ overflow: 'clip' }}>
+      <Box ref={fit.ref} sx={{ overflow: 'clip' }}>
         {held.map((h) => (
           <Box key={h.id} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, p: '12px 14px', display: 'grid', gap: '6px 12px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
             <Box sx={{ gridColumn: '1 / -1' }}>{cell(h, 'person')}</Box>
@@ -766,14 +849,16 @@ function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel }: {
     );
   }
 
+  // Skip hidden cells rather than render them display:none; the actions column stays.
+  const visibleCols = HELD_COLUMNS.filter((c) => !hidden.has(c.key));
   return (
-    <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not scroll: the table never goes sideways (#294 S11) */}
+    <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not scroll: the table never goes sideways (#294 S11) */}
       <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
-        <Box component="thead"><Box component="tr">{HELD_COLUMNS.map((c) => <Box key={c.key} component="th" sx={{ ...headSx, display: hidden.has(c.key) ? 'none' : 'table-cell' }}>{c.label}</Box>)}</Box></Box>
+        <Box component="thead"><Box component="tr">{visibleCols.map((c) => <Box key={c.key} component="th" sx={headSx}>{c.label}</Box>)}</Box></Box>
         <Box component="tbody">
           {held.map((h) => (
             <Box component="tr" key={h.id}>
-              {HELD_COLUMNS.map((c) => <Box key={c.key} component="td" sx={{ ...cellSx, display: hidden.has(c.key) ? 'none' : 'table-cell' }}>{cell(h, c.key)}</Box>)}
+              {visibleCols.map((c) => <Box key={c.key} component="td" sx={cellSx}>{cell(h, c.key)}</Box>)}
             </Box>
           ))}
         </Box>

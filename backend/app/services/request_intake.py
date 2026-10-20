@@ -241,12 +241,13 @@ async def submit_request(
     first_name, _, last_name = name.partition(" ")             # the title is "<first> <last>"
 
     form_data = form.model_dump(mode="json")                   # dates as ISO strings, as SharePoint expects
+    staff_id = employee.get("id")                              # this exact record, even when its email is shared
     if request_type == "leave":
         form_data.update(employee_name=name, first_name=first_name, last_name=last_name)
-        item = await process_new_leave_request(form_data, email, source, notify=notify)
+        item = await process_new_leave_request(form_data, email, source, notify=notify, employee_id=staff_id)
     elif request_type == "overtime":
-        item = await process_new_overtime_request(form_data, email, source, notify=notify)
+        item = await process_new_overtime_request(form_data, email, source, notify=notify, employee_id=staff_id)
     else:
-        item = await process_new_carryover_payout(form_data, email, source, notify=notify)
+        item = await process_new_carryover_payout(form_data, email, source, notify=notify, employee_id=staff_id)
     logger.info("Admin/request: created %s request #%s (notify=%s)", request_type, item.get("id"), notify)
     return item

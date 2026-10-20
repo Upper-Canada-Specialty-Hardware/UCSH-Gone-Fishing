@@ -1,6 +1,9 @@
 import axios from 'axios';
 import { clearSession, loadSession, setSignInNotice } from './intake';
 import { ADMIN_SIGNED_OUT, AdminSession, adminSessionToken, clearAdminSession } from './adminSession';
+// Type only (erased at build time, so no runtime import cycle): the manager
+// person view reuses the admin record shape (#372).
+import type { StaffRecord } from './staff';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -162,8 +165,6 @@ export const updateHoliday = (id: string, payload: { title: string; date: string
 export const deleteHoliday = (id: string) => api.delete(`/admin/holidays/${id}`);
 
 // Admin - holidays SharePoint -> Postgres copy + parity check
-export const getHolidaysParity = () => api.get('/admin/holidays/parity');
-export const copyHolidaysToPostgres = () => api.post('/admin/holidays/copy-to-postgres');
 
 // Admin — Stuck Requests / Reprocess
 export const getAdminStuckRequests = () => api.get('/admin/stuck-requests');
@@ -212,9 +213,11 @@ export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
 export const addRequestColumns = () => api.post('/admin/request-columns');
-// Admin - where the request lists live, and the copy from SharePoint before the move
-export const getRequestStorage = () => api.get('/admin/request-storage');
-export const copyRequestsToPostgres = () => api.post('/admin/request-storage/copy');
+// Admin - where requests and staff live, and the one-step switch to Postgres.
+/** Current storage, the last sync and recent runs, request counts and open findings. */
+export const getStorageStatus = () => api.get('/admin/storage');
+/** Run the final sync and switch requests (and staff) to Postgres. One-way. */
+export const flipStorageToPostgres = () => api.post('/admin/storage/flip');
 /** The dates carry-over and payout requests are accepted between (Toronto dates, both ends included). */
 export interface CarryoverWindow {
   start: string | null;   // YYYY-MM-DD, or null when no dates are set
@@ -228,3 +231,118 @@ export const setCarryoverPayoutWindow = (start: string | null, end: string | nul
   api.put<CarryoverWindow>('/admin/carryover-payout', { start, end });
 export const exportCarryoverPayout = () =>
   api.get<Blob>('/admin/carryover-payout/export', { responseType: 'blob' });
+
+// #360 - manager History tab: download the team requests on screen as an .xlsx.
+// The route is a /team path, so the dashboard sign-in token (added by the
+// interceptor above) authorises it; it is scoped to the manager's team by the
+// data the client sends, which only ever comes from /team/requests.
+/**
+ * Download the team requests the manager is viewing as an .xlsx (one sheet per list).
+ *
+ * @param requests - The request items as /team/requests returns them.
+ * @returns The axios response, with a Blob body.
+ */
+export const exportTeamRequests = (requests: any[]) =>
+  api.post<Blob>('/team/requests/export', { requests }, { responseType: 'blob' });
+// Admin - #370: pending requests whose managers are all on vacation, so nobody
+// can approve them until a manager is back. The admin approves/rejects them here
+// with the usual admin approve/reject calls above.
+/** One manager of a stuck request, and the date they are back. */
+export interface VacationCoverManager {
+  name: string;
+  back: string;   // "Nov 10, 2026"
+}
+/** A pending request no manager can approve because all its managers are off. */
+export interface VacationCoverRequest {
+  request_type: string;   // "leave" / "overtime" / "carryover-payout", for the action calls
+  id: string;
+  employee_name: string;
+  what: string;           // the leave type, overtime hours, or carry-over/payout word
+  when: string;           // the dates, or the day count for carry-over/payout
+  managers: VacationCoverManager[];
+}
+export const getAdminVacationCover = () =>
+  api.get<{ requests: VacationCoverRequest[] }>('/admin/vacation-cover');
+
+// Manager: control over their own team (#362, #363). A manager edits a
+// teammate's balances/entitlements with a reason, and adds or removes people on
+// their team. Every change is recorded under the manager's name server-side.
+
+/** One addable person the picker lists. */
+export interface AddableMember {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  location: string;
+  employment_type: string;
+  system_check: string;
+  /** The names already managing this person, so the add-to-team module can show
+   *  them before the add (#372). */
+  managers: string[];
+}
+
+/**
+ * Change one teammate's balances and entitlements, with a required reason (#362).
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @param payload - The balance-pot wire keys to change and the reason.
+ * @returns The save result (what changed, whether history was recorded).
+ */
+export const updateTeamEntitlements = (
+  employeeId: string, payload: { changes: Record<string, number>; reason: string },
+) => api.patch(`/team/members/${employeeId}/entitlements`, payload);
+
+/**
+ * Staff the manager may still add (everyone not already on their team) (#363).
+ *
+ * @returns ``{ people: AddableMember[] }`` in name order.
+ */
+export const getAddableMembers = () =>
+  api.get<{ people: AddableMember[] }>('/team/addable');
+
+/**
+ * One teammate's managers and whether anyone else would remain (#363). Read
+ * before the remove confirmation so the UI can warn about an orphaned person.
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @returns ``{ id, name, managers, has_other_manager }``.
+ */
+export const getTeamMemberManagers = (employeeId: string) =>
+  api.get<{ id: string; name: string; managers: string[]; has_other_manager: boolean }>(
+    `/team/members/${employeeId}/managers`,
+  );
+
+/**
+ * Add a person to the calling manager's team (#363).
+ *
+ * @param employeeId - Staff Directory id of the person to add.
+ * @returns ``{ id, name, managers, added }``.
+ */
+export const addTeamMember = (employeeId: string) =>
+  api.post(`/team/members/${employeeId}`);
+
+/**
+ * Remove the calling manager from a teammate, leaving any other managers (#363).
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @returns ``{ id, name, managers, removed, has_other_manager }``.
+ */
+export const removeTeamMember = (employeeId: string) =>
+  api.delete(`/team/members/${employeeId}`);
+
+/*
+ * #372 - the manager dashboard's team person view reuses the admin PersonProfile.
+ */
+
+/**
+ * One teammate's full record for the manager person view (#372). Same payload as
+ * the admin ``GET /admin/employees/{id}``, so the admin ``PersonProfile`` is
+ * reused in manager mode; refused (403) for anyone not on the caller's team (an
+ * archived person included).
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @returns The staff record (``employee_id``, ``fields``, ``people``, ``history``).
+ */
+export const getTeamMemberRecord = (employeeId: string) =>
+  api.get<StaffRecord>(`/team/members/${employeeId}/record`);

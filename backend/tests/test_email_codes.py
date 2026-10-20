@@ -61,13 +61,19 @@ def client(monkeypatch):
         test_client.sent.append({"to": to, "subject": subject, "html": html_body})
 
     async def fake_get_employee_by_email(email):
-        return test_client.staff.get(email.strip().lower())
+        found = test_client.staff.get(email.strip().lower())
+        return found[0] if isinstance(found, list) else found
+
+    async def fake_get_employees_by_email(email):
+        found = test_client.staff.get(email.strip().lower())   # a record, a list of records, or nothing
+        return found if isinstance(found, list) else ([found] if found else [])
 
     monkeypatch.setattr(intake, "send_email", fake_send_email)
     async def fake_is_manager(name):
         return name in test_client.managers
 
     monkeypatch.setattr(intake, "get_employee_by_email", fake_get_employee_by_email)
+    monkeypatch.setattr(intake, "get_employees_by_email", fake_get_employees_by_email)
     monkeypatch.setattr(intake, "is_manager", fake_is_manager)
     return test_client
 
@@ -206,6 +212,28 @@ def test_a_failed_manager_check_still_signs_in_as_employee(client, fixed_code, m
     body = _verify(client, email, fixed_code).json()
 
     assert body["status"] == "employee" and body["role"] == "employee"
+
+
+def test_a_shared_mailbox_is_asked_which_person_is_signing_in(client, fixed_code):
+    # Two records carry one address (a shared desk and the person who reads it):
+    # the answer lists both, each with its own token, so the page can ask.
+    email = _unique("shared")
+    client.staff[email] = [
+        {"id": "40", "fields": {"Title": "Accounts Payable", "Department": "Accounting"}},
+        {"id": "41", "fields": {"Title": "Kim Clerk", "Department": "Accounting", "Location": "Toronto"}},
+    ]
+    client.managers.add("Kim Clerk")
+    _ask(client, email)
+
+    body = _verify(client, email, fixed_code).json()
+
+    assert body["status"] == "choose"
+    assert [(p["name"], p["uid"], p["role"]) for p in body["people"]] == [
+        ("Accounts Payable", "40", "employee"), ("Kim Clerk", "41", "manager"),
+    ]
+    assert body["people"][1]["location"] == "Toronto"
+    for p in body["people"]:
+        assert validate_dashboard_token(p["role"], p["uid"], p["token"], p["exp"]) == (True, "")
 
 
 def test_an_unknown_address_gets_a_verified_email_token(client, fixed_code):

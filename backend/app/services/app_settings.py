@@ -19,11 +19,23 @@ from app.models.app_setting import AppSetting
 logger = logging.getLogger(__name__)
 
 CARRYOVER_PAYOUT_WINDOW = "carryover_payout_window"   # {"start", "end"} ISO dates, or None
+REQUESTS_STORAGE = "requests_storage"                 # "sharepoint" (default) or "postgres"
+STAFF_STORAGE = "staff_storage"                       # "sharepoint" (default) or "postgres"
+HOLIDAYS_STORAGE = "holidays_storage"                 # "sharepoint" (default) or "postgres"
+SWITCH_PAUSE = "switch_pause"                         # {"until": ISO} while the storage switch runs, or None
 TORONTO = ZoneInfo("America/Toronto")                # the company's calendar day
+
+# The two backends the request lists can live in; the switch reads this.
+SHAREPOINT = "sharepoint"
+POSTGRES = "postgres"
 
 # Each setting's value while it has no row.
 DEFAULTS: dict[str, Any] = {
     CARRYOVER_PAYOUT_WINDOW: None,                  # no dates: closed until an admin sets them
+    REQUESTS_STORAGE: SHAREPOINT,                   # requests stay in SharePoint until the switch is flipped
+    STAFF_STORAGE: SHAREPOINT,                      # the Staff Directory stays in SharePoint until the switch is flipped
+    HOLIDAYS_STORAGE: SHAREPOINT,                   # Company Holidays stay in SharePoint until the switch is flipped
+    SWITCH_PAUSE: None,                             # no pause until the switch sets one; None means the app is open
 }
 
 
@@ -65,6 +77,44 @@ async def set_setting(key: str, value: Any) -> Any:
         await session.commit()
     logger.info("Setting %s changed to %r", key, value)
     return value
+
+
+async def requests_storage() -> str:
+    """Where the request lists are read and written now, from the database.
+
+    Read on every call so an admin flipping the switch takes effect without a
+    redeploy. The request store validates the value; this only returns it.
+
+    Returns:
+        The stored backend name, or "sharepoint" when it was never set.
+    """
+    return await get_setting(REQUESTS_STORAGE)
+
+
+async def staff_storage() -> str:
+    """Where the Staff Directory is read and written now, from the database.
+
+    Read on every call, like ``requests_storage``, so an admin flipping the
+    switch takes effect without a redeploy. The staff store validates the value;
+    this only returns it.
+
+    Returns:
+        The stored backend name, or "sharepoint" when it was never set.
+    """
+    return await get_setting(STAFF_STORAGE)
+
+
+async def holidays_storage() -> str:
+    """Where Company Holidays are read and written now, from the database.
+
+    Read on every call, like ``requests_storage`` and ``staff_storage``, so an
+    admin flipping the switch takes effect without a redeploy. The holiday
+    factory validates the value; this only returns it.
+
+    Returns:
+        The stored backend name, or "sharepoint" when it was never set.
+    """
+    return await get_setting(HOLIDAYS_STORAGE)
 
 
 def toronto_today() -> date:

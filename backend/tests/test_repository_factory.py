@@ -26,6 +26,8 @@ from app.repositories.sharepoint.employee import SharePointEmployeeRepository
 def test_factory_returns_sharepoint_impls_by_default():
     assert isinstance(get_employee_repository(), SharePointEmployeeRepository)
     assert isinstance(get_employee_repository(), EmployeeRepository)
+    # Holidays hand back a proxy that chooses its backend per call; it still
+    # satisfies the HolidayRepository interface the services depend on.
     assert isinstance(get_holiday_repository(), HolidayRepository)
 
 

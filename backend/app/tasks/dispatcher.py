@@ -9,20 +9,35 @@ logger = logging.getLogger(__name__)
 async def dispatch_change(list_id: str, item: dict):
     """Route SP list changes to the correct service pipeline.
 
-    Once requests live in Postgres, a change on a SharePoint request list can
-    only be a Microsoft Form item (the app no longer writes there). The item is
-    first moved into Postgres, and the Postgres copy, under its new id, is what
-    gets processed. An item moved before is skipped.
+    Once requests live in Postgres (#335), a SharePoint request list is no longer
+    a live source, so a request-list change here is logged and ignored: it is
+    never imported or processed, and nothing reads SharePoint for it. In practice
+    the webhook route drops every notification after the switch before it gets
+    here; this is the second guard.
 
     Args:
         list_id: The SharePoint list the change came from.
         item: The changed item as SharePoint sent it.
     """
-    if requests_in_postgres() and is_request_list(list_id):
-        from app.services.request_copy import move_form_item_into_postgres
-        item = await move_form_item_into_postgres(list_id, str(item.get("id", "")))
-        if item is None:
-            return                                              # already in Postgres, or gone
+    # While the storage switch is pausing writes or running its final sync, a
+    # request-list change must not be auto-processed: a new approval or a computed
+    # day count would land in SharePoint after the final sync has read it and be
+    # lost. The scheduled SharePoint check picks the item up afterwards, so skip and
+    # log it here rather than process it (#335 fix).
+    if is_request_list(list_id):
+        from app.services.storage_switch import switch_is_running
+        from app.services.switch_pause import is_paused
+        if switch_is_running() or await is_paused():
+            logger.info("Storage switch in progress; skipping SharePoint %s item %s", list_id, item.get("id"))
+            return
+
+    if await requests_in_postgres() and is_request_list(list_id):
+        # The request list is no longer the live source. Anything that still lands
+        # there (a Form submission or a hand edit) is never imported or processed:
+        # it would otherwise run the old SharePoint path and email a manager. The
+        # line is logged so a stray item is never dropped in silence.
+        logger.info("Requests are in Postgres; ignoring SharePoint %s item %s", list_id, item.get("id"))
+        return
     fields = item.get("fields", {})
     item_id = item.get("id")
 

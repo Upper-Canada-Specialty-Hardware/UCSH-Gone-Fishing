@@ -17,11 +17,13 @@ import { buildTheme } from '../theme';
 import { carryoverClosedReason } from '../utils/carryoverWindow';
 import { isHourly } from '../utils/employment';
 import { getMyBalances } from '../api/client';
+import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, EmployeeSession, RequestType, VerifiedEmail,
-  clearSession, errorText, getRequestTypes, holdRequest, loadNewHire, loadSession, requestCode,
-  saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
+  Balances, EmployeeSession, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
+  clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, holdRequest, loadNewHire,
+  loadSession, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
+  takeSignInNotice, verifyCode,
 } from '../api/intake';
 
 /**
@@ -33,12 +35,89 @@ import {
  * - newhire-request: then pick a form and fill it in
  * - done: submitted (or held for a new hire)
  */
-type Step = 'email' | 'code' | 'form' | 'newhire' | 'newhire-request' | 'done';
+type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
+const HELD_POLL_MS = 3000;   // how often a new hire's waiting page asks whether their request went through
+const STATUS_POLL_MS = 3000; // how often a sent request's page asks how it is going (#364)
+const STATUS_POLL_CAP_MS = 30 * 60 * 1000;   // stop following after half an hour, even if nothing decided it
+
+/**
+ * A timestamp as a short local clock time (e.g. "2:45 PM"), shown beside a
+ * finished step.
+ *
+ * @param iso - The ISO 8601 time the step happened, or null while it waits.
+ * @returns The clock time, or undefined when there is no usable time.
+ */
+function stepTime(iso: string | null): string | undefined {
+  if (!iso) return undefined;                        // still waiting: no time to show
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return undefined;   // unparseable: show nothing
+  return when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * The title for the balance step once it is done, by how the balance moved.
+ *
+ * @param effect - "applied", "counted", "no_balance_used", or null.
+ * @returns A plain-words title.
+ */
+function balanceTitle(effect: 'applied' | 'counted' | 'no_balance_used' | null): string {
+  if (effect === 'counted') return 'Your vacation was counted';       // hourly vacation: a counter, no pot moves
+  if (effect === 'no_balance_used') return 'No balance was used';      // bereavement, jury duty, hourly overtime
+  return 'Your balance was updated';                                   // a pot was spent or credited
+}
+
+/**
+ * The "what happens next" points for a signed-in employee's request, driven by
+ * the live progress once it is known (#364). Before the first poll answers
+ * (progress is null), it reads as the plain just-sent list.
+ *
+ * @param progress - The latest status from the server, or null before the first poll.
+ * @returns The points, in order, each with its done state and time.
+ */
+function staffNextSteps(progress: RequestProgress | null): NextItem[] {
+  const manager = progress?.manager_name || 'your manager';   // filled in once the send names them
+  const steps = progress?.steps;
+  const result = steps?.decided.result ?? null;
+  const decided = steps?.decided.done;                         // a decision has landed
+  // The ask reaches a manager only once the sent_to_manager event lands; a request
+  // sent while every manager is off waits on the admin cover list and this step is
+  // not yet done (#370). Before the first poll answers (no steps) assume the common
+  // case (a manager was asked); once a decision has landed the ask is moot, so show
+  // it done either way.
+  let sent: NextItem;
+  if (!steps) {
+    sent = { title: `Sent to ${manager}`, note: 'Just now', done: true };   // optimistic until the poll answers
+  } else if (steps.sent_to_manager.done || decided) {
+    sent = { title: `Sent to ${manager}`, note: stepTime(steps.sent_to_manager.at) || 'Just now', done: true };
+  } else {
+    // No manager was asked yet: everyone is off, so it waits until one is back.
+    sent = { title: 'Waiting for a manager to be available', note: 'No manager is free right now', done: false };
+  }
+  // Name who decided: "an admin" or the manager who acted (a stand-in when the
+  // assigned manager was off), falling back to the assigned manager (#371).
+  const decider = steps?.decided.decider || manager;
+  const decidedItem: NextItem = decided
+    ? {
+        title: result === 'rejected' ? `${decider} rejected it` : `${decider} approved it`,
+        note: stepTime(steps!.decided.at),
+        done: true,
+      }
+    : { title: 'They approve or reject', note: 'From the email, a text reply or their dashboard' };
+  const emailed: NextItem = steps?.result_sent.done
+    ? { title: 'You got an email with the decision', note: stepTime(steps.result_sent.at), done: true }
+    : { title: 'You get an email with the decision' };
+  // A rejection moves no balance, so the balance point is left out once rejected.
+  if (result === 'rejected') return [sent, decidedItem, emailed];
+  const balance: NextItem = steps?.balance.done
+    ? { title: balanceTitle(steps.balance.effect), note: stepTime(steps.balance.at), done: true }
+    : { title: 'Your balance updates', note: 'When it is approved' };
+  return [sent, decidedItem, balance, emailed];
+}
 
 /** The steps in the order they come, for which way a change of step slides. */
-const STEP_ORDER: Step[] = ['email', 'code', 'form', 'done'];
+const STEP_ORDER: Step[] = ['email', 'code', 'choose', 'form', 'done'];
 
 /** A new step slides in from the side the person moved towards; the old one leaves the other way. */
 const STEP_MOTION = {
@@ -99,6 +178,7 @@ function ResendRing() {
 const STEP_LABELS: Record<Step, string> = {
   email: 'Your email',
   code: 'The code we email you',
+  choose: 'Which person you are',
   form: 'Your request',
   newhire: 'About you',
   'newhire-request': 'Your request',
@@ -160,6 +240,7 @@ export default function RequestPage() {
   const [code, setCode] = useState('');
   const [session, setSession] = useState<EmployeeSession | null>(null);
   const [verified, setVerified] = useState<VerifiedEmail | null>(null);
+  const [choices, setChoices] = useState<SignInChoice[]>([]);   // the records on a shared mailbox, to pick from
   const [values, setValues] = useState<RequestValues>({ ...EMPTY_REQUEST });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -167,6 +248,10 @@ export default function RequestPage() {
   const [resendIn, setResendIn] = useState(0);
   const [doneText, setDoneText] = useState('');
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
+  const [heldToken, setHeldToken] = useState('');              // signed token to ask how the held request is going
+  const [heldStatus, setHeldStatus] = useState<HeldStatus>('waiting');   // what that request is doing now
+  const [myToken, setMyToken] = useState('');                  // signed token to follow a sent request's progress (#364)
+  const [progress, setProgress] = useState<RequestProgress | null>(null);   // that request's latest progress
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
@@ -175,6 +260,11 @@ export default function RequestPage() {
   const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
   const [misses, setMisses] = useState(0);                     // refused codes, to shake the boxes
   const navigate = useNavigate();
+  // Keep the typed request across a #331 auto-update reload: save the form values
+  // and restore them once on mount. clearDraft forgets them after a submit.
+  const { clearDraft } = useSessionDraft<RequestValues>(
+    'request-form-draft', values, (saved) => setValues({ ...EMPTY_REQUEST, ...saved }),
+  );
   const { pathname } = useLocation();
   const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
   const signedInPage = pathname.startsWith('/my/request');    // under the top bar with the page tabs
@@ -238,6 +328,62 @@ export default function RequestPage() {
     return () => { live = false; };
   }, [session, doneText]);
 
+  // A new hire's waiting page follows its held request: ask every few seconds,
+  // and once the supervisor adds them (or an admin cancels it) say so at once.
+  useEffect(() => {
+    if (step !== 'done' || !heldToken || heldStatus !== 'waiting') return;   // nothing to follow
+    let live = true;
+    /** Ask once; a failed ask is simply tried again on the next tick. */
+    const ask = () => {
+      if (document.hidden) return;                     // a background tab waits until it is looked at
+      getHeldStatus(heldToken)
+        .then(({ data }) => {
+          if (!live || data.status === 'waiting') return;
+          setHeldWith(data.supervisor_name);
+          setHeldStatus(data.status);                   // stops this effect: the answer is final
+          setDoneText(data.status === 'sent'
+            ? `${data.supervisor_name} added you to the staff list, so your request was sent to them. You will get an email when it is approved or rejected.`
+            : 'This request was cancelled. If you still need it, start again with your email.');
+        })
+        .catch(() => { /* retried on the next tick */ });
+    };
+    const timer = setInterval(ask, HELD_POLL_MS);
+    document.addEventListener('visibilitychange', ask); // coming back to the tab asks straight away
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', ask);
+    };
+  }, [step, heldToken, heldStatus]);
+
+  // A signed-in employee's sent request follows itself the same way (#364): ask
+  // every few seconds while the done page is open, so the steps fill in as the
+  // manager approves or rejects by email, text or dashboard. It stops once the
+  // request is finished, and gives up after a cap so it never polls forever.
+  useEffect(() => {
+    if (step !== 'done' || !session || !myToken || progress?.finished) return;   // nothing to follow
+    let live = true;
+    let timer: ReturnType<typeof setInterval>;
+    const deadline = Date.now() + STATUS_POLL_CAP_MS;   // half an hour from when following began
+    /** Ask once; a failed or refused ask simply leaves the steps as they are. */
+    const ask = () => {
+      if (!live) return;
+      if (Date.now() > deadline) { clearInterval(timer); return; }   // past the cap: stop following
+      if (document.hidden) return;                      // a background tab waits until it is looked at
+      getRequestStatus(myToken)
+        .then(({ data }) => { if (live) setProgress(data); })
+        .catch(() => { /* retried on the next tick; a 401/404 just keeps the plain steps */ });
+    };
+    ask();                                              // ask straight away, not only after the first interval
+    timer = setInterval(ask, STATUS_POLL_MS);
+    document.addEventListener('visibilitychange', ask); // coming back to the tab asks straight away
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', ask);
+    };
+  }, [step, session, myToken, progress?.finished]);
+
   // Count down to when a new code may be asked for.
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -272,9 +418,10 @@ export default function RequestPage() {
     try {
       const res = await verifyCode(email.trim(), code.trim());
       if (res.data.status === 'employee') {
-        const signedIn: EmployeeSession = { ...res.data, email: email.trim().toLowerCase() };
-        saveSession(signedIn);                          // 30 days on this device
-        navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
+        signInAs(res.data);
+      } else if (res.data.status === 'choose') {
+        setChoices(res.data.people);                    // a shared mailbox: ask which record this is
+        setStep('choose');
       } else {
         saveNewHire(res.data.verified);                 // the code is used up; this tab keeps the 24-hour pass
         navigate('/new-hire', { replace: true });
@@ -287,13 +434,31 @@ export default function RequestPage() {
     }
   };
 
+  /**
+   * Keep the signed-in record on this device and go on to the person's pages.
+   *
+   * @param person - The record signed in as: the only one on the address, or the one picked.
+   */
+  const signInAs = (person: Omit<EmployeeSession, 'email'>) => {
+    const signedIn: EmployeeSession = {
+      name: person.name, role: person.role, uid: person.uid, token: person.token, exp: person.exp,
+      email: email.trim().toLowerCase(),
+    };
+    saveSession(signedIn);                              // 30 days on this device
+    navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
+  };
+
   /** Submit as the signed-in employee. */
   const submitAsEmployee = async () => {
     if (!session) return;
     setError(''); setBusy(true);
     try {
-      await submitMyRequest(session, type, buildRequestBody(type, values));
+      const res = await submitMyRequest(session, type, buildRequestBody(type, values));
+      clearDraft();                                   // submitted: no draft to keep
       setHeldWith('');
+      setHeldToken('');                               // a staff request has nothing to wait on
+      setMyToken(res.data.status_token || '');        // follow this request's progress (#364)
+      setProgress(null);                              // the first poll fills it in
       setDoneText('Your request was sent to your manager. You will get an email when it is approved or rejected.');
       setStep('done');
     } catch (err: any) {
@@ -325,7 +490,10 @@ export default function RequestPage() {
           : { supervisor_id: starter.supervisor?.id }),
         request_type: type, form: buildRequestBody(type, values),
       });
+      clearDraft();                                     // held: no draft to keep
       setHeldWith(res.data.supervisor_name);
+      setHeldToken(res.data.status_token);              // lets the page follow it from here
+      setHeldStatus('waiting');
       saveNewHire(null);                                // held: a refresh must not send it twice
       setDoneText(
         `You are not in the Staff Directory yet, so we asked ${res.data.supervisor_name} to add you. `
@@ -353,6 +521,9 @@ export default function RequestPage() {
       return;
     }
     setValues({ ...EMPTY_REQUEST });
+    clearDraft();                                       // fresh form: drop the old draft
+    setMyToken('');                                     // stop following the request just finished (#364)
+    setProgress(null);
     setError('');
     setStep('form');
   };
@@ -370,7 +541,9 @@ export default function RequestPage() {
 
   // The steps in the side panel: a new hire's third step is about them, not just the request.
   const held = step === 'newhire' || step === 'newhire-request' || (step === 'done' && !session);
-  const order: Step[] = held ? ['email', 'code', 'newhire', 'newhire-request', 'done'] : ['email', 'code', 'form', 'done'];
+  const order: Step[] = held
+    ? ['email', 'code', 'newhire', 'newhire-request', 'done']
+    : step === 'choose' ? ['email', 'code', 'choose', 'form', 'done'] : ['email', 'code', 'form', 'done'];   // the pick shows only when asked
   const at = order.indexOf(step);
   const steps: StepItem[] = order.map((k, i) => ({
     label: STEP_LABELS[k],
@@ -378,16 +551,18 @@ export default function RequestPage() {
   }));
 
   // What happens next, shown once the request is sent or saved.
+  // A new hire's list moves on by itself once their supervisor adds them.
+  const added = heldStatus === 'sent';
   const next: NextItem[] = held ? [
-    { title: 'Saved', note: 'Just now', done: true },
-    { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
-    { title: 'Your request goes to them', note: 'Automatically' },
+    { title: 'Saved', note: added ? 'Earlier' : 'Just now', done: true },
+    added
+      ? { title: `${heldWith || 'Your supervisor'} added you to the staff list`, note: 'Just now', done: true }
+      : { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
+    added
+      ? { title: `Sent to ${heldWith || 'your supervisor'}`, note: 'Just now', done: true }
+      : { title: 'Your request goes to them', note: 'Automatically' },
     { title: 'You get an email with the decision' },
-  ] : [
-    { title: 'Sent to your manager', note: 'Just now', done: true },
-    { title: 'They approve or reject', note: 'From the email, a text reply or their dashboard' },
-    { title: 'You get an email', note: 'Your balance changes when it is approved' },
-  ];
+  ] : staffNextSteps(progress);   // a sent request's points follow its real progress (#364)
 
   const dir = useDirection(step === 'newhire' ? 2 : STEP_ORDER.indexOf(step));
   const big = { py: 1.5, fontSize: 15 } as const;                                       // the main buttons' size
@@ -452,6 +627,31 @@ export default function RequestPage() {
                       {resendIn > 0 ? `Send a new code (${resendIn}s)` : 'Send a new code'}
                     </Link>
                   </Box>
+                </Box>
+              </>
+            )}
+
+            {step === 'choose' && (
+              <>
+                <Heading>Which person are you?</Heading>
+                <Lead>More than one staff record uses {email.trim()}. Pick yours: your requests and balances follow it.</Lead>
+                <Box sx={{ display: 'grid', gap: 1.25 }}>
+                  {choices.map((person) => (
+                    <Button key={person.uid} variant="outlined" size="large" onClick={() => signInAs(person)}
+                      sx={{ justifyContent: 'flex-start', textAlign: 'left', py: 1.5, px: 2, textTransform: 'none' }}>
+                      <Box sx={{ display: 'grid', minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 600, fontSize: 15 }}>{person.name}</Typography>
+                        {(person.department || person.location) && (
+                          <Typography variant="body2" color="text.secondary">
+                            {[person.department, person.location].filter(Boolean).join(' · ')}
+                          </Typography>
+                        )}
+                      </Box>
+                    </Button>
+                  ))}
+                </Box>
+                <Box>
+                  <Link component="button" variant="body2" onClick={() => { setStep('email'); setChoices([]); setError(''); }}>Use a different email</Link>
                 </Box>
               </>
             )}
@@ -525,7 +725,9 @@ export default function RequestPage() {
                   bgcolor: t.tokens.okSoft, color: 'success.main',
                   animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
                 })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
-                <Heading>{held ? 'Request saved' : 'Request sent'}</Heading>
+                <Heading>
+                  {!held || added ? 'Request sent' : heldStatus === 'cancelled' ? 'Request cancelled' : 'Request saved'}
+                </Heading>
                 <Lead>{doneText}</Lead>
                 <NextSteps items={next} />
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>

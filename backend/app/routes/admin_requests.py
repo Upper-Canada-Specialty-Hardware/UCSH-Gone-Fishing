@@ -29,8 +29,8 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import async_session
-from app.graph.sharepoint import sp_client
 from app.models.request_deletion import RequestDeletion
+from app.repositories.postgres.staff import is_archived   # refuse an archived person a new request (#119)
 from app.repositories.request_store import request_store
 # The same creation, validation, preview and approval pieces every other way
 # of making a request uses, so an admin-made request is identical to a normal one.
@@ -61,6 +61,7 @@ from app.services.request_intake import RequestFormError, parse_request_form, su
 from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_ADMIN
 from app.services.requests_export import build_requests_workbook, requests_export_filename
+from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -181,6 +182,13 @@ async def admin_new_request(body: NewRequestBody):
     employee = await get_employee_by_id(body.employee_id)      # the person it is for
     if not employee:
         raise HTTPException(status_code=404, detail="That employee is not in the Staff Directory.")
+    # An archived person has left: a request cannot be made for them (#119). They
+    # are not in the picker, so this guards a stale id or a crafted call.
+    if is_archived(employee.get("fields", {})):
+        raise HTTPException(
+            status_code=409,
+            detail="That person is archived, so a request cannot be made for them.",
+        )
 
     # Pending notifies the manager; Approved suppresses that email and approves below.
     notify = status == "Pending"
@@ -248,7 +256,8 @@ async def _approve_admin_request(request_type: str, item_id) -> dict:
         ff = fresh["fields"] if fresh else {}                  # the item as created, with its days
         if ff.get("LeaveType") in DAY_COSTING_LEAVE_TYPES and float(ff.get("Days", 0) or 0) <= 0:
             return {"error": "The number of days could not be worked out, so this was not approved."}
-    return await APPROVE_HANDLERS[request_type](item_id, ADMIN_ID)
+    # channel="admin_dashboard"; admin creates and approves in one step here.
+    return await APPROVE_HANDLERS[request_type](item_id, ADMIN_ID, "admin_dashboard")
 
 
 @router.post("/admin/requests/preview")
@@ -336,17 +345,27 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
         await claim_action(list_id, request_id, "approve")
 
     # Refund first, only for an approved item the admin chose to refund. A refused
-    # refund stops here, so nothing is deleted and no record is kept.
+    # refund stops here, so nothing is deleted and no record is kept. Refund must
+    # come before the delete: it reads the request and its ledger rows to work out
+    # what to reverse, and on Postgres the delete sets those ledger rows'
+    # request_id to null (finding 4), so a deleted request could no longer be
+    # refunded. If the refund succeeds but the delete below then fails, the item
+    # is left refunded and still present (not lost): the admin can simply retry
+    # the delete, and the refund is idempotent, so no balance moves twice.
     refunded = False
     if body.refund and fields.get("Status") == "Approved":
-        result = await REFUND_HANDLERS[request_type](request_id, ADMIN_ID)
+        # channel="admin_dashboard"; refund-then-delete is an admin-only path.
+        result = await REFUND_HANDLERS[request_type](request_id, ADMIN_ID, "admin_dashboard")
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         refunded = True
 
-    # Delete the item first, then keep the record, so a deletion record never
-    # outlives an item that is still there. A 404 means it is already gone, which
-    # is success (#294 S5).
+    # Delete the item, then keep the record, so a deletion record never outlives
+    # an item that is still there. On Postgres the request's child rows follow the
+    # foreign-key rules set in Alembic 0021: its timeline and field history cascade
+    # away, while balance_ledger and outbox rows survive with their link nulled, so
+    # balance history and sent-message records outlive the delete. A 404 means it
+    # is already gone, which is success (#294 S5).
     try:
         await request_store.delete_list_item(list_id, request_id)
     except httpx.HTTPStatusError as e:
@@ -401,7 +420,7 @@ async def admin_new_request_options():
         {"staff": [{"id", "name", "department", "location", "email",
         "managers"}], "leave_types": [...]}, staff sorted by name.
     """
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     staff = []
     for item in items:
         f = item.get("fields", {})

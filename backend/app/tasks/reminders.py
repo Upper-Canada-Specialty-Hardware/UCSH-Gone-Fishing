@@ -33,6 +33,9 @@ _LIST_FOR_TYPE = {
     "carryover-payout": settings.SP_LIST_CARRYOVER_PAYOUT,
 }
 _TYPE_FOR_LIST = {v: k for k, v in _LIST_FOR_TYPE.items()}
+# The URL/request-type word -> the request_vocab kind the Postgres path uses
+# (the only difference is the hyphen in "carryover-payout").
+_KIND_FOR_TYPE = {"leave": "leave", "overtime": "overtime", "carryover-payout": "carryover_payout"}
 
 
 def _request_type(list_id: str) -> str | None:
@@ -123,6 +126,18 @@ async def send_reminder_now(request_type: str, request_id: str | int) -> dict:
     list_id = _LIST_FOR_TYPE.get(request_type)
     if not list_id:
         return {"error": f"Unknown request type: {request_type}"}
+    # Once requests and staff both live in Postgres, a manual reminder goes
+    # through the outbox like the scheduled one, so it keeps the typed approval
+    # version and request_approval_state in step. The old direct send queued
+    # nothing for an app-made row (no ManagerLookupId) and broke an imported
+    # row's links, while reporting success (#326, finding 4).
+    from app.services.request_submission import queue_reminder, submission_active
+    if await submission_active():
+        queued = await queue_reminder(_KIND_FOR_TYPE.get(request_type, request_type), request_id)
+        if not queued:
+            return {"error": "Request is no longer pending"}
+        logger.info("Admin queued a reminder for %s #%s (Postgres)", request_type, request_id)
+        return {"status": "reminder_sent", "request_type": request_type, "request_id": str(request_id)}
     item = await request_store.get_list_item_or_none(list_id, request_id)
     if item is None:
         return {"error": "Request no longer exists in SharePoint"}
@@ -170,6 +185,16 @@ async def _process_row(row: RequestApprovalState) -> None:
 
 
 async def send_due_reminders() -> None:
+    # Once requests and staff both live in Postgres, reminders go through the
+    # outbox like every other message: the submission module finds the pending
+    # requests that are due and queues a reminder (once a day) for each (#326).
+    from app.services.request_submission import submission_active, queue_due_reminders
+    if await submission_active():
+        queued = await queue_due_reminders()
+        if queued:
+            logger.info("Reminder scan (Postgres) - %d request(s) queued", queued)
+        return
+
     now = datetime.utcnow()
     async with async_session() as session:
         result = await session.execute(

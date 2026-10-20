@@ -23,6 +23,8 @@ Emails go through send_email, so they move with it from one email service to
 the next with no change here.
 """
 
+import hashlib
+import hmac
 import html
 import logging
 from dataclasses import dataclass
@@ -35,7 +37,6 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.database import async_session
 from app.graph.email import send_email
-from app.graph.sharepoint import sp_client
 from app.models import HeldRequest
 from app.models.mixins import utcnow
 from app.services.dashboard_tokens import generate_dashboard_url
@@ -46,6 +47,7 @@ from app.services.employee import (
 )
 from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
+from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +153,7 @@ def _clean(text: str | None) -> str:
 
 async def _staff() -> list[dict]:
     """Every Staff Directory record (the list is not indexed, so all of it)."""
-    return await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    return await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
 
 async def list_departments() -> list[str]:
@@ -426,7 +428,7 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
     from app.services.leave_requests import _resolve_user_lookup_id
     from app.services.request_submitter import requests_linked_by_email
     waiting_for_site = (
-        not requests_linked_by_email() and not await _resolve_user_lookup_id(email)
+        not await requests_linked_by_email() and not await _resolve_user_lookup_id(email)
     )
 
     results: list[ReleaseResult] = []
@@ -563,6 +565,61 @@ async def cancel_held_request(held_id: int) -> bool:
         row.status = "cancelled"
         await session.commit()
     return True
+
+
+# ----- the new hire's waiting page -----
+
+def held_status_token(held_id: int) -> str:
+    """A signed token that lets the page that held a request ask how it is going.
+
+    The page that held the request keeps this, so it can show "sent to your
+    supervisor" the moment they add the person, without a sign-in.
+
+    Args:
+        held_id: The held_requests row id.
+
+    Returns:
+        "<id>.<signature>": the id plus an HMAC over it, so no other id can be asked about.
+    """
+    message = f"held-status:{held_id}".encode()                # its own prefix: never valid as another token
+    signature = hmac.new(settings.APPROVAL_LINK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    return f"{held_id}.{signature}"
+
+
+def held_id_from_status_token(token: str) -> int | None:
+    """The held request id a status token names, when its signature checks out.
+
+    Args:
+        token: A token from held_status_token.
+
+    Returns:
+        The id, or None for a malformed or forged token.
+    """
+    head, _, _ = (token or "").partition(".")                  # "<id>.<signature>"
+    if not head.isdigit():
+        return None                                            # not a token at all
+    held_id = int(head)
+    # Constant-time compare, so the signature cannot be guessed one byte at a time.
+    return held_id if hmac.compare_digest(token, held_status_token(held_id)) else None
+
+
+async def held_request_status(held_id: int) -> dict | None:
+    """Where one held request stands, in the words the waiting page needs.
+
+    Args:
+        held_id: The held_requests row id.
+
+    Returns:
+        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}, or
+        None when there is no such row. Every open status (held, waiting_site,
+        releasing, failed) reads as waiting: to the person it is still on its way.
+    """
+    async with async_session() as session:
+        row = await session.get(HeldRequest, held_id)
+    if row is None:
+        return None
+    status = {"released": "sent", "cancelled": "cancelled"}.get(row.status, "waiting")
+    return {"status": status, "supervisor_name": row.supervisor_name}
 
 
 async def held_request_email(held_id: int) -> str | None:

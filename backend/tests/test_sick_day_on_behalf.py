@@ -15,12 +15,22 @@ and the flag the dashboard reads to decide whether to show the button.
 """
 
 import asyncio
+import copy
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import delete, select
 
 from app.config import settings
+from app.database import async_session
+from app.graph import sharepoint
+from app.models.balance_ledger import BalanceLedger
+from app.models.outbox import Outbox
+from app.models.request_counter import RequestCounter
+from app.models.request_event import RequestEvent
+from app.models.request_record import RequestRecord
+from app.models.request_vocab import CHANNELS
 from app.routes import dashboard as dashboard_route
 from app.routes.dashboard import router as dashboard_router
 from app.services import sick_day_on_behalf as sd
@@ -33,6 +43,7 @@ from app.services.sick_day_on_behalf import (
     log_sick_day_on_behalf,
     manager_may_log_sick_days,
 )
+from staff_seed import import_staff, wipe_staff
 
 BC_MANAGER = {
     "id": "42",
@@ -170,7 +181,8 @@ def _patch(monkeypatch, *, manager=BC_MANAGER, employee=EMPLOYEE, conflict=None,
         calls["order"].append("stamp")
         return {"id": str(item_id), "fields": fields}
 
-    async def _approve(request_id, manager_id):
+    # The sick-day path now passes channel="manager_logs_sick_day"; capture it.
+    async def _approve(request_id, manager_id, *args, **kwargs):
         calls["approved"] = (str(request_id), str(manager_id))
         calls["order"].append("approve")
         return approve_result or {"status": "approved", "balances": {"CurrentSickDayBalance": 3}}
@@ -252,6 +264,19 @@ def test_an_unknown_employee_is_refused(monkeypatch):
     assert calls["created"] is None
 
 
+def test_an_archived_employee_is_refused_before_anything_is_written(monkeypatch):
+    # An archived teammate (#119) is out of every route, so no sick day is logged
+    # for them; the refusal happens before the request is created.
+    archived = copy.deepcopy(EMPLOYEE)
+    archived["fields"]["ArchivedAt"] = "2026-09-01T00:00:00Z"   # a set timestamp means archived
+    calls = _patch(monkeypatch, employee=archived)
+
+    with pytest.raises(SickDayOnBehalfError, match="archived"):
+        asyncio.run(log_sick_day_on_behalf("42", FORM))
+
+    assert calls["created"] is None
+
+
 def test_a_range_with_no_working_days_is_refused(monkeypatch):
     calls = _patch(monkeypatch)
     weekend = {**FORM, "start_date": "2026-09-05", "end_date": "2026-09-06"}  # Sat-Sun
@@ -281,6 +306,124 @@ def test_a_refused_approval_names_the_request_left_pending(monkeypatch):
 
     # The request was created and stamped, so it is visible in the Pending list.
     assert calls["order"] == ["create", "stamp", "approve"]
+
+
+# ----- the real Postgres approve path (findings 1 and 7) -----
+
+# A salaried employee and their manager, both as Staff Directory items the fake
+# sp_client hands to the staff import. On Postgres a manager is their own staff
+# id, so AllManagers carries the manager's staff id (42), not a user-list id.
+_PG_EMPLOYEE = {"id": "480", "fields": {
+    "Title": "Roland Alvarez", "EmailAddress": "rolanda@ucsh.com",
+    "Location": "British Columbia", "Department": "Warehouse", "SalaryHourly": "Salary",
+    "AllManagers": [{"LookupId": 42, "LookupValue": "Steve Faith"}],
+    "CurrentVacationBalance": 10, "CurrentSickDayBalance": 5,
+    "CurrentOvertimeBalance": 0, "CarryOver": 0, "Payout": 0,
+}}
+_PG_MANAGER = {"id": "42", "fields": {
+    "Title": "Steve Faith", "EmailAddress": "stevef@ucsh.com", "Location": "British Columbia",
+    "CurrentVacationBalance": 0, "CurrentSickDayBalance": 0,
+    "CurrentOvertimeBalance": 0, "CarryOver": 0, "Payout": 0,
+}}
+STAFF_LIST = settings.SP_LIST_STAFF_DIRECTORY
+
+
+class _FakeSP:
+    """A minimal sp_client: only the Staff Directory, for the staff import."""
+
+    def __init__(self):
+        self.lists = {STAFF_LIST: [copy.deepcopy(_PG_EMPLOYEE), copy.deepcopy(_PG_MANAGER)]}
+
+    async def get_list_items(self, list_id, filter=None, select=None, expand="fields", top=5000):
+        """Every item of a list, copied so a caller cannot mutate the store."""
+        return [copy.deepcopy(i) for i in self.lists.get(list_id, [])]
+
+    async def get_list_item(self, list_id, item_id):
+        """One item by id, or a KeyError (get_employee_by_id swallows it)."""
+        for item in self.lists.get(list_id, []):
+            if str(item["id"]) == str(item_id):
+                return copy.deepcopy(item)
+        raise KeyError(item_id)
+
+    async def get_list_item_or_none(self, list_id, item_id):
+        """One item by id, or None."""
+        for item in self.lists.get(list_id, []):
+            if str(item["id"]) == str(item_id):
+                return copy.deepcopy(item)
+        return None
+
+
+async def _pg_wipe():
+    """Empty the request and staff tables these tests write to."""
+    async with async_session() as session:
+        for model in (BalanceLedger, RequestEvent, Outbox, RequestRecord, RequestCounter):
+            await session.execute(delete(model))
+        await session.commit()
+
+
+@pytest.fixture
+def pg(monkeypatch):
+    """Both storages in Postgres, sp_client faked, staff seeded, tables clean."""
+    fake = _FakeSP()
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", fake.get_list_items)
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_item", fake.get_list_item)
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_item_or_none", fake.get_list_item_or_none)
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+
+    async def _holidays(province):
+        return []
+
+    async def _overlap(**kwargs):
+        return None
+
+    monkeypatch.setattr(sd, "get_holidays_for_province", _holidays)
+    monkeypatch.setattr(sd, "check_leave_overlap", _overlap)
+
+    asyncio.run(_pg_wipe())
+    asyncio.run(wipe_staff())
+    asyncio.run(import_staff())
+    yield fake
+    asyncio.run(_pg_wipe())
+    asyncio.run(wipe_staff())
+
+
+def test_logging_a_sick_day_approves_through_the_real_postgres_decision(pg):
+    # The sick day is created, submitted and approved on the spot through the one
+    # Postgres decision path (not a mock). The approval writes ledger and event
+    # rows whose channel must be one request_vocab.CHANNELS allows: the fix passes
+    # "manager_dashboard"; the old "manager_logs_sick_day" is not a channel and
+    # its CHECK constraint would reject the whole approve (finding 1). On Postgres
+    # no SubmittedTest lookup id is resolved against SharePoint (finding 7).
+    result = asyncio.run(log_sick_day_on_behalf("42", FORM))
+
+    assert result["status"] == "approved"
+    assert result["days"] == 2
+
+    async def read():
+        async with async_session() as session:
+            record = (await session.execute(
+                select(RequestRecord).where(RequestRecord.kind == "leave")
+            )).scalars().first()
+            events = (await session.execute(
+                select(RequestEvent).where(RequestEvent.request_id == record.id)
+            )).scalars().all()
+            ledger = (await session.execute(
+                select(BalanceLedger).where(BalanceLedger.request_id == record.id)
+            )).scalars().all()
+            return record, events, ledger
+
+    record, events, ledger = asyncio.run(read())
+    assert record.status == "approved"
+    # The real decision deducted the sick pot (5 -> 3) and recorded the move.
+    sick_rows = [row for row in ledger if row.pot == "sick"]
+    assert len(sick_rows) == 1 and sick_rows[0].before == 5.0 and sick_rows[0].after == 3.0
+    # No SubmittedTest lookup id was resolved against the SharePoint user list.
+    assert "SubmittedTestLookupId" not in (record.extra or {})
+    # Every row the real approve wrote carries a valid, allowed channel.
+    assert events and all(e.channel in CHANNELS for e in events)
+    assert ledger and all(row.channel in CHANNELS for row in ledger)
+    assert any(e.channel == "manager_dashboard" for e in events)
 
 
 # ----- the endpoint -----

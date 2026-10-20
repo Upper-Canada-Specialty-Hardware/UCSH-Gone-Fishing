@@ -18,7 +18,9 @@ from sqlalchemy import delete
 from app.config import settings
 from app.database import async_session
 from app.graph import sharepoint
-from app.models.request_item import LeaveRequestItem
+from app.models.request_change import RequestChange
+from app.models.request_counter import RequestCounter
+from app.models.request_record import RequestRecord
 from app.repositories.request_store import request_list_tables, request_store
 from app.services import employment, leave_requests
 from app.services.balance import simulate_leave_impact
@@ -220,8 +222,11 @@ def bc_store(monkeypatch):
     boss = {"id": "3", "fields": {"Title": "Sam Supervisor", "EmailAddress": "sam@ucsh.com"}}
 
     async def wipe():
+        # The live store is the typed requests table now; clear it, its change
+        # rows and its id counters between tests.
         async with async_session() as session:
-            await session.execute(delete(LeaveRequestItem))
+            for model in (RequestChange, RequestRecord, RequestCounter):
+                await session.execute(delete(model))
             await session.commit()
 
     async def submitter(fields, column):
@@ -253,7 +258,7 @@ def _pending(leave_type: str, days: float) -> str:
     item_id = random.randint(10_000_000, 99_999_999)          # the claim log outlives the wipe
     table = request_list_tables()[settings.SP_LIST_LEAVE_REQUESTS]
     run(table.create_list_item(settings.SP_LIST_LEAVE_REQUESTS, {
-        "LeaveType": leave_type, "Status": "Pending", "StartDate": "2026-11-02",
+        "EmployeeID": "7", "LeaveType": leave_type, "Status": "Pending", "StartDate": "2026-11-02",
         "EndDate": "2026-11-04", "Days": days, "SubmitterEmail": "jamie@ucsh.com",
     }, item_id=item_id))
     return str(item_id)

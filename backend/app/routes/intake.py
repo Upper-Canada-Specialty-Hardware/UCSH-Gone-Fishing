@@ -13,6 +13,10 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  to pick from, a typed search for the supervisor in one, then
                  hold a request until the supervisor adds the person
                  (services/held_requests.py).
+* GET /held/status - how one held request is going, for the page that held
+                 it; needs the signed status token POST /held returned.
+* POST /session/refresh - re-check a signed-in person's role on each visit, so
+                 someone made a manager after signing in gets My team (#376).
 
 Mailbox control is the identity proof. Sending goes through send_email, so
 whichever email service that routes to (SMTP2GO today; the UCSH mailer for
@@ -27,10 +31,18 @@ from pydantic import BaseModel
 from app.config import settings
 
 from app.graph.email import send_email
-from app.services import email_codes, held_requests
+from app.services import email_codes, held_requests, request_status
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
-from app.services.dashboard_tokens import generate_dashboard_token
-from app.services.employee import get_employee_by_email, is_manager
+from app.services.dashboard_tokens import generate_dashboard_token, validate_dashboard_token
+from app.services.employee import (
+    email_belongs_to_archived,
+    get_employee_by_email,
+    get_employee_by_id,
+    get_employees_by_email,
+    is_manager,
+)
+from app.services.manager_match import manager_name_of  # who manages whom, by id or name (#376)
+from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
 from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
@@ -53,6 +65,14 @@ class VerifyRequest(BaseModel):
     """Body of POST /verify."""
     email: str
     code: str
+
+
+class SessionBody(BaseModel):
+    """Body of POST /session/refresh: the signed-in token the page holds."""
+    token: str
+    role: str
+    uid: str
+    exp: str
 
 
 class VerifiedEmail(BaseModel):
@@ -160,24 +180,27 @@ async def request_code(body: CodeRequest, request: Request):
     return _CODE_SENT
 
 
-async def _manages_anyone(name: str) -> bool:
+async def _manages_anyone(employee: dict) -> bool | None:
     """Whether anyone in the Staff Directory lists this person as a manager.
 
+    Matches by their link id or by name ignoring case and spacing (#376), so a
+    manager set up outside the app is found too.
+
     Args:
-        name: The employee's Staff Directory name.
+        employee: The person's staff record (``{"id", "fields"}``).
 
     Returns:
-        True for a manager. False when nobody lists them, or when the check
-        fails: they still sign in, just without My team, and the next sign-in
-        tries again.
+        True for a manager, False when nobody lists them, None when the check
+        failed (sign-in treats that as an employee; the next visit's refresh
+        tries again instead of keeping the wrong answer for 30 days).
     """
-    if not name:
-        return False
+    if not (employee.get("fields", {}) or {}).get("Title"):
+        return False                                           # a blank record manages nobody
     try:
-        return await is_manager(name)
+        return await is_manager(await manager_name_of(employee))
     except Exception:  # noqa: BLE001 - a failed lookup must not block sign-in
         logger.exception("Could not check whether the signed-in person is a manager")
-        return False
+        return None
 
 
 @router.post("/verify")
@@ -191,7 +214,10 @@ async def verify_code(body: VerifyRequest):
         For a Staff Directory employee: {"status": "employee", "name", and the
         dashboard token fields role/uid/token/exp}. role is "manager" when
         someone lists them as a manager (it opens My team as well as their own
-        pages), otherwise "employee". For anyone else:
+        pages), otherwise "employee". When more than one Staff Directory record
+        carries the address (a shared mailbox): {"status": "choose", "people":
+        [one employee answer per record, plus "department" and "location"]}, so
+        the page asks which person is signing in. For anyone else:
         {"status": "unknown", "verified": {email, exp, token}}.
 
     Raises:
@@ -203,20 +229,51 @@ async def verify_code(body: VerifyRequest):
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.error)
 
-    employee = await get_employee_by_email(email)
-    if employee is not None:
-        name = employee.get("fields", {}).get("Title", "")
-        role = "manager" if await _manages_anyone(name) else "employee"
-        # Same signed token the emailed dashboard links carry; 30 days by default.
-        session_token = generate_dashboard_token(role, employee["id"])
+    people = await get_employees_by_email(email)            # active records only (archived filtered out)
+    if len(people) > 1:
+        # A shared mailbox: whoever controls it may sign in as any record on it,
+        # so each gets its own token and the page asks which one this is.
         return {
-            "status": "employee",
-            "name": name,
-            **session_token,                                   # role, uid, token, exp
+            "status": "choose",
+            "people": [await _signed_in_as(employee) for employee in people],
         }
+    if people:
+        return {"status": "employee", **await _signed_in_as(people[0])}
+
+    # No active record. If an archived one carries this address, the person has
+    # left: refuse with a plain message rather than send them down the new-hire
+    # path (#119). An archived person cannot make a request.
+    if await email_belongs_to_archived(email):
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been archived. Contact HR if you think this is a mistake.",
+        )
 
     # Not on staff yet: prove the address was verified for the new-hire path.
     return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
+
+
+async def _signed_in_as(employee: dict) -> dict:
+    """The sign-in answer for one staff record: who they are, plus their token.
+
+    Args:
+        employee: The staff record (``{"id", "fields"}``).
+
+    Returns:
+        {"name", "department", "location", role, uid, token, exp}. role is
+        "manager" when someone lists them as a manager, otherwise "employee".
+    """
+    fields = employee.get("fields", {})
+    name = fields.get("Title", "")
+    role = "manager" if await _manages_anyone(employee) else "employee"   # None (failed) -> employee
+    # Same signed token the emailed dashboard links carry; 30 days by default.
+    session_token = generate_dashboard_token(role, employee["id"])
+    return {
+        "name": name,
+        "department": fields.get("Department") or "",          # tells two records apart on the chooser
+        "location": fields.get("Location") or "",
+        **session_token,                                       # role, uid, token, exp
+    }
 
 
 @router.get("/departments")
@@ -291,7 +348,8 @@ async def hold(body: HeldRequestBody):
         body: The verified-email token, name, department, supervisor and form.
 
     Returns:
-        {"status": "held", "supervisor_name"}.
+        {"status": "held", "supervisor_name", "status_token"}: the token lets
+        the page ask GET /held/status how the request is going.
 
     Raises:
         HTTPException: 401 for a bad token; 409 when the address is on staff
@@ -312,7 +370,65 @@ async def hold(body: HeldRequestBody):
         )
     except (held_requests.HoldError, RequestFormError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": "held", "supervisor_name": row.supervisor_name}
+    return {
+        "status": "held", "supervisor_name": row.supervisor_name,
+        "status_token": held_requests.held_status_token(row.id),   # the waiting page polls with it
+    }
+
+
+@router.get("/held/status")
+async def held_status(token: str = Query(...)):
+    """How a held request is going, for the page that held it.
+
+    Public, but only for the one request its signed token names: the answer is
+    the status and the supervisor the person already chose, nothing more. The
+    page asks every few seconds, so it says "sent" the moment the supervisor
+    adds the person.
+
+    Args:
+        token: The status_token POST /held returned.
+
+    Returns:
+        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}.
+
+    Raises:
+        HTTPException: 404 for a bad token or a request that no longer exists.
+    """
+    held_id = held_requests.held_id_from_status_token(token)
+    found = await held_requests.held_request_status(held_id) if held_id is not None else None
+    if found is None:
+        raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
+    return found
+
+
+@router.get("/request-status")
+async def request_status_endpoint(token: str = Query(...)):
+    """How a request sent from the request page is going, for the page that sent it.
+
+    Public, but only for the one request its signed token names (#364). The
+    normal submit response (routes/self_service.py) hands the page this token;
+    the page asks every few seconds and shows each step done with its time, so an
+    approval by email, text or dashboard shows without a sign-in or a refresh.
+
+    Args:
+        token: The status_token the submit response returned.
+
+    Returns:
+        {"status", "manager_name", "finished", "steps": {...}} for that request
+        (see services/request_status.py).
+
+    Raises:
+        HTTPException: 401 for a forged or malformed token; 404 when the request
+            it names does not exist (e.g. on the SharePoint path).
+    """
+    reference = request_status.request_ref_from_status_token(token)
+    if reference is None:
+        raise HTTPException(status_code=401, detail="This status link is not valid.")
+    kind, item_id = reference
+    found = await request_status.request_progress(kind, item_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Request not found.")
+    return found
 
 
 def _render_code_email(code: str) -> str:
@@ -329,3 +445,44 @@ def _render_code_email(code: str) -> str:
         f'<p style="font-size:28px;font-weight:bold;letter-spacing:6px">{code}</p>'
         "<p>It works for 10 minutes. If you did not ask for it, you can ignore this email.</p>"
     )
+
+
+@router.post("/session/refresh")
+async def refresh_session(body: SessionBody):
+    """Re-check a signed-in person's role, so My team follows the Staff Directory (#376).
+
+    The role in a sign-in token is decided when the code is checked and kept for
+    30 days. Someone made a manager after that (or whose check failed that day)
+    would not see My team until the token ran out. The page calls this on every
+    visit; when the role has changed it gets a new token with the right one.
+
+    Args:
+        body: The token fields the page holds (from the code sign-in or an
+            emailed link).
+
+    Returns:
+        ``{"changed": False}`` when the role still holds (or could not be
+        checked), else ``{"changed": True, role, uid, token, exp}``.
+
+    Raises:
+        HTTPException: 401 when the token is not valid; 404 when the person's
+            record is gone; 403 when they have been archived.
+    """
+    valid, error = validate_dashboard_token(body.role, body.uid, body.token, body.exp)
+    if not valid:
+        raise HTTPException(status_code=401, detail=error)
+    if body.role not in ("employee", "manager"):              # an admin link keeps its role
+        return {"changed": False}
+    employee = await get_employee_by_id(body.uid)             # their record now
+    if not employee:
+        raise HTTPException(status_code=404, detail="Your staff record could not be found.")
+    if is_archived(employee.get("fields", {})):               # a departed person gets no new token (#119)
+        raise HTTPException(status_code=403, detail="This account is no longer active. Please contact HR.")
+    manages = await _manages_anyone(employee)
+    if manages is None:                                       # check failed: keep what they have
+        return {"changed": False}
+    role = "manager" if manages else "employee"
+    if role == body.role:                                     # nothing to change
+        return {"changed": False}
+    # A fresh token with the new role; the page swaps it in for the old one.
+    return {"changed": True, **generate_dashboard_token(role, body.uid)}

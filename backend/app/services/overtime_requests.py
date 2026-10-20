@@ -11,7 +11,11 @@ from app.services.employee import (
     map_location_to_province,
 )
 # Who a request is for: SubmitterEmail first, then the SubmittedBy person column.
-from app.services.request_submitter import resolve_request_submitter, submitter_columns
+from app.services.request_submitter import (
+    new_request_submitter,
+    resolve_request_submitter,
+    submitter_columns,
+)
 from app.services.holidays import (
     get_holidays_for_province,
     get_half_friday_season,
@@ -49,14 +53,16 @@ from app.services.audit_trail import (
     extract_approval_deltas,
     write_audit_log,
 )
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
+from app.services.switch_pause import guarded  # refuse writes mid-switch and count them in flight
 
 logger = logging.getLogger(__name__)
 
 
+@guarded  # refuses mid-switch, and the switch waits for it to finish
 async def process_new_overtime_request(
     form_data: dict, submitter_email: str, source: str | None = None,
-    notify: bool = True,
+    notify: bool = True, employee_id: str | int | None = None,
 ) -> dict:
     """Create the SharePoint overtime item, assign its manager, ask for approval.
 
@@ -68,9 +74,14 @@ async def process_new_overtime_request(
         notify: True asks the manager for approval, as a normal submission
             does. False assigns the manager but skips that email, so an admin
             can create and approve the request in one step (#283).
+        employee_id: The submitter's staff id when the caller knows it (a signed-in
+            person). It wins over the email, which two staff records can share.
 
     Returns:
         The created SharePoint item.
+
+    Raises:
+        SystemPaused: While the storage switch is running (no request is created).
     """
     hours = float(form_data.get("hours", 0))
     fields = {
@@ -80,11 +91,24 @@ async def process_new_overtime_request(
         "Status": "Pending",
     }
 
-    lookup_id = await _resolve_user_lookup_id(submitter_email)
-    if lookup_id:
-        fields["SubmittedByLookupId"] = lookup_id
+    # SubmittedBy is a SharePoint person column, resolved against the site's User
+    # Information List. Set it only in SharePoint mode: after the switch the typed
+    # row resolves the submitter by EmployeeID and SubmitterEmail, so that list is
+    # never read, not even as a fallback (Postgres is the only source of truth).
+    if not await requests_in_postgres():
+        lookup_id = await _resolve_user_lookup_id(submitter_email)
+        if lookup_id:
+            fields["SubmittedByLookupId"] = lookup_id
     # SubmitterEmail and RequestSource, for submitters the person column misses.
-    fields.update(submitter_columns(submitter_email, source))
+    fields.update(await submitter_columns(submitter_email, source))
+
+    # Once requests live in Postgres the typed row needs the submitter's staff id
+    # (employee_id is not null), so resolve by email now and refuse a request that
+    # matches nobody rather than writing a half-formed row (#324). SharePoint mode
+    # is unchanged: there EmployeeID is not written on the overtime list.
+    if await requests_in_postgres():
+        submitter = await new_request_submitter(submitter_email, employee_id)   # the chosen person when the email is shared
+        fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
 
     # No duplicate check here, deliberately — a clash with an already-approved
     # entry is raised when a manager tries to approve. See the module docstring
@@ -108,6 +132,14 @@ async def auto_assign_manager(request_id: str | int, submitter_email: str | None
         notify: True sends the approval email at the end; False stops after the
             manager is assigned, for an admin-created-and-approved request.
     """
+    # Once requests and staff both live in Postgres, the submission module records
+    # the request and QUEUES its manager email, text and the receipt, instead of
+    # resolving the SharePoint person columns and sending here (#324, #326).
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("overtime", request_id, notify=notify)
+        return
+
     item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -181,6 +213,11 @@ async def notify_manager_after_failed_admin_approval(request_id: str | int) -> b
     Returns:
         True when the manager was asked; False when it was not in a state to ask.
     """
+    # Postgres mode asks the manager through the outbox (keeps the typed version
+    # and links in step); the direct send queues nothing for an app-made row (#326).
+    if await requests_in_postgres():
+        from app.services.request_submission import queue_reminder
+        return await queue_reminder("overtime", request_id)
     item = await request_store.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     if item is None or item["fields"].get("Status") != "Pending":
         return False                                            # gone or already decided: leave it
@@ -409,6 +446,14 @@ async def admin_edit_overtime_request(
         "Title": new_title,
     }
 
+    # Once requests and staff live in Postgres the edit is applied in one
+    # transaction: bump the approval version (old links go stale), record the field
+    # changes, append an "edited" event and queue fresh manager links through the
+    # outbox (#324). SharePoint mode keeps the send path below.
+    from app.services.request_submission import apply_admin_edit, submission_active
+    if await submission_active():
+        return await apply_admin_edit("overtime", request_id, before, after, reason)
+
     async with lock_manager.lock(employee_id):
         fresh = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
         if fresh["fields"].get("Status") != "Pending":
@@ -439,17 +484,29 @@ async def admin_edit_overtime_request(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
-async def approve_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
+@guarded  # refuses mid-switch, and the switch waits for it to finish
+async def approve_overtime_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
+) -> dict:
     """Process overtime approval — update balance, vacation offset, recalc RAD.
 
     Args:
         request_id: SharePoint item id of the overtime request being approved.
         manager_id: Staff Directory id of whoever is approving.
+        channel: Which channel asked (for the Postgres decision path's audit).
+        link_version: The approval version a link carried, or None (stale check).
 
     Returns:
         A result dict describing the approval. An "error" key means nothing was
         written and the request is unchanged.
+
+    Raises:
+        SystemPaused: While the storage switch is running (nothing is written).
     """
+    from app.services.request_decisions import approve as _pg_approve, decisions_active
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_approve("overtime", request_id, manager_id, channel, link_version)
+
     # Conflict check runs BEFORE the idempotency claim so a blocked approval
     # stays retryable — same reasoning as approve_leave_request.
     pre_claim = await request_store.get_list_item_or_none(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
@@ -592,8 +649,14 @@ async def approve_overtime_request(request_id: str | int, manager_id: str | int)
     return {"status": "approved", "balances": balances}
 
 
-async def refund_overtime_request(request_id: str | int, admin_id: str | int) -> dict:
+@guarded  # refuses mid-switch, and the switch waits for it to finish
+async def refund_overtime_request(
+    request_id: str | int, admin_id: str | int, channel: str = "system",
+) -> dict:
     """Reverse an approved overtime request — subtract from OT balance, cascade, recalc RAD."""
+    from app.services.request_decisions import decisions_active, refund as _pg_refund
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_refund("overtime", request_id, admin_id, channel)
     item = await request_store.get_list_item(settings.SP_LIST_OVERTIME_REQUESTS, request_id)
     fields = item["fields"]
 
@@ -684,8 +747,15 @@ async def refund_overtime_request(request_id: str | int, admin_id: str | int) ->
     return {"status": "refunded", "balances": balances}
 
 
-async def reject_overtime_request(request_id: str | int, manager_id: str | int) -> dict:
+@guarded  # refuses mid-switch, and the switch waits for it to finish
+async def reject_overtime_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system",
+    link_version: int | None = None, reason: str | None = None,
+) -> dict:
     """Process overtime rejection."""
+    from app.services.request_decisions import decisions_active, reject as _pg_reject
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_reject("overtime", request_id, manager_id, channel, link_version, reason)
     if not await claim_action(settings.SP_LIST_OVERTIME_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 

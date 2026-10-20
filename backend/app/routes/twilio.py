@@ -10,8 +10,9 @@ from app.services.employee import get_employee_by_id, ADMIN_NAMES
 from app.services.leave_requests import approve_leave_request, reject_leave_request
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
-from app.graph.sharepoint import sp_client
 from app.repositories.request_store import request_store
+from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
+from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -63,6 +64,12 @@ async def receive_sms(request: Request):
         await send_sms(from_number, "System is currently in reporting-only mode. Approvals via SMS are disabled.")
         return ""
 
+    # While the storage switch runs, reply with the same friendly sentence the API
+    # routes return, so an SMS approval is refused cleanly rather than half-applied.
+    if await is_paused():
+        await send_sms(from_number, PAUSE_MESSAGE)
+        return ""
+
     body = params.get("Body", "").strip()
     # Extract last 10 digits
     from_digits = re.sub(r"\D", "", from_number)[-10:]
@@ -96,7 +103,7 @@ async def receive_sms(request: Request):
         return ""
 
     # Look up SMS sender by cell number (not indexed — client-side filter)
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         s for s in all_staff
         if re.sub(r"\D", "", s.get("fields", {}).get("CellNumber", ""))[-10:] == from_digits
@@ -139,7 +146,9 @@ async def receive_sms(request: Request):
     # Replying "response has been received" regardless made a refused approval
     # indistinguishable from a successful one.
     if decision == "Approve":
-        result = await config["approve"](item_id, sender_id) or {}
+        # channel="sms"; SMS replies carry no link version, so stale-link
+        # checking does not apply here (link_version stays the default None).
+        result = await config["approve"](item_id, sender_id, "sms") or {}
         if result.get("error"):
             await send_sms(from_number, f"Request #{item_id} was not approved. {result['error']}")
             return ""
@@ -149,7 +158,8 @@ async def receive_sms(request: Request):
             f"Response has been received. An email will be sent to ({manager_email}) once the process is completed.",
         )
     else:
-        result = await config["reject"](item_id, sender_id) or {}
+        # channel="sms" for the reject path too; no link version by SMS.
+        result = await config["reject"](item_id, sender_id, "sms") or {}
         if result.get("error"):
             await send_sms(from_number, f"Request #{item_id} was not rejected. {result['error']}")
             return ""

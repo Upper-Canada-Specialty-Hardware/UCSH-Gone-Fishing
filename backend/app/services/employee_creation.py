@@ -18,7 +18,7 @@ Comments, Extension, Birthday) are deliberately left unset.
 import logging
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store, staff_in_postgres
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     get_employee_by_email,
@@ -184,9 +184,10 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
 
     # Not finding them in the site's user list is a notice, not a refusal: the
     # request page links requests by email, and someone only joins that list
-    # once they visit the site or are added to it.
+    # once they visit the site or are added to it. Once staff live in Postgres
+    # there is no such list and the notice would be misleading, so it is skipped.
     notices: list[str] = []
-    if not await _resolve_user_lookup_id(fields["EmailAddress"]):
+    if not await staff_in_postgres() and not await _resolve_user_lookup_id(fields["EmailAddress"]):
         notices.append(
             f"{fields['EmailAddress']} is not linked to the SharePoint site yet. "
             "They can use the request page now; the Microsoft Form works once "
@@ -196,7 +197,9 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     if not manager_sp_user_ids:
         raise EmployeeValidationError("At least one supervisor must be assigned.")
 
-    item = await sp_client.create_list_item(settings.SP_LIST_STAFF_DIRECTORY, fields)
+    # Create through the store: on Postgres this mints the new staff id there
+    # (nothing goes to SharePoint); on SharePoint it creates the item directly.
+    item = await staff_store.create_list_item(settings.SP_LIST_STAFF_DIRECTORY, fields)
     employee_id = item["id"]
     logger.info("Created Staff Directory record #%s (%s)", employee_id, fields["Title"])
 
@@ -211,6 +214,7 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     )
 
     # Return the record as written, re-read so the caller sees the person and
-    # computed fields the two calls above added.
-    record = await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    # computed fields the two calls above added (through the store, so it reads the
+    # backend the create landed in).
+    record = await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
     return {**record, "notices": notices}

@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
-from app.services.employee import get_employee_by_id, is_manager
+from app.services.employee import get_all_managers_for_employee, get_employee_by_id, is_manager
+from app.services.manager_match import (  # one rule for who manages whom (#376)
+    entry_keys, lists_manager, manager_name_of, normalise_name, team_names,
+)
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_submitter import SUBMITTER_PERSON_COLUMNS, submitter_email_of
 from app.services.balance import (
@@ -35,10 +38,27 @@ from app.services.employment import (
     vacation_days_counted,
 )
 from app.routes.approval import HANDLERS
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
+from app.services.request_live_reads import WIRE_TO_STORED, indexed_request_items
+from app.repositories.staff_store import staff_store, staff_in_postgres  # Staff Directory reads/writes follow staff_storage
+from app.repositories.postgres.staff import is_archived  # tells an archived staff record from an active one (#119)
+from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _refuse_if_paused() -> None:
+    """Raise a 503 with the friendly message while the storage switch runs.
+
+    Called at the top of the dashboard decision endpoints so an approval,
+    rejection or refund is refused cleanly for the switch's short duration (#335).
+
+    Raises:
+        HTTPException: 503 while the switch pause is on.
+    """
+    if await is_paused():
+        raise HTTPException(status_code=503, detail=PAUSE_MESSAGE)
 
 
 # --- Auth dependency ---
@@ -47,6 +67,36 @@ class DashboardUser:
     def __init__(self, role: str, user_id: str):
         self.role = role
         self.user_id = user_id
+
+
+# The message an archived employee or manager sees when their old signed link is
+# used; plain, and it points them at HR rather than explaining the archive flag.
+ARCHIVED_CALLER_MESSAGE = "This account is no longer active. Please contact HR."
+
+
+async def refuse_if_archived_caller(role: str, uid: str) -> None:
+    """403 when an archived person uses an employee or manager dashboard link (#119).
+
+    A departed employee's signed link keeps validating (the token never expires),
+    so their own data and their team views would still open after they are
+    archived. One single-id staff lookup (never filtered, so it still resolves an
+    archived record) decides it. The admin role is a shared login, not a person,
+    so it is never archived and is left untouched.
+
+    Args:
+        role: The token's role ("employee", "manager" or "admin").
+        uid: The caller's Staff Directory id from the signed token.
+
+    Raises:
+        HTTPException: 403 when the caller's own staff record is archived.
+    """
+    if role not in ("employee", "manager"):            # admin is a shared login, not a person
+        return
+    if not await staff_in_postgres():                  # SharePoint has no archive; skip the extra Graph read
+        return
+    person = await get_employee_by_id(uid)             # single lookup: archived records resolve
+    if person is not None and is_archived(person.get("fields", {})):
+        raise HTTPException(status_code=403, detail=ARCHIVED_CALLER_MESSAGE)
 
 
 async def get_dashboard_user(
@@ -60,6 +110,8 @@ async def get_dashboard_user(
         raise HTTPException(status_code=401, detail=error_msg)
     if role not in ("employee", "manager", "admin"):
         raise HTTPException(status_code=400, detail="Invalid role")
+    # An archived employee or manager (#119) can no longer use their signed link.
+    await refuse_if_archived_caller(role, uid)
     return DashboardUser(role=role, user_id=uid)
 
 
@@ -88,38 +140,47 @@ def _filter_requests(items: list[dict], type_filter: str | None, status_filter: 
 
 
 def _is_in_all_managers(fields: dict, manager_name: str) -> bool:
-    """Check if manager_name appears in the AllManagers Person/Group field."""
-    all_managers = fields.get("AllManagers")
-    if not all_managers or not isinstance(all_managers, list):
-        return False
-    for entry in all_managers:
-        name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
-        if name == manager_name:
-            return True
-    return False
+    """Whether this person's AllManagers names the manager (#376).
+
+    Matches by the manager's link id when ``manager_name`` carries one (see
+    ``manager_match.manager_name_of``), else by name ignoring case and spacing,
+    so a manager set up outside the app still finds their team.
+
+    Args:
+        fields: The person's Staff Directory fields.
+        manager_name: The manager's name, plain or a ``ManagerName`` with ids.
+
+    Returns:
+        True when the person lists the manager.
+    """
+    return lists_manager(fields, manager_name)
 
 
 def _is_fully_processed(fields: dict, request_type: str) -> bool:
     """Check if a pending request has been through server-side processing.
 
     SP-created items skip the form endpoint, so they may be missing
-    calculated Days/Hours and the assigned Manager fields.
+    calculated Days/Hours and the assigned Manager fields. A request names its
+    manager by SharePoint lookup id (ManagerLookupId) when it came from a
+    SharePoint list, and by staff id (ManagerID) when the app created it after
+    the switch to Postgres; either one counts.
     """
+    has_manager = bool(fields.get("ManagerLookupId") or fields.get("ManagerID"))   # either backend's manager
     if request_type == "leave":
         days = fields.get("Days")
         if not days or float(days) == 0:
             return False
-        return bool(fields.get("ManagerLookupId"))
+        return has_manager
     elif request_type == "overtime":
         hours = fields.get("Hours")
         if not hours or float(hours) == 0:
             return False
-        return bool(fields.get("ManagerLookupId"))
+        return has_manager
     elif request_type == "carryover-payout":
         days = fields.get("Days")
         if not days or float(days) == 0:
             return False
-        return bool(fields.get("ManagerLookupId"))
+        return has_manager
     return True
 
 
@@ -163,6 +224,28 @@ def _format_employee(fields: dict, emp_id: str | int) -> dict:
     }
 
 
+def _employment_type_of(staff_item: dict | None, recorded: str | None = None) -> str:
+    """The employment type a request row is split by (#338).
+
+    A request in Postgres records the type that applied when it was made, and
+    that wins, so a later correction to the person (someone set as hourly by
+    mistake) does not move their old requests. SharePoint requests record none,
+    so they take the person's current Staff Directory value.
+
+    Args:
+        staff_item: The person's Staff Directory record, or None when unresolved.
+        recorded: The type stored on the request, or None/"" when there is none.
+
+    Returns:
+        "Salary", "Hourly", "Hourly BC", or "" when the person is unknown.
+    """
+    if recorded:
+        return recorded                                        # the request's own record wins
+    if not staff_item:
+        return ""                                              # unresolved person: left blank
+    return staff_item.get("fields", {}).get("SalaryHourly", "") or ""
+
+
 class _PersonNames(dict):
     """{SharePoint user id: display name}, plus staff names by email.
 
@@ -174,14 +257,20 @@ class _PersonNames(dict):
     def __init__(self):
         super().__init__()
         self.by_email: dict[str, str] = {}                     # lowercase email -> staff name
+        self.by_staff_id: dict[str, str] = {}                  # staff id (as text) -> staff name
 
 
 async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
     """Fetch Staff Directory and User Information List.
     Returns (by_name_lower, by_id, sp_user_to_name, mgr_to_emp_names) dicts;
     sp_user_to_name also carries ``by_email`` (see _PersonNames).
+
+    Archived people (#119) are kept in the name/id maps so a past request still
+    resolves their name in the request tables, but they are left out of
+    ``mgr_to_emp_names``: an archived person is no longer anyone's active report,
+    so they never appear in a manager's team views.
     """
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY, include_archived=True)
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
     mgr_to_emp_names: dict[str, set[str]] = {}
@@ -189,7 +278,15 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
         fields = item.get("fields", {})
         name = fields.get("Title", "")
         if name:
-            by_name[name.strip().lower()] = item
+            key = name.strip().lower()
+            existing = by_name.get(key)
+            # Prefer the active row when an archived and an active person share a
+            # name (#119): never let an archived record shadow an active one, so a
+            # name lookup resolves the person who is still here.
+            if existing is None or (
+                is_archived(existing.get("fields", {})) and not is_archived(fields)
+            ):
+                by_name[key] = item
         item_id = item.get("id")
         if item_id is not None:
             try:
@@ -197,15 +294,17 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
             except (ValueError, TypeError):
                 pass
 
-        # Build manager → employee mapping from AllManagers
+        # Build manager → employee mapping from AllManagers, but skip an archived
+        # employee: they are out of every team, so they are not a report here (#119).
         emp_name = name.strip()
-        if emp_name:
+        if emp_name and not is_archived(fields):
             all_managers = fields.get("AllManagers")
             if all_managers and isinstance(all_managers, list):
                 for entry in all_managers:
-                    mgr_name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
-                    if mgr_name:
-                        mgr_to_emp_names.setdefault(mgr_name, set()).add(emp_name)
+                    # File the report under the manager's normalised name and id, so
+                    # team_names() finds them by either (#376).
+                    for key in entry_keys(entry):
+                        mgr_to_emp_names.setdefault(key, set()).add(emp_name)
 
     # SP User Information List: map SP user IDs → display names
     sp_user_to_name = _PersonNames()
@@ -213,25 +312,59 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
         fields = item.get("fields", {})
         email = (fields.get("EmailAddress") or "").strip().lower()
         if email and fields.get("Title"):
-            sp_user_to_name.by_email[email] = fields["Title"]
-    try:
-        user_items = await sp_client.get_list_items("User Information List", top=5000)
-        for u in user_items:
-            uid = u.get("id")
-            uname = u.get("fields", {}).get("Title", "")
-            if uid and uname:
-                sp_user_to_name[int(uid)] = uname
-    except Exception:
-        logger.exception("Failed to fetch User Information List for name resolution")
+            sp_user_to_name.by_email.setdefault(email, fields["Title"])   # first record wins, as elsewhere
+        if item.get("id") is not None and fields.get("Title"):
+            sp_user_to_name.by_staff_id[str(item["id"])] = fields["Title"]   # for EmployeeID / ManagerID
+    # The User Information List only resolves SharePoint person-column lookup ids
+    # to names. Read it only while staff live in SharePoint; after the switch the
+    # names come from the staff store (by_email above and the typed request
+    # fields), so that list is never read, not even as a fallback (#265).
+    if not await staff_in_postgres():
+        try:
+            user_items = await sp_client.get_list_items("User Information List", top=5000)
+            for u in user_items:
+                uid = u.get("id")
+                uname = u.get("fields", {}).get("Title", "")
+                if uid and uname:
+                    sp_user_to_name[int(uid)] = uname
+        except Exception:
+            logger.exception("Failed to fetch User Information List for name resolution")
 
     return by_name, by_id, sp_user_to_name, mgr_to_emp_names
+
+
+def _team_ids_including_archived(by_id: dict, manager_name: str) -> set[str]:
+    """The manager's team as Staff Directory ids, archived teammates included (#119).
+
+    The active-only ``mgr_to_emp_names`` from ``_build_staff_lookups`` drops an
+    archived person, which is right for Today, Team, the pickers and balances but
+    wrong for the History tab and the timeline check, where an archived teammate's
+    past requests must still show. This reads the same prebuilt id map (which
+    holds archived people too) and keeps everyone who lists this manager, so the
+    history scopes to the whole team, departed members and all.
+
+    Args:
+        by_id: The staff id -> item map from ``_build_staff_lookups`` (archived
+            people included).
+        manager_name: The manager's display name, matched against ``AllManagers``.
+
+    Returns:
+        The team's Staff Directory ids as strings; empty when nobody lists them.
+    """
+    team: set[str] = set()
+    for item in by_id.values():                                # id-keyed map: no name collisions
+        if _is_in_all_managers(item.get("fields", {}), manager_name):   # lists this manager
+            team.add(str(item.get("id")))                      # keep archived teammates too
+    return team
 
 
 def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: dict) -> str:
     """Resolve a SP Person/Group lookup field to a display name.
 
-    For the submitter columns, a SubmitterEmail on the item wins: it names the
-    submitter even when the person column could not be set.
+    The staff id the item carries comes first (EmployeeID, or ManagerID for
+    "Manager"): it is exact, even when two staff records share one email. For
+    the submitter columns a SubmitterEmail comes next, then the SharePoint
+    person-column lookup id.
 
     Args:
         item_data: The request item's fields.
@@ -241,6 +374,15 @@ def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: d
     Returns:
         The display name, or "" when nothing resolves.
     """
+    # The staff id the request carries: EmployeeID for the submitter, ManagerID
+    # for the manager. Exact even on a shared mailbox, and after the switch the
+    # SharePoint user ids below no longer resolve (that list is never read).
+    id_column = "ManagerID" if field_prefix == "Manager" else "EmployeeID"
+    staff_id = item_data.get(id_column)
+    if staff_id not in (None, ""):
+        name = getattr(sp_user_to_name, "by_staff_id", {}).get(_id_text(staff_id))
+        if name:
+            return name
     if field_prefix in SUBMITTER_PERSON_COLUMNS:
         email = submitter_email_of(item_data)
         name = getattr(sp_user_to_name, "by_email", {}).get(email) if email else None
@@ -253,6 +395,22 @@ def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: d
         except (ValueError, TypeError):
             pass
     return ""
+
+
+def _id_text(value) -> str:
+    """A staff id as the staff map keys it: "377" for 377, 377.0 or "377".
+
+    Args:
+        value: The raw id from a request row.
+
+    Returns:
+        The whole-number text, or the value as text when it is not a number.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number.is_integer() else str(value)
 
 
 def _resolve_managers(staff_item: dict | None) -> str:
@@ -366,6 +524,7 @@ def _enrich_pending_item(
 
     item_data["employee_name"] = emp_name
     item_data["managers"] = _resolve_managers(staff)
+    item_data["employment_type"] = _employment_type_of(staff)   # salaried/hourly split (#338)
 
     if not staff:
         item_data["current_balances"] = None
@@ -374,18 +533,27 @@ def _enrich_pending_item(
         return item_data
 
     sf = staff["fields"]
-    item_data["current_balances"] = _format_balances(sf)
+    item_data["current_balances"] = _format_balances(sf)       # the real current pots, always the person's own
     item_data["below_zero"] = None                             # set below when approving digs under zero
+
+    # The hourly rules key on the employment type the request was submitted under,
+    # not the person's current one, so the projection matches what approval does
+    # (request_decisions reads request.employment_type). On Postgres the item
+    # carries that stamp; override SalaryHourly with it for the rule decisions
+    # only, keeping the real pot values. Without a stamp (SharePoint) use the
+    # person's current fields unchanged (#300).
+    stamped = item_data.get("RequestEmploymentType")
+    sf_eff = {**sf, "SalaryHourly": stamped} if stamped else sf
 
     # Kinds that move nothing for this person (#300): hourly vacation is
     # counted, hourly leave other than sick and hourly overtime change nothing.
     leave_type = item_data.get("LeaveType", "")
-    if request_type == "leave" and is_hourly(sf) and leave_type == "Vacation":
+    if request_type == "leave" and is_hourly(sf_eff) and leave_type == "Vacation":
         item_data["projected_balances"] = None
         item_data["balance_unchanged"] = "hourly: counted as vacation taken, no balance used"
         return item_data
-    if (request_type == "leave" and leave_type not in NO_COST_LEAVE and not leave_costs_balance(sf, leave_type)) or (
-        request_type == "overtime" and not overtime_costs_balance(sf)
+    if (request_type == "leave" and leave_type not in NO_COST_LEAVE and not leave_costs_balance(sf_eff, leave_type)) or (
+        request_type == "overtime" and not overtime_costs_balance(sf_eff)
     ):
         item_data["projected_balances"] = None
         item_data["balance_unchanged"] = "Hourly staff, no balance adjustment"
@@ -407,20 +575,20 @@ def _enrich_pending_item(
                 is_next_year = is_next_year_request(start, end)
             except (ValueError, TypeError):
                 pass
-        projected_sp = simulate_leave_impact(sf, leave_type, days, is_next_year)
+        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, is_next_year)
         balance_unchanged = f"No balance deduction for {leave_type}" if projected_sp is None else ""
     elif request_type == "overtime":
         hours = float(item_data.get("Hours", 0) or 0)
-        projected_sp = simulate_overtime_impact(sf, hours)
+        projected_sp = simulate_overtime_impact(sf_eff, hours)
     elif request_type == "carryover-payout":
         days = float(item_data.get("Days", 0) or 0)
         req_type = item_data.get("TypeofRequest", "")
-        projected_sp = simulate_carryover_payout_impact(sf, days, req_type)
+        projected_sp = simulate_carryover_payout_impact(sf_eff, days, req_type)
 
     if projected_sp:
         item_data["projected_balances"] = _format_balances({**sf, **projected_sp})
         # Red on the card when approving takes the floor below zero (#300).
-        item_data["below_zero"] = floor_warning(sf, projected_sp)
+        item_data["below_zero"] = floor_warning(sf_eff, projected_sp)
     else:
         item_data["projected_balances"] = None
     item_data["balance_unchanged"] = balance_unchanged
@@ -473,24 +641,48 @@ async def my_requests(
     emp_name_lower = emp_name.strip().lower()
 
     managers = _resolve_managers(emp)
-    _, _, sp_user_to_name, _ = await _build_staff_lookups()
     results = []
+    pg = await requests_in_postgres()                          # Postgres: indexed reads, no whole-list fetch
+    # Only the SharePoint path needs the person-name map; skip the read in Postgres.
+    sp_user_to_name = (await _build_staff_lookups())[2] if not pg else None
 
-    # SharePoint text fields aren't indexed — fetch all and filter client-side.
-    # Match by SubmittedTest/SubmittedBy Person/Group display name vs SD Title.
+    async def _own_items(request_type: str, list_id: str, person_col: str) -> list[dict]:
+        """This employee's rows of one kind: indexed in Postgres, name-matched in SharePoint.
 
-    # Leave requests — SubmittedTest Person/Group field
-    if not type or type == "leave":
+        Args:
+            request_type: The url-form kind.
+            list_id: The SharePoint list id (SharePoint path only).
+            person_col: The submitter person column to match on (SharePoint path only).
+
+        Returns:
+            The items, already narrowed to this employee.
+        """
+        if pg:
+            return await indexed_request_items(
+                request_type, employee_id=user.user_id, status=status,
+                from_date=from_date, to_date=to_date,
+            )
         try:
-            items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+            raw = await request_store.get_list_items(list_id)  # SharePoint cannot index text, so fetch all
         except Exception:
-            logger.exception("Failed to fetch leave requests")
-            items = []
-        for item in items:
+            logger.exception("Failed to fetch %s requests", request_type)
+            return []
+        kept = []
+        for item in raw:
             f = item.get("fields", {})
-            submitted_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
-            if submitted_name.strip().lower() != emp_name_lower:
-                continue
+            if request_type == "carryover-payout":             # matched by EmployeeID, not a person column
+                if f.get("EmployeeID") != int(user.user_id):
+                    continue
+            else:
+                submitted = _resolve_sp_user_name(f, person_col, sp_user_to_name)
+                if submitted.strip().lower() != emp_name_lower:
+                    continue
+            kept.append(item)
+        return kept
+
+    # Leave requests — own rows (SubmittedTest person column in SharePoint).
+    if not type or type == "leave":
+        for item in await _own_items("leave", settings.SP_LIST_LEAVE_REQUESTS, "SubmittedTest"):
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
                     continue
@@ -498,18 +690,9 @@ async def my_requests(
                 r["managers"] = managers
                 results.append(r)
 
-    # Overtime — SubmittedBy Person/Group field
+    # Overtime — own rows (SubmittedBy person column in SharePoint).
     if not type or type == "overtime":
-        try:
-            items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
-        except Exception:
-            logger.exception("Failed to fetch overtime requests")
-            items = []
-        for item in items:
-            f = item.get("fields", {})
-            submitted_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
-            if submitted_name.strip().lower() != emp_name_lower:
-                continue
+        for item in await _own_items("overtime", settings.SP_LIST_OVERTIME_REQUESTS, "SubmittedBy"):
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
                     continue
@@ -517,17 +700,9 @@ async def my_requests(
                 r["managers"] = managers
                 results.append(r)
 
-    # Carryover/Payout — match by EmployeeID (SD item ID)
+    # Carryover/Payout — own rows (matched by EmployeeID in SharePoint).
     if not type or type == "carryover-payout":
-        try:
-            items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
-        except Exception:
-            logger.exception("Failed to fetch carryover requests")
-            items = []
-        emp_id = int(user.user_id)
-        for item in items:
-            if item.get("fields", {}).get("EmployeeID") != emp_id:
-                continue
+        for item in await _own_items("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT, ""):
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
                     continue
@@ -556,9 +731,9 @@ async def team_members(user: AuthUser):
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
@@ -581,9 +756,9 @@ async def team_balances(user: AuthUser):
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
         i for i in all_staff
         if _is_in_all_managers(i.get("fields", {}), manager_name)
@@ -601,15 +776,15 @@ async def team_pending(user: AuthUser):
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
-    my_employees = mgr_to_emp_names.get(manager_name, set())
+    my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
     pending = []
 
     # Leave — check submitter in my_employees (dynamic manager lookup)
     try:
-        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+        items = await _pending_source("leave", settings.SP_LIST_LEAVE_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch leave items for team pending")
         items = []
@@ -628,7 +803,7 @@ async def team_pending(user: AuthUser):
 
     # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
     try:
-        items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
+        items = await _pending_source("overtime", settings.SP_LIST_OVERTIME_REQUESTS)
     except Exception:
         logger.exception("Failed to fetch overtime items for team pending")
         items = []
@@ -640,7 +815,7 @@ async def team_pending(user: AuthUser):
             continue
         submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
         mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
-        if mgr_name != manager_name and submitter_name not in my_employees:
+        if normalise_name(mgr_name) != normalise_name(manager_name) and submitter_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "overtime", **f}
         _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
@@ -648,7 +823,7 @@ async def team_pending(user: AuthUser):
 
     # Carryover/Payout — check submitter in my_employees
     try:
-        items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        items = await _pending_source("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:
         logger.exception("Failed to fetch carryover items for team pending")
         items = []
@@ -690,82 +865,103 @@ async def team_requests(
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
-    my_employees = mgr_to_emp_names.get(manager_name, set())
+    my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
     results = []
+    pg = await requests_in_postgres()                          # Postgres: indexed team reads
+    # The History tab must keep an archived teammate's past requests (#119), so the
+    # Postgres query is scoped by the team INCLUDING archived people, not the
+    # active-only map Today/Team/pickers use.
+    team_ids = _team_ids_including_archived(staff_by_id, manager_name)
 
-    # Leave — check submitter in my_employees (dynamic manager lookup)
-    if not type or type == "leave":
+    async def _team_items(request_type: str, list_id: str) -> list[dict]:
+        """The team's rows of one kind: indexed in Postgres, whole-list in SharePoint.
+
+        Args:
+            request_type: The url-form kind.
+            list_id: The SharePoint list id (SharePoint path only).
+
+        Returns:
+            The items; already narrowed to the team in Postgres.
+        """
+        if pg:
+            return await indexed_request_items(
+                request_type, team_employee_ids=team_ids, manager_id=str(user.user_id),
+                status=status, from_date=from_date, to_date=to_date,
+            )
         try:
-            items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+            return await request_store.get_list_items(list_id)
         except Exception:
-            logger.exception("Failed to fetch leave items for team requests")
-            items = []
-        for item in items:
+            logger.exception("Failed to fetch %s items for team requests", request_type)
+            return []
+
+    def _project(r: dict, request_type: str, f: dict) -> None:
+        """Set a row's type, employee name and managers, the same for both paths.
+
+        Args:
+            r: The flattened request row being built.
+            request_type: The url-form kind.
+            f: The item's fields (carries the typed employee_name in Postgres).
+        """
+        r["request_type"] = request_type
+        # The person blob names the employee in SharePoint; the typed column does in Postgres.
+        emp_name = _resolve_employee_name(f, request_type, sp_user_to_name, staff_by_id) or f.get("employee_name", "")
+        r["employee_name"] = emp_name
+        r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+        # Salaried/hourly split (#338): the request's recorded type, else the person's today.
+        r["employment_type"] = _employment_type_of(
+            staff_by_name.get(emp_name.lower()) if emp_name else None, f.get("employment_type"),
+        )
+
+    # Leave — the team's rows (submitter in my_employees on the SharePoint path).
+    if not type or type == "leave":
+        for item in await _team_items("leave", settings.SP_LIST_LEAVE_REQUESTS):
             f = item.get("fields", {})
-            emp_name_check = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
-            if emp_name_check not in my_employees:
+            if not pg and _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name) not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
                     continue
-                r["request_type"] = "leave"
-                emp_name = _resolve_employee_name(f, "leave", sp_user_to_name, staff_by_id)
-                r["employee_name"] = emp_name
-                r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+                _project(r, "leave", f)
                 results.append(r)
 
-    # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
+    # Overtime — the team's rows (Manager is me, or submitter in my_employees, on SharePoint).
     if not type or type == "overtime":
-        try:
-            items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
-        except Exception:
-            logger.exception("Failed to fetch overtime items for team requests")
-            items = []
-        for item in items:
+        for item in await _team_items("overtime", settings.SP_LIST_OVERTIME_REQUESTS):
             f = item.get("fields", {})
-            submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
-            mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
-            if mgr_name != manager_name and submitter_name not in my_employees:
-                continue
+            if not pg:
+                submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
+                mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
+                if normalise_name(mgr_name) != normalise_name(manager_name) and submitter_name not in my_employees:
+                    continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
                     continue
-                r["request_type"] = "overtime"
-                emp_name = _resolve_employee_name(f, "overtime", sp_user_to_name, staff_by_id)
-                r["employee_name"] = emp_name
-                r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+                _project(r, "overtime", f)
                 results.append(r)
 
-    # Carryover/Payout — check submitter in my_employees
+    # Carryover/Payout — the team's rows (employee in my_employees on the SharePoint path).
     if not type or type == "carryover-payout":
-        try:
-            items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
-        except Exception:
-            logger.exception("Failed to fetch carryover items for team requests")
-            items = []
-        for item in items:
+        for item in await _team_items("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT):
             f = item.get("fields", {})
-            emp_id = f.get("EmployeeID")
-            emp_name = ""
-            if emp_id is not None:
-                try:
-                    staff = staff_by_id.get(int(emp_id))
-                    if staff:
-                        emp_name = staff["fields"].get("Title", "")
-                except (ValueError, TypeError):
-                    pass
-            if emp_name not in my_employees:
-                continue
+            if not pg:
+                emp_id = f.get("EmployeeID")
+                emp_name = ""
+                if emp_id is not None:
+                    try:
+                        staff = staff_by_id.get(int(emp_id))
+                        if staff:
+                            emp_name = staff["fields"].get("Title", "")
+                    except (ValueError, TypeError):
+                        pass
+                if emp_name not in my_employees:
+                    continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
                     continue
-                r["request_type"] = "carryover-payout"
-                emp_name = _resolve_employee_name(f, "carryover-payout", sp_user_to_name, staff_by_id)
-                r["employee_name"] = emp_name
-                r["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+                _project(r, "carryover-payout", f)
                 results.append(r)
 
     # Reuse the staff map already built above to compute each row's pots.
@@ -783,10 +979,10 @@ async def team_calendar(
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
-    my_employees = mgr_to_emp_names.get(manager_name, set())
+    my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
 
     all_leave = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
 
@@ -817,17 +1013,71 @@ async def team_calendar(
     return {"events": events}
 
 
+async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str, request_id: str) -> None:
+    """403 unless this manager may decide this request (own-team gate for #362/#369).
+
+    The dashboard Approve/Reject buttons used to run the decision for any signed-in
+    manager, so a manager could decide another team's request, or their own, from a
+    valid token (the email-link and SMS paths already bind the decider: the link is
+    HMAC-signed over the manager and request, and the SMS path checks the sender is
+    on the submitter's manager list). This closes that hole on the dashboard: a
+    manager may decide only a request whose employee lists them (or one assigned to
+    them, so a #342 stand-in still works), and never their own request. Admins are
+    unchanged. Postgres only (the preview path); the SharePoint path keeps its
+    existing behaviour, as nothing reads SharePoint after the switch.
+
+    Args:
+        user: The signed-in caller (manager or admin).
+        request_type: The url-form request kind.
+        request_id: The item_id being decided.
+
+    Raises:
+        HTTPException: 403 when a manager is not on the request's team, or is the
+            request's own employee.
+    """
+    if user.role != "manager":                                 # admins may decide any request
+        return
+    if not await requests_in_postgres():                       # legacy SharePoint path: unchanged
+        return
+    from app.database import async_session
+    from app.models.request_record import RequestRecord
+    from sqlalchemy import select
+    stored_kind = WIRE_TO_STORED.get(request_type, request_type)   # url form -> stored kind
+    try:
+        key = int(request_id)
+    except (TypeError, ValueError):
+        return                                                 # not a Postgres id: let the handler report it
+    async with async_session() as session:
+        record = (await session.execute(
+            select(RequestRecord).where(RequestRecord.kind == stored_kind, RequestRecord.item_id == key)
+        )).scalars().first()
+    if record is None:
+        return                                                 # gone: the handler returns the "no longer exists" error
+    if str(record.employee_id) == str(user.user_id):           # a manager cannot decide their own request
+        raise HTTPException(status_code=403, detail="You cannot decide your own request.")
+    if record.manager_id is not None and str(record.manager_id) == str(user.user_id):
+        return                                                 # the assigned manager (or a #342 stand-in)
+    employee = await get_employee_by_id(record.employee_id)    # resolve the submitter's managers
+    managers = await get_all_managers_for_employee(employee) if employee else []
+    if str(user.user_id) not in {str(m["id"]) for m in managers}:   # not on this employee's manager list
+        raise HTTPException(status_code=403, detail="This request is not on your team.")
+
+
 @router.post("/team/approve/{request_type}/{request_id}")
 async def team_approve(user: AuthUser, request_type: str, request_id: str):
     _require_role(user, "manager", "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
+    await _refuse_manager_not_on_request(user, request_type, request_id)  # own-team gate
 
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    result = await handler(request_id, user.user_id)
+    # channel="manager_dashboard"; no link version comes through the dashboard,
+    # so the stale-link check does not apply (link_version stays default None).
+    result = await handler(request_id, user.user_id, "manager_dashboard")
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -838,12 +1088,15 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
     _require_role(user, "manager", "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
+    await _refuse_manager_not_on_request(user, request_type, request_id)  # own-team gate
 
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    result = await handler(request_id, user.user_id)
+    # channel="manager_dashboard" for the reject path too.
+    result = await handler(request_id, user.user_id, "manager_dashboard")
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -873,24 +1126,32 @@ async def team_create_employee(user: AuthUser, body: dict):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
 
-    # The new hire's supervisor is the manager creating them. AllManagers is a
-    # Person/Group field keyed by Microsoft 365 user id, so resolve the manager's
-    # record to their email and then to that id.
+    # The new hire's supervisor is the manager creating them.
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Your own staff record could not be found")
-    manager_email = (manager["fields"].get("EmailAddress") or "").strip()
-    manager_sp_user_id = await _resolve_user_lookup_id(manager_email)
-    if not manager_sp_user_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Your own record does not resolve to a Microsoft 365 account, "
-                   "so it cannot be recorded as the new hire's supervisor.",
-        )
+    if await staff_in_postgres():
+        # Staff live in Postgres: there is no SharePoint user list to resolve a
+        # Microsoft 365 id from, so the supervisor is this manager by their staff
+        # id and name from the staff table (#265). Managers resolve by name on
+        # read, so the id only needs to be their own stable staff id.
+        supervisor_ids = [int(user.user_id)]
+    else:
+        # SharePoint: AllManagers is a Person/Group field keyed by Microsoft 365
+        # user id, so resolve the manager's record to their email and then to that id.
+        manager_email = (manager["fields"].get("EmailAddress") or "").strip()
+        manager_sp_user_id = await _resolve_user_lookup_id(manager_email)
+        if not manager_sp_user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Your own record does not resolve to a Microsoft 365 account, "
+                       "so it cannot be recorded as the new hire's supervisor.",
+            )
+        supervisor_ids = [manager_sp_user_id]
 
     from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
-        record = await create_employee(body, [manager_sp_user_id])
+        record = await create_employee(body, supervisor_ids)
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
@@ -957,37 +1218,6 @@ async def admin_list_holidays():
     """
     from app.services.holidays import list_all_holidays
     return {"holidays": await list_all_holidays()}
-
-
-@router.get("/admin/holidays/parity")
-async def admin_holidays_parity():
-    """Compare the SharePoint and Postgres holiday rows without writing.
-
-    Read-only, so it runs even while processing is disabled. Lets the admin see
-    whether Postgres matches SharePoint before STORAGE_HOLIDAYS is flipped.
-
-    Returns:
-        The parity report (see services.holidays.holidays_parity).
-    """
-    from app.services.holidays import holidays_parity
-    return await holidays_parity()
-
-
-@router.post("/admin/holidays/copy-to-postgres")
-async def admin_copy_holidays_to_postgres():
-    """Copy every Company Holiday from SharePoint into Postgres (idempotent).
-
-    Returns:
-        A summary: {"source_count", "created", "updated"}.
-
-    Raises:
-        HTTPException: 503 while processing is disabled (it writes to Postgres,
-            so it is gated like the other admin writes).
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.holidays import copy_holidays_from_sharepoint
-    return await copy_holidays_from_sharepoint()
 
 
 @router.post("/admin/holidays")
@@ -1150,7 +1380,7 @@ async def _after_employee_created(record: dict) -> dict:
 
 @router.get("/admin/balances")
 async def admin_balances(group_by: str | None = Query(None)):
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
 
     # Build set of all manager names from AllManagers fields
     manager_names: set[str] = set()
@@ -1192,38 +1422,40 @@ async def admin_requests(
 ):
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     results = []
+    pg = await requests_in_postgres()                          # Postgres: indexed read of all rows
 
-    if not type or type == "leave":
-        items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            if item.get("Status") == "Pending" and not _is_fully_processed(item, "leave"):
+    async def _all_items(request_type: str, list_id: str) -> list[dict]:
+        """Every row of one kind: indexed in Postgres, whole-list in SharePoint.
+
+        Args:
+            request_type: The url-form kind.
+            list_id: The SharePoint list id (SharePoint path only).
+
+        Returns:
+            The items of this kind.
+        """
+        if pg:
+            return await indexed_request_items(
+                request_type, status=status, from_date=from_date, to_date=to_date,
+            )
+        return await request_store.get_list_items(list_id)
+
+    for request_type, list_id in (
+        ("leave", settings.SP_LIST_LEAVE_REQUESTS),
+        ("overtime", settings.SP_LIST_OVERTIME_REQUESTS),
+        ("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT),
+    ):
+        if type and type != request_type:
+            continue
+        for item in _filter_requests(await _all_items(request_type, list_id), None, status, from_date, to_date):
+            if item.get("Status") == "Pending" and not _is_fully_processed(item, request_type):
                 continue
-            item["request_type"] = "leave"
-            emp_name = _resolve_employee_name(item, "leave", sp_user_to_name, staff_by_id)
+            item["request_type"] = request_type
+            # The person blob names the employee in SharePoint; the typed column does in Postgres.
+            emp_name = _resolve_employee_name(item, request_type, sp_user_to_name, staff_by_id) or item.get("employee_name", "")
             item["employee_name"] = emp_name
             item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
-            results.append(item)
-
-    if not type or type == "overtime":
-        items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            if item.get("Status") == "Pending" and not _is_fully_processed(item, "overtime"):
-                continue
-            item["request_type"] = "overtime"
-            emp_name = _resolve_employee_name(item, "overtime", sp_user_to_name, staff_by_id)
-            item["employee_name"] = emp_name
-            item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
-            results.append(item)
-
-    if not type or type == "carryover-payout":
-        items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
-        for item in _filter_requests(items, None, status, from_date, to_date):
-            if item.get("Status") == "Pending" and not _is_fully_processed(item, "carryover-payout"):
-                continue
-            item["request_type"] = "carryover-payout"
-            emp_name = _resolve_employee_name(item, "carryover-payout", sp_user_to_name, staff_by_id)
-            item["employee_name"] = emp_name
-            item["managers"] = _resolve_managers(staff_by_name.get(emp_name.lower()) if emp_name else None)
+            item["employment_type"] = _employment_type_of(staff_by_name.get(emp_name.lower()) if emp_name else None, item.get("employment_type"))  # recorded type wins (#338)
             results.append(item)
 
     # Reuse the staff map already built above; this list also feeds the staff
@@ -1243,7 +1475,7 @@ async def admin_pending():
         (settings.SP_LIST_CARRYOVER_PAYOUT, "carryover-payout"),
     ]:
         try:
-            items = await request_store.get_list_items(list_id)
+            items = await _pending_source(req_type, list_id)   # only pending rows on Postgres
             for item in items:
                 f = item.get("fields", {})
                 if f.get("Status") != "Pending":
@@ -1259,6 +1491,26 @@ async def admin_pending():
     # Reuse the staff map already built above to project each pending row.
     await attach_taken_from(pending, staff_by_name=staff_by_name)
     return {"pending": pending}
+
+
+async def _pending_source(request_type: str, list_id: str) -> list[dict]:
+    """The items a pending view filters: pending rows only on Postgres.
+
+    On Postgres an indexed query returns just the pending rows, instead of every
+    request ever made (thousands) for the caller to throw most away. On
+    SharePoint the list cannot be filtered server side, so the whole list comes
+    back as before. Callers still check Status themselves, so both paths agree.
+
+    Args:
+        request_type: The url-form kind ("leave", "overtime", "carryover-payout").
+        list_id: The SharePoint list id (SharePoint path only).
+
+    Returns:
+        Items in the Graph list-item shape.
+    """
+    if await requests_in_postgres():
+        return await indexed_request_items(request_type, status="pending")
+    return await request_store.get_list_items(list_id)
 
 
 # ============================
@@ -1336,8 +1588,9 @@ def _diagnose_stuck_leave(
         codes.append("missing_days")
         details.append("Dates present but Days not calculated")
 
-    # Manager lookup failed (has AllManagers on SD but ManagerLookupId not set on request)
-    if staff and not fields.get("ManagerLookupId"):
+    # Manager lookup failed (has AllManagers on SD but no manager on the request)
+    has_manager = bool(fields.get("ManagerLookupId") or fields.get("ManagerID"))   # either backend's manager
+    if staff and not has_manager:
         all_mgrs = staff.get("fields", {}).get("AllManagers")
         if all_mgrs and isinstance(all_mgrs, list) and len(all_mgrs) > 0:
             codes.append("missing_manager_lookup")
@@ -1347,7 +1600,7 @@ def _diagnose_stuck_leave(
     # written when the email is built; nothing on the SharePoint item answers
     # this, since ApproveProcessedFlag is set only when a decision is applied,
     # which listed every request still waiting on its manager as stuck.
-    if fields.get("ManagerLookupId") and notified is False:
+    if has_manager and notified is False:
         codes.append("approval_email_pending")
         details.append(
             "Manager assigned but the approval email was never sent - there is no "
@@ -1403,7 +1656,7 @@ async def admin_stuck_requests():
         # 3. Blocked at approval by an already-approved absence
         is_stuck = (
             not _is_fully_processed(f, "leave")
-            or (f.get("ManagerLookupId") and notified is False)
+            or ((f.get("ManagerLookupId") or f.get("ManagerID")) and notified is False)   # either backend's manager
             or blocked_by is not None
         )
         if not is_stuck:
@@ -1423,12 +1676,13 @@ async def admin_stuck_requests():
         stuck.append({
             "id": item.get("id"),
             "employee_name": emp_name,
+            "employment_type": _employment_type_of(staff),    # salaried/hourly split (#338)
             "LeaveType": f.get("LeaveType"),
             "Title": f.get("Title"),
             "StartDate": f.get("StartDate"),
             "EndDate": f.get("EndDate"),
             "Days": f.get("Days"),
-            "ManagerLookupId": f.get("ManagerLookupId"),
+            "ManagerLookupId": f.get("ManagerLookupId") or f.get("ManagerID"),   # SharePoint lookup id, or the staff id on Postgres
             "ApproveProcessedFlag": f.get("ApproveProcessedFlag"),
             "Created": f.get("Created"),
             "diagnostics": diagnostics,
@@ -1482,30 +1736,6 @@ async def admin_employee_setup():
         raise HTTPException(status_code=500, detail="Setup check failed - check server logs")
 
 
-@router.post("/admin/employee-setup/nudge")
-async def admin_employee_setup_nudge():
-    """Run the setup sweep now and email the creator of every broken record.
-
-    The same sweep the task runs each morning, triggered by hand for when a
-    round of fixes has just gone in and the point is to see who is still
-    outstanding. Cadence still applies: a creator already told about the same
-    problems inside the last week is not told again.
-
-    Unlike the GET above this one sends email, so it is gated on
-    PROCESSING_ENABLED like every other outbound path. Like every other /admin/*
-    endpoint it carries no token or role check.
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-
-    from app.tasks.setup_nudges import run_setup_nudge_sweep
-    try:
-        return await run_setup_nudge_sweep()
-    except Exception:
-        logger.exception("Setup nudge sweep failed")
-        raise HTTPException(status_code=500, detail="Nudge sweep failed - check server logs")
-
-
 # ============================
 # Admin impersonation endpoint
 # ============================
@@ -1545,7 +1775,7 @@ async def admin_send_dashboard_link(target_id: str):
     if not email:
         raise HTTPException(status_code=400, detail="Employee has no email address")
     name = fields.get("Title", "")
-    if not await is_manager(name):
+    if not await is_manager(await manager_name_of(emp)):          # by id or by name (#376)
         raise HTTPException(status_code=400, detail="Employee is not a manager")
 
     dashboard_url = generate_dashboard_url("manager", target_id)
@@ -1562,13 +1792,31 @@ async def admin_send_dashboard_link(target_id: str):
     return {"status": "sent", "email": email}
 
 
+async def _status_counts_postgres() -> dict[str, dict[str, int]]:
+    """Request counts per kind and status, counted by the database.
+
+    Returns:
+        ``{stored kind: {Status as the wire shows it: count}}``, e.g.
+        ``{"leave": {"Approved": 3000, "Pending": 16}}``.
+    """
+    from sqlalchemy import func, select
+    from app.database import async_session
+    from app.models.request_record import RequestRecord
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(RequestRecord.kind, RequestRecord.status, func.count())
+            .group_by(RequestRecord.kind, RequestRecord.status)
+        )).all()
+    counts: dict[str, dict[str, int]] = {}
+    for kind, status, n in rows:
+        label = status.capitalize() if status else "Unknown"      # the same casing the item shape uses
+        counts.setdefault(kind, {})
+        counts[kind][label] = counts[kind].get(label, 0) + int(n)
+    return counts
+
+
 @router.get("/admin/stats")
 async def admin_stats():
-
-    # Gather counts
-    leave_items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
-    overtime_items = await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS)
-    carryover_items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
 
     def _count_by_status(items):
         counts = {}
@@ -1577,8 +1825,19 @@ async def admin_stats():
             counts[status] = counts.get(status, 0) + 1
         return counts
 
+    if await requests_in_postgres():
+        # Count in the database rather than loading every request to count it.
+        by_kind = await _status_counts_postgres()
+        leave_by = by_kind.get("leave", {})
+        overtime_by = by_kind.get("overtime", {})
+        carryover_by = by_kind.get("carryover_payout", {})
+    else:
+        leave_by = _count_by_status(await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS))
+        overtime_by = _count_by_status(await request_store.get_list_items(settings.SP_LIST_OVERTIME_REQUESTS))
+        carryover_by = _count_by_status(await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT))
+
     # Department breakdown from staff directory
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     dept_summary = {}
     for item in staff:
         f = item.get("fields", {})
@@ -1596,13 +1855,13 @@ async def admin_stats():
 
     return {
         "total_requests": {
-            "leave": len(leave_items),
-            "overtime": len(overtime_items),
-            "carryover_payout": len(carryover_items),
+            "leave": sum(leave_by.values()),
+            "overtime": sum(overtime_by.values()),
+            "carryover_payout": sum(carryover_by.values()),
         },
-        "leave_by_status": _count_by_status(leave_items),
-        "overtime_by_status": _count_by_status(overtime_items),
-        "carryover_by_status": _count_by_status(carryover_items),
+        "leave_by_status": leave_by,
+        "overtime_by_status": overtime_by,
+        "carryover_by_status": carryover_by,
         "department_summary": dept_summary,
     }
 
@@ -1644,26 +1903,31 @@ async def _run_request_action(handler, *args) -> dict:
 async def admin_approve(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
+    # channel="admin_dashboard"; passed through _run_request_action to the handler.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
 
 
 @router.post("/admin/reject/{request_type}/{request_id}")
 async def admin_reject(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
+    # channel="admin_dashboard" for the reject path too.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
 
 
 @router.post("/admin/refund/{request_type}/{request_id}")
 async def admin_refund(request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                                    # refuse mid-switch
 
     from app.services.leave_requests import refund_leave_request
     from app.services.overtime_requests import refund_overtime_request
@@ -1678,7 +1942,8 @@ async def admin_refund(request_type: str, request_id: str):
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID)
+    # channel="admin_dashboard"; refund is admin-only, so this is the one source.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
 
 
 @router.post("/admin/send-reminder/{request_type}/{request_id}")
@@ -1727,7 +1992,14 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
     from app.tasks.dispatcher import dispatch_change
     from app.services.leave_requests import send_approval_email
     try:
-        if fields.get("ManagerLookupId"):
+        if await requests_in_postgres():
+            # In Postgres mode re-ask the manager through the outbox, which keeps
+            # the typed approval version and the links in step. The direct send
+            # bumps request_approval_state but not the typed version (every link
+            # then dies) and queues nothing for an app-made row (#326, finding 4).
+            from app.services.request_submission import queue_reminder
+            await queue_reminder("leave", request_id)
+        elif fields.get("ManagerLookupId"):
             await send_approval_email(request_id, new_version=True)
         else:
             await dispatch_change(settings.SP_LIST_LEAVE_REQUESTS, item)
@@ -2037,7 +2309,7 @@ async def admin_export_carryover_payout():
     from fastapi.responses import Response
     from app.services.app_settings import carryover_payout_window, toronto_today
     from app.services.carryover_export import build_workbook, export_filename
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)    # every employee
+    staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)    # every employee
     requests = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     window, today = await carryover_payout_window(), toronto_today()
     data = build_workbook(staff, requests, window)
@@ -2048,40 +2320,11 @@ async def admin_export_carryover_payout():
     )
 
 
-@router.get("/admin/request-storage")
-async def admin_request_storage():
-    """Where the request lists live, and how many items each side holds.
-
-    Behind the admin password like every other /admin/* route (#228). Read only.
-
-    Returns:
-        The report from request_copy.request_storage_report.
-    """
-    from app.services.request_copy import request_storage_report
-    return await request_storage_report()
-
-
-@router.post("/admin/request-storage/copy")
-async def admin_copy_requests_to_postgres():
-    """Copy every request from the three SharePoint lists into Postgres.
-
-    Safe to run again while requests still live in SharePoint; refused once
-    STORAGE_REQUESTS is "postgres".
-
-    Returns:
-        The summary from request_copy.copy_requests_from_sharepoint.
-
-    Raises:
-        HTTPException: 503 while processing is disabled; 409 once requests
-            already live in Postgres.
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.request_copy import RequestsAlreadyMoved, copy_requests_from_sharepoint
-    try:
-        return await copy_requests_from_sharepoint()
-    except RequestsAlreadyMoved as e:
-        raise HTTPException(status_code=409, detail=str(e))
+# The old request-storage report and JSON copy endpoints were removed with the
+# storage-switch rework (#335/#336): the admin storage card now shows status and
+# runs the one-step flip through /admin/storage and /admin/storage/flip
+# (app/routes/admin_storage.py). The bulk copy helper stays in request_copy.py for
+# the pre-switch shadow phase; it is no longer exposed as an admin action.
 
 
 @router.get("/admin/sp-users")
@@ -2140,6 +2383,7 @@ async def admin_set_balances(body: dict):
 
     from app.services.concurrency import lock_manager
     from app.services.balance import recalculate_request_allow_date
+    from app.repositories.staff_store import staff_store
 
     corrections = body.get("corrections", [])
     if not corrections:
@@ -2174,8 +2418,13 @@ async def admin_set_balances(body: dict):
                           for k, sp_field in BALANCE_FIELDS.items()
                           if k in entry}
 
-                await sp_client.update_list_item_fields(
+                # Route through the store: on Postgres the correction lands there
+                # and records the balance change in the history (admin_dashboard);
+                # on SharePoint it writes the list directly, exactly as before.
+                await staff_store.update_list_item_fields(
                     settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
+                    history_source="admin_dashboard",
+                    history_reason="Balance correction from the admin dashboard.",
                 )
 
                 vacation = sp_updates.get("CurrentVacationBalance",
@@ -2322,11 +2571,10 @@ async def admin_export_staff(body: StaffExportRequest):
     from fastapi.responses import Response
     from app.services import staff_changes
     from app.services.app_settings import toronto_today
-    from app.services.employee import _get_sp_user_name_map
-    from app.services.manager_assignments import _extract_all_managers
+    from app.services.manager_assignments import _extract_all_managers, _manager_id_to_name
     from app.services.staff_export import build_workbook, export_filename
 
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # every employee
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # every employee
     by_id = {str(item.get("id")): item for item in items}
 
     # Keep the order the table sent. None means "everyone" (in name order); an
@@ -2338,7 +2586,9 @@ async def admin_export_staff(body: StaffExportRequest):
         ordered = [by_id[i] for i in body.employee_ids if i in by_id]
 
     # Resolve each row's manager names once, so the Managers column reads as names.
-    id_to_name = await _get_sp_user_name_map()
+    # On Postgres the map comes from the staff table (no SharePoint user list read
+    # after the switch); on SharePoint it comes from the user list as before (#265).
+    id_to_name = await _manager_id_to_name()
     rows = []
     for item in ordered:
         fields = item.get("fields", {})

@@ -13,6 +13,7 @@ from app.services.employee import (
 )
 # Who a request is for: SubmitterEmail first, then the SubmittedTest person column.
 from app.services.request_submitter import (
+    new_request_submitter,
     resolve_request_submitter,
     resolve_request_submitter_name,
     submitter_columns,
@@ -59,14 +60,16 @@ from app.services.audit_trail import (
     write_audit_log,
     extract_approval_deltas,
 )
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
+from app.services.switch_pause import guarded  # refuse writes mid-switch and count them in flight
 
 logger = logging.getLogger(__name__)
 
 
+@guarded  # refuses mid-switch, and the switch waits for it to finish
 async def process_new_leave_request(
     form_data: dict, submitter_email: str, source: str | None = None,
-    notify: bool = True,
+    notify: bool = True, employee_id: str | int | None = None,
 ) -> dict:
     """Create the SharePoint leave item, then work out its days and manager.
 
@@ -79,9 +82,14 @@ async def process_new_leave_request(
             submission does. False assigns the manager and counts the days but
             skips that email, so an admin can create a request and approve it
             at once without the manager ever being asked (#283).
+        employee_id: The submitter's staff id when the caller knows it (a signed-in
+            person). It wins over the email, which two staff records can share.
 
     Returns:
         The created SharePoint item.
+
+    Raises:
+        SystemPaused: While the storage switch is running (no request is created).
     """
     leave_type = form_data.get("leave_type", "")
     is_partial = leave_type == "Half Day or Partial Day Off"
@@ -107,11 +115,24 @@ async def process_new_leave_request(
         last_name = form_data.get("last_name") or ""
         fields["Title"] = compose_leave_title(f"{first_name} {last_name}", notes)
 
-    # Set SubmittedTest via Claims lookup
-    fields["SubmittedTestLookupId"] = await _resolve_user_lookup_id(submitter_email)
+    # SubmittedTest is a SharePoint person column, resolved against the site's
+    # User Information List. Set it only while requests live in SharePoint: after
+    # the switch the typed row resolves the submitter by EmployeeID (stamped
+    # below) and SubmitterEmail, so that list is never read, not even as a
+    # fallback. Postgres is the only source of truth once the switch is on.
+    if not await requests_in_postgres():
+        fields["SubmittedTestLookupId"] = await _resolve_user_lookup_id(submitter_email)
     # SubmitterEmail and RequestSource, so the request resolves even when the
     # person column could not be set (submitter never visited the site).
-    fields.update(submitter_columns(submitter_email, source))
+    fields.update(await submitter_columns(submitter_email, source))
+
+    # Once requests live in Postgres the typed row needs the submitter's staff id
+    # (employee_id is not null), so resolve them by email now and refuse a request
+    # that matches nobody rather than writing a half-formed row (#324). SharePoint
+    # mode is unchanged: there EmployeeID is not written on the leave list.
+    if await requests_in_postgres():
+        submitter = await new_request_submitter(submitter_email, employee_id)   # the chosen person when the email is shared
+        fields["EmployeeID"] = str(submitter["id"])             # stamps employee_id on the typed row
 
     # No duplicate check here, deliberately. A clash with an approved absence is
     # raised when a manager tries to approve, not at intake — blocking here ran
@@ -131,13 +152,63 @@ async def process_new_leave_request(
         await auto_calculate_days(item_id)
     except Exception:  # noqa: BLE001 - as before: a failure here must not stop the rest
         logger.exception("Could not work out the days for leave request #%s", item_id)
-    await asyncio.gather(
+    # return_exceptions keeps one failure from cancelling the other, but it also
+    # hides it: auto_assign_manager runs submit() in Postgres mode (the manager
+    # email, the events, the receipt), so a swallowed failure here leaves a
+    # committed request with no manager and nobody told, while the route still
+    # reports success. Log each failure and flag the request so it is visible
+    # instead of lost (finding 11).
+    results = await asyncio.gather(
         auto_assign_manager(item_id, notify=notify),            # notify=False skips the manager's approval email
         send_bereavement_alert(item_id),
         return_exceptions=True,
     )
+    for step, outcome in zip(("assign the manager for", "send the bereavement alert for"), results):
+        if isinstance(outcome, Exception):
+            logger.error("Could not %s leave request #%s", step, item_id, exc_info=outcome)
+            await _flag_post_create_failure(item_id, outcome)   # a visible signal on the request itself
 
     return item
+
+
+async def _flag_post_create_failure(item_id: str | int, exc: BaseException) -> None:
+    """Record a ``flagged`` event on a leave request whose post-create step raised.
+
+    The post-create steps run under ``gather(return_exceptions=True)``, which
+    swallows a failure; in Postgres mode that failure may be the submit that
+    assigns the manager and queues the emails, so without a visible mark the
+    request sits committed and silent. This appends a flagged event to the
+    Postgres request, so its timeline and the stuck-request views show the
+    failure. SharePoint mode keeps no event log, so there the logged exception
+    is the only signal and this is a no-op.
+
+    Args:
+        item_id: The leave request item id.
+        exc: The exception the post-create step raised, recorded on the event.
+    """
+    if not await requests_in_postgres():
+        return                                                  # no event log in SharePoint mode
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models.request_record import RequestRecord
+    from app.services.request_journal import append_event, step_key
+    try:
+        async with async_session() as session:
+            record = (await session.execute(
+                select(RequestRecord).where(
+                    RequestRecord.kind == "leave", RequestRecord.item_id == int(item_id)
+                )
+            )).scalars().first()
+            if record is None:
+                return                                          # the row is gone: nothing to flag
+            key = step_key("leave", record.item_id, "flagged", record.approval_version, suffix="post_create")
+            await append_event(
+                session, record, "flagged", "system", None,
+                {"error": f"{type(exc).__name__}: {exc}", "step": "post_create"}, key,
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - flagging is best-effort; never raise from the create path
+        logger.exception("Could not flag leave request #%s after a post-create failure", item_id)
 
 
 async def auto_calculate_days(leave_request_id: str | int):
@@ -181,6 +252,12 @@ async def _check_partial_day(
     request_id, fields, start_date, holidays, half_friday_season, emp_fields
 ):
     """Run partial-day auto-rejection checks."""
+    # Once requests and staff live in Postgres the submission path runs these same
+    # checks and queues any rejection through the outbox (#324), so this SharePoint
+    # send path must not also fire; return before it writes or emails anything.
+    from app.services.request_submission import submission_active
+    if await submission_active():
+        return
     from app.services.auto_reject_titles import append_auto_reject_tag
 
     submitter_email = emp_fields.get("EmailAddress", "")
@@ -247,6 +324,14 @@ async def auto_assign_manager(leave_request_id: str | int, notify: bool = True):
         notify: True triggers the approval email at the end; False stops after
             the manager is assigned, for an admin-created-and-approved request.
     """
+    # Once requests and staff both live in Postgres, the submission module records
+    # the request and QUEUES its manager email, text and the receipt, instead of
+    # resolving the SharePoint person columns and sending here (#324, #326).
+    from app.services.request_submission import submission_active, submit
+    if await submission_active():
+        await submit("leave", leave_request_id, notify=notify)
+        return
+
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
 
@@ -341,6 +426,13 @@ async def notify_manager_after_failed_admin_approval(leave_request_id: str | int
         True when the manager was asked (it is now a normal Pending request);
         False when the request was not in a state to ask about.
     """
+    # Once requests live in Postgres, ask the manager through the outbox, which
+    # keeps the typed approval version and the links in step. The direct send
+    # below queues nothing for an app-made Postgres row (no ManagerLookupId in
+    # the shape) while reporting success (#326, finding 4).
+    if await requests_in_postgres():
+        from app.services.request_submission import queue_reminder
+        return await queue_reminder("leave", leave_request_id)
     item = await request_store.get_list_item_or_none(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     if item is None or item["fields"].get("Status") != "Pending":
         return False                                            # gone or already decided: leave it
@@ -628,6 +720,14 @@ async def admin_edit_leave_request(
         "EndDate": new_end,
     }
 
+    # Once requests and staff live in Postgres the edit is applied in one
+    # transaction: it bumps the approval version (old links go stale), records the
+    # field changes, appends an "edited" event and queues fresh manager links
+    # through the outbox (#324). SharePoint mode keeps the send path below.
+    from app.services.request_submission import apply_admin_edit, submission_active
+    if await submission_active():
+        return await apply_admin_edit("leave", request_id, before, after, reason)
+
     async with lock_manager.lock(employee_id):
         fresh = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
         ff = fresh["fields"]
@@ -658,17 +758,32 @@ async def admin_edit_leave_request(
     return {"status": "saved", "new_version": new_version, "fields": after}
 
 
-async def approve_leave_request(request_id: str | int, manager_id: str | int) -> dict:
+@guarded  # refuses mid-switch, and the switch waits for it to finish
+async def approve_leave_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system", link_version: int | None = None,
+) -> dict:
     """Process leave approval — update SP, deduct balance, cascade, email.
 
     Args:
         request_id: SharePoint item id of the leave request being approved.
         manager_id: Staff Directory id of whoever is approving.
+        channel: Which channel asked (for the Postgres decision path's audit).
+        link_version: The approval version a link carried, or None; a mismatch
+            is a stale link (Postgres path only).
 
     Returns:
         A result dict describing the approval. An "error" key means nothing was
         written and the request is unchanged.
+
+    Raises:
+        SystemPaused: While the storage switch is running (nothing is written).
     """
+    # Once requests and staff both live in Postgres, every channel runs the one
+    # transactional decision path instead of this SharePoint flow (#324).
+    from app.services.request_decisions import approve as _pg_approve, decisions_active
+    if await decisions_active():
+        return await _pg_approve("leave", request_id, manager_id, channel, link_version)
+
     # Conflict check runs BEFORE the idempotency claim, on its own read of the
     # item. Claiming first would consume the one-shot claim on a blocked
     # approval, and the manager would then get "Already processed" forever, even
@@ -860,8 +975,15 @@ async def approve_leave_request(request_id: str | int, manager_id: str | int) ->
     return {"status": "approved", "balances": balances}
 
 
-async def reject_leave_request(request_id: str | int, manager_id: str | int) -> dict:
+@guarded  # refuses mid-switch, and the switch waits for it to finish
+async def reject_leave_request(
+    request_id: str | int, manager_id: str | int, channel: str = "system",
+    link_version: int | None = None, reason: str | None = None,
+) -> dict:
     """Process leave rejection."""
+    from app.services.request_decisions import decisions_active, reject as _pg_reject
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_reject("leave", request_id, manager_id, channel, link_version, reason)
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "reject"):
         return {"error": "Already processed"}
 
@@ -901,8 +1023,14 @@ async def reject_leave_request(request_id: str | int, manager_id: str | int) -> 
     return {"status": "rejected"}
 
 
-async def refund_leave_request(request_id: str | int, admin_id: str | int) -> dict:
+@guarded  # refuses mid-switch, and the switch waits for it to finish
+async def refund_leave_request(
+    request_id: str | int, admin_id: str | int, channel: str = "system",
+) -> dict:
     """Reverse an approved leave request — restore balance, cascade, recalc RAD."""
+    from app.services.request_decisions import decisions_active, refund as _pg_refund
+    if await decisions_active():                                 # one decision path once both are in Postgres
+        return await _pg_refund("leave", request_id, admin_id, channel)
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
     fields = item["fields"]
 

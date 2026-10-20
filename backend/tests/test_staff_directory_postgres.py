@@ -1,0 +1,434 @@
+"""The Staff Directory in Postgres behaves like the SharePoint list (#261, #265, #341).
+
+These run on the local SQLite fallback (the same SQLAlchemy layer Postgres uses
+under conftest), with ``sp_client`` faked so nothing touches a real list. They
+cover: the store answers in the same shape from either backend; the import is
+idempotent and builds the supervisor links; matching is by id then email and
+never by name; the balance lock/write live inside the caller's transaction and a
+rollback leaves the pots untouched; the write-back retries until it lands, claims
+a row so a second drain never replays it, and reclaims a crashed claim; the pull
+is a detector that changes nothing in Postgres, flagging a SharePoint row that
+differs in any app-modelled column (balances included) with both values, flagging
+a SharePoint item with no Postgres row without importing it, leaving a person with
+an unsettled write-back alone, and filing one finding per unchanged difference;
+and each #341 detector fires on its case and stays quiet on a clean one.
+"""
+import asyncio
+
+import pytest
+from sqlalchemy import delete, func, select
+
+from app.config import settings
+from app.database import async_session
+from app.graph import sharepoint as sharepoint_module
+from app.models.legacy_finding import LegacyFinding
+from app.models.staff import (
+    Department,
+    Location,
+    Staff,
+    StaffSupervisor,
+    StaffWriteback,
+)
+from app.models.staff_change import StaffChange
+from app.repositories.postgres.staff_balances import PostgresStaffBalances
+from app.repositories.staff_store import staff_store
+from app.services import staff_import
+from app.services.person_match import match_person
+
+STAFF = settings.SP_LIST_STAFF_DIRECTORY
+
+
+def run(coro):
+    """Run one coroutine to completion."""
+    return asyncio.run(coro)
+
+
+def _sp_item(item_id, **overrides):
+    """A sample SharePoint Staff Directory item, with field overrides.
+
+    Args:
+        item_id: The SharePoint item id (string).
+        **overrides: Field values to set or replace on the base record.
+
+    Returns:
+        A ``{"id", "fields"}`` dict in Graph's shape.
+    """
+    fields = {
+        "Title": "Ada Lovelace",
+        "EmailAddress": "ada@ucsh.com",
+        "SalaryHourly": "Salary",
+        "Location": "Barrie",
+        "Department": "Engineering",
+        "Supervisor": "Chief",
+        "DefaultYearlyVacationDays": 15,
+        "SickDayEntitlement": 8,
+        "CurrentVacationBalance": 10.5,
+        "CurrentSickDayBalance": 3,
+        "CurrentOvertimeBalance": 1.25,
+        "CarryOver": 2,
+        "Payout": 0,
+        "CellNumber": "555-1212",
+        "Extension": 204,
+        "Birthday": "1990-12-10",
+        "SystemCheck": "Ready",
+        "RequestAllowDate": "2026-12-31",
+        "Comments": "note",
+        "TitleLinkLookupId": 55,
+        "Modified": "2026-10-10T12:00:00Z",
+        "Created": "2020-01-01T00:00:00Z",
+        "AllManagers": [{"LookupId": 77, "LookupValue": "Grace Hopper"}],
+        "SupervisorLinkLookupId": 77,
+    }
+    fields.update(overrides)
+    return {"id": str(item_id), "fields": fields}
+
+
+@pytest.fixture
+def clean_db():
+    """Empty every staff table before and after a test."""
+    async def wipe():
+        async with async_session() as session:
+            for model in (StaffWriteback, StaffSupervisor, StaffChange, LegacyFinding, Staff,
+                          Location, Department):
+                await session.execute(delete(model))
+            await session.commit()
+    run(wipe())
+    yield
+    run(wipe())
+
+
+def _fake_list(monkeypatch, items):
+    """Make sp_client.get_list_items return a fixed list for any list id."""
+    async def fake_get_list_items(list_id, **kwargs):
+        return list(items)
+    monkeypatch.setattr(sharepoint_module.sp_client, "get_list_items", fake_get_list_items)
+
+
+def _import(items):
+    """Run the staff import once over the given SharePoint items and commit."""
+    async def inner():
+        async with async_session() as session:
+            counts = await staff_import.staff_sync_step(session, None)
+            await session.commit()
+            return counts
+    return run(inner())
+
+
+# --- Response shape: both backends agree --------------------------------------
+
+def test_store_shape_matches_between_backends(clean_db, monkeypatch):
+    item = _sp_item("101")
+    _fake_list(monkeypatch, [item])
+    _import([item])
+
+    # Postgres backend through the store.
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    from_pg = run(staff_store.get_list_item(STAFF, "101"))
+
+    # SharePoint backend through the store (faked sp_client returns the raw item).
+    async def fake_get_item(list_id, item_id):
+        return item
+    monkeypatch.setattr(sharepoint_module.sp_client, "get_list_item", fake_get_item)
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "sharepoint")
+    from_sp = run(staff_store.get_list_item(STAFF, "101"))
+
+    assert from_pg["id"] == from_sp["id"] == "101"
+    # The columns every caller reads must match across the two backends.
+    for column in (
+        "Title", "EmailAddress", "SalaryHourly", "Location", "Department", "Supervisor",
+        "DefaultYearlyVacationDays", "SickDayEntitlement", "CurrentVacationBalance",
+        "CurrentSickDayBalance", "CurrentOvertimeBalance", "CarryOver", "Payout",
+        "CellNumber", "Extension", "Birthday", "SystemCheck", "RequestAllowDate",
+        "Comments", "TitleLinkLookupId", "Modified", "AllManagers", "SupervisorLinkLookupId",
+    ):
+        assert from_pg["fields"][column] == from_sp["fields"][column], column
+
+
+def test_a_blank_title_reads_as_empty_string_not_none(clean_db, monkeypatch):
+    # Callers do fields["Title"].strip(), so a missing name must be "" not None.
+    item = _sp_item("102", Title="")
+    _fake_list(monkeypatch, [item])
+    _import([item])
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    fields = run(staff_store.get_list_item(STAFF, "102"))["fields"]
+    assert fields["Title"] == ""
+    assert fields["EmailAddress"] == "ada@ucsh.com"
+
+
+# --- Import: idempotent, with the supervisor links ----------------------------
+
+def test_import_is_idempotent(clean_db, monkeypatch):
+    item = _sp_item("101")
+    _fake_list(monkeypatch, [item])
+    first = _import([item])
+    second = _import([item])
+
+    assert first["imported"] == 1 and first["updated"] == 0
+    assert second["imported"] == 0 and second["updated"] == 1   # same row, not a duplicate
+
+    async def count_staff():
+        async with async_session() as session:
+            return (await session.execute(select(func.count()).select_from(Staff))).scalar_one()
+    assert run(count_staff()) == 1
+
+
+def test_import_builds_supervisor_links_and_relinks_by_name(clean_db, monkeypatch):
+    # Ada is managed by Grace; importing both lets the manager link resolve to
+    # Grace's own staff row (managers are links between staff rows).
+    ada = _sp_item("101")
+    grace = _sp_item("77", Title="Grace Hopper", EmailAddress="grace@ucsh.com",
+                     AllManagers=[], SupervisorLinkLookupId=None)
+    _fake_list(monkeypatch, [ada, grace])
+    _import([ada, grace])
+
+    async def read_links():
+        async with async_session() as session:
+            ada_row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            grace_row = (await session.execute(select(Staff).where(Staff.sp_item_id == "77"))).scalars().first()
+            links = (await session.execute(
+                select(StaffSupervisor).where(StaffSupervisor.staff_id == ada_row.id)
+            )).scalars().all()
+            return links, grace_row.id
+    links, grace_id = run(read_links())
+
+    relations = sorted(link.relation for link in links)
+    assert relations == ["manager", "supervisor_link"]          # both person columns kept
+    manager_link = next(link for link in links if link.relation == "manager")
+    assert manager_link.manager_sp_user_id == 77
+    assert manager_link.manager_name == "Grace Hopper"
+    assert manager_link.manager_staff_id == grace_id            # relinked to Grace's staff row
+
+
+# --- Duplicate email and supervisor-link replacement (#341) -------------------
+
+def test_a_shared_email_is_kept_on_both_records(clean_db, monkeypatch):
+    # Two records genuinely share one mailbox (a shared desk and the person who
+    # reads it): both keep the email, the share is counted, and no finding is filed.
+    first = _sp_item("101", EmailAddress="dup@ucsh.com")
+    later = _sp_item("202", Title="Bob Builder", EmailAddress="dup@ucsh.com")
+    _fake_list(monkeypatch, [first, later])
+    counts = _import([first, later])
+    assert counts["email_conflicts"] == 1                      # counted for the storage screen
+
+    async def read():
+        async with async_session() as session:
+            rows = {r.sp_item_id: r for r in (await session.execute(select(Staff))).scalars().all()}
+            finding = (await session.execute(
+                select(LegacyFinding).where(LegacyFinding.case == "email_conflict")
+            )).scalars().first()
+            return rows, finding
+    rows, finding = run(read())
+
+    assert rows["101"].email == "dup@ucsh.com"
+    assert rows["202"].email == "dup@ucsh.com"                 # no longer blanked
+    assert finding is None
+
+
+def test_reimport_without_managers_removes_the_manager_link(clean_db, monkeypatch):
+    # A manager removed in SharePoint must be removed here too: the import replaces
+    # the supervisor links with exactly what the payload carries, so an absent /
+    # empty AllManagers drops the old manager link rather than leaving it stale.
+    with_manager = _sp_item("101")                             # AllManagers names #77
+    _fake_list(monkeypatch, [with_manager])
+    _import([with_manager])
+
+    async def manager_links():
+        async with async_session() as session:
+            ada = (await session.execute(
+                select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            links = (await session.execute(
+                select(StaffSupervisor).where(StaffSupervisor.staff_id == ada.id)
+            )).scalars().all()
+            return [link.relation for link in links]
+    assert "manager" in run(manager_links())                   # the link exists after the first import
+
+    without = _sp_item("101", AllManagers=[], SupervisorLinkLookupId=None)
+    _fake_list(monkeypatch, [without])
+    _import([without])
+    assert "manager" not in run(manager_links())               # the removed manager is gone
+
+
+# --- Matching: id then email, never name (#265) -------------------------------
+
+def test_match_by_id_then_email_never_name(clean_db, monkeypatch):
+    _fake_list(monkeypatch, [_sp_item("101")])
+    _import([_sp_item("101")])
+
+    assert run(match_person(staff_id="101"))["id"] == "101"                 # by id
+    assert run(match_person(email="ADA@ucsh.com "))["id"] == "101"          # case + trailing space
+    assert run(match_person(email="a d a @ucsh.com"))["id"] == "101"        # spaces inside
+    assert run(match_person(email="Ada Lovelace")) is None                 # a name is not an email
+    assert run(match_person()) is None                                     # nothing to match on
+
+
+def test_match_id_wins_over_email(clean_db, monkeypatch):
+    items = [_sp_item("101"), _sp_item("202", Title="Bob", EmailAddress="bob@ucsh.com")]
+    _fake_list(monkeypatch, items)
+    _import(items)
+    # Ada's id with Bob's email: the id wins.
+    matched = run(match_person(staff_id="101", email="bob@ucsh.com"))
+    assert matched["id"] == "101"
+
+
+# --- Balances: lock and write inside the caller's transaction -----------------
+
+def _seed_one(monkeypatch, item):
+    _fake_list(monkeypatch, [item])
+    _import([item])
+
+
+def test_lock_and_write_pots_commit(clean_db, monkeypatch):
+    _seed_one(monkeypatch, _sp_item("101"))
+    balances = PostgresStaffBalances()
+
+    async def do():
+        async with async_session() as session:
+            pots = await balances.lock_pots(session, "101")
+            assert pots["vacation"] == 10.5 and pots["sick"] == 3.0
+            await balances.write_pots(session, "101", {"vacation": 8.0, "sick": 2.0})
+            await session.commit()
+        async with async_session() as session:                 # a fresh read sees the move
+            row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            wb = (await session.execute(select(StaffWriteback))).scalars().all()
+            return float(row.vacation_balance), float(row.sick_balance), wb
+    vacation, sick, wb = run(do())
+    assert (vacation, sick) == (8.0, 2.0)
+    assert wb == []                                             # nothing is queued for SharePoint
+
+
+def test_rollback_leaves_the_pots_unchanged(clean_db, monkeypatch):
+    _seed_one(monkeypatch, _sp_item("101"))
+    balances = PostgresStaffBalances()
+
+    async def do():
+        async with async_session() as session:
+            await balances.lock_pots(session, "101")
+            await balances.write_pots(session, "101", {"vacation": 0.0, "sick": 0.0})
+            await session.rollback()                            # the caller's transaction is undone
+        async with async_session() as session:
+            row = (await session.execute(select(Staff).where(Staff.sp_item_id == "101"))).scalars().first()
+            wb = (await session.execute(select(StaffWriteback))).scalars().all()
+            return float(row.vacation_balance), float(row.sick_balance), wb
+    vacation, sick, wb = run(do())
+    assert (vacation, sick) == (10.5, 3.0)                      # untouched
+    assert wb == []                                            # nothing is queued for SharePoint
+
+
+# --- Write-back: retries until it lands ---------------------------------------
+
+# --- #341 detectors -----------------------------------------------------------
+
+def _cases_for(sp_id):
+    """The finding cases filed against one staff id."""
+    async def inner():
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(LegacyFinding).where(LegacyFinding.subject_id == str(sp_id))
+            )).scalars().all()
+            return {r.case for r in rows}
+    return run(inner())
+
+
+def test_employment_type_suspect_fires_and_is_quiet_when_clean(clean_db, monkeypatch):
+    suspect = _sp_item("1", SalaryHourly="Hourly", DefaultYearlyVacationDays=10,
+                       CurrentVacationBalance=5)
+    clean = _sp_item("2", SalaryHourly="Hourly", DefaultYearlyVacationDays=0,
+                     CurrentVacationBalance=0, EmailAddress="clean@ucsh.com")
+    _fake_list(monkeypatch, [suspect, clean])
+    _import([suspect, clean])
+    assert "employment_type_suspect" in _cases_for("1")
+    assert "employment_type_suspect" not in _cases_for("2")
+
+
+def test_username_as_name_fires_and_is_quiet_when_clean(clean_db, monkeypatch):
+    login = _sp_item("1", Title="jsmith2", EmailAddress="jsmith@ucsh.com")
+    person = _sp_item("2", Title="Jane Smith", EmailAddress="jane@ucsh.com")
+    _fake_list(monkeypatch, [login, person])
+    _import([login, person])
+    assert "username_as_name" in _cases_for("1")
+    assert "username_as_name" not in _cases_for("2")
+
+
+def test_no_user_link_fires_and_is_quiet_when_clean(clean_db, monkeypatch):
+    no_link = _sp_item("1", TitleLinkLookupId=None)
+    linked = _sp_item("2", TitleLinkLookupId=55, EmailAddress="linked@ucsh.com")
+    _fake_list(monkeypatch, [no_link, linked])
+    _import([no_link, linked])
+    assert "no_user_link" in _cases_for("1")
+    assert "no_user_link" not in _cases_for("2")
+
+
+def test_below_zero_predates_rules_fires_and_is_quiet_when_clean(clean_db, monkeypatch):
+    # Salaried: vacation may go below zero, but a negative sick predates the rules.
+    bad = _sp_item("1", SalaryHourly="Salary", CurrentSickDayBalance=-2,
+                   CurrentVacationBalance=-5)
+    clean = _sp_item("2", SalaryHourly="Salary", CurrentSickDayBalance=1,
+                     CurrentVacationBalance=-5, EmailAddress="clean@ucsh.com")
+    _fake_list(monkeypatch, [bad, clean])
+    _import([bad, clean])
+    assert "below_zero_predates_rules" in _cases_for("1")
+    assert "below_zero_predates_rules" not in _cases_for("2")   # only vacation negative: allowed
+
+
+def test_findings_are_not_duplicated_on_rerun(clean_db, monkeypatch):
+    item = _sp_item("1", TitleLinkLookupId=None)
+    _fake_list(monkeypatch, [item])
+    _import([item])
+    _import([item])                                            # rerun
+
+    async def count_no_link():
+        async with async_session() as session:
+            return (await session.execute(
+                select(func.count()).select_from(LegacyFinding)
+                .where(LegacyFinding.case == "no_user_link", LegacyFinding.subject_id == "1")
+            )).scalar_one()
+    assert run(count_no_link()) == 1                           # fingerprint keeps it unique
+
+
+# --- The staff_storage switch -------------------------------------------------
+
+def test_staff_list_uses_sharepoint_by_default(monkeypatch):
+    # Default STORAGE_EMPLOYEES: the read goes straight to sp_client.
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "sharepoint")
+    calls = []
+
+    async def fake_items(list_id, **kwargs):
+        calls.append(list_id)
+        return []
+    monkeypatch.setattr(sharepoint_module.sp_client, "get_list_items", fake_items)
+    run(staff_store.get_list_items(STAFF))
+    assert calls == [STAFF]
+
+
+def test_other_lists_always_go_to_sharepoint(monkeypatch):
+    # Even pinned to Postgres, a non-staff list id reaches sp_client untouched.
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    calls = []
+
+    async def fake_items(list_id, **kwargs):
+        calls.append(list_id)
+        return []
+    monkeypatch.setattr(sharepoint_module.sp_client, "get_list_items", fake_items)
+    run(staff_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS))
+    assert calls == [settings.SP_LIST_LEAVE_REQUESTS]
+
+
+def test_a_mistyped_staff_setting_fails_loudly(monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgress")
+    with pytest.raises(NotImplementedError):
+        run(staff_store.get_list_items(STAFF))
+
+
+def test_create_through_the_store_lands_only_in_postgres(clean_db, monkeypatch):
+    # A create while on Postgres mints an id in the app's range and queues nothing
+    # for SharePoint: Postgres is the only copy of staff.
+    from app.repositories.postgres.staff import APP_STAFF_ID_START
+    monkeypatch.setattr(settings, "STORAGE_EMPLOYEES", "postgres")
+    created = run(staff_store.create_list_item(STAFF, {"Title": "New Person", "SalaryHourly": "Salary"}))
+    assert created["fields"]["Title"] == "New Person"
+    assert int(created["id"]) >= APP_STAFF_ID_START           # an app-made id
+
+    async def read_wb():
+        async with async_session() as session:
+            return (await session.execute(select(StaffWriteback))).scalars().all()
+    assert run(read_wb()) == []                                # nothing for SharePoint

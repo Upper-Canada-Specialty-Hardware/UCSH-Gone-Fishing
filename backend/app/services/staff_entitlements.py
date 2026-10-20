@@ -20,7 +20,7 @@ import logging
 import math
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_in_postgres, staff_store
 from app.services import staff_changes
 from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
@@ -29,7 +29,7 @@ from app.services.employee import (
     _get_sp_user_name_map,
     get_employee_by_id,
 )
-from app.services.manager_assignments import _extract_all_managers
+from app.services.manager_assignments import _extract_all_managers, _manager_id_to_name
 
 logger = logging.getLogger(__name__)
 
@@ -520,8 +520,44 @@ def _current_managers(current_fields: dict, id_to_name: dict[int, str]) -> dict:
     return {"ids": ids, "names": names}
 
 
+def _link_payload(field_changes: list[dict], fields_in: dict) -> dict | None:
+    """The manager/supervisor links to pass the store, with names, for the ones that moved.
+
+    Only links that actually changed are included, so a save that leaves a person
+    column alone does not rewrite it. The names come from the request itself
+    (the picker sends ids and names together), so the Postgres store keeps matching
+    managers by name without a second lookup.
+
+    Args:
+        field_changes: The planned field diffs from ``plan_field_changes``.
+        fields_in: The directory-field part of the request (wire keys).
+
+    Returns:
+        ``{"managers": [...]}`` and/or ``{"supervisor_link": {...}}`` for the links
+        that changed, or None when no person column moved.
+    """
+    payload: dict = {}
+    changed_fields = {c["field"] for c in field_changes}   # only what really moved
+    if MANAGERS_KEY in changed_fields:                     # the AllManagers set changed
+        managers = fields_in.get(MANAGERS_KEY) or {}
+        ids = managers.get("ids") or []
+        names = managers.get("names") or []
+        payload["managers"] = [
+            {"sp_user_id": _as_sp_user_id(uid), "name": _clean_text(name)}
+            for uid, name in zip(ids, names)
+        ]
+    if "supervisor_link" in changed_fields:                # the single SupervisorLink changed
+        link = fields_in.get("supervisor_link") or {}
+        payload["supervisor_link"] = {
+            "sp_user_id": _as_sp_user_id(link.get("sp_user_id")),
+            "name": _clean_text(link.get("name")),
+        }
+    return payload or None                                 # None when no person column moved
+
+
 async def apply_entitlement_changes(
-    employee_id: str, requested: dict, reason: str, fields: dict | None = None
+    employee_id: str, requested: dict, reason: str, fields: dict | None = None,
+    source: str = "admin_dashboard",
 ) -> dict:
     """Apply balance/entitlement and Staff Directory field changes, with a reason.
 
@@ -535,10 +571,14 @@ async def apply_entitlement_changes(
     Args:
         employee_id: Staff Directory item id of the person being edited.
         requested: snake_case wire key -> new numeric value (the balance pots).
-        reason: Why HR made the change; required and stored with the history.
+        reason: Why the change was made; required and stored with the history.
         fields: snake_case wire key -> new value for the Staff Directory text,
             choice and person fields (see ``TEXT_FIELDS``/``PERSON_FIELDS`` and
             the managers key). Optional; omitted means no directory-field edits.
+        source: Which channel recorded the change in the history; the admin
+            dashboard by default, ``"manager_dashboard"`` when a manager edits
+            their own teammate (#362). Kept within the ``StaffChange.source``
+            column's 24-character limit by the caller.
 
     Returns:
         ``{"employee_id", "name", "changed": [...], "history_recorded": bool}``,
@@ -567,7 +607,7 @@ async def apply_entitlement_changes(
     id_to_name: dict[int, str] = {}
     if needs_people:
         try:
-            id_to_name = await _get_sp_user_name_map()  # one read for all people fields
+            id_to_name = await _person_names()       # one read for all people fields
         except Exception:
             logger.exception("Failed to read user name map for %s", employee_id)
             id_to_name = {}                          # degrade: before-names may be blank
@@ -600,9 +640,16 @@ async def apply_entitlement_changes(
         sp_updates: dict = {c["column"]: c["after"] for c in pot_changes}
         for c in field_changes:
             sp_updates.update(c["sp"])
+        # When staff live in Postgres, the manager/supervisor person columns in the
+        # patch carry ids but no names, so pass the names alongside; SharePoint
+        # ignores this and reads the LookupId keys. ``history_source`` stays None:
+        # this service records its own history below, so the store must not log it
+        # a second time.
+        link_payload = _link_payload(field_changes, fields_in)
         try:
-            await sp_client.update_list_item_fields(
+            await staff_store.update_list_item_fields(
                 settings.SP_LIST_STAFF_DIRECTORY, employee_id, sp_updates,
+                links=link_payload,
             )
         except Exception as exc:                      # upstream write failed
             logger.exception("Failed to write Staff Directory record for %s", employee_id)
@@ -618,6 +665,7 @@ async def apply_entitlement_changes(
                 name,
                 [(c["column"], c["before"], c["after"]) for c in changes],
                 reason,
+                source=source,                        # admin, or a manager's own team (#362)
             )
         except Exception:                            # history must not undo the save
             logger.exception(                        # keep the detail in the logs
@@ -665,6 +713,7 @@ async def apply_entitlement_changes(
                     name,
                     [("RequestAllowDate", rad_moved[0], rad_moved[1])],
                     "Recomputed automatically after a balance change.",
+                    source=source,                    # same channel as the edit that caused it
                 )
             except Exception:                         # best-effort, like the main log
                 logger.exception(
@@ -681,6 +730,20 @@ async def apply_entitlement_changes(
             result["notice"] = notice
         return result
 
+
+async def _person_names() -> dict[int, str]:
+    """Person id -> display name for the people fields, from the backend staff live in.
+
+    After the switch a person field holds a staff id and the name comes from the
+    staff table; SharePoint's user list is never read. Before it, the ids are
+    SharePoint user ids, named from that list as before.
+
+    Returns:
+        ``{person id: display name}``.
+    """
+    if await staff_in_postgres():
+        return await _manager_id_to_name()           # the staff table
+    return await _get_sp_user_name_map()             # SharePoint, before the switch
 
 async def get_staff_record(employee_id: str) -> dict | None:
     """Read one person's Staff Directory record for the admin person panel.
@@ -714,7 +777,7 @@ async def get_staff_record(employee_id: str) -> dict | None:
     # One User Information List read covers both person links and the managers;
     # a failure degrades to blank names rather than failing the whole panel.
     try:
-        id_to_name = await _get_sp_user_name_map()
+        id_to_name = await _person_names()
     except Exception:
         logger.exception("Failed to read user name map for %s", employee_id)
         id_to_name = {}

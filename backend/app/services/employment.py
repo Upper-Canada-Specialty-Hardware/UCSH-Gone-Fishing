@@ -27,7 +27,10 @@ HOURLY_TYPES = (HOURLY, HOURLY_BC)
 VACATION = "Vacation"                       # leave kind counted for hourly staff
 SICK_LEAVE = "Sick or Personal Day"         # spends sick for everyone
 PARTIAL_DAY = "Half Day or Partial Day Off" # hourly: a whole sick day
-NO_COST_LEAVE = ("Bereavement", "Jury Duty")  # never touch a balance
+# Leave that never touches a balance, on every approval path. "Work from Home"
+# is the retired type the old Microsoft Form still sends (#375): working from
+# home is not time off, so its approval moves nothing and runs no overflow step.
+NO_COST_LEAVE = ("Bereavement", "Jury Duty", "Work from Home")
 
 # The column each type's floor lives in, and its wire pot name.
 SICK_FIELD = "CurrentSickDayBalance"
@@ -67,7 +70,7 @@ def leave_costs_balance(fields: dict | None, leave_type: str) -> bool:
         leave_type: The request's LeaveType.
 
     Returns:
-        False for bereavement and jury duty; for hourly staff, False unless it
+        False for bereavement, jury duty and work from home; for hourly staff, False unless it
         is a sick or part day (their vacation is counted, not spent); True
         otherwise.
     """
@@ -197,6 +200,14 @@ def vacation_days_counted(leave_rows: list[dict], year: int) -> float:
         if (row.get("Status") or "").strip() != "Approved":   # pending/refunded don't count
             continue
         if (row.get("LeaveType") or "") != VACATION:          # only vacation is counted
+            continue
+        # The employment type stamped on the request at decision time, when the
+        # row carries it (Postgres #300). A vacation approved while the person was
+        # salaried spent pots, so it is not an hourly "counted" day and must be
+        # left out, matching the vacation_taken ledger counter. A row without the
+        # stamp (SharePoint) keeps the old behaviour: this person is hourly now.
+        stamped = row.get("RequestEmploymentType")
+        if stamped is not None and stamped not in HOURLY_TYPES:
             continue
         start = str(row.get("StartDate") or "")[:4]           # "YYYY" of the first day
         if start != str(year):

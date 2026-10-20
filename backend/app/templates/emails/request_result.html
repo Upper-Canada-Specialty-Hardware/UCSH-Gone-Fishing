@@ -1,0 +1,21 @@
+{# The one result notice sent to the employee after a decision (#325).
+
+   It is rendered from the request's ledger rows inside the decision
+   transaction, so it can only say what actually moved: a before/after line per
+   pot for salaried staff and hourly sick, the vacation-taken counter for hourly
+   vacation, or a plain note when nothing was used (bereavement, jury duty,
+   hourly overtime). Rejections use the same shell with no table. Styled with
+   the shared macros so it matches every other email. #}
+{% import "_macros.html" as ui %}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">{{ heading }}</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ intro }}</p>
+{% if rows %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
+  {% for row in rows %}
+  {{ ui.row(row.label, row.value) }}
+  {% endfor %}
+</table>
+{% endif %}
+{% if note %}
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ note }}</p>
+{% endif %}

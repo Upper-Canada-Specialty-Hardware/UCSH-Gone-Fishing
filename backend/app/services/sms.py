@@ -14,6 +14,15 @@ TWILIO_API_BASE = "https://api.twilio.com/2010-04-01"
 
 async def send_sms(to: str, body: str):
     """Send SMS via Twilio REST API."""
+    # Rehearsal mode drops any recipient not on the allow list, so a rehearsal
+    # never texts real staff. Gated here, the lowest SMS send, so every caller
+    # (approvals, reminders) is covered (#339).
+    from app.services.rehearsal import allow_recipient
+
+    if not allow_recipient(to):
+        logger.info("Rehearsal: SMS to a non-allowlisted number was dropped")
+        return {"skipped": "rehearsal"}
+
     # Normalize phone number
     if not to.startswith("+"):
         to = f"+1{to[-10:]}"

@@ -1,0 +1,273 @@
+"""Copy the Staff Directory into Postgres, idempotently, and flag what is off (#261, #341).
+
+``staff_sync_step`` reads every Staff Directory record from SharePoint and writes
+it into the ``staff`` table (and its location, department and supervisor-link
+tables), keyed on the SharePoint item id so a second run updates the same people
+instead of duplicating them. One bad record never stops the run: each is written
+inside its own savepoint, and a record that cannot be written is counted and
+reported rather than aborting the import.
+
+As it goes it runs the #341 detectors, which flag a record for HR to look at and
+never change it: an employment type that does not fit the balances, a login used
+as a name, a person with no Microsoft 365 link, and a below-zero balance the
+current rules would not have produced. Each flag is one ``legacy_findings`` row,
+filed once per case per person (the fingerprint makes reruns safe).
+
+Findings are filed through the shared ``legacy_findings.record_finding``, the
+same writer the request checks use.
+"""
+import logging
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.manager_match import normalise_name  # case- and space-blind names (#376)
+from app.config import settings
+from app.graph.sharepoint import sp_client
+from app.models.staff import Staff, StaffSupervisor
+from app.repositories.postgres.staff import (
+    ALL_MANAGERS_COLUMN,
+    _lookup_id,
+    _norm_email,
+    apply_sp_fields,
+    staff_query,
+)
+from app.services.employment import is_hourly
+from app.services.legacy_findings import record_finding
+
+logger = logging.getLogger(__name__)
+
+# The #341 staff cases, each a value the legacy_findings CHECK allows.
+CASE_EMPLOYMENT_TYPE_SUSPECT = "employment_type_suspect"
+CASE_USERNAME_AS_NAME = "username_as_name"
+CASE_NO_USER_LINK = "no_user_link"
+CASE_BELOW_ZERO_PREDATES_RULES = "below_zero_predates_rules"
+
+# The five pots and their SharePoint columns, for the below-zero detector.
+_POT_COLUMNS = {
+    "sick": "CurrentSickDayBalance",
+    "make_up": "CurrentOvertimeBalance",
+    "carry_over": "CarryOver",
+    "vacation": "CurrentVacationBalance",
+    "payout": "Payout",
+}
+
+
+def _num(value) -> float:
+    """A balance value as a float, blank counting as zero.
+
+    Args:
+        value: A number column value or None.
+
+    Returns:
+        The value as a float, or 0.0 when blank or unreadable.
+    """
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _looks_like_username(name: str, email: str) -> bool:
+    """Whether a name looks like a login rather than a person's name.
+
+    Fires when the name holds an email address, equals the email's login part,
+    or is a single spaceless token carrying a digit (e.g. "jsmith2"). HR then
+    confirms and fixes the real name; the importer never changes it.
+
+    Args:
+        name: The Staff Directory Title.
+        email: The EmailAddress, used to spot a name equal to the login part.
+
+    Returns:
+        True when the name reads like a username.
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:                                                  # a blank name is a different problem
+        return False
+    if "@" in cleaned:                                              # an email dropped in the name field
+        return True
+    local = (email or "").split("@")[0].strip().lower()            # the login part of the email
+    if local and cleaned.lower() == local:                         # the name IS the login
+        return True
+    if " " not in cleaned and any(c.isdigit() for c in cleaned):   # a spaceless token with a digit
+        return True
+    return False
+
+
+async def _run_detectors(session: AsyncSession, sp_id: str, fields: dict, run_id: int | None) -> int:
+    """Run the four #341 staff detectors on one record, filing a finding each.
+
+    Args:
+        session: The open session; findings are added, not committed.
+        sp_id: The person's Staff Directory item id.
+        fields: The record's SharePoint fields.
+        run_id: The sync run that is importing, for the finding rows.
+
+    Returns:
+        How many new findings were filed for this person (skipped duplicates do
+        not count).
+    """
+    filed = 0
+    name = (fields.get("Title") or "").strip()
+    email = (fields.get("EmailAddress") or "").strip()
+
+    # 1. Employment type suspect: hourly staff get no vacation entitlement and
+    # carry no vacation balance, so either one on an hourly record is suspect.
+    if is_hourly(fields):
+        entitlement = _num(fields.get("DefaultYearlyVacationDays"))
+        vacation = _num(fields.get("CurrentVacationBalance"))
+        if entitlement > 0 or vacation != 0:
+            filed += bool(await record_finding(
+                session, CASE_EMPLOYMENT_TYPE_SUSPECT, "staff", None, sp_id,
+                "An hourly record has a vacation entitlement or vacation balance, which hourly staff should not carry.",
+                {"salary_hourly": fields.get("SalaryHourly"),
+                 "vacation_entitlement": entitlement, "vacation_balance": vacation},
+                run_id,
+            ))
+
+    # 2. Username as name: the Title reads like a login, not a person's name.
+    if _looks_like_username(name, email):
+        filed += bool(await record_finding(
+            session, CASE_USERNAME_AS_NAME, "staff", None, sp_id,
+            "The name looks like a login rather than a person's name.",
+            {"name": name, "email": email},
+            run_id,
+        ))
+
+    # 3. No user link: the person has no Microsoft 365 link (TitleLink), so the
+    # directory cannot tie them to an account.
+    if not _lookup_id(fields.get("TitleLinkLookupId")):
+        filed += bool(await record_finding(
+            session, CASE_NO_USER_LINK, "staff", None, sp_id,
+            "The record has no Microsoft 365 person link.",
+            {"name": name},
+            run_id,
+        ))
+
+    # 4. Below zero predates rules: today's rules let only the person's floor pot
+    # go below zero (vacation for salaried, sick for hourly). A different pot in
+    # the negative must predate those rules, so flag it for HR.
+    floor = "sick" if is_hourly(fields) else "vacation"
+    negatives = {
+        pot: _num(fields.get(column))
+        for pot, column in _POT_COLUMNS.items()
+        if pot != floor and _num(fields.get(column)) < 0
+    }
+    if negatives:
+        filed += bool(await record_finding(
+            session, CASE_BELOW_ZERO_PREDATES_RULES, "staff", None, sp_id,
+            "A balance that today's rules keep at or above zero is negative, so it predates the rules.",
+            {"floor_pot": floor, "negative_pots": negatives},
+            run_id,
+        ))
+    return filed
+
+
+async def _relink_supervisors(session: AsyncSession) -> int:
+    """Resolve each manager link to the manager's own staff row.
+
+    An AllManagers entry holds the manager's Microsoft 365 user id and display
+    name. The id is matched first, against each staff row's own account link
+    (``TitleLink``, the same id space), so a manager whose display name differs
+    from their staff name is still found (#376). Failing that, the name is
+    matched to a Staff Title ignoring case and spacing. Left null when the
+    manager is not in the directory (an external approver). It is a second pass
+    because every staff row must exist first.
+
+    Args:
+        session: The open session; links are updated, not committed.
+
+    Returns:
+        How many links were newly resolved to a staff row.
+    """
+    rows = (await session.execute(select(Staff))).scalars().all()
+    staff_by_name = {normalise_name(row.name): row.id for row in rows if normalise_name(row.name)}
+    # Their own Microsoft 365 user id -> staff row (the id an AllManagers entry holds).
+    staff_by_account = {row.title_link_sp_user_id: row.id for row in rows if row.title_link_sp_user_id is not None}
+    resolved = 0
+    for link in (await session.execute(
+        select(StaffSupervisor).where(StaffSupervisor.manager_staff_id.is_(None))
+    )).scalars().all():
+        target = staff_by_account.get(link.manager_sp_user_id) if link.manager_sp_user_id is not None else None
+        if target is None:                                   # no account match: fall back to the name
+            target = staff_by_name.get(normalise_name(link.manager_name))
+        if target is not None:
+            link.manager_staff_id = target
+            resolved += 1
+    return resolved
+
+
+async def staff_sync_step(session: AsyncSession, sync_run) -> dict:
+    """Import or update every Staff Directory record, and run the #341 detectors.
+
+    A SYNC_STEPS callable: takes the caller's session and the sync-run row, writes
+    the people, and returns counts for ``SyncRun.counts``. It does not commit; the
+    caller commits once so the whole run lands together. Safe to run again.
+
+    Args:
+        session: The caller's open session.
+        sync_run: The ``SyncRun`` row for this run (or None in a test); its id is
+            stamped on the findings.
+
+    Returns:
+        ``{"seen", "imported", "updated", "failed", "findings", "email_conflicts",
+        "relinked", "dropped_columns"}`` and, when any, ``"dropped_column_names"``.
+    """
+    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    run_id = getattr(sync_run, "id", None)
+    counts = {
+        "seen": 0, "imported": 0, "updated": 0, "failed": 0,
+        "findings": 0, "email_conflicts": 0, "relinked": 0,
+    }
+    seen_emails: dict[str, str] = {}                                 # normalised email -> first sp id
+    dropped_columns: set[str] = set()
+
+    for item in items:
+        sp_id = str(item.get("id"))
+        fields = dict(item.get("fields", {}))
+        counts["seen"] += 1
+
+        # A shared email is kept on every record that carries it: some mailboxes
+        # really belong to two records (a shared desk and the person who reads it),
+        # and the request page asks which one is signing in. Only counted, so the
+        # storage screen still shows how many records share one.
+        norm = _norm_email(fields.get("EmailAddress"))
+        if norm and seen_emails.get(norm, sp_id) != sp_id:
+            counts["email_conflicts"] += 1
+            logger.info("Staff import: #%s shares email %s with #%s; kept on both",
+                        sp_id, norm, seen_emails[norm])
+        elif norm:
+            seen_emails[norm] = sp_id
+
+        # Replace the supervisor links with exactly what the payload carries: an
+        # absent AllManagers means none, so a manager removed in SharePoint is
+        # removed here too. apply_sp_fields only rebuilds links when a person column
+        # is present, so an empty list is injected to force that branch (#341 fix).
+        fields.setdefault(ALL_MANAGERS_COLUMN, [])
+
+        try:
+            async with session.begin_nested():                      # one row cannot poison the batch
+                row = (await session.execute(
+                    staff_query().where(Staff.sp_item_id == sp_id)
+                )).scalars().first()
+                created = row is None
+                if created:
+                    row = Staff(sp_item_id=sp_id)
+                    session.add(row)
+                dropped = await apply_sp_fields(session, row, fields)
+        except Exception as exc:                                    # record it, keep going
+            counts["failed"] += 1
+            logger.exception("Staff import failed for #%s: %s", sp_id, exc)
+            continue
+
+        counts["imported" if created else "updated"] += 1
+        if dropped:
+            dropped_columns.update(dropped)
+        counts["findings"] += await _run_detectors(session, sp_id, fields, run_id)
+
+    counts["relinked"] = await _relink_supervisors(session)
+    counts["dropped_columns"] = len(dropped_columns)
+    if dropped_columns:
+        counts["dropped_column_names"] = sorted(dropped_columns)
+    return counts

@@ -47,16 +47,33 @@ def directory(monkeypatch):
 # ----- writing the columns -----
 
 def test_nothing_is_written_while_the_setting_is_off(monkeypatch):
+    # Requests in SharePoint (the default) and the columns not enabled: nothing.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "sharepoint")
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
-    assert request_submitter.submitter_columns("pat@ucsh.com", "Request page") == {}
+    assert asyncio.run(request_submitter.submitter_columns("pat@ucsh.com", "Request page")) == {}
 
 
 def test_both_columns_are_written_once_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "sharepoint")
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", True)
-    assert request_submitter.submitter_columns(" Pat@UCSH.com ", "Request page") == {
+    assert asyncio.run(request_submitter.submitter_columns(" Pat@UCSH.com ", "Request page")) == {
         "SubmitterEmail": "pat@ucsh.com",
         "RequestSource": "Request page",
     }
+
+
+def test_the_columns_are_written_on_postgres_even_with_the_setting_off(monkeypatch):
+    # After the switch a request row takes any field, so the two columns are
+    # written regardless of the SharePoint column setting; requests_linked_by_email
+    # no longer depends on REQUEST_EMAIL_COLUMNS_ENABLED (finding 2). The function
+    # is async now, so this also pins that it is awaited, not called.
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", False)
+    assert asyncio.run(request_submitter.submitter_columns("pat@ucsh.com", "Request page")) == {
+        "SubmitterEmail": "pat@ucsh.com",
+        "RequestSource": "Request page",
+    }
+    assert asyncio.run(request_submitter.requests_linked_by_email()) is True
 
 
 def test_a_new_leave_item_carries_the_columns_when_enabled(monkeypatch):
@@ -174,3 +191,36 @@ def test_a_failing_list_is_reported_without_stopping_the_others(monkeypatch):
     assert report["lists"]["overtime"]["error"] == "403 Forbidden"
     assert report["lists"]["leave"]["present"] == ["SubmitterEmail", "RequestSource"]
     assert not report["ready"]
+
+
+# ----- a new request's submitter, when two records share an email -----
+
+DESK = {"id": "3", "fields": {"Title": "Accounts Desk", "EmailAddress": "pat@ucsh.com"}}
+
+
+def test_a_new_request_keeps_the_record_chosen_at_sign_in(directory, monkeypatch):
+    # Pat's email also sits on an older shared-desk record; the id from sign-in wins.
+    async def by_id(item_id):
+        return {"3": DESK, "7": PAT}.get(str(item_id))
+
+    monkeypatch.setattr(request_submitter, "get_employee_by_id", by_id)
+    assert asyncio.run(request_submitter.new_request_submitter("pat@ucsh.com", "7")) is PAT
+    assert directory["email"] == 0                             # never re-matched by email
+
+
+def test_a_new_request_without_an_id_falls_back_to_the_email(directory, monkeypatch):
+    async def by_id(item_id):
+        return None                                            # a stale id finds nobody
+
+    monkeypatch.setattr(request_submitter, "get_employee_by_id", by_id)
+    assert asyncio.run(request_submitter.new_request_submitter("pat@ucsh.com", None)) is PAT
+    assert asyncio.run(request_submitter.new_request_submitter("pat@ucsh.com", "99")) is PAT
+
+
+def test_a_new_request_for_nobody_is_refused(directory, monkeypatch):
+    async def by_id(item_id):
+        return None
+
+    monkeypatch.setattr(request_submitter, "get_employee_by_id", by_id)
+    with pytest.raises(request_submitter.UnknownSubmitter):
+        asyncio.run(request_submitter.new_request_submitter("nobody@ucsh.com", None))

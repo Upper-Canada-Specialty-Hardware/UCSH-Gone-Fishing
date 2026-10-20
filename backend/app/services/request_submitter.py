@@ -25,16 +25,29 @@ import logging
 from app.config import settings
 from app.graph.client import graph_client
 from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_in_postgres
 from app.services.employee import (
     get_employee_by_email,
+    get_employee_by_id,
     resolve_person_field,
     resolve_person_field_name,
 )
+from app.services.person_match import match_person
 
 logger = logging.getLogger(__name__)
 
 SUBMITTER_EMAIL_COLUMN = "SubmitterEmail"   # plain text: the submitter's address
 REQUEST_SOURCE_COLUMN = "RequestSource"     # plain text: where the request came from
+
+
+class UnknownSubmitter(ValueError):
+    """A new request whose submitter is on no staff record, so it cannot be saved.
+
+    Raised at intake once requests live in Postgres: the typed requests row needs
+    the submitter's staff id (employee_id is not null), so a request that resolves
+    to nobody is refused with a clear message instead of a half-written row. The
+    message is safe to show the person.
+    """
 
 SOURCE_REQUEST_PAGE = "Request page"        # the public request page (#131)
 SOURCE_API = "API"                          # the /api/forms endpoints
@@ -45,21 +58,28 @@ SOURCE_MANAGER = "Manager dashboard"        # a manager logged a sick day for th
 SUBMITTER_PERSON_COLUMNS = ("SubmittedTest", "SubmittedBy")
 
 
-def requests_linked_by_email() -> bool:
+async def requests_linked_by_email() -> bool:
     """Whether new requests can carry SubmitterEmail, so no site membership is needed.
 
     True once requests live in Postgres (a row takes any field), or while they
     are still in SharePoint once REQUEST_EMAIL_COLUMNS_ENABLED says the lists
     have the two columns.
 
+    Async because it reads the live ``requests_storage`` database setting through
+    ``requests_in_postgres`` (not just the ``STORAGE_REQUESTS`` environment
+    override), so a runtime switch of the backend reaches every caller: after a
+    dashboard flip to Postgres a released new hire is no longer parked as
+    "waiting_site" and the request page no longer returns 409 for someone who is
+    not on the SharePoint site.
+
     Returns:
         True when a request can name its submitter by email.
     """
-    from app.repositories.request_store import requests_in_postgres
-    return requests_in_postgres() or settings.REQUEST_EMAIL_COLUMNS_ENABLED
+    from app.repositories.request_store import requests_in_postgres   # local: avoid an import cycle
+    return await requests_in_postgres() or settings.REQUEST_EMAIL_COLUMNS_ENABLED
 
 
-def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
+async def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
     """The extra fields to write on a new request item, when enabled.
 
     Args:
@@ -70,7 +90,7 @@ def submitter_columns(submitter_email: str | None, source: str | None) -> dict:
         {"SubmitterEmail", "RequestSource"} with whatever is known, or an
         empty dict while requests_linked_by_email() is False.
     """
-    if not requests_linked_by_email():
+    if not await requests_linked_by_email():
         return {}                                              # the SharePoint columns may not exist yet
     fields: dict = {}
     if submitter_email:
@@ -92,6 +112,36 @@ def submitter_email_of(fields: dict) -> str:
     return (fields.get(SUBMITTER_EMAIL_COLUMN) or "").strip().lower()
 
 
+async def new_request_submitter(submitter_email: str, employee_id: str | int | None = None) -> dict:
+    """The staff record a new request is for: the given staff id, else the email.
+
+    Two staff records can share one mailbox (Accounts Payable and the person who
+    reads it, for example). The request page asks such a person which record they
+    are and signs them in as that one, so its staff id is passed here and wins;
+    re-resolving by email alone would always pick the first record.
+
+    Args:
+        submitter_email: The submitter's address.
+        employee_id: The signed-in person's staff id, when the caller knows it.
+
+    Returns:
+        The staff record (``{"id", "fields"}``).
+
+    Raises:
+        UnknownSubmitter: When neither the id nor the email finds anyone.
+    """
+    if employee_id not in (None, ""):
+        employee = await get_employee_by_id(employee_id)        # the person chosen at sign-in
+        if employee:
+            return employee
+    employee = await get_employee_by_email(submitter_email) if submitter_email else None
+    if not employee:
+        raise UnknownSubmitter(
+            f"No staff record was found for {submitter_email}, so the request was not created."
+        )
+    return employee
+
+
 async def resolve_request_submitter(fields: dict, person_column: str) -> dict | None:
     """Find the Staff Directory record a request belongs to.
 
@@ -105,6 +155,11 @@ async def resolve_request_submitter(fields: dict, person_column: str) -> dict | 
         nor the person column leads to one.
     """
     email = submitter_email_of(fields)
+    # Once the Staff Directory is in Postgres, match by staff id then email only
+    # (#265): no display-name match and no Microsoft 365 user-list lookup. The
+    # request item carries the submitter's staff id in EmployeeID when known.
+    if await staff_in_postgres():
+        return await match_person(staff_id=fields.get("EmployeeID"), email=email)
     if email:
         employee = await get_employee_by_email(email)          # works without a site visit
         if employee:
@@ -126,6 +181,11 @@ async def resolve_request_submitter_name(fields: dict, person_column: str) -> st
         The Staff Directory name, or "" when nothing resolves.
     """
     email = submitter_email_of(fields)
+    # Postgres era (#265): resolve by staff id then email; take the name off the
+    # matched record. No name or Microsoft 365 fallback.
+    if await staff_in_postgres():
+        matched = await match_person(staff_id=fields.get("EmployeeID"), email=email)
+        return matched.get("fields", {}).get("Title", "") if matched else ""
     if email:
         employee = await get_employee_by_email(email)
         if employee:
@@ -185,10 +245,22 @@ async def ensure_request_columns(create: bool) -> dict:
     Returns:
         {"lists": {request_type: {"present": [...], "added": [...],
         "missing": [...], "error": str | None}}, "ready": bool} where ready
-        means every list now has both columns.
+        means every list now has both columns. After the switch:
+        ``{"lists": {}, "ready": True, "switched": True}``.
     """
+    # After the switch requests live in Postgres and the SharePoint lists are
+    # frozen, so there is nothing to check or add; SharePoint is not called.
+    from app.services.sharepoint_cutoff import sharepoint_cut_off
+    if await sharepoint_cut_off():
+        return {"lists": {}, "ready": True, "enabled": settings.REQUEST_EMAIL_COLUMNS_ENABLED, "switched": True}
     if not sp_client.site_id:
         await sp_client.resolve_site_id()                      # lazily, for a cold start
+    # Rehearsal mode never writes to SharePoint, and adding a column changes the
+    # live list, so in rehearsal the add is refused and only the report runs.
+    from app.services.rehearsal import sharepoint_writes_allowed
+    if create and not sharepoint_writes_allowed():
+        logger.info("Rehearsal: not adding request columns to SharePoint")
+        create = False                                         # report only
     report: dict = {}
     for request_type, setting_name in REQUEST_LISTS:
         list_id = getattr(settings, setting_name)

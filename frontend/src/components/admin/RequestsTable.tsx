@@ -1,13 +1,15 @@
-import { Fragment, ReactNode, useEffect, useMemo, useRef } from 'react';
+import { Fragment, ReactNode, useEffect, useMemo, useState } from 'react';
 import { Box, Button, Checkbox, Collapse } from '@mui/material';
 import { Theme, alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
 import TakenFrom from '../TakenFrom';
+import RequestTimelineDialog from '../RequestTimelineDialog';
 import { hasAuditLog } from '../dataGridDefaults';
 import { DIAGNOSTIC_LABELS } from './requestRows';
 import {
-  COLUMNS, COLUMN_SETS, COLUMN_WIDTHS, Row, Src, amountText, num, priorityOrder, refDate, whenText,
+  COLUMNS, COLUMN_WIDTHS, Row, Src, TableMode, amountText, columnsFor, num, priorityOrderFor, refDate, whenText,
 } from './requestTable';
+import { LiveScope } from '../../api/events';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 import { useFitColumns } from './useFitColumns';
 
@@ -43,6 +45,12 @@ interface Props {
   empty: string;
   /** A line under the table naming the dropped columns or the card fallback. */
   onFitNote: (note: string) => void;
+  /** Which dashboard the table is on; sets its columns and row actions (default 'admin'). */
+  mode?: TableMode;
+  /** Whether rows carry a selection checkbox; off for the read-only employee/manager tables (default true). */
+  selectable?: boolean;
+  /** Which timeline endpoint the opened request reads ('admin' by default; 'me'/'team' for the dashboards). */
+  timelineScope?: LiveScope;
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -55,15 +63,6 @@ function statusTone(theme: Theme, status: string): { color: string; bg: string }
   if (status === 'Rejected' || status === 'Stuck') return { color: p.error.main, bg: t.errSoft };
   if (status === 'Refunded') return { color: p.info.main, bg: t.infoSoft };
   return { color: p.warning.main, bg: t.warnSoft };   // Pending and anything else
-}
-
-/** "today" / "yesterday" / "N days ago" from a YYYY-MM-DD created date. */
-function agoText(created: string): string {
-  if (!created) return '';
-  const [y, m, d] = created.split('-').map(Number);
-  const then = new Date(y, m - 1, d).getTime();
-  const days = Math.round((Date.now() - then) / 86400000);
-  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
 }
 
 /** The totals line for a set of rows, by list. */
@@ -106,11 +105,21 @@ function groupKey(r: Row, group: string): string {
 export default function RequestsTable(props: Props) {
   const { rows, src, sort, onSort, sortable, group, openKey, onToggleOpen, selected, processingEnabled, busyKey, leaving, actions, empty, onFitNote } = props;
   const theme = useTheme();
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const cols = COLUMN_SETS[src];
-  const fit = useFitColumns(wrapRef, priorityOrder(src), COLUMN_WIDTHS);
+  const mode = props.mode ?? 'admin';                // 'admin' keeps every behaviour exactly as before
+  const selectable = props.selectable ?? true;       // the read-only dashboards drop the checkbox column
+  const timelineScope = props.timelineScope ?? 'admin';
+  const cols = columnsFor(mode, src);                 // admin = the per-list set; mine/team = their own set
+  const fit = useFitColumns(priorityOrderFor(mode, src), COLUMN_WIDTHS);
   const hidden = useMemo(() => new Set(fit.hidden), [fit.hidden]);
   const cards = fit.cards;
+
+  // Paint at most a page of rows at a time: thousands in the DOM freeze the tab.
+  // Search, filters, sort, grouping and stats still run over the full list; only
+  // how many rows are rendered is capped, with a "Show 100 more" control (#278).
+  const PAGE = 100;
+  const [limit, setLimit] = useState(PAGE);
+  // Start again at one page when the row set, grouping or list changes.
+  useEffect(() => { setLimit(PAGE); }, [rows.length, group, src]);
 
   // Tell the screen which columns are dropped (they stay in the opened request).
   // In an effect, not during render, so it never updates the parent mid-render.
@@ -133,6 +142,23 @@ export default function RequestsTable(props: Props) {
     return Array.from(map.entries());
   }, [rows, group]);
 
+  // The rows actually painted, capped to `limit` across the groups in order.
+  // The group and its per-group totals use the full group; only the slice that
+  // is rendered is limited, so the DOM never holds thousands of rows at once.
+  const renderGroups = useMemo(() => {
+    let budget = limit;
+    return groups.map(([gk, gr]) => {
+      const show = budget > 0 ? gr.slice(0, budget) : [];  // this group's share of the page
+      budget -= gr.length;
+      return [gk, gr, show] as [string, Row[], Row[]];
+    });
+  }, [groups, limit]);
+  const totalRows = rows.length;                           // the full matched set
+  const renderedCount = Math.min(limit, totalRows);        // how many are painted
+  const onMore = () => setLimit((n) => n + PAGE);          // reveal one more page
+
+  // Select-all and the header checkbox act on EVERY matched row, not just the
+  // painted ones, so a bulk action is correct for rows below the page cap.
   const shownKeys = rows.map((r) => r.key);
   const pickedShown = shownKeys.filter((k) => selected.has(k)).length;
   const allChecked = pickedShown > 0 && pickedShown === shownKeys.length;
@@ -155,8 +181,9 @@ export default function RequestsTable(props: Props) {
       case 'taken': return <TakenFrom value={r.raw.taken_from} compact />;   // the taken_from the admin endpoints stamp
 
       case 'status': return <StatusCell r={r} theme={theme} />;
+      case 'stage': return r.stage ? <Box component="span" sx={{ color: 'text.secondary' }}>{r.stage}</Box> : '-';
       case 'mgr': return r.manager ? `${r.manager}${r.managers.length > 1 ? ` +${r.managers.length - 1}` : ''}` : <Box sx={{ color: 'error.main' }}>None</Box>;
-      case 'created': return <Box component="span" title={formatInstantDay(r.created)}>{agoText(r.created)}</Box>;   // created is an instant; tooltip shows its day
+      case 'created': return formatInstantDay(r.created) || '-';   // the day it was created, e.g. "Oct 14, 2026"
       case 'approved': return r.approved ? formatInstantDay(r.approved) : <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;   // decided-at instant
       case 'start': return formatDay(r.start) || '-';     // calendar date
       case 'end': return formatDay(r.end) || '-';         // calendar date
@@ -166,7 +193,7 @@ export default function RequestsTable(props: Props) {
       case 'hdays': return <Box component="span" sx={{ color: 'text.secondary' }}>{num((r.hours || 0) / 8, 3)}</Box>;
       case 'newbal': return r.newBalance || <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;
       case 'sysstate': return <Box component="span" sx={{ color: r.sysState === 'Processed' ? 'text.secondary' : 'warning.main' }}>{r.sysState}</Box>;
-      case 'quick': return <QuickActions r={r} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} />;
+      case 'quick': return <QuickActions r={r} mode={mode} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} />;
       default: return '';
     }
   };
@@ -174,15 +201,19 @@ export default function RequestsTable(props: Props) {
   const headCellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 2, fontSize: 12.5, fontWeight: 700, color: 'text.secondary', bgcolor: theme.tokens.hover, userSelect: 'none' } as const;
   const bodyCellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', whiteSpace: 'nowrap', verticalAlign: 'middle' } as const;
 
+  // Before the first width measure, a light placeholder keeps the container (and
+  // its ref) in the DOM to be measured, without laying out every column at a guess.
+  if (!fit.measured) return <Box ref={fit.ref} sx={{ overflow: 'clip', minHeight: 160 }} aria-hidden />;
+
   // ---- Cards layout: each request a labelled block (phones, or still too wide). ----
   if (cards) {
     return (
-      <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky toolbar above it working (#294 S9) */}
+      <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky toolbar above it working (#294 S9) */}
         {rows.length === 0 && <Box sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>{empty}</Box>}
-        {groups.map(([gk, gr]) => (
+        {renderGroups.map(([gk, gr, show]) => (show.length === 0 ? null : (
           <Box key={gk || 'all'}>
             {gk && <Box sx={{ bgcolor: theme.tokens.chip, px: 1.75, py: 0.875, fontSize: 12.5, fontWeight: 700, color: 'text.secondary' }}>{gk} · {gr.length} {gr.length === 1 ? 'request' : 'requests'}{totalsText(gr)}</Box>}
-            {gr.map((r) => {
+            {show.map((r) => {
               const open = openKey === r.key;
               return (
                 <Box key={r.key} id={`req-row-${r.key}`} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, opacity: isLeaving(r) ? 0 : 1, transition: 'opacity .25s' }}>
@@ -192,54 +223,60 @@ export default function RequestsTable(props: Props) {
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleOpen(r.key); } }}
                     sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '6px 12px', p: '12px 14px', cursor: 'pointer', bgcolor: open ? theme.tokens.primarySoft : selected.has(r.key) ? alpha(theme.palette.secondary.main, 0.12) : 'transparent' }}
                   >
-                    <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />
-                      {cell(r, 'person')}
-                    </Box>
+                    {/* The card header holds the selection box and the person; each is shown only when this mode has it, so "my requests" (no person, no selection) skips the header entirely. */}
+                    {(selectable || cols.includes('person')) && (
+                      <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 1 }}>
+                        {selectable && <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />}
+                        {cols.includes('person') && cell(r, 'person')}
+                      </Box>
+                    )}
                     {cols.filter((k) => k !== 'person' && k !== 'quick').map((k) => (
                       <Box key={k} sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
                         <Box sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '.04em' }}>{COLUMNS[k].label}</Box>
                         {cell(r, k)}
                       </Box>
                     ))}
-                    <Box sx={{ gridColumn: '1 / -1' }}>{cell(r, 'quick')}</Box>
+                    {cols.includes('quick') && <Box sx={{ gridColumn: '1 / -1' }}>{cell(r, 'quick')}</Box>}
                   </Box>
                   <Collapse in={open} unmountOnExit>
-                    <Box sx={{ bgcolor: theme.tokens.primarySoft, px: 2, pb: 2 }}><RequestDetail r={r} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
+                    <Box sx={{ bgcolor: theme.tokens.primarySoft, px: 2, pb: 2 }}><RequestDetail r={r} mode={mode} timelineScope={timelineScope} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
                   </Collapse>
                 </Box>
               );
             })}
           </Box>
-        ))}
+        )))}
+        <MoreRows rendered={renderedCount} total={totalRows} step={PAGE} onMore={onMore} />
       </Box>
     );
   }
 
   // ---- Table layout ----
-  const colSpan = cols.filter((k) => !hidden.has(k)).length + 2;   // + selection + chevron
+  const visibleCols = cols.filter((k) => !hidden.has(k));          // skip hidden cells, do not render them
+  const colSpan = visibleCols.length + 1 + (selectable ? 1 : 0);   // + chevron, + selection when shown
   return (
-    <Box ref={wrapRef} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky header and toolbar working (#294 S9) */}
+    <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not hidden: keeps the sticky header and toolbar working (#294 S9) */}
       <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
         <Box component="thead">
           <Box component="tr">
-            <Box component="th" sx={{ ...headCellSx, width: 34, pr: 0 }}>
-              <Checkbox size="small" checked={allChecked} indeterminate={someChecked} onChange={(e) => props.onSelectAll(shownKeys, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': 'Select every request shown' }} />
-            </Box>
+            {selectable && (
+              <Box component="th" sx={{ ...headCellSx, width: 34, pr: 0 }}>
+                <Checkbox size="small" checked={allChecked} indeterminate={someChecked} onChange={(e) => props.onSelectAll(shownKeys, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select all ${shownKeys.length} requests` }} />
+              </Box>
+            )}
             <Box component="th" sx={{ ...headCellSx, width: 24 }} />
-            {cols.map((k) => {
+            {visibleCols.map((k) => {
               const c = COLUMNS[k];
               const active = sortable && sort.k === k;
               return (
                 <Box
                   key={k} component="th"
-                  className={hidden.has(k) ? 'fit-hide' : undefined}
                   onClick={() => { if (!c.noSort && sortable) onSort(k); }}
                   role={!c.noSort && sortable ? 'button' : undefined}
                   tabIndex={!c.noSort && sortable ? 0 : undefined}
                   onKeyDown={(e) => { if ((e.key === 'Enter') && !c.noSort && sortable) onSort(k); }}
                   aria-sort={active ? (sort.dir > 0 ? 'ascending' : 'descending') : undefined}
-                  sx={{ ...headCellSx, display: hidden.has(k) ? 'none' : 'table-cell', textAlign: c.numeric ? 'right' : 'left', cursor: !c.noSort && sortable ? 'pointer' : 'default', '&:hover': { color: !c.noSort && sortable ? 'text.primary' : undefined } }}
+                  sx={{ ...headCellSx, display: 'table-cell', textAlign: c.numeric ? 'right' : 'left', cursor: !c.noSort && sortable ? 'pointer' : 'default', '&:hover': { color: !c.noSort && sortable ? 'text.primary' : undefined } }}
                 >
                   {c.label}{active && <Box component="span" sx={{ ml: 0.5, display: 'inline-block', transform: sort.dir > 0 ? 'none' : 'rotate(180deg)' }}>↑</Box>}
                 </Box>
@@ -251,12 +288,12 @@ export default function RequestsTable(props: Props) {
           {rows.length === 0 && (
             <Box component="tr"><Box component="td" colSpan={colSpan} sx={{ ...bodyCellSx, textAlign: 'center', color: 'text.secondary', py: 4, whiteSpace: 'normal' }}>{empty}</Box></Box>
           )}
-          {groups.map(([gk, gr]) => (
+          {renderGroups.map(([gk, gr, show]) => (show.length === 0 ? null : (
             <Fragment key={gk || 'all'}>
               {gk && (
                 <Box component="tr"><Box component="td" colSpan={colSpan} sx={{ ...bodyCellSx, bgcolor: theme.tokens.chip, fontSize: 12.5, fontWeight: 700, color: 'text.secondary', whiteSpace: 'normal' }}>{gk} · {gr.length} {gr.length === 1 ? 'request' : 'requests'}{totalsText(gr)}</Box></Box>
               )}
-              {gr.map((r) => {
+              {show.map((r) => {
                 const open = openKey === r.key;
                 return (
                   <Fragment key={r.key}>
@@ -268,17 +305,18 @@ export default function RequestsTable(props: Props) {
                       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleOpen(r.key); } }}
                       sx={{ cursor: 'pointer', opacity: isLeaving(r) ? 0 : 1, transform: isLeaving(r) ? 'translateX(16px)' : 'none', transition: 'opacity .25s, transform .25s', bgcolor: open ? theme.tokens.primarySoft : selected.has(r.key) ? alpha(theme.palette.secondary.main, 0.12) : 'transparent', '&:hover': { bgcolor: open ? theme.tokens.primarySoft : theme.tokens.hover } }}
                     >
-                      <Box component="td" sx={{ ...bodyCellSx, width: 34, pr: 0, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
-                        <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />
-                      </Box>
+                      {selectable && (
+                        <Box component="td" sx={{ ...bodyCellSx, width: 34, pr: 0, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
+                          <Checkbox size="small" checked={selected.has(r.key)} onClick={(e) => e.stopPropagation()} onChange={(e) => props.onSelect(r.key, e.target.checked)} sx={{ p: 0.5 }} inputProps={{ 'aria-label': `Select request ${r.id}` }} />
+                        </Box>
+                      )}
                       <Box component="td" sx={{ ...bodyCellSx, borderBottomColor: open ? 'transparent' : theme.tokens.line }}>
                         <Box component="span" sx={{ display: 'inline-block', width: 18, color: open ? 'primary.main' : 'text.secondary', transition: 'transform .3s', transform: open ? 'rotate(90deg)' : 'none' }}>›</Box>
                       </Box>
-                      {cols.map((k) => (
+                      {visibleCols.map((k) => (
                         <Box
                           key={k} component="td"
-                          className={hidden.has(k) ? 'fit-hide' : undefined}
-                          sx={{ ...bodyCellSx, display: hidden.has(k) ? 'none' : 'table-cell', textAlign: COLUMNS[k].numeric ? 'right' : 'left', whiteSpace: COLUMNS[k].wrap ? 'normal' : 'nowrap', ...(COLUMNS[k].wrap ? { minWidth: 160, maxWidth: 340 } : {}), borderBottomColor: open ? 'transparent' : theme.tokens.line }}
+                          sx={{ ...bodyCellSx, display: 'table-cell', textAlign: COLUMNS[k].numeric ? 'right' : 'left', whiteSpace: COLUMNS[k].wrap ? 'normal' : 'nowrap', ...(COLUMNS[k].wrap ? { minWidth: 160, maxWidth: 340 } : {}), borderBottomColor: open ? 'transparent' : theme.tokens.line }}
                         >
                           {cell(r, k)}
                         </Box>
@@ -287,7 +325,7 @@ export default function RequestsTable(props: Props) {
                     <Box component="tr">
                       <Box component="td" colSpan={colSpan} sx={{ p: 0, borderBottom: `1px solid ${theme.tokens.line}`, bgcolor: open ? theme.tokens.primarySoft : 'transparent' }}>
                         <Collapse in={open} unmountOnExit>
-                          <Box sx={{ px: { xs: 2, md: '42px' }, pt: 0.5, pb: 2.25 }}><RequestDetail r={r} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
+                          <Box sx={{ px: { xs: 2, md: '42px' }, pt: 0.5, pb: 2.25 }}><RequestDetail r={r} mode={mode} timelineScope={timelineScope} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} /></Box>
                         </Collapse>
                       </Box>
                     </Box>
@@ -295,7 +333,7 @@ export default function RequestsTable(props: Props) {
                 );
               })}
             </Fragment>
-          ))}
+          )))}
         </Box>
         {rows.length > 0 && (
           <Box component="tfoot">
@@ -303,6 +341,31 @@ export default function RequestsTable(props: Props) {
           </Box>
         )}
       </Box>
+      <MoreRows rendered={renderedCount} total={totalRows} step={PAGE} onMore={onMore} />
+    </Box>
+  );
+}
+
+/**
+ * The "Show 100 more" control and the shown-of-total line under a capped table.
+ * It appears only once the matched set is larger than one page, so a small list
+ * carries no footer.
+ *
+ * @param props.rendered - How many rows are painted right now.
+ * @param props.total - How many rows match in all.
+ * @param props.step - The page size added by each click.
+ * @param props.onMore - Reveal one more page.
+ * @returns The control, or null when nothing is capped.
+ */
+function MoreRows({ rendered, total, step, onMore }: { rendered: number; total: number; step: number; onMore: () => void }) {
+  const theme = useTheme();
+  if (total <= step) return null;                          // one page or fewer: no footer needed
+  return (
+    <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap', p: '10px 14px', borderTop: `1px solid ${theme.tokens.line}` }}>
+      {rendered < total && (
+        <Button size="small" variant="outlined" color="inherit" onClick={onMore}>Show {step} more</Button>
+      )}
+      <Box sx={{ fontSize: 13, color: 'text.secondary' }}>Showing {rendered.toLocaleString()} of {total.toLocaleString()}</Box>
     </Box>
   );
 }
@@ -327,10 +390,12 @@ function StatusCell({ r, theme }: { r: Row; theme: Theme }) {
   );
 }
 
-/** The row-level quick actions: approve/reject a pending one, refund an approved one. */
-function QuickActions({ r, processingEnabled, busy, actions }: { r: Row; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+/** The row-level quick actions: approve/reject a pending one, refund an approved one (admin only). */
+function QuickActions({ r, mode, processingEnabled, busy, actions }: { r: Row; mode: TableMode; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const stop = (e: React.MouseEvent) => e.stopPropagation();
-  if (r.status === 'Approved') {
+  if (mode === 'mine') return null;                 // the employee table is read-only: no actions
+  // Refund in the row is an admin-only action; the manager team table never shows it.
+  if (mode === 'admin' && r.status === 'Approved') {
     return <Button size="small" variant="outlined" color="inherit" disabled={busy || !processingEnabled} onClick={(e) => { stop(e); actions.refund(r); }} sx={{ fontSize: 12.5 }}>Refund</Button>;
   }
   if (r.status !== 'Pending' || r.source === 'stuck') return null;
@@ -355,17 +420,22 @@ function Field({ label, value, wide }: { label: string; value: ReactNode; wide?:
 
 /**
  * The opened request: every column of its list on the left, what it did to the
- * person's balances on the right, and the actions the admin dashboard has today
- * plus Delete. The actions call the dashboard's existing handlers unchanged.
+ * person's balances on the right, and the actions for this dashboard. On the
+ * admin table that is the full set (approve/reject/edit/refund/reprocess/audit
+ * plus Delete); on the manager team table only approve/reject; on the employee
+ * table none. The actions call the dashboard's existing handlers unchanged.
  *
  * @param props.r - The row.
+ * @param props.mode - Which dashboard this is on; decides the actions and the raw-log button.
+ * @param props.timelineScope - Which timeline endpoint "View full timeline" reads.
  * @param props.processingEnabled - Whether writes are allowed.
  * @param props.busy - Whether an action is already running on this row.
  * @param props.actions - The handlers.
  * @returns The detail panel.
  */
-function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+function RequestDetail({ r, mode, timelineScope, processingEnabled, busy, actions }: { r: Row; mode: TableMode; timelineScope: LiveScope; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const theme = useTheme();
+  const [timelineOpen, setTimelineOpen] = useState(false);   // the full timeline dialog (#329, #332)
   const listName = r.src === 'leave' ? 'Leave Requests' : r.src === 'mu' ? 'Overtime Requests Data' : 'CarryOver_Payout_Data';
   const title = r.src === 'leave' ? 'Leave request' : r.src === 'mu' ? 'Make-up request' : `${r.kindLabel} request`;
   const stuck = r.source === 'stuck' || r.sysState === 'Needs attention';
@@ -384,6 +454,7 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           {r.src === 'mu' && <><Field label="Date" value={formatDay(r.date)} /><Field label="Hours" value={r.hours == null ? '' : num(r.hours, 1)} /><Field label="As days" value={`${num((r.hours || 0) / 8, 3)} (hours ÷ 8)`} /></>}
           {r.src === 'co' && <><Field label="Type of request" value={r.kindLabel} /><Field label="Days" value={r.days == null ? '' : num(r.days, 3)} /><Field label="New balance after this request" value={r.newBalance} wide /></>}
           <Field label="Status" value={r.status} />
+          <Field label="Stage" value={r.stage} />
           <Field label="System state" value={r.sysState} />
           <Field label="Employee" value={r.person} />
           <Field label="Submitted by" value={r.submittedBy} />
@@ -395,7 +466,16 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
           <Field label="Location" value={r.loc} />
           {r.src !== 'co' && <Field label={r.src === 'mu' ? 'Overtime details' : 'Title'} value={r.title} wide />}
         </Box>
-        <DetailActions r={r} stuck={stuck} processingEnabled={processingEnabled} busy={busy} actions={actions} />
+        <DetailActions r={r} mode={mode} stuck={stuck} processingEnabled={processingEnabled} busy={busy} actions={actions} />
+        {/* The request's full timeline; the field history inside it is admin-only (#329, #332). */}
+        <Button size="small" variant="text" onClick={() => setTimelineOpen(true)} sx={{ justifySelf: 'start' }}>View full timeline</Button>
+        <RequestTimelineDialog
+          open={timelineOpen}
+          onClose={() => setTimelineOpen(false)}
+          scope={timelineScope}
+          requestType={r.request_type}
+          itemId={r.id}
+        />
       </Box>
 
       <Box sx={panelSx}>
@@ -413,7 +493,7 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
             <Box component="h3" sx={{ m: 0, fontSize: 16, display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'baseline', fontFamily: theme.tokens.display }}>
               What it did to balances<Box component="small" sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 400, fontFamily: 'inherit' }}>BalanceAuditLog</Box>
             </Box>
-            <BalanceSteps r={r} onAudit={() => actions.audit(r)} />
+            <BalanceSteps r={r} showRawLog={mode === 'admin'} onAudit={() => actions.audit(r)} />
           </>
         )}
       </Box>
@@ -421,9 +501,22 @@ function RequestDetail({ r, processingEnabled, busy, actions }: { r: Row; proces
   );
 }
 
-/** The actions shown in the opened request, by its state. */
-function DetailActions({ r, stuck, processingEnabled, busy, actions }: { r: Row; stuck: boolean; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+/** The actions shown in the opened request, by its state and the dashboard it is on. */
+function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r: Row; mode: TableMode; stuck: boolean; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const writeOff = !processingEnabled;
+  // The employee table is read-only.
+  if (mode === 'mine') return null;
+  // The manager team table offers only approve/reject on a waiting request; refund,
+  // edit, reminders, reprocess and delete stay admin-only (#360).
+  if (mode === 'team') {
+    if (r.status !== 'Pending' || r.source === 'stuck') return null;
+    return (
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+        <Button size="small" variant="contained" color="success" disabled={busy || writeOff} onClick={() => actions.approve(r)}>Approve</Button>
+        <Button size="small" variant="outlined" color="error" disabled={busy || writeOff} onClick={() => actions.reject(r)}>Reject</Button>
+      </Box>
+    );
+  }
   return (
     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
       {stuck ? (
@@ -449,7 +542,7 @@ function DetailActions({ r, stuck, processingEnabled, busy, actions }: { r: Row;
 }
 
 /** The balance audit log as numbered steps, or a message when there is none. */
-function BalanceSteps({ r, onAudit }: { r: Row; onAudit: () => void }) {
+function BalanceSteps({ r, showRawLog, onAudit }: { r: Row; showRawLog: boolean; onAudit: () => void }) {
   const theme = useTheme();
   let steps: { op: string; field: string; before: number; after: number }[] = [];
   if (r.auditLog) {
@@ -485,7 +578,8 @@ function BalanceSteps({ r, onAudit }: { r: Row; onAudit: () => void }) {
           </Box>
         </Box>
       ))}
-      <Button size="small" variant="text" onClick={onAudit} sx={{ justifySelf: 'start' }}>Show the raw log</Button>
+      {/* The raw audit-log JSON is an admin-only tool; the employee/manager tables show only the steps. */}
+      {showRawLog && <Button size="small" variant="text" onClick={onAudit} sx={{ justifySelf: 'start' }}>Show the raw log</Button>}
     </Box>
   );
 }

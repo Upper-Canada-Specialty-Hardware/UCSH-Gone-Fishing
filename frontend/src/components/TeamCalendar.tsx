@@ -35,9 +35,20 @@ interface CalendarEvent {
 
 interface Props {
   events: CalendarEvent[];
+  /** When set, clicking a leave block in the month grid calls back with its
+   *  source event (#373), so the Calendar tab can select it on the timeline. */
+  onSelectEvent?: (event: CalendarEvent) => void;
 }
 
-export default function TeamCalendar({ events }: Props) {
+/**
+ * The month-grid view of approved leave (react-big-calendar).
+ *
+ * @param props.events - The approved leave events to lay out.
+ * @param props.onSelectEvent - Optional: called with the source event when a
+ *   leave block is clicked (#373).
+ * @returns The month calendar.
+ */
+export default function TeamCalendar({ events, onSelectEvent }: Props) {
   const calendarEvents: Event[] = useMemo(
     () =>
       events.map((e) => ({
@@ -84,6 +95,10 @@ export default function TeamCalendar({ events }: Props) {
         views={['month']}
         defaultView="month"
         eventPropGetter={eventStyleGetter}
+        // Clicking a block hands its source event back so the Calendar tab can
+        // select it on the timeline (#373); the cursor shows it is clickable.
+        onSelectEvent={onSelectEvent ? (event: Event) => onSelectEvent(event.resource as CalendarEvent) : undefined}
+        style={onSelectEvent ? { cursor: 'pointer' } : undefined}
         popup
       />
     </Box>

@@ -15,6 +15,8 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
+from app.repositories.postgres.staff import is_archived   # refuse an archived submitter (#119)
+from app.repositories.request_store import requests_in_postgres  # gate the status token to the Postgres path (#364)
 from app.routes.dashboard import AuthUser, _format_balances
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
@@ -25,6 +27,7 @@ from app.services.request_intake import (
     submit_request,
 )
 from app.services.request_preview import preview_request
+from app.services.request_status import status_token_for
 from app.services.request_submitter import SOURCE_REQUEST_PAGE, requests_linked_by_email
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,9 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
         body: The form, snake_case (see services/request_intake.py).
 
     Returns:
-        {"status": "submitted", "request_type", "item_id"}.
+        {"status": "submitted", "request_type", "item_id", "status_token"}. The
+        status_token lets the page follow this request's progress (#364); it is
+        None on the SharePoint path, where there is no Postgres row to follow.
 
     Raises:
         HTTPException: 400 for a form that cannot become a request, or a
@@ -64,13 +69,20 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
     employee = await get_employee_by_id(user.user_id)
     if not employee:
         raise HTTPException(status_code=404, detail="Your staff record could not be found.")
+    # An archived person (left the company) cannot make a request, even holding an
+    # old signed link (#119).
+    if is_archived(employee.get("fields", {})):
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been archived and can no longer submit requests. Contact HR.",
+        )
 
     # Without SubmitterEmail (requests still in SharePoint, columns not there),
     # the only link from a request back to its person is the person column,
     # which needs them in the site's user list. Refuse up front rather than
     # create a request nobody is told about. Never the case once requests live
     # in Postgres.
-    if not requests_linked_by_email():
+    if not await requests_linked_by_email():
         email = employee["fields"].get("EmailAddress", "")
         if not await _resolve_user_lookup_id(email):
             raise HTTPException(
@@ -90,7 +102,19 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
             status_code=502,
             detail="Your request could not be saved. Try again in a few minutes.",
         )
-    return {"status": "submitted", "request_type": request_type, "item_id": item.get("id")}
+    item_id = item.get("id")                                   # str(item_id) on the Postgres path
+    # The page can only follow a request that has a Postgres row to read; on the
+    # SharePoint path there is none, so mint no token even though the id is numeric,
+    # and the page keeps the plain steps (#364).
+    status_token = status_token_for(request_type, item_id) if await requests_in_postgres() else None
+    return {
+        "status": "submitted",
+        "request_type": request_type,
+        "item_id": item_id,
+        # The page polls GET /api/intake/request-status with this to follow the
+        # request; None when it cannot be named (the SharePoint path) (#364).
+        "status_token": status_token,
+    }
 
 
 @router.post("/me/requests/{request_type}/preview")

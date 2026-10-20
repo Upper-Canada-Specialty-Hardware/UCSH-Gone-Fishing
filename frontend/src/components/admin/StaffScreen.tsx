@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Box, Button, Chip, Collapse, IconButton, Paper, Stack, Table, TableBody, TableCell,
   TableHead, TableRow, TextField, Typography, useMediaQuery,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
+import { useSearchParams } from 'react-router-dom';
 import CloseIcon from '@mui/icons-material/Close';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import DownloadIcon from '@mui/icons-material/Download';
 import { EmployeeSetupSummary } from '../EmployeeSetupList';
 import { ManagerOption } from '../AddEmployee';
 import { getManagerAssignments, getSpUsers } from '../../api/client';
-import { getStaffRecord, StaffRecord } from '../../api/staff';
+import { getStaffRecord, StaffRecord, getArchivedStaff, restoreStaff, ArchivedPerson } from '../../api/staff';
 import { isHourly } from '../../utils/employment';
+import { formatInstantDay } from '../../utils/dates';
 import { Enter } from '../Motion';
 import PersonProfile from './PersonProfile';
 import StaffExportDialog, { ExportPerson } from './StaffExportDialog';
@@ -103,6 +105,7 @@ interface Props {
  */
 export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onReload, onNotify }: Props) {
   const theme = useTheme();
+  const [searchParams] = useSearchParams();                             // ?open=<id> from a deep link
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Record<string, string[]>>({});   // filter key -> chosen values
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -111,6 +114,34 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
   const [record, setRecord] = useState<StaffRecord | null>(null);       // their fetched record
   const [recordLoading, setRecordLoading] = useState(false);
   const [spUsers, setSpUsers] = useState<ManagerOption[]>([]);          // people for the pickers
+  const [archived, setArchived] = useState<ArchivedPerson[]>([]);       // departed people (#119)
+  const [archivedOpen, setArchivedOpen] = useState(false);             // the archived list, collapsed by default
+  const [restoringId, setRestoringId] = useState<string | null>(null);  // a restore in flight
+
+  // The archived people, for the collapsible list at the foot of the screen.
+  const loadArchived = useCallback(() => {
+    getArchivedStaff()
+      .then((r) => setArchived(r.data.archived || []))
+      .catch(() => setArchived([]));                        // the list just stays empty
+  }, []);
+  useEffect(() => { loadArchived(); }, [loadArchived]);
+
+  /** Restore one archived person, then refresh the archived list and the table. */
+  const doRestore = async (id: string) => {
+    setRestoringId(id);
+    try {
+      await restoreStaff(id);
+      onNotify('The person was restored.', 'success');
+      loadArchived();                                        // drop them from the archived list
+      onReload?.();                                          // bring them back into the staff table
+      loadManagers();                                        // their managers column follows
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      onNotify(typeof detail === 'string' ? detail : 'The person could not be restored.', 'error');
+    } finally {
+      setRestoringId(null);
+    }
+  };
 
   // Manager names by employee id; /admin/balances does not carry them.
   const [managersById, setManagersById] = useState<Record<string, string[]> | null>(null);
@@ -154,6 +185,9 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
     });
   };
   const rows = useMemo(() => people.filter(passes), [people, query, picked, problemsById]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // Salaried and hourly shown in two tables with columns that fit each (#338).
+  const salariedRows = useMemo(() => rows.filter((p) => !isHourly(p.employment_type)), [rows]);
+  const hourlyRows = useMemo(() => rows.filter((p) => isHourly(p.employment_type)), [rows]);
 
   /** Toggle one value within a filter group. */
   const toggleFilter = (key: string, value: string) => {
@@ -183,11 +217,20 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
     }
   };
 
+  // Opened from a deep link with ?open=<id>: show that person's
+  // profile at once. Runs when the param changes, so closing the profile by hand
+  // (the param stays) does not spring it back open.
+  useEffect(() => {
+    const id = searchParams.get('open');
+    if (id && id !== openId) openPerson(id);
+  }, [searchParams]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Reload everything a save can touch: the dashboard balances/requests, the
    *  manager assignments (for the row), and the open person's full record. */
   const reloadRecord = async () => {
     onReload?.();                                           // dashboard balances + requests
     loadManagers();                                        // the row's managers column
+    loadArchived();                                        // a person just archived appears in the list (#119)
     if (!openId) return;
     try {
       const res = await getStaffRecord(openId);            // the profile's own record
@@ -287,11 +330,81 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
           </Box>
         )}
 
-        <StaffTable people={people} rows={rows} problemsById={problemsById} onOpen={openPerson} theme={theme} />
+        {rows.length === 0 ? (
+          <Typography color="text.secondary" sx={{ p: 3 }}>{people.length ? 'Nobody matches these filters.' : 'No staff to show.'}</Typography>
+        ) : (
+          <>
+            {/* Salaried: every pot, as before. */}
+            <StaffGroup title="Salaried" count={salariedRows.length}>
+              {salariedRows.length
+                ? <StaffTable variant="salaried" people={people} rows={salariedRows} problemsById={problemsById} onOpen={openPerson} theme={theme} />
+                : <Typography color="text.secondary" sx={{ p: 2 }}>No salaried staff match.</Typography>}
+            </StaffGroup>
+            {/* Hourly: Sick plus the vacation-taken counter; no Make-up, Carry-over or Payout (#300). */}
+            <StaffGroup title="Hourly" count={hourlyRows.length}>
+              {hourlyRows.length
+                ? <StaffTable variant="hourly" people={people} rows={hourlyRows} problemsById={problemsById} onOpen={openPerson} theme={theme} />
+                : <Typography color="text.secondary" sx={{ p: 2 }}>No hourly staff match.</Typography>}
+            </StaffGroup>
+          </>
+        )}
 
         <Box sx={{ p: 1.5, borderTop: 1, borderColor: 'divider' }}>
-          <Typography variant="body2" color="text.secondary">Showing {rows.length} of {people.length} people</Typography>
+          <Typography variant="body2" color="text.secondary">Showing {rows.length} of {people.length} people ({salariedRows.length} salaried, {hourlyRows.length} hourly)</Typography>
         </Box>
+      </Paper>
+
+      {/* Archived people (#119): departed staff, out of the tables above. Collapsed
+          by default; Restore brings one back into the Staff Directory. */}
+      <Paper sx={{ overflow: 'hidden' }}>
+        <Box
+          role="button" tabIndex={0} aria-expanded={archivedOpen}
+          onClick={() => setArchivedOpen((o) => !o)}
+          onKeyDown={(e) => { if (e.key === 'Enter') setArchivedOpen((o) => !o); }}
+          sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.75, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
+        >
+          <Typography sx={{ fontWeight: 700 }}>Archived</Typography>
+          <Chip size="small" label={archived.length} />
+          <Box sx={{ flex: 1 }} />
+          <Typography variant="caption" color="text.secondary">{archivedOpen ? 'Hide' : 'Show'}</Typography>
+        </Box>
+        <Collapse in={archivedOpen}>
+          {archived.length === 0 ? (
+            <Typography color="text.secondary" sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>Nobody is archived.</Typography>
+          ) : (
+            <Table size="small" sx={{ tableLayout: 'fixed', borderTop: 1, borderColor: 'divider', '& td, & th': { borderColor: 'divider', overflowWrap: 'anywhere', whiteSpace: 'normal' } }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Employee</TableCell>
+                  <TableCell>Archived</TableCell>
+                  <TableCell>Reason</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {archived.map((a) => (
+                  <TableRow key={a.id}>
+                    <TableCell>
+                      <Typography sx={{ fontWeight: 600 }}>{a.name}</Typography>
+                      <Typography variant="caption" color="text.secondary">{a.department || 'No department'} · {a.location || 'No location'}</Typography>
+                    </TableCell>
+                    {/* The archive date read as "Nov 2, 2026". */}
+                    <TableCell>{a.archived_at ? formatInstantDay(a.archived_at) : ''}</TableCell>
+                    <TableCell>{a.archived_reason || ''}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        size="small" variant="outlined"
+                        onClick={() => doRestore(a.id)} disabled={restoringId === a.id}
+                      >
+                        {restoringId === a.id ? 'Restoring...' : 'Restore'}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </Collapse>
       </Paper>
 
       <StaffExportDialog
@@ -312,31 +425,68 @@ function balance(v: number | undefined) {
 }
 
 /**
- * The staff table that never scrolls sideways: cells wrap, the least important
- * columns drop by width (Managers first, then Carry-over, then Make-up), a
+ * A labelled section above one staff table, naming the group and its size.
+ *
+ * @param props.title - "Salaried" or "Hourly".
+ * @param props.count - How many people are in the group.
+ * @param props.children - The table, or a short empty line.
+ * @returns The section.
+ */
+function StaffGroup({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  return (
+    <Box>
+      {/* A plain heading bar so the two groups read as separate tables. */}
+      <Box sx={{ px: 1.75, py: 1, display: 'flex', alignItems: 'baseline', gap: 1, bgcolor: 'action.hover', borderBottom: 1, borderColor: 'divider' }}>
+        <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{title}</Typography>
+        <Typography variant="caption" color="text.secondary">{count} {count === 1 ? 'person' : 'people'}</Typography>
+      </Box>
+      {children}
+    </Box>
+  );
+}
+
+/** A numeric balance cell, below zero in the error colour and bold. */
+function BalanceCell({ value }: { value: number | undefined }) {
+  const b = balance(value);
+  return (
+    <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: b.negative ? 'error.main' : undefined, fontWeight: b.negative ? 700 : undefined }}>
+      {b.text}
+    </TableCell>
+  );
+}
+
+/**
+ * One staff table that never scrolls sideways: cells wrap, the least important
+ * columns drop by width (Managers, then Carry-over and Make-up for salaried), a
  * footer names the hidden columns, and below ~560px rows become cards. Every
- * hidden value stays reachable by opening the person.
+ * hidden value stays reachable by opening the person. The salaried variant
+ * shows every pot as before; the hourly variant shows Sick and the
+ * vacation-taken counter only, with no Make-up, Carry-over or Payout (#300, #338).
  *
  * @param props.people - Everyone (for the empty-state copy).
- * @param props.rows - The filtered rows to show.
+ * @param props.rows - The filtered rows of this group to show.
  * @param props.problemsById - Setup problems per id, for the row flag.
  * @param props.onOpen - Open a person's profile.
  * @param props.theme - The MUI theme (for tokens).
+ * @param props.variant - "salaried" (every pot) or "hourly" (sick plus counter).
  * @returns The table or cards.
  */
-function StaffTable({ people, rows, problemsById, onOpen, theme }: {
-  people: Person[]; rows: Person[]; problemsById: Record<string, string[]>; onOpen: (id: string) => void; theme: ReturnType<typeof useTheme>;
+function StaffTable({ people, rows, problemsById, onOpen, variant }: {
+  people: Person[]; rows: Person[]; problemsById: Record<string, string[]>; onOpen: (id: string) => void; theme: ReturnType<typeof useTheme>; variant: 'salaried' | 'hourly';
 }) {
   const wide = useMediaQuery('(min-width:900px)');          // Managers column fits
   const mid = useMediaQuery('(min-width:720px)');           // Make-up and Carry-over fit
   const cards = useMediaQuery('(max-width:560px)');         // below this, rows become cards
+  const hourly = variant === 'hourly';                     // sick plus the vacation-taken counter only
 
-  // Which balance columns are visible, in priority order (actions-last is moot here).
+  // Which columns are visible; hourly never has Make-up or Carry-over to drop.
   const showManagers = wide;
-  const showMakeUp = mid;
-  const showCarryOver = mid;
+  const showMakeUp = mid && !hourly;
+  const showCarryOver = mid && !hourly;
   const hidden = [
-    !showManagers && 'Managers', !showMakeUp && 'Make-up', !showCarryOver && 'Carry-over',
+    !showManagers && 'Managers',
+    !hourly && !showMakeUp && 'Make-up',
+    !hourly && !showCarryOver && 'Carry-over',
   ].filter(Boolean) as string[];
 
   if (rows.length === 0) {
@@ -345,6 +495,8 @@ function StaffTable({ people, rows, problemsById, onOpen, theme }: {
 
   // Below ~560px: labelled cards, so nothing has to scroll sideways.
   if (cards) {
+    // The balance lines each card shows, by variant.
+    const salaryPairs: [string, string][] = [['Vacation', 'vacation_balance'], ['Sick', 'sick_balance'], ['Make-up', 'overtime'], ['Carry-over', 'carryover']];
     return (
       <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
         {rows.map((p) => (
@@ -355,28 +507,31 @@ function StaffTable({ people, rows, problemsById, onOpen, theme }: {
             </Typography>
             <Typography variant="caption" color="text.secondary">{p.department || 'No department'} · {p.location || 'No location'}</Typography>
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5, mt: 1 }}>
-              {([['Vacation', 'vacation_balance'], ['Sick', 'sick_balance'], ['Make-up', 'overtime'], ['Carry-over', 'carryover']] as [string, string][]).map(([label, k]) => {
-                const bc = isHourly(p.balances);
-                // hourly: Vacation reads as a counter, Make-up/Carry-over do not apply (#300).
-                if (bc && k === 'vacation_balance') {
+              {hourly ? (
+                <>
+                  {/* Vacation is a counter here, not a balance; Sick is the only pot. */}
+                  <Typography variant="body2" title="Vacation taken this year. Counted, not a balance.">
+                    <Box component="span" color="text.secondary">Vacation taken: </Box><b style={{ fontVariantNumeric: 'tabular-nums' }}>{balance(p.balances?.vacation_taken).text}</b>
+                  </Typography>
+                  {(() => {
+                    const b = balance(p.balances?.sick_balance);
+                    return (
+                      <Typography variant="body2" sx={{ color: b.negative ? 'error.main' : undefined }}>
+                        <Box component="span" color="text.secondary">Sick: </Box><b style={{ fontVariantNumeric: 'tabular-nums' }}>{b.text}</b>
+                      </Typography>
+                    );
+                  })()}
+                </>
+              ) : (
+                salaryPairs.map(([label, k]) => {
+                  const b = balance(p.balances?.[k]);
                   return (
-                    <Typography key={k} variant="body2" title="Vacation taken this year. Counted, not a balance.">
-                      <Box component="span" color="text.secondary">Vacation taken: </Box><b style={{ fontVariantNumeric: 'tabular-nums' }}>{balance(p.balances?.vacation_taken).text}</b>
+                    <Typography key={k} variant="body2" sx={{ color: b.negative ? 'error.main' : undefined }}>
+                      <Box component="span" color="text.secondary">{label}: </Box><b style={{ fontVariantNumeric: 'tabular-nums' }}>{b.text}</b>
                     </Typography>
                   );
-                }
-                if (bc && (k === 'overtime' || k === 'carryover')) {
-                  return (
-                    <Typography key={k} variant="body2"><Box component="span" color="text.secondary">{label}: </Box>-</Typography>
-                  );
-                }
-                const b = balance(p.balances?.[k]);
-                return (
-                  <Typography key={k} variant="body2" sx={{ color: b.negative ? 'error.main' : undefined }}>
-                    <Box component="span" color="text.secondary">{label}: </Box><b style={{ fontVariantNumeric: 'tabular-nums' }}>{b.text}</b>
-                  </Typography>
-                );
-              })}
+                })
+              )}
               <Typography variant="body2" sx={{ gridColumn: '1 / -1' }}>
                 <Box component="span" color="text.secondary">Managers: </Box>
                 {p.managers === null ? '' : p.managers.length ? p.managers.join(', ') : 'None'}
@@ -395,10 +550,19 @@ function StaffTable({ people, rows, problemsById, onOpen, theme }: {
           <TableRow>
             <TableCell>Employee</TableCell>
             {showManagers && <TableCell>Managers</TableCell>}
-            <TableCell align="right">Vacation</TableCell>
-            <TableCell align="right">Sick</TableCell>
-            {showMakeUp && <TableCell align="right">Make-up</TableCell>}
-            {showCarryOver && <TableCell align="right">Carry-over</TableCell>}
+            {hourly ? (
+              <>
+                <TableCell align="right">Sick</TableCell>
+                <TableCell align="right">Vacation taken</TableCell>
+              </>
+            ) : (
+              <>
+                <TableCell align="right">Vacation</TableCell>
+                <TableCell align="right">Sick</TableCell>
+                {showMakeUp && <TableCell align="right">Make-up</TableCell>}
+                {showCarryOver && <TableCell align="right">Carry-over</TableCell>}
+              </>
+            )}
           </TableRow>
         </TableHead>
         <TableBody>
@@ -416,25 +580,22 @@ function StaffTable({ people, rows, problemsById, onOpen, theme }: {
                   {p.managers === null ? '' : p.managers.length ? p.managers.join(', ') : <Chip size="small" color="error" variant="outlined" label="None" />}
                 </TableCell>
               )}
-              {([['vacation_balance', true], ['sick_balance', true], ['overtime', showMakeUp], ['carryover', showCarryOver]] as [string, boolean][]).map(([k, show]) => {
-                if (!show) return null;
-                const bc = isHourly(p.balances);
-                // hourly: Vacation is a counter ("N taken"); Make-up and Carry-over do not apply (#300).
-                if (bc && k === 'vacation_balance') {
-                  return (
-                    <TableCell key={k} align="right" title="Vacation taken this year. Counted, not a balance." sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
-                      {balance(p.balances?.vacation_taken).text} taken
-                    </TableCell>
-                  );
-                }
-                if (bc && (k === 'overtime' || k === 'carryover')) {
-                  return <TableCell key={k} align="right" sx={{ color: 'text.secondary' }}>-</TableCell>;
-                }
-                const b = balance(p.balances?.[k]);
-                return (
-                  <TableCell key={k} align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: b.negative ? 'error.main' : undefined, fontWeight: b.negative ? 700 : undefined }}>{b.text}</TableCell>
-                );
-              })}
+              {hourly ? (
+                <>
+                  <BalanceCell value={p.balances?.sick_balance} />
+                  {/* Vacation is a counter ("N taken"), not a spendable balance. */}
+                  <TableCell align="right" title="Vacation taken this year. Counted, not a balance." sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
+                    {balance(p.balances?.vacation_taken).text} taken
+                  </TableCell>
+                </>
+              ) : (
+                <>
+                  <BalanceCell value={p.balances?.vacation_balance} />
+                  <BalanceCell value={p.balances?.sick_balance} />
+                  {showMakeUp && <BalanceCell value={p.balances?.overtime} />}
+                  {showCarryOver && <BalanceCell value={p.balances?.carryover} />}
+                </>
+              )}
             </TableRow>
           ))}
         </TableBody>

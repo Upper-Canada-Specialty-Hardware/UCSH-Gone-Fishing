@@ -14,11 +14,19 @@ from sqlalchemy import delete
 
 from app.config import settings
 from app.database import async_session
-from app.models.request_item import CarryoverPayoutRequestItem, LeaveRequestItem, OvertimeRequestItem
+from app.models.request_change import RequestChange
+from app.models.request_counter import RequestCounter
+from app.models.request_record import RequestRecord
 from app.repositories import request_store as store_module
 from app.repositories.request_store import request_store
 
 LEAVE = settings.SP_LIST_LEAVE_REQUESTS
+
+# The live typed requests table requires an employee id and the per-kind fields
+# (a leave needs a leave type and a start date), so every fixture item carries
+# them. This is fixture data only; it does not change what any test asserts.
+LEAVE_REQUIRED = {"EmployeeID": "7", "LeaveType": "Vacation", "StartDate": "2026-11-02"}
+OVERTIME_REQUIRED = {"EmployeeID": "7", "Date": "2026-11-02", "Hours": 4}
 
 
 def run(coro):
@@ -32,8 +40,10 @@ def postgres(monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
 
     async def wipe():
+        # The live store writes the typed requests table now, so clear it (its
+        # change rows first, then its id counters) between tests.
         async with async_session() as session:
-            for model in (LeaveRequestItem, OvertimeRequestItem, CarryoverPayoutRequestItem):
+            for model in (RequestChange, RequestRecord, RequestCounter):
                 await session.execute(delete(model))
             await session.commit()
 
@@ -43,7 +53,7 @@ def postgres(monkeypatch):
 
 
 def test_a_created_item_comes_back_in_the_graph_shape(postgres):
-    item = run(request_store.create_list_item(LEAVE, {"LeaveType": "Vacation", "Status": "Pending"}))
+    item = run(request_store.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending"}))
     assert isinstance(item["id"], str)                          # Graph sends ids as strings
     assert item["fields"]["id"] == item["id"]
     assert item["fields"]["LeaveType"] == "Vacation"
@@ -52,7 +62,7 @@ def test_a_created_item_comes_back_in_the_graph_shape(postgres):
 
 
 def test_an_update_merges_fields_and_keeps_the_rest(postgres):
-    item = run(request_store.create_list_item(LEAVE, {"Status": "Pending", "Days": 2.0}))
+    item = run(request_store.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending", "Days": 2.0}))
     fields = run(request_store.update_list_item_fields(LEAVE, item["id"], {"Status": "Approved"}))
     assert fields["Status"] == "Approved"
     assert fields["Days"] == 2.0                                # untouched field kept, like a PATCH
@@ -70,34 +80,35 @@ def test_a_missing_item_raises_the_same_404_as_graph(postgres):
 
 
 def test_system_fields_are_not_stored_from_a_caller(postgres):
-    item = run(request_store.create_list_item(LEAVE, {"id": "5", "Created": "x", "Status": "Pending"}))
+    item = run(request_store.create_list_item(
+        LEAVE, {**LEAVE_REQUIRED, "id": "5", "Created": "x", "Status": "Pending"}))
     assert item["fields"]["Created"] != "x"                     # SharePoint fills these in itself
 
 
 def test_the_lists_are_kept_apart(postgres):
-    run(request_store.create_list_item(LEAVE, {"Status": "Pending"}))
-    run(request_store.create_list_item(settings.SP_LIST_OVERTIME_REQUESTS, {"Hours": 4}))
+    run(request_store.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending"}))
+    run(request_store.create_list_item(settings.SP_LIST_OVERTIME_REQUESTS, {**OVERTIME_REQUIRED}))
     assert len(run(request_store.get_list_items(LEAVE))) == 1
     assert len(run(request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT))) == 0
 
 
 def test_select_keeps_only_the_named_fields(postgres):
-    run(request_store.create_list_item(LEAVE, {"Status": "Pending", "Days": 1}))
+    run(request_store.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending", "Days": 1}))
     [item] = run(request_store.get_list_items(LEAVE, select=["Status"]))
     assert set(item["fields"]) == {"id", "Status"}
 
 
 def test_a_copied_item_keeps_its_id_and_source(postgres):
     table = store_module.request_list_tables()[LEAVE]
-    run(table.create_list_item(LEAVE, {"Status": "Pending"}, item_id=412, sp_item_id="412"))
+    run(table.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending"}, item_id=412, sp_item_id="412"))
     assert run(request_store.get_list_item(LEAVE, "412"))["id"] == "412"
     assert run(table.find_by_sp_item_id("412"))["id"] == "412"
-    newer = run(request_store.create_list_item(LEAVE, {"Status": "Pending"}))
+    newer = run(request_store.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending"}))
     assert int(newer["id"]) > 412                               # new requests never reuse a copied id
 
 
 def test_delete_removes_the_item(postgres):
-    item = run(request_store.create_list_item(LEAVE, {"Status": "Pending"}))
+    item = run(request_store.create_list_item(LEAVE, {**LEAVE_REQUIRED, "Status": "Pending"}))
     run(request_store.delete_list_item(LEAVE, item["id"]))
     assert run(request_store.get_list_item_or_none(LEAVE, item["id"])) is None
 

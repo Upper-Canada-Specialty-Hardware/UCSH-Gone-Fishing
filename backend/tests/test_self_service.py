@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.routes import self_service
-from app.services import request_intake
+from app.services import request_intake, request_status
 from app.services.dashboard_tokens import generate_dashboard_token
 
 PAT = {"id": "7", "fields": {"Title": "Pat Q Staff", "EmailAddress": "pat@ucsh.com"}}
@@ -29,6 +29,7 @@ def client(monkeypatch):
     app.include_router(self_service.router, prefix="/api/dashboard")
     test_client = TestClient(app)
     test_client.created = []
+    test_client.employee_ids = []                              # the staff id each creation was told
     test_client.linked = True
     monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
     monkeypatch.setattr(settings, "REQUEST_EMAIL_COLUMNS_ENABLED", True)
@@ -40,13 +41,21 @@ def client(monkeypatch):
         return 12 if test_client.linked else None
 
     def recorder(kind):
-        async def create(form_data, email, source=None, notify=True):
+        async def create(form_data, email, source=None, notify=True, employee_id=None):
             test_client.created.append((kind, form_data, email, source))
+            test_client.employee_ids.append(employee_id)
             return {"id": "500"}
         return create
 
+    # The preview and production request page runs on Postgres, so the submit
+    # response carries a follow-the-request status token (#364). The gate reads
+    # this, separately from the (stubbed) creation path, so patch it to True here.
+    async def in_postgres():
+        return True
+
     monkeypatch.setattr(self_service, "get_employee_by_id", by_id)
     monkeypatch.setattr(self_service, "_resolve_user_lookup_id", lookup)
+    monkeypatch.setattr(self_service, "requests_in_postgres", in_postgres)
     monkeypatch.setattr(request_intake, "process_new_leave_request", recorder("leave"))
     monkeypatch.setattr(request_intake, "process_new_overtime_request", recorder("overtime"))
     monkeypatch.setattr(request_intake, "process_new_carryover_payout", recorder("carryover-payout"))
@@ -66,11 +75,29 @@ def test_a_vacation_request_is_created_for_the_signed_in_employee(client):
     response = _submit(client, "leave", VACATION)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "submitted", "request_type": "leave", "item_id": "500"}
+    # The response carries a signed status_token naming this request, so the page
+    # can follow its progress without a sign-in (#364).
+    assert response.json() == {
+        "status": "submitted", "request_type": "leave", "item_id": "500",
+        "status_token": request_status.request_status_token("leave", 500),
+    }
     kind, form_data, email, source = client.created[0]
     assert (kind, email, source) == ("leave", "pat@ucsh.com", "Request page")
     assert form_data["start_date"] == "2026-11-02" and form_data["end_date"] == "2026-11-04"
     assert (form_data["first_name"], form_data["last_name"]) == ("Pat", "Q Staff")
+    assert client.employee_ids == ["7"]                        # the signed-in record, not a re-match by email
+
+
+def test_no_status_token_on_the_sharepoint_path(client, monkeypatch):
+    # On the SharePoint path there is no Postgres row to follow, so no token is
+    # minted even though the id is numeric; the page keeps the plain steps (#364).
+    async def not_postgres():
+        return False
+    monkeypatch.setattr(self_service, "requests_in_postgres", not_postgres)
+
+    body = _submit(client, "leave", VACATION).json()
+    assert body["item_id"] == "500"
+    assert body["status_token"] is None
 
 
 def test_a_partial_day_is_one_date_measured_in_hours(client):

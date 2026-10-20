@@ -8,12 +8,18 @@ refuses once requests live in Postgres.
 import asyncio
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.database import async_session
+from app.models.legacy_finding import LegacyFinding
+from app.models.request_change import RequestChange
+from app.models.request_counter import RequestCounter
 from app.models.request_item import CarryoverPayoutRequestItem, LeaveRequestItem, OvertimeRequestItem
+from app.models.request_record import RequestRecord
+from app.models.sharepoint_seen import SharepointSeen
 from app.repositories.request_store import request_list_tables
+from app.services.request_copy import _json_copy_tables
 from app.services import request_copy
 
 LEAVE = settings.SP_LIST_LEAVE_REQUESTS
@@ -48,8 +54,11 @@ def sharepoint_lists(monkeypatch):
         return lists[list_id]
 
     async def wipe():
+        # The bulk copy writes the JSON tables; the Form fallback writes the live
+        # typed requests table. Clear both (typed change rows and counters too).
         async with async_session() as session:
-            for model in (LeaveRequestItem, OvertimeRequestItem, CarryoverPayoutRequestItem):
+            for model in (LeaveRequestItem, OvertimeRequestItem, CarryoverPayoutRequestItem,
+                          RequestChange, RequestRecord, RequestCounter, LegacyFinding, SharepointSeen):
                 await session.execute(delete(model))
             await session.commit()
 
@@ -62,11 +71,11 @@ def sharepoint_lists(monkeypatch):
 def test_the_copy_keeps_ids_times_and_fills_the_email(sharepoint_lists):
     report = run(request_copy.copy_requests_from_sharepoint())
     assert report["lists"]["leave"] == {"source_count": 1, "created": 1, "updated": 0}
-    leave = run(request_list_tables()[LEAVE].get_list_item(LEAVE, "412"))
+    leave = run(_json_copy_tables()[LEAVE].get_list_item(LEAVE, "412"))
     assert leave["createdDateTime"] == "2026-03-01T15:00:00Z"
     assert leave["fields"]["SubmitterEmail"] == "pat@ucsh.com"     # from the person column
     assert "@odata.etag" not in leave["fields"]
-    overtime = run(request_list_tables()[OVERTIME].get_list_item(OVERTIME, "88"))
+    overtime = run(_json_copy_tables()[OVERTIME].get_list_item(OVERTIME, "88"))
     assert overtime["fields"]["SubmitterEmail"] == "lee@gmail.com"  # an existing email is kept
 
 
@@ -75,7 +84,7 @@ def test_running_again_overwrites_with_sharepoints_values(sharepoint_lists):
     sharepoint_lists[LEAVE][0]["fields"]["Status"] = "Cancelled"
     report = run(request_copy.copy_requests_from_sharepoint())
     assert report["lists"]["leave"] == {"source_count": 1, "created": 0, "updated": 1}
-    leave = run(request_list_tables()[LEAVE].get_list_item(LEAVE, "412"))
+    leave = run(_json_copy_tables()[LEAVE].get_list_item(LEAVE, "412"))
     assert leave["fields"]["Status"] == "Cancelled"
 
 
@@ -94,19 +103,20 @@ def test_the_report_counts_what_is_left_to_copy(sharepoint_lists):
     assert after["lists"]["leave"]["only_in_sharepoint"] == 0
 
 
-# The Microsoft Form fallback (#195): once requests live in Postgres, a new item
-# the Form writes to a SharePoint list is moved into Postgres and processed there.
+# After the switch nothing reads SharePoint: a new item that still lands in a
+# SharePoint list (a Form submission or a hand edit) is never imported or flagged.
 
 FORM_ITEM = {
     "id": "950", "createdDateTime": "2026-10-10T13:00:00Z",
     "fields": {"LeaveType": "Vacation", "Status": "Pending", "StartDate": "2026-11-02",
-               "EndDate": "2026-11-02", "SubmittedTestLookupId": "21"},
+               "EndDate": "2026-11-02", "EmployeeID": "21", "SubmittedTestLookupId": "21",
+               "SubmitterEmail": "pat@ucsh.com"},
 }
 
 
 @pytest.fixture
 def form_item(sharepoint_lists, monkeypatch):
-    """Requests in Postgres; SharePoint holds one new Form item (or none, once deleted)."""
+    """Requests in Postgres; SharePoint holds one new item a person or the Form wrote."""
     monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
     inbox = {"950": FORM_ITEM}
 
@@ -117,31 +127,27 @@ def form_item(sharepoint_lists, monkeypatch):
     return inbox
 
 
-def test_a_form_item_is_moved_once_with_a_new_id(form_item):
-    moved = run(request_copy.move_form_item_into_postgres(LEAVE, "950"))
-    assert moved["fields"]["LeaveType"] == "Vacation"
-    assert moved["fields"]["SubmitterEmail"] == "pat@ucsh.com"
-    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))["id"] == moved["id"]
-    assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None   # never twice
+async def _findings_for(sp_item_id, case):
+    """Legacy findings of one case for a SharePoint item id."""
+    async with async_session() as session:
+        return (await session.execute(
+            select(LegacyFinding).where(
+                LegacyFinding.subject_id == str(sp_item_id), LegacyFinding.case == case
+            )
+        )).scalars().all()
 
 
-def test_a_deleted_form_item_is_skipped(form_item):
-    form_item.clear()
-    assert run(request_copy.move_form_item_into_postgres(LEAVE, "950")) is None
-
-
-def test_the_dispatcher_processes_the_postgres_copy(form_item, monkeypatch):
-    from app.services import leave_requests
+def test_the_dispatcher_ignores_a_new_item_after_the_switch(form_item, monkeypatch):
+    # A request-list change once requests live in Postgres is logged and ignored:
+    # never imported, never flagged, and SharePoint is not read for it.
     from app.tasks import dispatcher
-    handled = []
+    reads = []
 
-    async def record(item_id):
-        handled.append(str(item_id))
-
-    for name in ("auto_calculate_days", "auto_assign_manager", "send_bereavement_alert"):
-        monkeypatch.setattr(leave_requests, name, record)
+    async def counting_read(list_id, item_id):
+        reads.append(item_id)
+        return form_item.get(str(item_id))
+    monkeypatch.setattr(request_copy.sp_client, "get_list_item_or_none", counting_read)
     run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    moved = run(request_list_tables()[LEAVE].find_by_sp_item_id("950"))
-    assert handled == [moved["id"]] * 3                         # processed under its Postgres id
-    run(dispatcher.dispatch_change(LEAVE, {"id": "950", "fields": {}}))
-    assert len(handled) == 3                                    # a second notice changes nothing
+    assert run(request_list_tables()[LEAVE].find_by_sp_item_id("950")) is None   # never imported
+    assert run(_findings_for("950", "sharepoint_new_after_switch")) == []        # never flagged
+    assert reads == []                                                           # SharePoint not read

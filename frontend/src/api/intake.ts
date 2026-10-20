@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { BelowZero } from '../utils/employment';
+import { dropLaunchCache } from './launchCache';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -20,6 +21,20 @@ export interface EmployeeSession {
   token: string;
   exp: string;
   email: string;
+}
+
+/**
+ * One staff record on a shared mailbox, as /verify lists them for the person to
+ * pick: who it is, where they work, and that record's own signed token.
+ */
+export interface SignInChoice {
+  name: string;
+  department: string;
+  location: string;
+  role: string;
+  uid: string;
+  token: string;
+  exp: string;
 }
 
 /** The token /verify returns for an address on no staff record. */
@@ -151,6 +166,72 @@ export function saveSession(session: EmployeeSession): void {
   }
 }
 
+/** The role check's answer: unchanged, or a new token with the right role. */
+interface RefreshAnswer {
+  changed: boolean;
+  role?: string;
+  uid?: string;
+  token?: string;
+  exp?: string;
+}
+
+let roleCheck: Promise<boolean> | null = null;   // one check per page load, shared by every caller
+let roleChecked = false;                          // true once that check has answered
+
+/** @returns Whether this page load's role check has answered yet. */
+export const sessionRoleChecked = () => roleChecked;
+
+/**
+ * Swap a refreshed token into wherever the sign-in lives (this tab's emailed
+ * link, or the device's 30-day sign-in), keeping the name and email.
+ *
+ * @param fresh - The new token fields.
+ * @returns True when the stored sign-in now carries the new role.
+ */
+function replaceSessionToken(fresh: { role: string; uid: string; token: string; exp: string }): boolean {
+  try {
+    if (linkSession()) saveLinkSession(fresh);                       // an emailed link wins, as in loadSession
+    else {
+      const current = deviceSession();
+      if (!current) return false;                                    // signed out meanwhile
+      saveSession({ ...current, ...fresh });                         // keep name and email
+    }
+  } catch {
+    return false;                                                    // storage blocked
+  }
+  return loadSession()?.role === fresh.role;                         // only report success when it stuck
+}
+
+/**
+ * Re-check the signed-in person's role once per page load (#376).
+ *
+ * The role is decided when the code is checked and kept for 30 days, so
+ * someone listed as a manager after signing in would never see My team. This
+ * asks the server again and, when the role has changed, stores the new token.
+ *
+ * @returns True when the role changed and the new token was stored (the
+ *   caller reloads so every part of the page sees it); false otherwise,
+ *   including when nobody is signed in or the check failed.
+ */
+export function refreshSessionRole(): Promise<boolean> {
+  if (roleCheck) return roleCheck;                                   // already asked on this page load
+  const session = loadSession();
+  if (!session) {
+    roleChecked = true;
+    return Promise.resolve(false);
+  }
+  const { token, role, uid, exp } = session;
+  roleCheck = intake.post<RefreshAnswer>('/session/refresh', { token, role, uid, exp })
+    .then((res) => {
+      const a = res.data;
+      if (!a.changed || !a.role || !a.uid || !a.token || !a.exp) return false;   // nothing to swap
+      return replaceSessionToken({ role: a.role, uid: a.uid, token: a.token, exp: a.exp });
+    })
+    .catch(() => false)                                              // offline or refused: keep what they have
+    .finally(() => { roleChecked = true; });
+  return roleCheck;
+}
+
 /** Sign out everywhere: this device's 30-day sign-in and this tab's link. */
 export function clearSession(): void {
   try {
@@ -159,6 +240,22 @@ export function clearSession(): void {
   } catch {
     /* nothing to clear */
   }
+  void dropLaunchCache('staff');                 // the saved dashboard data goes with the sign-in
+}
+
+/**
+ * The key one dashboard's data is saved under for a fast relaunch.
+ *
+ * A manager signs in once but opens two dashboards (their team and their own
+ * requests), each saving a different shape, so the view is part of the key;
+ * keyed by the sign-in alone, one view would load the other's data and break.
+ *
+ * @param view - Which dashboard: 'team' (manager) or 'me' (own requests).
+ * @returns "<view>:<role>:<uid>" (e.g. "team:manager:368"), or null when nobody is signed in.
+ */
+export function staffCacheKey(view: 'team' | 'me'): string | null {
+  const session = loadSession();
+  return session ? `${view}:${session.role}:${session.uid}` : null;
 }
 
 /**
@@ -248,7 +345,8 @@ export const requestCode = (email: string) => intake.post('/code', { email });
  *
  * @param email - The same address.
  * @param code - The 6 digits typed.
- * @returns {status: "employee", name, role, uid, token, exp} or {status: "unknown", verified}.
+ * @returns {status: "employee", name, role, uid, token, exp}; {status: "choose", people}
+ *   when several staff records share the address; or {status: "unknown", verified}.
  * @throws AxiosError 400 with a readable reason when the code is wrong or expired.
  */
 export const verifyCode = (email: string, code: string) =>
@@ -290,7 +388,20 @@ export const holdRequest = (body: {
   supervisor_email?: string;
   request_type: RequestType;
   form: Record<string, unknown>;
-}) => intake.post('/held', body);
+}) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held', body);
+
+/** Where a held request stands, as the waiting page shows it. */
+export type HeldStatus = 'waiting' | 'sent' | 'cancelled';
+
+/**
+ * Ask how a held request is going, so the waiting page can update on its own.
+ *
+ * @param statusToken - The status_token holdRequest returned.
+ * @returns The status and the supervisor it waits on.
+ * @throws AxiosError 404 when the token is bad or the request is gone.
+ */
+export const getHeldStatus = (statusToken: string) =>
+  intake.get<{ status: HeldStatus; supervisor_name: string }>('/held/status', { params: { token: statusToken } });
 
 /**
  * Submit a request as the signed-in employee.
@@ -301,9 +412,52 @@ export const holdRequest = (body: {
  * @throws AxiosError 400 with a reason, 401 sign-in expired, 409 not routable yet, 503 off.
  */
 export const submitMyRequest = (session: EmployeeSession, type: RequestType, form: Record<string, unknown>) =>
-  dashboard.post(`/me/requests/${type}`, form, {
-    params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
-  });
+  dashboard.post<{ status: string; request_type: string; item_id: string; status_token: string | null }>(
+    `/me/requests/${type}`, form, {
+      params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+    });
+
+/** One step of a request page submission, as the status endpoint reports it. */
+export interface ProgressStep {
+  /** True once the step has happened. */
+  done: boolean;
+  /** When it happened (ISO 8601), or null while it is still waiting. */
+  at: string | null;
+}
+
+/** Where a request sent from the request page stands, for the page that sent it (#364). */
+export interface RequestProgress {
+  /** The request's lifecycle state, lower case (pending, approved, rejected, ...). */
+  status: string;
+  /** The deciding manager's name, once it is known. */
+  manager_name: string;
+  /** True once there is nothing left to wait for (decided and the result email sent). */
+  finished: boolean;
+  steps: {
+    /** The approval ask reached the manager. */
+    sent_to_manager: ProgressStep;
+    /**
+     * A manager or admin approved or rejected; "result" says which once done, and
+     * "decider" names who decided ("an admin", or the manager's name) once done.
+     */
+    decided: ProgressStep & { result: 'approved' | 'rejected' | null; decider: string | null };
+    /** How the balance moved on approval; "effect" says which once done. */
+    balance: ProgressStep & { effect: 'applied' | 'counted' | 'no_balance_used' | null };
+    /** The decision email went to the employee. */
+    result_sent: ProgressStep;
+  };
+}
+
+/**
+ * Ask how a request sent from the request page is going, so its "what happens
+ * next" steps update on their own (#364).
+ *
+ * @param statusToken - The status_token the submit response returned.
+ * @returns The request's progress.
+ * @throws AxiosError 401 when the token is bad, 404 when the request is gone.
+ */
+export const getRequestStatus = (statusToken: string) =>
+  intake.get<RequestProgress>('/request-status', { params: { token: statusToken } });
 
 /** Balances in the dashboard's shape. */
 export interface Balances {

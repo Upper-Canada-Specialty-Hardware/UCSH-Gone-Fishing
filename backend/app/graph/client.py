@@ -41,6 +41,16 @@ class GraphClient:
         await self._request("DELETE", path)
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Send one Graph call, refusing it once the switch to Postgres has run.
+
+        Every SharePoint read and write passes through here, so this one check
+        keeps the whole app off SharePoint after the switch (no fallbacks).
+
+        Raises:
+            SharePointCutOff: After the switch; no token is fetched, nothing is sent.
+        """
+        from app.services.sharepoint_cutoff import refuse_if_cut_off   # lazy: avoid an import cycle
+        await refuse_if_cut_off(method, path)                  # before the token, so nothing leaves the app
         headers = await self._headers()
         resp = await self._http.request(method, path, headers=headers, **kwargs)
 

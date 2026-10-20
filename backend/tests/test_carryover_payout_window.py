@@ -64,7 +64,7 @@ def client(monkeypatch):
     async def by_id(item_id):
         return PAT
 
-    async def create(form_data, email, source=None, notify=True):
+    async def create(form_data, email, source=None, notify=True, employee_id=None):
         test_client.created.append(form_data)
         return {"id": "500"}
 

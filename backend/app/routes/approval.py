@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from app.config import settings
 from app.services.approval_links import validate_approval_token
 from app.services.approval_versions import get_current_version
+from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 from app.services.leave_requests import approve_leave_request, reject_leave_request
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
@@ -30,6 +31,13 @@ LIST_ID_FOR_TYPE = {
     "carryover-payout": settings.SP_LIST_CARRYOVER_PAYOUT,
 }
 
+# The URL segment -> the request kind the Postgres decision path uses.
+KIND_FOR_TYPE = {
+    "leave": "leave",
+    "overtime": "overtime",
+    "carryover-payout": "carryover_payout",
+}
+
 
 def _error_page(request, request_id, message):
     """The one place approval_error.html is rendered.
@@ -51,6 +59,11 @@ async def _validate_and_check(request, request_type, action, request_id, token, 
             request, request_id,
             "System is currently in reporting-only mode. Approvals are disabled.",
         )
+
+    # While the storage switch runs, show the friendly "try again" page instead of
+    # processing an approval that would land on the backend about to be left (#335).
+    if await is_paused():
+        return _error_page(request, request_id, PAUSE_MESSAGE)
 
     valid, error_msg = validate_approval_token(
         request_type, request_id, action, mgr, token, exp, version
@@ -94,6 +107,18 @@ async def confirm_approval(
     if error_response:
         return error_response
 
+    # Record that the manager opened the link (once per version per day); best
+    # effort, and only meaningful once the request lives in the typed table.
+    kind = KIND_FOR_TYPE.get(request_type)
+    if kind:
+        try:
+            from app.repositories.request_store import requests_in_postgres
+            from app.services.request_decisions import record_link_opened
+            if await requests_in_postgres():
+                await record_link_opened(kind, request_id, v, "email_link", mgr)
+        except Exception:
+            logger.debug("Could not record link_opened for %s #%s", request_type, request_id)
+
     return templates.TemplateResponse(
         request,
         "approval_confirm.html",
@@ -128,7 +153,10 @@ async def handle_approval(
     handler = HANDLERS[(request_type, action)]
 
     try:
-        result = await handler(request_id, mgr)
+        # Tag the decision with the channel and the link version so the Postgres
+        # path can log who acted and reject a stale link; the SharePoint handlers
+        # accept and ignore the extra args, so this is safe in both modes.
+        result = await handler(request_id, mgr, "email_link", v)
     except Exception as e:
         logger.exception("Error processing approval for %s #%s", request_type, request_id)
         return _error_page(request, request_id, str(e))

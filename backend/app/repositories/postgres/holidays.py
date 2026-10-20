@@ -6,9 +6,9 @@ setting STORAGE_HOLIDAYS to "postgres" swaps the source of these rows without
 touching the business-day calculator, the half-Friday season logic, or anything
 that consumes them.
 
-The rows must be present before the flag is flipped -- copy them over first with
-the admin dashboard's "Copy from SharePoint" action (see services.holidays
-copy_holidays_from_sharepoint). An empty table is not an error to the calculator,
+The rows are copied from SharePoint by the shadow sync's holiday step and once
+more by the storage switch's final sync, which then flips holidays together with
+requests and staff (see services.holiday_import). An empty table is not an error to the calculator,
 it simply means "no stat holidays", which silently changes how business days are
 counted, so ``get_all`` logs a warning if it ever reads zero rows.
 """

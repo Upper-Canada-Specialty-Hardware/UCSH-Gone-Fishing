@@ -1,7 +1,7 @@
 import logging
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store, staff_in_postgres
 from app.services.employee import _get_sp_user_name_map
 
 logger = logging.getLogger(__name__)
@@ -11,6 +11,32 @@ async def _get_sp_name_to_id_map() -> dict[str, int]:
     """Build name → SP user ID map from User Information List."""
     sp_user_map = await _get_sp_user_name_map()
     return {name: uid for uid, name in sp_user_map.items()}
+
+
+async def _manager_id_to_name() -> dict[int, str]:
+    """Map a manager identifier to a display name, from whichever backend holds staff.
+
+    On Postgres there is no SharePoint User Information List, so a manager is
+    identified by their own staff id and the name comes from the staff table
+    (#265). On SharePoint the identifier is the Microsoft 365 user id and the
+    name comes from the user list, exactly as before.
+
+    Returns:
+        ``{identifier: display name}`` for the managers the screen can name.
+    """
+    if await staff_in_postgres():
+        out: dict[int, str] = {}
+        # Archived people are kept (#119): a request may still name an archived
+        # manager, and the screens need that id to resolve to their name.
+        for item in await staff_store.get_list_items(
+            settings.SP_LIST_STAFF_DIRECTORY, include_archived=True
+        ):
+            try:
+                out[int(item["id"])] = item.get("fields", {}).get("Title", "")  # staff id -> name
+            except (TypeError, ValueError):
+                continue                                       # a non-numeric id is not a manager key
+        return out
+    return await _get_sp_user_name_map()
 
 
 def _extract_all_managers(fields: dict) -> list[dict]:
@@ -29,8 +55,10 @@ def _extract_all_managers(fields: dict) -> list[dict]:
 
 async def get_all_assignments() -> list[dict]:
     """Fetch all Staff Directory employees with their resolved AllManagers."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    sp_user_map = await _get_sp_user_name_map()
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # The id -> name map comes from the staff table on Postgres (no fallback to the
+    # SharePoint user list after the switch) and from the user list otherwise (#265).
+    sp_user_map = await _manager_id_to_name()
 
     assignments = []
     for item in items:
@@ -58,9 +86,13 @@ async def get_all_assignments() -> list[dict]:
 
 
 async def get_staff_as_sp_users() -> list[dict]:
-    """Return all staff members with their SP user IDs for autocomplete."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    name_to_id = await _get_sp_name_to_id_map()
+    """Return all staff members with their manager identifier for autocomplete."""
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # On Postgres there is no SharePoint user list; the person's own staff id is
+    # the manager identifier the assignment screen passes back, so no name->id
+    # map is needed and everyone is selectable (#265).
+    postgres = await staff_in_postgres()
+    name_to_id = {} if postgres else await _get_sp_name_to_id_map()
 
     users = []
     for item in items:
@@ -68,9 +100,9 @@ async def get_staff_as_sp_users() -> list[dict]:
         name = fields.get("Title", "")
         if not name:
             continue
-        sp_user_id = name_to_id.get(name)
+        sp_user_id = int(item["id"]) if postgres else name_to_id.get(name)
         if not sp_user_id:
-            continue
+            continue                                           # SharePoint: not on the user list, not selectable
         users.append({
             "staff_id": str(item["id"]),
             "sp_user_id": sp_user_id,
@@ -83,26 +115,59 @@ async def get_staff_as_sp_users() -> list[dict]:
     return users
 
 
-async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[int]) -> dict:
-    """Update the AllManagers field on a single Staff Directory record."""
-    update_fields: dict = {}
-    if manager_sp_user_ids:
-        update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
-        update_fields["AllManagersLookupId"] = manager_sp_user_ids
-    else:
-        # Clear AllManagers by setting to empty array
-        update_fields["AllManagersLookupId@odata.type"] = "Collection(Edm.Int32)"
-        update_fields["AllManagersLookupId"] = []
+async def update_employee_managers(
+    employee_id: int, manager_sp_user_ids: list[int],
+    history_source: str = "system",
+    history_reason: str = "Updated from the manager assignment screen.",
+) -> dict:
+    """Update the AllManagers field on a single Staff Directory record.
 
-    await sp_client.update_list_item_fields(
-        settings.SP_LIST_STAFF_DIRECTORY, employee_id, update_fields
+    Routed through ``staff_store``, so the change lands in Postgres when staff live
+    there (recording one history row with ``history_source``/``history_reason``) and
+    goes straight to SharePoint otherwise, byte for byte as before.
+
+    Args:
+        employee_id: Staff Directory item id of the person whose managers change.
+        manager_sp_user_ids: The SharePoint user ids of the approving managers; an
+            empty list clears them.
+        history_source: Which channel to record the AllManagers change under in the
+            history; ``"system"`` for the admin assignment screen (the default),
+            ``"manager_dashboard"`` when a manager adds or removes themselves (#363).
+        history_reason: The reason stored with that history row, naming who made the
+            change for a manager-dashboard edit.
+
+    Returns:
+        ``{"id", "name", "managers"}`` with the managers resolved to names.
+    """
+    # The write shape carries the manager ids; resolve their names once, up
+    # front, so the Postgres store stores the names too and the return reads as
+    # names. The map comes from the staff table when staff live in Postgres (no
+    # SharePoint user list there) and from the user list otherwise (#265).
+    sp_user_map = await _manager_id_to_name()
+    # Always send the collection type plus the id list; an empty list clears them.
+    update_fields: dict = {
+        "AllManagersLookupId@odata.type": "Collection(Edm.Int32)",
+        "AllManagersLookupId": manager_sp_user_ids or [],
+    }
+    # The same managers with names, for the Postgres backend (ignored by SharePoint).
+    links = {
+        "managers": [
+            {"sp_user_id": mid, "name": sp_user_map.get(mid, "")}
+            for mid in (manager_sp_user_ids or [])
+        ]
+    }
+
+    await staff_store.update_list_item_fields(
+        settings.SP_LIST_STAFF_DIRECTORY, employee_id, update_fields,
+        links=links,
+        history_source=history_source,                   # "system", or a manager's own team (#363)
+        history_reason=history_reason,
     )
     logger.info("Updated AllManagers for employee %s: %s", employee_id, manager_sp_user_ids)
 
-    # Re-read and return updated data
-    item = await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
+    # Re-read and return updated data (through the store, so it follows the backend).
+    item = await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, employee_id)
     fields = item.get("fields", {})
-    sp_user_map = await _get_sp_user_name_map()
     managers = _extract_all_managers(fields)
     for mgr in managers:
         if not mgr["name"] and mgr["sp_user_id"] in sp_user_map:
@@ -117,8 +182,9 @@ async def update_employee_managers(employee_id: int, manager_sp_user_ids: list[i
 
 async def preview_bulk_operation(operation: str, params: dict) -> dict:
     """Dry-run a bulk operation and return what would change."""
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    sp_user_map = await _get_sp_user_name_map()
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # Postgres: names from the staff table, never the SharePoint user list (#265).
+    sp_user_map = await _manager_id_to_name()
 
     source_id = params.get("source_manager_id")
     target_id = params.get("target_manager_id")

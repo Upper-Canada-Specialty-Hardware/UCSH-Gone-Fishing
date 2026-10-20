@@ -14,6 +14,7 @@ import asyncio
 
 import pytest
 
+from app.graph import sharepoint as sharepoint_module
 from app.services import employee_creation as ec
 from app.services.employee_creation import (
     EmployeeValidationError,
@@ -129,8 +130,10 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=
     monkeypatch.setattr(ec, "get_employee_by_name", _get_by_name)
     monkeypatch.setattr(ec, "get_employee_by_email", _get_by_email)
     monkeypatch.setattr(ec, "_resolve_user_lookup_id", _resolve)
-    monkeypatch.setattr(ec.sp_client, "create_list_item", _create)
-    monkeypatch.setattr(ec.sp_client, "get_list_item", _get_item)
+    # Default storage is SharePoint, so the store delegates to the shared sp_client
+    # object; patch it there so the create and re-read are faked in that mode.
+    monkeypatch.setattr(sharepoint_module.sp_client, "create_list_item", _create)
+    monkeypatch.setattr(sharepoint_module.sp_client, "get_list_item", _get_item)
     monkeypatch.setattr(ec, "update_employee_managers", _update_managers)
     monkeypatch.setattr(ec, "recalculate_request_allow_date", _rad)
     return calls

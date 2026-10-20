@@ -2,6 +2,7 @@ import logging
 
 from app.config import settings
 from app.graph.sharepoint import sp_client
+from app.repositories.staff_store import staff_store
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,9 @@ def map_location_to_province(location: str) -> str:
 
 
 async def get_employee_by_name(name: str) -> dict | None:
-    # Title is not indexed on Staff Directory — fetch all and match client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # Title is not indexed on Staff Directory, so fetch all and match in memory.
+    # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     target = name.strip().lower()
     for item in items:
         if item.get("fields", {}).get("Title", "").strip().lower() == target:
@@ -37,8 +39,9 @@ async def get_employee_by_name(name: str) -> dict | None:
 
 
 async def get_employee_by_email(email: str) -> dict | None:
-    # EmailAddress is not indexed on Staff Directory — fetch all and match client-side
-    items = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # EmailAddress is not indexed on Staff Directory, so fetch all and match in memory.
+    # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     target = email.strip().lower()
     for item in items:
         if item.get("fields", {}).get("EmailAddress", "").strip().lower() == target:
@@ -47,12 +50,66 @@ async def get_employee_by_email(email: str) -> dict | None:
     return None
 
 
+async def get_employees_by_email(email: str) -> list[dict]:
+    """Every staff record carrying an email, in Staff Directory order.
+
+    One mailbox can genuinely belong to two records (a shared desk such as
+    Accounts Payable and the person who reads it), so sign-in asks which one.
+
+    Args:
+        email: The address, matched case-insensitively.
+
+    Returns:
+        The matching records (``{"id", "fields"}``); empty when none match.
+    """
+    items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)   # one read of the directory
+    target = email.strip().lower()
+    return [
+        item for item in items
+        if (item.get("fields", {}).get("EmailAddress") or "").strip().lower() == target
+    ]
+
+
 async def get_employee_by_id(item_id: str | int) -> dict | None:
     try:
-        return await sp_client.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
+        # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+        # A single-id lookup is never filtered, so an archived person still resolves (#119).
+        return await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, int(item_id))
     except Exception:
         logger.warning("Employee not found by ID: %s", item_id)
         return None
+
+
+async def email_belongs_to_archived(email: str) -> bool:
+    """Whether every staff record on this email is archived (#119).
+
+    The default directory read leaves archived people out, so ``get_employees_by_email``
+    cannot see them; this read keeps them, to tell "archived, refuse" apart from
+    "not on staff, new-hire path". A shared mailbox with even one active record is
+    not treated as archived, so that record still signs in.
+
+    Args:
+        email: The address, matched case-insensitively.
+
+    Returns:
+        True when at least one record carries the address and all of them are
+        archived; False when none match or any active record carries it.
+    """
+    from app.repositories.postgres.staff import is_archived   # local: avoids importing it app-wide
+    from app.repositories.staff_store import staff_in_postgres
+    if not await staff_in_postgres():                       # no archive concept on SharePoint
+        return False
+    items = await staff_store.get_list_items(
+        settings.SP_LIST_STAFF_DIRECTORY, include_archived=True
+    )
+    target = email.strip().lower()
+    matched = [
+        item for item in items
+        if (item.get("fields", {}).get("EmailAddress") or "").strip().lower() == target
+    ]
+    if not matched:                                          # nobody on this address at all
+        return False
+    return all(is_archived(item.get("fields", {})) for item in matched)
 
 
 async def get_all_managers_for_employee(employee: dict) -> list[dict]:
@@ -80,16 +137,20 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
 
 
 async def is_manager(employee_name: str) -> bool:
-    """Check if anyone lists this employee in their AllManagers field."""
-    all_staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    for staff in all_staff:
-        all_managers = staff.get("fields", {}).get("AllManagers")
-        if all_managers and isinstance(all_managers, list):
-            for entry in all_managers:
-                name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
-                if name == employee_name:
-                    return True
-    return False
+    """Whether anyone lists this person in their AllManagers field (#376).
+
+    Args:
+        employee_name: Their name; a ``ManagerName`` (``manager_match``) also
+            matches by their link id, so a manager whose Microsoft 365 name
+            differs from their staff name is still found.
+
+    Returns:
+        True when at least one person lists them.
+    """
+    from app.services.manager_match import lists_manager   # lazy: manager_match imports staff_store
+    # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
+    all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    return any(lists_manager(staff.get("fields", {}), employee_name) for staff in all_staff)
 
 
 async def get_employee_roles(employee: dict) -> list[str]:
@@ -97,7 +158,8 @@ async def get_employee_roles(employee: dict) -> list[str]:
     fields = employee.get("fields", {})
     name = fields.get("Title", "")
     roles = ["employee"]
-    if await is_manager(name):
+    from app.services.manager_match import manager_name_of   # lazy, as in is_manager
+    if await is_manager(await manager_name_of(employee)):     # by id or by name (#376)
         roles.append("manager")
     if name in ADMIN_NAMES:
         roles.append("admin")

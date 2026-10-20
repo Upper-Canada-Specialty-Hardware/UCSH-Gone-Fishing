@@ -8,6 +8,19 @@ from app.graph.client import graph_client
 
 logger = logging.getLogger(__name__)
 
+# The most pages a single list read will fetch before it gives up. Set high so a
+# real list is always read whole; a read that still hits it is treated as
+# truncated and raised, never quietly returned short (#336 fix).
+MAX_PAGES = 1000
+
+
+class SharePointReadTruncated(RuntimeError):
+    """A list read hit the page safety limit, so it may be missing items.
+
+    Raised instead of returning a short list, so the sync fails and the switch
+    refuses rather than treating unread items as deleted.
+    """
+
 
 class SharePointClient:
     def __init__(self):
@@ -38,9 +51,8 @@ class SharePointClient:
 
         url = f"{self._list_path(list_id)}/items"
         items: list[dict] = []
-        max_pages = 50
 
-        for page in range(max_pages):
+        for page in range(MAX_PAGES):
             data = await graph_client.get(url, params=params)
             items.extend(data.get("value", []))
 
@@ -52,9 +64,15 @@ class SharePointClient:
             url = next_link
             params = None
         else:
-            logger.warning(
+            # Still a next page after MAX_PAGES: the read is incomplete, so the
+            # items we have are not the whole list. Raise rather than return short,
+            # so the caller (the sync) fails instead of taking unread items as gone.
+            logger.error(
                 "get_list_items hit %d-page safety limit for list %s (fetched %d items)",
-                max_pages, list_id, len(items),
+                MAX_PAGES, list_id, len(items),
+            )
+            raise SharePointReadTruncated(
+                f"list {list_id} read stopped after {MAX_PAGES} pages ({len(items)} items)"
             )
 
         return items
@@ -80,13 +98,58 @@ class SharePointClient:
                 return None
             raise
 
+    async def get_item_versions(self, list_id: str, item_id: str | int) -> list[dict]:
+        """Every kept version of one list item, newest first, with its fields (#357).
+
+        Read only. SharePoint keeps a version each time an item is written, so a
+        request's versions show when it was approved and by whom, and a staff
+        record's versions show its balances before and after every write.
+
+        Args:
+            list_id: The list the item is on.
+            item_id: The item's id.
+
+        Returns:
+            Graph listItemVersion objects (``id``, ``lastModifiedDateTime``,
+            ``lastModifiedBy``, ``fields``); empty when the item is gone (404)
+            or the id is not a SharePoint id (400).
+
+        Raises:
+            httpx.HTTPStatusError: For any other failure (throttling, an outage).
+            SharePointReadTruncated: When the versions run past the page limit.
+        """
+        url = f"{self._list_path(list_id)}/items/{item_id}/versions"
+        versions: list[dict] = []
+        try:
+            for _ in range(MAX_PAGES):
+                data = await graph_client.get(url)
+                versions.extend(data.get("value", []))
+                url = data.get("@odata.nextLink")              # absolute, with its own query
+                if not url:
+                    return versions
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (400, 404):           # gone, or not an item id at all
+                return []
+            raise
+        raise SharePointReadTruncated(f"versions of item {item_id} on list {list_id} ran past {MAX_PAGES} pages")
+
     async def create_list_item(self, list_id: str, fields: dict) -> dict:
+        # Rehearsal mode must not change SharePoint; reads stay open, writes skip
+        # with a log line and a harmless empty result (#339).
+        from app.services.rehearsal import sharepoint_writes_allowed
+        if not sharepoint_writes_allowed():
+            logger.warning("Rehearsal: skipped creating an item on list %s", list_id)
+            return {}
         path = f"{self._list_path(list_id)}/items"
         return await graph_client.post(path, json={"fields": fields})
 
     async def update_list_item_fields(
         self, list_id: str, item_id: str | int, fields: dict
     ) -> dict:
+        from app.services.rehearsal import sharepoint_writes_allowed
+        if not sharepoint_writes_allowed():
+            logger.warning("Rehearsal: skipped updating item %s on list %s", item_id, list_id)
+            return {}
         path = f"{self._list_path(list_id)}/items/{item_id}/fields"
         return await graph_client.patch(path, json=fields)
 
@@ -97,6 +160,10 @@ class SharePointClient:
             list_id: The SharePoint list the item lives in.
             item_id: The item to delete.
         """
+        from app.services.rehearsal import sharepoint_writes_allowed
+        if not sharepoint_writes_allowed():
+            logger.warning("Rehearsal: skipped deleting item %s on list %s", item_id, list_id)
+            return
         path = f"{self._list_path(list_id)}/items/{item_id}"
         await graph_client.delete(path)  # Graph returns 204 No Content
 
@@ -110,9 +177,8 @@ class SharePointClient:
         all_items: list[dict] = []
         delta_link = ""
         params = None
-        max_pages = 50
 
-        for page in range(max_pages):
+        for page in range(MAX_PAGES):
             data = await graph_client.get(url, params=params)
             all_items.extend(data.get("value", []))
 
@@ -128,9 +194,14 @@ class SharePointClient:
             url = next_link
             params = None
         else:
-            logger.warning(
+            # No deltaLink after MAX_PAGES: the delta is incomplete, so raise rather
+            # than hand back a short page with no delta token to resume from.
+            logger.error(
                 "get_delta hit %d-page safety limit for list %s (fetched %d items)",
-                max_pages, list_id, len(all_items),
+                MAX_PAGES, list_id, len(all_items),
+            )
+            raise SharePointReadTruncated(
+                f"delta for list {list_id} stopped after {MAX_PAGES} pages ({len(all_items)} items)"
             )
 
         return {"value": all_items, "@odata.deltaLink": delta_link}

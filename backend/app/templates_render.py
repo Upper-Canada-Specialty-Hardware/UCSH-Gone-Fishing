@@ -127,6 +127,25 @@ def render_leave_hourly_approved(fields: dict, manager_name: str) -> str:
     return _render("leave_hourly_approved.html", fields=fields, manager_name=manager_name)
 
 
+def render_request_result(heading: str, intro: str, rows: list[dict], note: str = "") -> str:
+    """The one decision-result email body, built from a request's ledger step (#325).
+
+    One shell for every outcome: a before/after table for the pots that moved
+    (salaried and hourly sick), the vacation-taken counter for hourly vacation,
+    or just a note when nothing was used; a rejection passes no rows.
+
+    Args:
+        heading: The title line, e.g. "Leave Request: Approved".
+        intro: The opening sentence naming the request and who decided it.
+        rows: ``[{"label", "value"}]`` lines for the balance table, or empty.
+        note: A closing sentence (why nothing moved, or a rejection note), or "".
+
+    Returns:
+        The email body HTML; the shared layout is applied by the sender.
+    """
+    return _render("request_result.html", heading=heading, intro=intro, rows=rows, note=note)
+
+
 def render_partial_day_holiday_rejected(fields: dict, holiday_name: str, reason: str) -> str:
     return _render(
         "partial_day_holiday_rejected.html",
@@ -332,27 +351,6 @@ def render_request_now_blocked(
 
 
 # --- Dashboard ---
-
-def render_staff_setup_issues(
-    employee_name: str, issues: list[dict], record_url: str | None = None,
-) -> str:
-    """Render the nudge sent to the creator of a broken Staff Directory record.
-
-    Args:
-        employee_name: The name on the record, so the reader knows which of
-            their records this is about.
-        issues: One {"code", "title", "detail", "fix"} per failing check.
-        record_url: Link to the list item, or None when the item carries no
-            webUrl - the link line is then left out rather than sent empty.
-
-    Returns:
-        The rendered HTML body.
-    """
-    return _render(
-        "staff_setup_issues.html",
-        employee_name=employee_name, issues=issues, record_url=record_url,
-    )
-
 
 def render_dashboard_link_email(manager_name: str, dashboard_url: str) -> str:
     return _render("dashboard_link_email.html", manager_name=manager_name, dashboard_url=dashboard_url)

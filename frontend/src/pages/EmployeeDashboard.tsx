@@ -1,9 +1,11 @@
-import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
+import { loadSession, staffCacheKey } from '../api/intake';
 import { Alert, Avatar, Box, Button, Chip, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import KindPill from '../components/KindPill';
-import RequestHistory from '../components/RequestHistory';
+import RequestsHistoryTable from '../components/RequestsHistoryTable';
 import TakenFrom from '../components/TakenFrom';
 import { Kpi, Panel } from '../components/Panels';
 import { MonthlyBars } from '../components/manager/Charts';
@@ -11,6 +13,8 @@ import { approveSummary, daysOffByMonth } from '../components/manager/teamStats'
 import { daysToCarryReset, myKindRows, myYear } from '../components/employee/myStats';
 import { STATUS_COLOR } from '../components/dataGridDefaults';
 import { getMyBalances, getMyRequests } from '../api/client';
+import { useLiveRequests } from '../hooks/useLiveRequests';
+import { LiveEvent } from '../api/events';
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { parseDay, today } from '../utils/dates';
 import { firstName } from '../utils/personColor';
@@ -176,6 +180,13 @@ function initials(name: string): string {
  *
  * @returns The employee dashboard.
  */
+/** Everything the employee dashboard loads at launch, as saved for the next launch. */
+interface EmployeeSnapshot {
+  balances: any;
+  employee: any;
+  requests: any[];
+}
+
 export default function EmployeeDashboard() {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -192,15 +203,74 @@ export default function EmployeeDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Live updates: merge each timeline event into the loaded requests, so an
+  // approval shows here without a reload (#328). A decision by email, SMS or an
+  // admin also moves this person's balances and the Taken-from chips, which the
+  // merge cannot know, so a balance-changing event refetches the balances and
+  // requests on a short debounce. Opens once the data has loaded.
+  const liveRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLiveEvent = useCallback((ev: LiveEvent) => {
+    const balanceTypes = ['approved', 'rejected', 'refunded', 'cancelled'];   // the ones that move a balance
+    if (!balanceTypes.includes(ev.type)) return;
+    if (liveRefresh.current) clearTimeout(liveRefresh.current);
+    liveRefresh.current = setTimeout(() => {
+      Promise.all([getMyBalances(), getMyRequests()])
+        .then(([balRes, reqRes]) => {
+          setBalances(balRes.data.balances);               // fresh pots after the decision
+          setRequests(reqRes.data.requests || []);         // fresh Taken-from chips and status
+        })
+        .catch(() => { /* the merged rows stay; balances refresh on the next event */ });
+    }, 400);
+  }, []);
+  // Their own staff record changed (an admin edit, a balance correction): re-read
+  // the balances and profile. Another person's change is ignored.
+  const onStaffChange = useCallback((staffId: string) => {
+    if (staffId !== String(loadSession()?.uid ?? '')) return;
+    getMyBalances()
+      .then((r) => { setBalances(r.data.balances); setEmployee(r.data.employee); })
+      .catch(() => { /* the figures stay until the next change */ });
+  }, []);
+  useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
+
   useEffect(() => {
-    Promise.all([getMyBalances(), getMyRequests()])
-      .then(([balRes, reqRes]) => {
-        setBalances(balRes.data.balances);
-        setEmployee(balRes.data.employee);
-        setRequests(reqRes.data.requests || []);
-      })
-      .catch((err) => setError(err.response?.data?.detail || 'Failed to load data'))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const cacheKey = staffCacheKey('me');               // "me:<role>:<id>", or null when signed out
+    let painted = false;                                // a saved snapshot is already on screen
+
+    /** Put one snapshot of the launch data on screen. */
+    const show = (s: EmployeeSnapshot) => {
+      setBalances(s.balances);
+      setEmployee(s.employee);
+      setRequests(s.requests);
+      setLoading(false);
+    };
+
+    const load = async () => {
+      // A relaunch paints the last data at once; the fresh load below replaces it.
+      const cached = cacheKey ? await readLaunchCache<EmployeeSnapshot>(cacheKey) : null;
+      // Only a snapshot of this view's shape is shown; anything else waits for the fresh load.
+      const usable = cached && cached.balances && cached.employee && Array.isArray(cached.requests);
+      if (usable && !cancelled) { show(cached); painted = true; }
+      try {
+        const [balRes, reqRes] = await Promise.all([getMyBalances(), getMyRequests()]);
+        if (cancelled) return;
+        const fresh: EmployeeSnapshot = {
+          balances: balRes.data.balances,
+          employee: balRes.data.employee,
+          requests: reqRes.data.requests || [],
+        };
+        show(fresh);
+        if (cacheKey) void writeLaunchCache(cacheKey, fresh);   // the head start for the next launch
+      } catch (err: any) {
+        if (cancelled) return;
+        // With saved data on screen, a failed refresh keeps it rather than blanking the page.
+        if (!painted) setError(err.response?.data?.detail || 'Failed to load data');
+        setLoading(false);
+      }
+    };
+
+    void load();
+    return () => { cancelled = true; };
   }, []);
 
   // The requests in three groups for the overview.
@@ -375,10 +445,12 @@ export default function EmployeeDashboard() {
       )}
 
       {tab === 'history' && (
-        // minWidth 0 and overflow hidden keep the table scrolling inside the card, never the page.
-        <Paper sx={{ p: 2, minWidth: 0, overflow: 'hidden' }}>
-          <RequestHistory requests={requests} />
-        </Paper>
+        // minWidth 0 lets this item shrink below the table's natural width; the
+        // table (RequestsHistoryTable) is the admin requests table in read-only
+        // "mine" mode and keeps itself inside the card, never widening the page.
+        <Box sx={{ minWidth: 0 }}>
+          <RequestsHistoryTable requests={requests} mode="mine" timelineScope="me" />
+        </Box>
       )}
       </Enter>
     </Box>

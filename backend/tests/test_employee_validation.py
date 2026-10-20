@@ -877,3 +877,83 @@ def test_module_makes_no_write_or_notify_calls():
     called = _called_function_names(source)
     leaked = called & FORBIDDEN_CALLS
     assert not leaked, f"validation module must not call writers/notifiers: {leaked}"
+
+
+def test_a_shared_mailbox_is_not_reported_as_a_different_person():
+    # Two real records on one mailbox: the round-trip lands on the other record,
+    # which carries the same email, so this is a shared desk, not a mis-wiring.
+    other = {"id": "40", "fields": {"Title": "Accounts Payable", "EmailAddress": "AP@ucsh.com"}}
+    verdict = ev._identity_verdict("41", "ap@ucsh.com", 12, other)
+    assert verdict["status"] == "pass"
+    assert "shared with Accounts Payable" in verdict["detail"]
+
+
+def test_a_different_person_with_another_email_still_fails():
+    other = {"id": "40", "fields": {"Title": "Someone Else", "EmailAddress": "else@ucsh.com"}}
+    assert ev._identity_verdict("41", "ap@ucsh.com", 12, other)["status"] == "fail"
+
+
+# ----- employment type fits the record (moved here from the legacy data screen) -----
+
+def test_an_hourly_record_with_a_vacation_grant_fails_the_employment_type_check():
+    fields = {**GOOD_FIELDS, "SalaryHourly": "Hourly", "DefaultYearlyVacationDays": 15, "CurrentVacationBalance": 8}
+    check = _by_code(_report(employee_fields=fields), "employment_type_fits")
+    assert check["status"] == "fail"
+    assert "Hourly" in check["detail"] and "15 days" in check["detail"] and "8 days" in check["detail"]
+
+
+def test_an_hourly_record_carrying_only_an_old_negative_vacation_balance_passes():
+    # Hourly BC staff carry a negative vacation balance from before the hourly rules.
+    fields = {**GOOD_FIELDS, "SalaryHourly": "Hourly BC", "DefaultYearlyVacationDays": 0, "CurrentVacationBalance": -9}
+    assert _by_code(_report(employee_fields=fields), "employment_type_fits")["status"] == "pass"
+
+
+def test_a_salaried_record_gets_no_employment_type_check():
+    report = _report(employee_fields={**GOOD_FIELDS, "SalaryHourly": "Salary"})
+    assert all(c["code"] != "employment_type_fits" for c in report["checks"])
+
+
+# ----- approved requests that never moved a balance -----
+
+def test_the_unmoved_check_names_the_first_requests_and_counts_the_rest():
+    unmoved = [
+        {"kind": "leave", "item_id": 3857 - i, "leave_type": "Vacation", "decided": date(2026, 9, 29)}
+        for i in range(7)
+    ]
+    check = ev._unmoved_check(unmoved)
+    assert check["status"] == "fail" and check["code"] == "approved_balance_unmoved"
+    assert check["detail"].startswith("7 approved request(s) never moved a balance: leave #3857 (Vacation, Sep 29, 2026)")
+    assert check["detail"].endswith("; and 2 more.")
+
+
+def test_approved_requests_without_balance_change_keeps_only_recent_costing_ones():
+    from app.database import async_session
+    from app.models.request_record import RequestRecord
+    from datetime import datetime, timezone
+
+    person = f"emp-{uuid.uuid4().hex[:8]}"                      # the test database persists between runs
+    base = 900_000_000 + uuid.uuid4().int % 50_000_000           # item ids no other test uses
+
+    def row(offset, leave_type, decided, state="not_applied", status="approved"):
+        return RequestRecord(
+            kind="leave", item_id=base + offset, employee_id=person, employee_name="Pat Staff",
+            status=status, stage="Approved", leave_type=leave_type, balance_state=state,
+            start_date=decided, days=1,                         # a leave row needs its dates and cost
+            decided_at=datetime.combine(decided, datetime.min.time(), tzinfo=timezone.utc), extra={},
+        )
+
+    async def flow():
+        async with async_session() as s:
+            s.add_all([
+                row(1, "Vacation", date(2026, 9, 29)),               # counts: recent, costs days, never moved
+                row(2, "Work from Home", date(2026, 9, 29)),         # retired type that costs nothing: skipped
+                row(3, "Vacation", date(2025, 6, 1)),                # before the cut-off: legacy, skipped
+                row(4, "Vacation", date(2026, 9, 30), state="applied"),   # moved: fine
+                row(5, "Vacation", date(2026, 9, 30), status="pending"),  # not approved: skipped
+            ])
+            await s.commit()
+        return await ev.approved_requests_without_balance_change()
+
+    found = asyncio.run(flow())[person]
+    assert [r["item_id"] for r in found] == [base + 1]
+    assert found[0]["decided"] == date(2026, 9, 29)

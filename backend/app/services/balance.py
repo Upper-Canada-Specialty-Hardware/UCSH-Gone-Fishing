@@ -2,9 +2,9 @@ import logging
 from datetime import date
 
 from app.config import settings
-from app.graph.sharepoint import sp_client
 from app.services.employee import get_employee_by_id
-from app.services.employment import is_hourly, leave_costs_balance, whole_sick_days
+from app.services.employment import NO_COST_LEAVE, is_hourly, leave_costs_balance, whole_sick_days
+from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ async def cascade_current_year(employee_id: str | int) -> dict:
                 and result["CurrentVacationBalance"] == vacation):
             break
 
-        await sp_client.update_list_item_fields(
+        await staff_store.update_list_item_fields(
             settings.SP_LIST_STAFF_DIRECTORY, employee_id, result,
         )
 
@@ -105,7 +105,7 @@ async def cascade_next_year(employee_id: str | int) -> dict:
                 and ny_result["CarryOver"] == carryover):
             break
 
-        await sp_client.update_list_item_fields(
+        await staff_store.update_list_item_fields(
             settings.SP_LIST_STAFF_DIRECTORY, employee_id,
             {"CarryOver": ny_result["CarryOver"], "CurrentOvertimeBalance": ny_result["CurrentOvertimeBalance"]},
         )
@@ -163,7 +163,7 @@ async def recalculate_request_allow_date(
         return None  # No change needed
 
     # Include Title to avoid clearing it (SP PatchItem behavior)
-    await sp_client.update_list_item_fields(
+    await staff_store.update_list_item_fields(
         settings.SP_LIST_STAFF_DIRECTORY,
         employee_id,
         {
@@ -187,7 +187,7 @@ async def apply_vacation_offset(employee_id: str | int) -> None:
     if new_vacation == vacation and new_overtime == overtime:
         return
 
-    await sp_client.update_list_item_fields(
+    await staff_store.update_list_item_fields(
         settings.SP_LIST_STAFF_DIRECTORY, employee_id,
         {"CurrentVacationBalance": new_vacation, "CurrentOvertimeBalance": new_overtime},
     )
@@ -201,8 +201,8 @@ def simulate_leave_impact(
     """Simulate balance impact of approving a leave request.
     Returns projected SP-style balance dict, or None for no-impact types.
     """
-    if leave_type in ("Bereavement", "Jury Duty"):
-        return None
+    if leave_type in NO_COST_LEAVE:      # bereavement, jury duty, work from home (#375)
+        return None                       # no impact: and no overflow step either
 
     # hourly (#300): sick is their only balance. A sick or part day takes
     # whole sick days and stops there (no cascade, so sick may go below zero);

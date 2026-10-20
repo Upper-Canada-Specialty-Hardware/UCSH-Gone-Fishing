@@ -43,7 +43,7 @@ reads and feeds the pure core.
 import logging
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.database import async_session
@@ -67,6 +67,7 @@ from app.services.balance import (
     simulate_carryover_payout_impact,
 )
 from app.repositories.request_store import request_store
+from app.repositories.staff_store import staff_in_postgres, staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
 
@@ -584,6 +585,31 @@ def build_validation_report(
         bad_status="warn",
     ))
 
+    # --- Employment type fits the record ---
+    # Hourly staff get no vacation grant and bank no vacation (#300), so a
+    # vacation grant or a positive vacation bank on an hourly record means the
+    # employment type, or those values, are wrong. A negative vacation balance
+    # is left alone: hourly BC staff carry one from before the hourly rules.
+    if is_hourly(employee_fields):
+        vacation_grant = _as_float(employee_fields.get("DefaultYearlyVacationDays"))   # hourly: should be 0
+        vacation_bank = _as_float(employee_fields.get("CurrentVacationBalance"))       # hourly: never above 0
+        salaried_values = []                                      # each salaried value found, in words
+        if vacation_grant > 0:
+            salaried_values.append(f"a yearly vacation grant of {vacation_grant:g} days")
+        if vacation_bank > 0:
+            salaried_values.append(f"a vacation balance of {vacation_bank:g} days")
+        checks.append(_measured(
+            "employment_type_fits", "balances",
+            label="Salaried vacation values on an hourly record",
+            actual=len(salaried_values), expected=0, comparison="equals",
+            ok_detail="The record is hourly and carries no salaried vacation values.",
+            bad_detail=(
+                f"The record is {(employee_fields.get('SalaryHourly') or '').strip()} but has "
+                + " and ".join(salaried_values)
+                + ", which only salaried staff carry."
+            ),
+        ))
+
     # --- Per-leave-type dry runs (current year) ---
     for code, leave_type, days in LEAVE_TYPE_CASES:
         checks.append(_simulate_leave_case(code, leave_type, employee_fields, days, is_next_year=False))
@@ -866,7 +892,7 @@ def summarise_request(kind: str, item: dict, notified: bool | None = None) -> di
         "item_id": str(item.get("id", "")),
         "status": status,
         "has_amount": amount > 0,
-        "has_manager": bool(f.get("ManagerLookupId")),
+        "has_manager": bool(f.get("ManagerLookupId") or f.get("ManagerID")),   # SharePoint lookup id, or the staff id on Postgres
         "notified": notified,
         "start_date": str(f.get("StartDate") or "")[:10],
         "end_date": str(f.get("EndDate") or "")[:10],
@@ -1049,6 +1075,14 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
         )}
     if str(resolved.get("id")) != str(employee_id):
         other = resolved.get("fields", {}).get("Title", "")
+        other_email = (resolved.get("fields", {}).get("EmailAddress") or "").strip().lower()
+        if other_email == email.lower():
+            # A shared mailbox (e.g. Accounts Payable and the person who reads it):
+            # both records are real, and the request page asks which one signs in.
+            return {"status": "pass", "account_count": 1, "lookup_id": lookup_id, "detail": (
+                f"This email is shared with {other} (#{resolved.get('id')}). The request "
+                "page asks which of them is signing in, so each gets their own requests."
+            )}
         return {"status": "fail", "account_count": 1, "lookup_id": lookup_id, "detail": (
             f"Their email/name matches a different person in the directory "
             f"({other}, #{resolved.get('id')}), not this record."
@@ -1077,6 +1111,12 @@ async def _check_identity(employee_id, fields: dict) -> dict:
         {"status", "account_count", "detail", "lookup_id"} - lookup_id is None
         when the email never resolved.
     """
+    if await staff_in_postgres():
+        # After the switch a request links to its submitter by email against the
+        # staff table, so that table is the directory; SharePoint is never read.
+        staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        directory, id_to_name = _staff_as_directory(staff)
+        return _identity_from_maps(str(employee_id), fields, directory, id_to_name, _index_staff_by_name(staff))
     email = (fields.get("EmailAddress") or "").strip()
     if not email:
         return _identity_verdict(employee_id, email, None, None)
@@ -1084,6 +1124,37 @@ async def _check_identity(employee_id, fields: dict) -> dict:
     if not lookup_id:
         return _identity_verdict(employee_id, email, None, None)
     return _identity_verdict(employee_id, email, lookup_id, await resolve_person_field(lookup_id))
+
+
+def _staff_as_directory(staff: list[dict]) -> tuple[dict[str, int], dict[int, str]]:
+    """The staff table read as the directory, for after the switch.
+
+    Gives the same two maps ``_parse_m365_rows`` builds from the Microsoft 365
+    user list, keyed by staff id instead of a SharePoint lookup id, so every
+    identity and supervisor check runs unchanged on Postgres.
+
+    Args:
+        staff: Staff rows in the ``{"id","fields"}`` shape.
+
+    Returns:
+        (lowercased email -> staff id, staff id -> name). The first row with an
+        email keeps it, as the staff import does with a duplicate.
+    """
+    by_email: dict[str, int] = {}
+    by_id: dict[int, str] = {}
+    for row in staff:
+        try:
+            staff_id = int(row["id"])                       # staff ids are whole numbers
+        except (KeyError, TypeError, ValueError):
+            continue                                        # unmatchable either way
+        fields = row.get("fields", {})
+        email = (fields.get("EmailAddress") or "").strip().lower()
+        if email:
+            by_email.setdefault(email, staff_id)            # first wins on a duplicate
+        name = fields.get("Title", "")
+        if name:
+            by_id[staff_id] = name
+    return by_email, by_id
 
 
 async def _fetch_m365_rows() -> list[dict] | None:
@@ -1147,6 +1218,9 @@ async def _load_m365_directory() -> dict[str, int] | None:
         Lowercased email -> lookup id, or None when the list could not be read
         at all — which is a different answer from "nobody matched".
     """
+    if await staff_in_postgres():                           # after the switch: the staff table
+        staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        return _staff_as_directory(staff)[0]
     users = await _fetch_m365_rows()
     if users is None:
         return None
@@ -1189,7 +1263,7 @@ async def _count_same_name_others(employee_id: str | int, name: str) -> int | No
     if not name:
         return 0
     try:
-        staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+        staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     except Exception:  # noqa: BLE001 - one unreadable list must not sink the report
         logger.exception("Setup check: could not re-read the Staff Directory")
         return None
@@ -1262,6 +1336,20 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
     """
     matched: list[tuple[str, str, dict]] = []  # (kind, list_id, raw row)
 
+    # After the switch every request row carries the submitter's staff id, so
+    # all three lists match on it (no SharePoint person column involved).
+    on_postgres = await staff_in_postgres()
+    if on_postgres:
+        for kind, list_id in (
+            ("leave", settings.SP_LIST_LEAVE_REQUESTS),
+            ("overtime", settings.SP_LIST_OVERTIME_REQUESTS),
+            ("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT),
+        ):
+            for item in await request_store.get_list_items(list_id):   # Postgres; an error surfaces
+                if str(item.get("fields", {}).get("EmployeeID") or "") == str(employee_id):
+                    matched.append((kind, list_id, item))
+        submitter_lookup_id = None                          # skip the SharePoint matching below
+
     # Without the lookup id there is no way to tell their rows from anyone
     # else's, so these two lists are skipped rather than guessed at.
     if submitter_lookup_id:
@@ -1281,7 +1369,8 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
     # Carry-over/payout stores the Staff Directory id outright, so it works even
     # when the Microsoft 365 lookup failed.
     try:
-        co_po_items = await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
+        # Already matched above on Postgres.
+        co_po_items = [] if on_postgres else await request_store.get_list_items(settings.SP_LIST_CARRYOVER_PAYOUT)
     except Exception:  # noqa: BLE001
         logger.exception("Setup check: could not read the carry-over/payout list")
         co_po_items = []
@@ -1557,6 +1646,78 @@ def _creator_email(record: dict) -> str | None:
     return (user.get("email") or "").strip().lower() or None
 
 
+# Leave types that never move a balance: the two the app spends nothing on, plus
+# the retired "Work from Home", still approved through the old form.
+UNMOVED_SKIP_LEAVE_TYPES = ("Bereavement", "Jury Duty", "Work from Home")
+# How many requests the unmoved-balance detail names before "and N more".
+UNMOVED_NAMED = 5
+
+
+async def approved_requests_without_balance_change() -> dict[str, list[dict]]:
+    """Recent approved requests whose balance never moved, by staff id.
+
+    Only requests decided on or after the legacy cut-off count: older ones
+    predate the current balance rules, so a missing move says nothing about
+    them. A request counts when it is approved, its balance state is still
+    ``not_applied`` (it should have moved a pot and did not), and its leave type
+    is one that costs days.
+
+    Returns:
+        Staff id -> that person's requests, each {"kind", "item_id",
+        "leave_type", "decided"} (decided is a date), newest first.
+    """
+    from app.models.request_record import RequestRecord          # lazy: keeps this module's imports light
+    from app.services.request_import import LEGACY_CUTOFF          # lazy: the importer imports the staff store
+    when = func.coalesce(RequestRecord.decided_at, RequestRecord.created_at)   # old rows may lack a decided date
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(RequestRecord.employee_id, RequestRecord.kind, RequestRecord.item_id,
+                   RequestRecord.leave_type, when)
+            .where(
+                RequestRecord.status == "approved",
+                RequestRecord.balance_state == "not_applied",      # should have moved a pot; nothing recorded
+                or_(RequestRecord.leave_type.is_(None),            # overtime and carry-over carry no leave type
+                    RequestRecord.leave_type.not_in(UNMOVED_SKIP_LEAVE_TYPES)),
+                RequestRecord.employee_id.is_not(None),
+            )
+            .order_by(when.desc())
+        )).all()
+    by_person: dict[str, list[dict]] = {}
+    for employee_id, kind, item_id, leave_type, decided in rows:
+        # The cut-off is applied here, on the date alone, so it reads the same on
+        # Postgres and SQLite (their stored datetimes compare differently).
+        if decided is None or decided.date() < LEGACY_CUTOFF:
+            continue                                               # undated, or before the current rules
+        by_person.setdefault(str(employee_id), []).append({
+            "kind": kind, "item_id": item_id, "leave_type": leave_type,
+            "decided": decided.date() if decided else None,
+        })
+    return by_person
+
+
+def _unmoved_check(unmoved: list[dict]) -> dict:
+    """The setup row for approved requests that never moved a balance.
+
+    Args:
+        unmoved: The person's requests from approved_requests_without_balance_change.
+
+    Returns:
+        One failing check naming the first few requests.
+    """
+    labels = []
+    for r in unmoved[:UNMOVED_NAMED]:
+        what = r["leave_type"] or ("overtime" if r["kind"] == "overtime" else "carry-over or payout")
+        day = r["decided"]                                        # a date, or None
+        when = f", {day:%b} {day.day}, {day.year}" if day else "" # "Sep 29, 2026", portable (no %-d)
+        labels.append(f"{r['kind'].replace('_', ' ')} #{r['item_id']} ({what}{when})")
+    more = len(unmoved) - UNMOVED_NAMED
+    return _check(
+        "approved_balance_unmoved", "balances", "fail",
+        f"{len(unmoved)} approved request(s) never moved a balance: "
+        + "; ".join(labels) + (f"; and {more} more." if more > 0 else "."),
+    )
+
+
 def build_setup_row(
     *,
     record: dict,
@@ -1568,6 +1729,7 @@ def build_setup_row(
     sample_start: date,
     sample_end: date,
     today: date,
+    unmoved: list[dict] | None = None,
 ) -> dict:
     """Grade one Staff Directory record from already-fetched data. No I/O.
 
@@ -1587,6 +1749,8 @@ def build_setup_row(
         sample_start: First day of the sample range for the day calculation.
         sample_end: Last day of that range.
         today: The date the sweep is running.
+        unmoved: This person's approved requests that never moved a balance
+            (see ``approved_requests_without_balance_change``), or None.
 
     Returns:
         {"employee_id", "employee_name", "department", "location", "fails",
@@ -1635,6 +1799,8 @@ def build_setup_row(
     )
 
     kept = [c for c in report["checks"] if c["category"] in SETUP_LIST_CATEGORIES]
+    if unmoved:                                                    # approved, should have moved a pot, did not
+        kept.append(_unmoved_check(unmoved))
     return {
         "employee_id": employee_id,
         "employee_name": name,
@@ -1660,8 +1826,7 @@ async def validate_all_employee_setups() -> dict:
         {"total_checked", "flagged", "directory_unreadable"} - flagged holds one
         row per record with at least one failing check, sorted by name.
     """
-    staff = await sp_client.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    m365_rows = await _fetch_m365_rows()
+    staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     holiday_items = await get_holiday_repository().get_all()
 
     # A directory that could not be read stays None all the way down, so the
@@ -1669,14 +1834,20 @@ async def validate_all_employee_setups() -> dict:
     # every record at once.
     directory: dict[str, int] | None = None
     sp_user_to_name: dict[int, str] = {}
-    if m365_rows is not None:
-        directory, sp_user_to_name = _parse_m365_rows(m365_rows)
+    if await staff_in_postgres():
+        # After the switch the staff table is the directory; SharePoint is never read.
+        directory, sp_user_to_name = _staff_as_directory(staff)
+    else:
+        m365_rows = await _fetch_m365_rows()
+        if m365_rows is not None:
+            directory, sp_user_to_name = _parse_m365_rows(m365_rows)
 
     staff_by_name = _index_staff_by_name(staff)
     name_counts = _count_staff_names(staff)
     holidays_by_province = _group_holidays_by_province(holiday_items)
     sample_start, sample_end = _sample_weekday_range()
     today = date.today()
+    unmoved_by_person = await approved_requests_without_balance_change()   # one read for everyone
 
     flagged = [
         row for row in (
@@ -1690,6 +1861,7 @@ async def validate_all_employee_setups() -> dict:
                 sample_start=sample_start,
                 sample_end=sample_end,
                 today=today,
+                unmoved=unmoved_by_person.get(str(record.get("id", ""))),
             )
             for record in staff
         )
@@ -1704,5 +1876,5 @@ async def validate_all_employee_setups() -> dict:
     return {
         "total_checked": len(staff),
         "flagged": flagged,
-        "directory_unreadable": m365_rows is None,
+        "directory_unreadable": directory is None,               # None only when the user list could not be read
     }

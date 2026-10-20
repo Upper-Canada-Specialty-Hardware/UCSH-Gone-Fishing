@@ -252,3 +252,70 @@ def test_admin_reminder_propagates_transient_errors():
     with _get_list_item_raises(503):
         with pytest.raises(httpx.HTTPStatusError):
             asyncio.run(reminders.send_reminder_now("leave", "3402"))
+
+
+# ----- after the switch, a manual reminder / re-ask goes through the outbox (finding 4) -----
+
+
+def test_admin_reminder_goes_through_the_outbox_once_requests_are_in_postgres(monkeypatch):
+    # The SharePoint path above sends directly; after the switch the reminder is
+    # queued through the outbox instead, so it keeps the typed approval version
+    # and links in step. The request type is mapped to the queue_reminder kind.
+    from app.services import request_submission
+    calls = []
+
+    async def fake_active():
+        return True
+
+    async def fake_queue(kind, request_id):
+        calls.append((kind, str(request_id)))
+        return True
+
+    monkeypatch.setattr(request_submission, "submission_active", fake_active)
+    monkeypatch.setattr(request_submission, "queue_reminder", fake_queue)
+
+    result = asyncio.run(reminders.send_reminder_now("carryover-payout", "77"))
+
+    assert result["status"] == "reminder_sent"
+    assert calls == [("carryover_payout", "77")]               # "carryover-payout" -> "carryover_payout"
+
+
+def test_admin_reminder_reports_not_pending_when_the_outbox_declines(monkeypatch):
+    # queue_reminder returns False when the request is no longer pending; the
+    # manual reminder must surface that as the same readable error, not success.
+    from app.services import request_submission
+
+    async def fake_active():
+        return True
+
+    async def fake_queue(kind, request_id):
+        return False
+
+    monkeypatch.setattr(request_submission, "submission_active", fake_active)
+    monkeypatch.setattr(request_submission, "queue_reminder", fake_queue)
+
+    result = asyncio.run(reminders.send_reminder_now("leave", "88"))
+    assert result == {"error": "Request is no longer pending"}
+
+
+def test_notify_after_failed_admin_approval_queues_through_the_outbox_on_postgres(monkeypatch):
+    # An admin create-and-approve that could not approve re-asks the manager. On
+    # Postgres that goes through the outbox (queue_reminder), never the direct
+    # SharePoint send that queues nothing for an app-made row (finding 4).
+    from app.services import leave_requests, request_submission
+    calls = []
+
+    async def in_postgres():
+        return True
+
+    async def fake_queue(kind, request_id):
+        calls.append((kind, str(request_id)))
+        return True
+
+    monkeypatch.setattr(leave_requests, "requests_in_postgres", in_postgres)
+    monkeypatch.setattr(request_submission, "queue_reminder", fake_queue)
+
+    asked = asyncio.run(leave_requests.notify_manager_after_failed_admin_approval("55"))
+
+    assert asked is True
+    assert calls == [("leave", "55")]
