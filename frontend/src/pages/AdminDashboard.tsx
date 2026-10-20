@@ -164,8 +164,10 @@ export default function AdminDashboard() {
       setEmployeeSetup(s.setup);
       setStats(s.stats);
       setProcessingEnabled(s.processing_enabled);
-      setHeldRows(s.held);
-      setVacationRows(s.vacation);
+      setHeldRows(s.held || []);                                  // an older saved snapshot may lack it
+      // A snapshot saved by an older build has no vacation list (#370); empty, not
+      // undefined, or the nav count's .length throws and blanks the whole page.
+      setVacationRows(s.vacation || []);
       setLoading(false);
     };
 
