@@ -19,6 +19,7 @@ Leave Titles carry the employee's name or a description depending on the intake
 path; this adapter splits an incoming Title with ``split_leave_title`` and
 rebuilds it on read with ``compose_leave_title`` (the descriptions bug, #321).
 """
+import json
 import logging
 from datetime import date, datetime, timezone
 
@@ -51,6 +52,34 @@ SIMPLE_MAP = {
 # SharePoint "Carry Over" / "Payout" <-> stored request_option.
 OPTION_TO_STORED = {"carry over": "carry_over", "payout": "payout"}
 OPTION_TO_WIRE = {"carry_over": "Carry Over", "payout": "Payout"}
+
+
+def choice_text(value) -> str | None:
+    """The plain name in a department or location value, however it arrived.
+
+    The Power Automate flow sometimes writes these columns as a SharePoint lookup
+    object, either as a dict or as its JSON text
+    ('{"@odata.type": "...SPListExpandedReference", "Id": 5, "Value": "Hardware"}').
+    Only the ``Value`` is the name; anything else is kept as given.
+
+    Args:
+        value: The SharePoint value: a plain string, a lookup dict, its JSON
+            text, or None.
+
+    Returns:
+        The name, or None when the value is blank.
+    """
+    if isinstance(value, dict):                                  # the lookup object itself
+        value = value.get("Value")                               # its name
+    elif isinstance(value, str) and value.lstrip().startswith("{"):   # the object as JSON text
+        try:
+            parsed = json.loads(value)                           # read it back
+        except ValueError:
+            parsed = None                                        # not JSON after all: keep the text
+        if isinstance(parsed, dict) and "Value" in parsed:
+            value = parsed["Value"]                              # its name
+    text = str(value).strip() if value is not None else ""      # tidy the result
+    return text or None                                          # blank stays empty
 
 
 def _to_date(value) -> date | None:
@@ -469,6 +498,8 @@ class TypedRequestList:
             record.employee_id = str(value) if value is not None else None
         elif attr == "manager_id":
             record.manager_id = str(value) if value else None
+        elif attr in ("department", "location"):
+            setattr(record, attr, choice_text(value))           # a lookup object stores its name only
         else:
             setattr(record, attr, value)
 
