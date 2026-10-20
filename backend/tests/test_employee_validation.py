@@ -129,6 +129,31 @@ def test_a_record_with_no_email_still_fails_identity():
     assert ev._identity_verdict("1", "", None, None)["status"] == "fail"
 
 
+def test_a_clean_name_and_email_pass_the_spacing_check():
+    # The healthy fixture is already tidy, so the check is green.
+    assert _by_code(_report(), "identity_name_spacing")["status"] == "pass"
+
+
+def test_a_trailing_space_in_the_name_fails_the_spacing_check():
+    # The Glenn Clarke case: a trailing space breaks the exact name match.
+    report = _report(employee_fields={**GOOD_FIELDS, "Title": "Glenn Clarke "})
+    assert _by_code(report, "identity_name_spacing")["status"] == "fail"
+    assert report["overall"] == "fail"
+
+
+def test_a_doubled_space_or_spaced_email_fails_the_spacing_check():
+    report = _report(employee_fields={
+        **GOOD_FIELDS, "Title": "Glenn  Clarke", "EmailAddress": "glenn@ucsh.ca ",
+    })
+    assert _by_code(report, "identity_name_spacing")["status"] == "fail"
+
+
+def test_a_capital_in_the_email_alone_passes_the_spacing_check():
+    # Emails are compared without case, so a capital is harmless and not flagged.
+    report = _report(employee_fields={**GOOD_FIELDS, "EmailAddress": "Glenn@UCSH.ca"})
+    assert _by_code(report, "identity_name_spacing")["status"] == "pass"
+
+
 # ----- supervisor / AllManagers -----
 
 def test_empty_all_managers_fails():
