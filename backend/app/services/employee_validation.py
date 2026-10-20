@@ -68,6 +68,7 @@ from app.services.balance import (
 )
 from app.repositories.request_store import request_store
 from app.repositories.staff_store import staff_in_postgres, staff_store  # Staff Directory reads follow staff_storage
+from app.services.staff_cleanup import clean_email, collapse_whitespace  # the normal form names/emails are held to
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +354,30 @@ def build_validation_report(
                 "so theirs can be attached to the wrong record."
             ),
         ))
+
+    # A name or email that carries stray spacing (a trailing space, a doubled
+    # space, a non-breaking space) is not in the form the request path matches
+    # on, so the person is matched to the wrong record or to none. Email case is
+    # left alone here: emails are compared without case, so a capital is harmless. This is exactly what left Glenn Clarke managing nobody.
+    title_raw = employee_fields.get("Title") or ""
+    email_raw = employee_fields.get("EmailAddress") or ""
+    spacing_bad = []                                   # which identity fields are not in normal form
+    if title_raw != collapse_whitespace(title_raw):    # name differs from its tidied form
+        spacing_bad.append("name")
+    if email_raw.lower() != clean_email(email_raw):    # email has whitespace (case ignored: harmless)
+        spacing_bad.append("email")
+    checks.append(_measured(
+        "identity_name_spacing", "identity",
+        label="Identity fields in their normal form",
+        actual=len(spacing_bad), expected=0, comparison="equals",
+        ok_detail="The name and email have no stray spaces.",
+        bad_detail=(
+            "Stray spacing in the "
+            + " and ".join(spacing_bad)
+            + ". Requests are matched by an exact name and email, so this one can "
+            "route to the wrong record or to none. Retype it in their profile and save."
+        ),
+    ))
 
     # --- Supervisor / AllManagers ---
     checks.append(_measured(

@@ -34,6 +34,7 @@ import {
   getConfig,
   getSpUsers,
   createEmployeeAdmin,
+  checkEmployeeAdmin,
   adminApproveRequest,
   adminRejectRequest,
   adminRefundRequest,
@@ -657,6 +658,7 @@ export default function AdminDashboard() {
                 <AddEmployee
                   processingEnabled={processingEnabled}
                   submitEmployee={createEmployeeAdmin}
+                  checkEmployee={checkEmployeeAdmin}
                   managerOptions={spUsers}
                   prefill={addPrefill}
                   onCreated={(name) =>

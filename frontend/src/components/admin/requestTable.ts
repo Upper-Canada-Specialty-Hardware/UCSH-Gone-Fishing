@@ -72,6 +72,24 @@ function managerList(managers: unknown): string[] {
 }
 
 /**
+ * The plain name in a department or location value. The Power Automate flow
+ * sometimes writes these as a SharePoint lookup object, or as that object's
+ * JSON text ({"@odata.type": "...", "Id": 5, "Value": "Hardware"}); only its
+ * Value is the name.
+ *
+ * @param value - A plain string, a lookup object, its JSON text, or nothing.
+ * @returns The name, or '' when blank.
+ */
+export function choiceText(value: unknown): string {
+  let v: unknown = value;
+  if (typeof v === 'string' && v.trim().startsWith('{')) {      // the object as JSON text
+    try { v = JSON.parse(v); } catch { /* not JSON: keep the text */ }
+  }
+  if (v && typeof v === 'object' && 'Value' in (v as object)) v = (v as { Value: unknown }).Value;   // its name
+  return v == null ? '' : String(v).trim();
+}
+
+/**
  * Flatten one raw request item into a table row.
  *
  * @param raw - The item as /admin/requests, /admin/pending or /admin/stuck-requests returns it.
@@ -97,8 +115,8 @@ export function toRow(raw: any, source: RowSource): Row {
     kind: kindOf(type, type === 'carryover-payout' ? item.TypeofRequest : item.LeaveType),
     kindLabel: kindLabelOf(item),
     person: item.employee_name || (item.Title || '').split(' /// ')[0] || 'Unknown',
-    dept: item.StaffDepartment || item.Department || '',
-    loc: item.StaffLocation || item.Location || '',
+    dept: choiceText(item.StaffDepartment || item.Department),   // a lookup object shows its name
+    loc: choiceText(item.StaffLocation || item.Location),
     manager: managers[0] || '',
     managers,
     status,

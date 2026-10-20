@@ -764,7 +764,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (r.kind === 'Overtime') return [{ cls: 'ot', amt: '+' + tfNum((r.hours || 0) / 8), label: 'added to Make-Up' }];
     if (r.kind === 'Payout') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'pay', amt: '', label: '→ ' + TF_YEAR + ' payout' }];
     if (r.kind === 'Carry Over') return [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }, { cls: 'co', amt: '', label: '→ ' + TF_YEAR + ' carry-over' }];
-    if (r.kind === 'Bereavement' || r.kind === 'Jury Duty' || r.kind === 'Jury duty') return [];   // cost nothing
+    if (r.kind === 'Bereavement' || r.kind === 'Jury Duty' || r.kind === 'Jury duty' || r.kind === 'Work from Home' || r.kind === 'Work From Home') return [];   // work from home, bereavement and jury duty cost nothing
     if (r.kind === 'Sick') return r.days ? [{ cls: 'sick', amt: tfNum(r.days), label: 'sick' }] : [];
     return r.days ? [{ cls: 'vac', amt: tfNum(r.days), label: 'vacation' }] : [];   // vacation / part day
   }
@@ -979,18 +979,37 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       return head('Add employee', intro) + '<div class="paper pad" style="display:grid;gap:12px;max-width:780px"><div class="okbox"><b>' + esc(c.name) + '</b> was added.' + (c.released ? ' ' + c.released + ' waiting request was sent to ' + esc(c.mgr) + ' for approval.' : '') + '</div>' +
         '<div class="acts" style="justify-content:flex-start">' + (c.released ? '<button class="btn pri" type="button" data-go="pending">See it in Pending</button>' : '') + '<button class="btn out" type="button" data-act="openperson" data-who="' + esc(c.name) + '">Open their record</button><button class="btn ghost" type="button" data-act="another">Add another</button></div></div>';
     }
+    // Review step (#378): the typed details are cleaned, the setup check is run,
+    // and this confirm panel shows before -> after plus any blocks or warnings.
+    if (state.addReview) return addConfirm(isAdmin);
     var sup = pf.mgrs || [];
     return (isAdmin ? head('Add employee', intro) : '<p class="muted" style="margin:0">' + intro + '</p>') +
       '<div class="' + (isAdmin ? 'paper' : '') + '">' + (pf.name ? '<div class="pad" style="padding-bottom:0"><div class="note">Filled in from <b>' + esc(pf.name) + '</b>\'s held request. Adding them sends that request to ' + esc(sup[0] || 'their supervisor') + '.</div></div>' : '') +
-      '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '><div class="row2"><label><span class="req">Full name (as in Microsoft 365)</span><input class="input" value="' + esc(pf.name || '') + '"><span class="help">Must match their Microsoft 365 display name exactly.</span></label>' +
-      '<label><span class="req">Email address</span><input class="input" type="email" value="' + esc(pf.email || '') + '"></label></div>' +
+      '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '><div class="row2"><label><span class="req">Full name (as in Microsoft 365)</span><input class="input" data-ae="name" value="' + esc(pf.name || '') + '"><span class="help">Must match their Microsoft 365 display name exactly.</span></label>' +
+      '<label><span class="req">Email address</span><input class="input" type="email" data-ae="email" value="' + esc(pf.email || '') + '"></label></div>' +
       '<div class="row2"><label><span class="req">Location</span><select class="input">' + LOCATIONS.map(function (l) { return '<option' + (l === pf.loc ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></label><label><span class="req">Department</span><input class="input" value="' + esc(pf.dept || '') + '"></label></div>' +
       '<div class="row2"><label><span class="req">Employment type</span><select class="input"><option>Salary</option><option>Hourly</option></select></label>' +
       (isAdmin ? '<div class="field"><span class="req">Supervisor(s)</span><span class="mchips" role="group" aria-label="Supervisors">' + MANAGERS.map(function (m) { return '<button type="button" data-sup="' + m + '" aria-pressed="' + (sup.indexOf(m) >= 0) + '">' + m + '</button>'; }).join('') + '</span></div>' : '<span></span>') + '</div>' +
       '<label style="max-width:360px">Cell number (optional)<input class="input"><span class="help">Only needed if they will approve requests by text.</span></label>' +
       '<div class="cap">Yearly entitlements</div><div class="row2"><label><span class="req">Vacation days / year</span><input class="input" type="number" value="10"></label><label><span class="req">Sick days / year</span><input class="input" type="number" value="5"></label></div>' +
       '<div class="cap">Opening balances</div><div class="row5">' + ['Vacation', 'Sick', 'Make-up', 'Carry-over', 'Payout'].map(function (b) { return '<label>' + b + '<input class="input" type="number"></label>'; }).join('') + '</div>' +
-      '<div><button class="btn pri' + P + '" type="button" data-act="create" style="padding:9px 18px">Add Employee</button></div></div></div>';
+      '<div><button class="btn pri' + P + '" type="button" data-act="review" style="padding:9px 18px">Review</button></div></div></div>';
+  }
+  // The confirm panel after Review (#378): before -> after for anything the
+  // cleaning changed, the setup check, blocked items in red, warnings in amber.
+  function addConfirm(isAdmin) {
+    var R = state.addReview;
+    var changed = [];
+    if (R.rawName !== R.name) changed.push(['Full name', R.rawName, R.name, 'Extra spaces removed']);
+    if (R.rawEmail !== R.email) changed.push(['Email', R.rawEmail || '(blank)', R.email, 'Made lower case']);
+    var beforeAfter = changed.length ? '<div class="cap">Tidied up before saving</div><div style="display:grid;gap:8px">' + changed.map(function (c) { return '<div style="display:grid;gap:2px"><span class="small muted">' + c[0] + ' (' + c[3] + ')</span><span><span style="text-decoration:line-through;color:var(--muted)">' + esc(c[1]) + '</span> <b>→ ' + esc(c[2]) + '</b></span></div>'; }).join('') + '</div>' : '<div class="note">Nothing needed tidying. The details are clean.</div>';
+    var detail = '<div class="cap">Will be added as</div><dl class="kv"><dt>Name</dt><dd>' + esc(R.name || '(none)') + '</dd><dt>Email</dt><dd>' + esc(R.email || '(none)') + '</dd><dt>Supervisor' + (R.sup.length > 1 ? 's' : '') + '</dt><dd>' + (R.sup.length ? esc(R.sup.join(', ')) : chip('None', 'err')) + '</dd></dl>';
+    var blocks = R.blocks.length ? '<div class="note" style="background:var(--err-soft);color:var(--err-strong)"><b>Fix before adding</b><ul style="margin:6px 0 0;padding-left:18px">' + R.blocks.map(function (b) { return '<li>' + esc(b) + '</li>'; }).join('') + '</ul></div>' : '';
+    var warns = R.warns.length ? '<div class="note" style="background:var(--warn-soft);color:var(--warn)"><b>Worth a look</b><ul style="margin:6px 0 0;padding-left:18px">' + R.warns.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul></div>' : '';
+    var check = R.blocks.length ? '' : '<div class="note" style="background:var(--ok-soft);color:var(--ok)">Setup check passed: their requests will reach ' + esc(R.sup.join(' and ')) + '.</div>';
+    var body = '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '>' + beforeAfter + detail + blocks + warns + check +
+      '<div class="acts" style="justify-content:flex-start"><button class="btn out" type="button" data-act="aeback">Back</button><button class="btn pri' + P + '" type="button" data-act="create"' + (R.blocks.length ? ' disabled style="opacity:.5;cursor:not-allowed"' : '') + '>Add employee</button></div></div>';
+    return (isAdmin ? head('Add employee', 'Check these details, then add them.') + '<div class="paper">' + body + '</div>' : '<p class="muted" style="margin:0">Check these details, then add them.</p><div>' + body + '</div>');
   }
 
   function personPanel() {
@@ -1025,7 +1044,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     return '<span class="meter"><span class="keep" style="width:' + keep + '%"></span><span class="use" style="left:' + left + '%;width:' + use + '%"></span></span>';
   }
   // Animated timeline: one bar per request, spanning its days; pending requests are dashed.
-  function timeline(days) {
+  function timeline(days, clickable) {
     days = days || DAYS;
     var pct = function (i) { return (i / days * 100) + '%'; };
     var head = '<div class="tl-head"><div></div><div class="tl-days">' + Array.apply(null, Array(days)).map(function (_, i) {
@@ -1037,7 +1056,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       var bars = REQS.filter(function (r) { return r.who === p.name && r.mgr === ME && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= 0 && idx(r.from) < days; }).map(function (r) {
         var a = idx(r.from), b = Math.min(idx(r.to || r.from), days - 1);
         var style = 'left:calc(' + pct(a) + ' + 2px);width:calc(' + ((b - a + 1) / days * 100) + '% - 4px);animation-delay:' + (0.1 + 0.06 * n++) + 's;' + (r.status === 'Pending' ? 'color:' + colorOf(r.who) : 'background:' + colorOf(r.who));
-        return '<span class="tl-bar' + (r.status === 'Pending' ? ' pending' : '') + '" style="' + style + '" title="' + esc(r.who + ': ' + r.kind + ', ' + r.when + (r.status === 'Pending' ? ' (asked, not approved yet)' : '')) + '">' + esc(r.kind) + '</span>';
+        var tag = clickable ? 'button' : 'span';                 // clickable bars decide a request in place (#373)
+        return '<' + tag + ' class="tl-bar' + (r.status === 'Pending' ? ' pending' : '') + (clickable && state.calSel === r.id ? ' sel' : '') + '"' + (clickable ? ' type="button" data-act="calsel" data-cal="' + r.id + '"' : '') + ' style="' + style + ';font:inherit' + (clickable ? ';cursor:pointer;border:0' : '') + '" title="' + esc(r.who + ': ' + r.kind + ', ' + r.when + (r.status === 'Pending' ? ' (asked, not approved yet)' : '')) + '">' + esc(r.kind) + '</' + tag + '>';
       }).join('');
       return '<div class="tl-row"><div class="tl-who">' + av(p.name) + esc(first(p.name)) + '</div><div class="tl-track">' + shades + bars + (TODAY < days ? '<span class="tl-now" style="left:calc(' + pct(TODAY) + ' + ' + (50 / days) + '%)"></span>' : '') + '</div></div>';
     }).join('');
@@ -1104,46 +1124,182 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       (r.overlap || r.clash ? '<div>' + (r.overlap ? '<span class="flag">' + esc(r.overlap) + '</span> ' : '') + (r.clash ? '<span class="flag">' + esc(r.clash) + '</span>' : '') + '</div>' : '') +
       '<div class="dfoot">' + rowActions(r) + '</div></article>';
   }
-  function manager() {
-    var mine = REQS.filter(function (r) { return r.mgr === ME && r.status !== 'Held'; });
-    var pend = mine.filter(function (r) { return r.status === 'Pending'; }).sort(function (a, b) { return b.age - a.age; });
-    var offWeek = team().filter(function (p) { for (var i = 0; i < 5; i++) if (offOn(p.name, i).some(function (r) { return r.status === 'Approved'; })) return true; return false; }).length;
+  function managerHeader() {
+    var pend = REQS.filter(function (r) { return r.mgr === ME && r.status === 'Pending'; });
     var tabs = [['today', 'Today' + (pend.length ? ' (' + pend.length + ')' : '')], ['calendar', 'Calendar'], ['team', 'Team'], ['trends', 'Trends'], ['history', 'History']];
-    var html = '<div class="hello"><div><h1>Good morning, Sam</h1><p>' + (pend.length ? pend.length + ' request' + (pend.length > 1 ? 's need' : ' needs') + ' your decision.' : 'You are all caught up.') + ' ' + team().length + ' people on your team.</p></div><button class="btn out' + P + '" type="button" data-act="mgradd">Add a new hire</button></div>' +
+    return '<div class="hello"><div><h1>Good morning, Sam</h1><p>' + (pend.length ? pend.length + ' request' + (pend.length > 1 ? 's need' : ' needs') + ' your decision.' : 'You are all caught up.') + ' ' + team().length + ' people on your team.</p></div><button class="btn out' + P + '" type="button" data-act="mgradd">Add a new hire</button></div>' +
       '<div class="tabs" role="tablist">' + tabs.map(function (t) { return '<button type="button" role="tab" data-mtab="' + t[0] + '" aria-selected="' + (t[0] === state.mtab) + '">' + t[1] + '</button>'; }).join('') + '</div>';
-    if (state.mtab === 'today') {
-      html += '<div class="kpis"><div class="kpi"><small>Waiting on you</small><b>' + pend.length + '</b><span class="trend' + (pend.some(function (r) { return r.age > 7; }) ? ' down' : '') + '">' + (pend.length ? 'oldest ' + pend[0].age + ' days' : 'nothing waiting') + '</span></div>' +
-        '<div class="kpi"><small>Off this week</small><b>' + offWeek + '</b><span class="trend">of ' + team().length + ' on the team</span></div>' +
-        '<div class="kpi"><small>Average time to approve</small><b>1.4 d</b><span class="trend">last 90 days</span>' + spark([3.1, 2.6, 2.8, 2.2, 1.9, 1.7, 1.4]) + '</div>' +
-        '<div class="kpi"><small>Days off taken this year</small><b>38.5</b><span class="trend">approved leave, team total</span>' + spark([2, 4, 7, 9, 11, 15, 25, 31, 34, 38.5]) + '</div></div>' +
-        '<div class="mgrid"><div style="display:grid;gap:14px;align-content:start">' + (pend.length ? pend.map(decisionCard).join('') : '<div class="paper caught"><span class="tick">✓</span><b>You are all caught up</b><span class="muted small">New requests from your team show up here.</span></div>') + '</div>' +
-        '<div style="display:grid;gap:14px;align-content:start"><div class="paper"><div class="sect">Next two weeks <span class="small muted" style="font-weight:400;margin-left:auto">dashed = asked</span></div>' + timeline(14) + '</div>' +
-        '<div class="paper"><div class="sect">Worth knowing</div>' + insights() + '</div></div></div>';
-    } else if (state.mtab === 'calendar') {
-      html += '<div class="paper"><div class="toolbar"><b style="font-size:15px">' + (state.calView === 'month' ? 'November 2026' : 'Oct 26 to Nov 22, 2026') + '</b><span style="margin-left:auto"></span><button class="fchip" type="button" data-cal="timeline" aria-pressed="' + (state.calView === 'timeline') + '">Timeline</button><button class="fchip" type="button" data-cal="month" aria-pressed="' + (state.calView === 'month') + '">Month</button></div>' +
-        (state.calView === 'month' ? monthCal() : timeline()) +
-        '<div class="pad legend">' + team().map(function (p) { return '<span><i style="background:' + colorOf(p.name) + '"></i>' + esc(p.name) + '</span>'; }).join('') + '<span><i style="border:1.5px dashed var(--muted)"></i>Asked, not approved yet</span><span><i style="background:color-mix(in srgb, var(--accent) 25%, transparent)"></i>Holiday</span></div></div>' +
-        '<div class="paper"><div class="sect">Who is in, day by day <span class="small muted" style="font-weight:400">if every request is approved</span></div><div class="chartbox">' + availability() + '</div></div>';
-    } else if (state.mtab === 'team') {
-      html += '<div class="paper"><div class="sect">Vacation left</div>' + rings() + '</div><div class="tcards">' + team().map(function (p) {
-        var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
-        var line = function (k, v, y) { return '<div class="potline"><span class="muted">' + k + '</span>' + meter(v, v, y || 5) + '<span class="v' + (v < 0 ? ' neg' : '') + '">' + v + (y ? ' of ' + y : '') + '</span></div>'; };
-        return '<div class="tcard"><div class="dhead">' + av(p.name, true) + '<div><div class="nm">' + esc(p.name) + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div></div></div>' +
-          line('Vacation', p.vac, p.vacY) + line('Sick', p.sick, p.sickY) + line('Make-Up', p.mu) + line('Carry Over', p.co) +
-          '<div class="small">' + (nxt ? 'Next off: <b>' + esc(nxt.kind) + ', ' + esc(nxt.when) + '</b>' + (nxt.status === 'Pending' ? ' (asked)' : '') : '<span class="muted">No time off booked.</span>') + '</div></div>';
-      }).join('') + '<button class="tcard' + P + '" type="button" data-act="mgradd" style="border-style:dashed;cursor:pointer;place-items:center;color:var(--primary);font-weight:600;background:transparent;box-shadow:none;min-height:180px">+ Add a new hire</button></div>';
-    } else if (state.mtab === 'trends') {
-      var kinds = [['Vacation', 29, 'var(--primary)'], ['Sick', 9, 'var(--accent)'], ['Overtime (as days)', 2.5, '#3d5a80'], ['Bereavement and jury', 0.5, '#b8892f']];
-      html += '<div class="two"><div class="paper" style="grid-column:1/-1"><div class="sect">Days off per month, 2026</div><div class="leg"><span><i style="background:var(--primary)"></i>Vacation</span><span><i style="background:var(--accent)"></i>Sick</span><span><i style="background:#b8892f"></i>Other</span></div><div class="chartbox">' + monthly() + '</div></div>' +
-        '<div class="paper"><div class="sect">By kind</div><div class="pad" style="display:grid;gap:12px">' + kinds.map(function (k) { return '<div class="potline" style="grid-template-columns:150px minmax(0,1fr) 44px"><span class="muted">' + k[0] + '</span><span class="meter"><span class="keep" style="width:' + (k[1] / 29 * 100) + '%;background:' + k[2] + '"></span></span><span class="v">' + k[1] + '</span></div>'; }).join('') + '</div></div>' +
-        '<div class="paper"><div class="sect">Time to approve</div><div class="pad" style="display:grid;gap:6px"><div style="display:flex;gap:16px;align-items:baseline"><b style="font-family:var(--display);font-size:34px">1.4 days</b></div>' + spark([3.1, 2.6, 2.8, 2.2, 1.9, 1.7, 1.4]).replace('class="spark"', 'class="spark" style="height:60px"') + '<span class="small muted">Average days from a request arriving to its approval over the last 90 days; the line is each of the last six months.</span></div></div></div>';
-    } else {
-      var hf = state.filter.hist || 'All';
-      var rows = mine.filter(function (r) { return r.status !== 'Pending' && (hf === 'All' || r.status === hf); });
-      html += '<div class="paper"><div class="toolbar">' + ['All', 'Approved', 'Rejected', 'Refunded'].map(function (t) { return '<button class="fchip" type="button" data-filter="hist|' + t + '" aria-pressed="' + (t === hf) + '">' + t + '</button>'; }).join('') + '</div>' +
-        (rows.length ? '<ul class="list">' + rows.map(function (r) { return '<li>' + av(r.who) + '<div><b>' + esc(r.who) + '</b><div class="small muted">' + what(r) + '</div></div><span class="r">' + chip(r.status, CHIP[r.status]) + '</span></li>'; }).join('') + '</ul>' : '<div class="empty">Nothing here yet.</div>') + '</div>';
+  }
+  function manager() {
+    // A teammate's profile opens in the Team tab's place (#362, #372), not a drawer.
+    if (state.mtab === 'team' && state.teamPerson != null) {
+      var tp = STAFF.filter(function (x) { return x.id === state.teamPerson; })[0];
+      if (tp) return managerHeader() + teamPersonProfile(tp);
+      state.teamPerson = null;
     }
+    var html = managerHeader();
+    if (state.mtab === 'today') html += managerToday();
+    else if (state.mtab === 'calendar') html += managerCalendar();
+    else if (state.mtab === 'team') html += teamGrid();
+    else if (state.mtab === 'trends') html += managerTrends();
+    else html += managerHistory();
     return html;
+  }
+  function managerToday() {
+    var pend = REQS.filter(function (r) { return r.mgr === ME && r.status === 'Pending'; }).sort(function (a, b) { return b.age - a.age; });
+    var offWeek = team().filter(function (p) { for (var i = 0; i < 5; i++) if (offOn(p.name, i).some(function (r) { return r.status === 'Approved'; })) return true; return false; }).length;
+    return '<div class="kpis"><div class="kpi"><small>Waiting on you</small><b>' + pend.length + '</b><span class="trend' + (pend.some(function (r) { return r.age > 7; }) ? ' down' : '') + '">' + (pend.length ? 'oldest ' + pend[0].age + ' days' : 'nothing waiting') + '</span></div>' +
+      '<div class="kpi"><small>Off this week</small><b>' + offWeek + '</b><span class="trend">of ' + team().length + ' on the team</span></div>' +
+      '<div class="kpi"><small>Average time to approve</small><b>1.4 d</b><span class="trend">last 90 days</span>' + spark([3.1, 2.6, 2.8, 2.2, 1.9, 1.7, 1.4]) + '</div>' +
+      '<div class="kpi"><small>Days off taken this year</small><b>38.5</b><span class="trend">approved leave, team total</span>' + spark([2, 4, 7, 9, 11, 15, 25, 31, 34, 38.5]) + '</div></div>' +
+      '<div class="mgrid"><div style="display:grid;gap:14px;align-content:start">' + (pend.length ? pend.map(decisionCard).join('') : '<div class="paper caught"><span class="tick">✓</span><b>You are all caught up</b><span class="muted small">New requests from your team show up here.</span></div>') + '</div>' +
+      '<div style="display:grid;gap:14px;align-content:start"><div class="paper"><div class="sect">Next two weeks <span class="small muted" style="font-weight:400;margin-left:auto">dashed = asked</span></div>' + timeline(14) + '</div>' +
+      '<div class="paper"><div class="sect">Worth knowing</div>' + insights() + '</div></div></div>';
+  }
+  // Calendar: a clickable timeline (decide a request in place), and a "who is in"
+  // chart with a day picker that lists who is off that day (#373).
+  function managerCalendar() {
+    var sel = state.calSel != null ? REQS.filter(function (r) { return r.id === state.calSel; })[0] : null;
+    var h = '<div class="paper"><div class="toolbar"><b style="font-size:15px">' + (state.calView === 'month' ? 'November 2026' : 'Oct 26 to Nov 22, 2026') + '</b><span style="margin-left:auto"></span><button class="fchip" type="button" data-cal="timeline" aria-pressed="' + (state.calView === 'timeline') + '">Timeline</button><button class="fchip" type="button" data-cal="month" aria-pressed="' + (state.calView === 'month') + '">Month</button></div>' +
+      (state.calView === 'month' ? monthCal() : timeline(DAYS, true)) +
+      '<div class="pad legend">' + team().map(function (p) { return '<span><i style="background:' + colorOf(p.name) + '"></i>' + esc(p.name) + '</span>'; }).join('') + '<span><i style="border:1.5px dashed var(--muted)"></i>Asked, not approved yet</span><span><i style="background:color-mix(in srgb, var(--accent) 25%, transparent)"></i>Holiday</span></div>' +
+      (state.calView === 'timeline' ? '<div class="small muted" style="padding:0 16px 12px">Click a bar to decide it, see it in History, or open the person.</div>' : '') +
+      (sel ? absenceDetail(sel) : '') + '</div>';
+    h += '<div class="paper"><div class="sect">Who is in, day by day <span class="small muted" style="font-weight:400">if every request is approved</span></div><div class="chartbox">' + availability() + '</div>' + dayPicker() + (state.pickedDay != null ? dayRoster(state.pickedDay) : '') + '</div>';
+    return h;
+  }
+  // The leave bar picked on the calendar: decide it here (same routes as Today),
+  // see it in History, or open the person's profile (#373).
+  function absenceDetail(r) {
+    var pill = r.type === 'Leave' ? ({ Vacation: 'vac', Sick: 'sick', 'Half day': 'half' }[r.kind] || '') : r.type === 'Overtime' ? 'ot' : r.kind === 'Payout' ? 'pay' : 'co';
+    var p = person(r.who) || { vacY: 10, sickY: 5 };
+    var max = function (k) { return k === 'Vacation' ? p.vacY : k === 'Sick' ? p.sickY : 5; };
+    return '<div class="pad" style="border-top:1px solid var(--line)"><article class="dcard" data-reqid="' + r.id + '" style="box-shadow:none;border:1px solid var(--line)"><div class="dhead">' + av(r.who, true) + '<div><div class="nm">' + esc(r.who) + '</div><div class="small muted">' + esc(r.kind) + ', ' + esc(r.when) + (r.status === 'Pending' ? ' (asked, not approved yet)' : '') + '</div></div><span class="pill ' + pill + '">' + esc(r.kind) + '</span>' + chip(r.status, CHIP[r.status]) + '</div>' +
+      (r.cur ? '<div class="impacts">' + Object.keys(r.cur).map(function (k) { return '<div class="imp"><span class="muted">' + k + '</span>' + meter(r.cur[k], r.next[k], max(k)) + '<span class="v">' + r.cur[k] + ' → ' + r.next[k] + '</span></div>'; }).join('') + '</div>' : '') +
+      '<div class="dfoot">' + (r.status === 'Pending' ? rowActions(r) : '') + '<button class="btn ghost" type="button" data-act="histopen" data-cal="' + r.id + '">See in History</button><button class="btn ghost" type="button" data-act="teamopenp" data-who="' + esc(r.who) + '">Open ' + esc(first(r.who)) + '</button></div></article></div>';
+  }
+  // A chip per working day in the window; the picked one lists who is off (#373).
+  function dayPicker() {
+    var out = [];
+    for (var i = 0; i < DAYS; i++) { if (weekend(i)) continue; var l = dayLabel(i), on = state.pickedDay === i; out.push('<button class="fchip" type="button" data-act="pickday" data-day="' + i + '" aria-pressed="' + on + '">' + l.mon + ' ' + l.d + '</button>'); }
+    return '<div class="pad" style="display:flex;gap:6px;flex-wrap:wrap"><span class="small muted" style="width:100%">Pick a day to see who is off:</span>' + out.join('') + '</div>';
+  }
+  function dayRoster(i) {
+    var l = dayLabel(i);
+    var offs = team().map(function (p) { var o = offOn(p.name, i)[0]; return o ? { who: p.name, kind: o.kind, pending: o.status === 'Pending' } : null; }).filter(Boolean);
+    return '<div class="pad" style="border-top:1px solid var(--line);display:grid;gap:6px"><b>' + l.mon + ' ' + l.d + ', 2026</b>' + (offs.length ? offs.map(function (o) { return '<div style="display:flex;gap:8px;align-items:center">' + av(o.who) + '<b>' + esc(first(o.who)) + '</b><span class="muted small">' + esc(o.kind) + (o.pending ? ' (asked)' : '') + '</span></div>'; }).join('') : '<span class="muted small">Everyone is in.</span>') + '</div>';
+  }
+  // Trends: clicking a month opens History filtered to it; a kind row opens its
+  // approved requests in History (#361, #373).
+  function managerTrends() {
+    var kinds = [['Vacation', 29, 'var(--primary)'], ['Sick', 9, 'var(--accent)'], ['Overtime', 2.5, '#3d5a80'], ['Bereavement and jury', 0.5, '#b8892f']];
+    var over = MONTHLY.m.map(function (mo, k) { var left = (28 + k * (700 - 56) / 10) / 700 * 100, w = ((700 - 56) / 10) / 700 * 100; return '<button type="button" class="barhit" data-act="histmonth" data-month="' + mo + '" aria-label="Open ' + mo + ' in History" style="position:absolute;top:0;bottom:22px;left:' + left + '%;width:' + w + '%;background:none;border:0;cursor:pointer"></button>'; }).join('');
+    return '<div class="two"><div class="paper" style="grid-column:1/-1"><div class="sect">Days off per month, 2026 <span class="small muted" style="font-weight:400;margin-left:auto">click a month to open it in History</span></div><div class="leg"><span><i style="background:var(--primary)"></i>Vacation</span><span><i style="background:var(--accent)"></i>Sick</span><span><i style="background:#b8892f"></i>Other</span></div><div class="chartbox" style="position:relative">' + monthly() + over + '</div></div>' +
+      '<div class="paper"><div class="sect">By kind</div><div class="pad" style="display:grid;gap:10px">' + kinds.map(function (k) { return '<button type="button" data-act="histkind" data-kind="' + k[0] + '" aria-label="Open ' + k[0] + ' requests in History" style="font:inherit;cursor:pointer;background:none;border:0;padding:4px;border-radius:8px;display:grid;grid-template-columns:150px minmax(0,1fr) 44px;gap:8px;align-items:center;text-align:left"><span class="muted">' + k[0] + '</span><span class="meter"><span class="keep" style="width:' + (k[1] / 29 * 100) + '%;background:' + k[2] + '"></span></span><span class="v">' + k[1] + '</span></button>'; }).join('') + '</div></div>' +
+      '<div class="paper"><div class="sect">Time to approve</div><div class="pad" style="display:grid;gap:6px"><div style="display:flex;gap:16px;align-items:baseline"><b style="font-family:var(--display);font-size:34px">1.4 days</b></div>' + spark([3.1, 2.6, 2.8, 2.2, 1.9, 1.7, 1.4]).replace('class="spark"', 'class="spark" style="height:60px"') + '<span class="small muted">Average days from a request arriving to its approval over the last 90 days; the line is each of the last six months.</span></div></div></div>';
+  }
+  function managerHistory() {
+    var hf = state.filter.hist || 'All';
+    var mine = REQS.filter(function (r) { return r.mgr === ME && r.status !== 'Held'; });
+    var rows = mine.filter(function (r) { return r.status !== 'Pending' && (hf === 'All' || r.status === hf); });
+    if (state.histKind) rows = rows.filter(function (r) { return r.kind === state.histKind || (state.histKind === 'Bereavement and jury' && (r.kind === 'Bereavement' || r.kind === 'Jury Duty')); });   // from a Trends kind click
+    if (state.histMonth) rows = rows.filter(function (r) { return (r.when || '').indexOf(state.histMonth) >= 0; });   // from a Trends month click
+    var fchips = ['All', 'Approved', 'Rejected', 'Refunded'].map(function (t) { return '<button class="fchip" type="button" data-filter="hist|' + t + '" aria-pressed="' + (t === hf) + '">' + t + '</button>'; }).join('');
+    if (state.histMonth) fchips += '<button class="fchip" type="button" data-act="clrhistmonth" aria-pressed="true" style="background:var(--primary-soft)">' + esc(state.histMonth) + ' 2026 ✕</button>';
+    if (state.histKind) fchips += '<button class="fchip" type="button" data-act="clrhistkind" aria-pressed="true" style="background:var(--primary-soft)">' + esc(state.histKind) + ' ✕</button>';
+    return '<div class="paper"><div class="toolbar">' + fchips + '</div>' +
+      (rows.length ? '<ul class="list">' + rows.map(function (r) { return '<li>' + av(r.who) + '<div><b>' + esc(r.who) + '</b><div class="small muted">' + what(r) + '</div>' + tfPills(histSegs(r)) + '</div><span class="r">' + chip(r.status, CHIP[r.status]) + '</span></li>'; }).join('') + '</ul>' : '<div class="empty">No requests match.</div>') + '</div>';
+  }
+  // The Team tab grid (#361): filter tiles, a search with Cards/Table and Log
+  // sick day, vacation rings, a card per person (opens their profile), and the
+  // two dashed cards to add a new hire or add existing staff to the team.
+  function teamGrid() {
+    var tl = team();
+    var isWaiting = function (p) { return REQS.some(function (r) { return r.who === p.name && r.mgr === ME && r.status === 'Pending'; }); };
+    var isOffWeek = function (p) { for (var i = 0; i < 5; i++) if (offOn(p.name, i).some(function (r) { return r.status === 'Approved'; })) return true; return false; };
+    var tiles = [['waiting', 'Waiting on you', tl.filter(isWaiting).length, 'with a request to decide', true], ['off', 'Off this week', tl.filter(isOffWeek).length, 'of ' + tl.length + ' on the team', false], ['low', 'Low on vacation', tl.filter(function (p) { return !isBC(p) && p.vac < 3; }).length, 'under 3 days left', false], ['mu', 'Make-Up banked', tl.filter(function (p) { return (p.mu || 0) > 0; }).length, 'people with Make-Up', false]];
+    var tileHtml = '<div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">' + tiles.map(function (t) {
+      var on = state.teamTile === t[0];
+      return '<button type="button" data-act="teamtile" data-tile="' + t[0] + '" aria-pressed="' + on + '" style="text-align:left;font:inherit;cursor:pointer;display:grid;gap:2px;padding:12px 14px;border-radius:12px;border:1px solid ' + (on ? 'var(--primary)' : 'var(--line)') + ';background:' + (on ? 'var(--primary-soft)' : 'var(--bg)') + '"><span class="small muted">' + t[1] + '</span><b style="font-size:24px;line-height:1.1' + (t[4] && t[2] ? ';color:var(--warn)' : '') + '">' + t[2] + '</b><span class="small muted">' + t[3] + '</span></button>';
+    }).join('') + '</div>';
+    var q = (state.filter.teamq || '').toLowerCase();
+    var shown = tl.filter(function (p) {
+      if (state.teamTile === 'waiting' && !isWaiting(p)) return false;
+      if (state.teamTile === 'off' && !isOffWeek(p)) return false;
+      if (state.teamTile === 'low' && !(!isBC(p) && p.vac < 3)) return false;
+      if (state.teamTile === 'mu' && !((p.mu || 0) > 0)) return false;
+      return !q || p.name.toLowerCase().indexOf(q) >= 0;
+    });
+    var toolbar = '<div class="toolbar"><input class="input" data-search="teamq" placeholder="Start typing a name" value="' + esc(state.filter.teamq || '') + '" aria-label="Search by name">' +
+      '<button class="fchip" type="button" data-act="teamview" data-tv="cards" aria-pressed="' + (state.teamView !== 'table') + '">Cards</button><button class="fchip" type="button" data-act="teamview" data-tv="table" aria-pressed="' + (state.teamView === 'table') + '">Table</button>' +
+      '<button class="btn out' + P + '" type="button" data-act="logsick" style="margin-left:auto">Log sick day</button></div>';
+    var card = function (p) {
+      var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
+      var line = function (k, v, y) { return '<div class="potline"><span class="muted">' + k + '</span>' + meter(v, v, y || 5) + '<span class="v' + (v < 0 ? ' neg' : '') + '">' + v + (y ? ' of ' + y : '') + '</span></div>'; };
+      var bals = isBC(p) ? line('Sick', p.sick, p.sickY) + '<div class="potline"><span class="muted">Vacation taken</span><span></span><span class="v">' + (p.vacTaken || 0) + '</span></div>' : line('Vacation', p.vac, p.vacY) + line('Sick', p.sick, p.sickY) + line('Make-Up', p.mu) + line('Carry Over', p.co);
+      return '<button class="tcard" type="button" data-act="teamopen" data-pid="' + p.id + '" style="text-align:left;font:inherit;cursor:pointer"><div class="dhead">' + av(p.name, true) + '<div><div class="nm">' + esc(p.name) + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div></div></div>' +
+        bals + '<div class="small">' + (nxt ? 'Next off: <b>' + esc(nxt.kind) + ', ' + esc(nxt.when) + '</b>' + (nxt.status === 'Pending' ? ' (asked)' : '') : '<span class="muted">No time off booked.</span>') + '</div></button>';
+    };
+    var addCards = '<button class="tcard' + P + '" type="button" data-act="mgradd" style="border-style:dashed;cursor:pointer;place-items:center;color:var(--primary);font-weight:600;background:transparent;box-shadow:none;min-height:160px">+ Add a new hire</button>' +
+      '<button class="tcard' + P + '" type="button" data-act="teamadd" style="border-style:dashed;cursor:pointer;place-items:center;color:var(--primary);font-weight:600;background:transparent;box-shadow:none;min-height:160px">+ Add to my team</button>';
+    var body;
+    if (state.teamView === 'table') {
+      body = '<div class="paper"><div class="scroll"><table><thead><tr><th>Person</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th>Next off</th></tr></thead><tbody>' + shown.map(function (p) {
+        var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
+        return '<tr class="click" tabindex="0" data-act="teamopen" data-pid="' + p.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(p.name) + '<div><b>' + esc(p.name) + '</b><span class="sub">' + esc(p.dept || 'No department') + '</span></div></div></td>' + (isBC(p) ? '<td class="num muted">' + (p.vacTaken || 0) + ' taken</td>' : numCell(p.vac)) + numCell(p.sick) + (isBC(p) ? '<td class="num muted">n/a</td>' : numCell(p.mu)) + '<td class="small muted">' + (nxt ? esc(nxt.when) + (nxt.status === 'Pending' ? ' (asked)' : '') : 'None booked') + '</td></tr>';
+      }).join('') + '</tbody></table></div></div>';
+    } else {
+      body = '<div class="paper"><div class="sect">Vacation left</div>' + rings() + '</div><div class="tcards">' + shown.map(card).join('') + addCards + '</div>';
+    }
+    return tileHtml + (state.teamTile ? '<div class="small muted">Filtered by a tile. Click it again to show everyone.</div>' : '') + toolbar + body;
+  }
+  // The pots shown on a teammate's profile; hourly staff get Sick only plus the
+  // vacation-taken counter (#300). Entitlements and balances are editable (#362).
+  function profilePots(p) {
+    return isBC(p)
+      ? [{ key: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { key: 'sick', label: 'Sick', meterOf: 'sickY' }]
+      : [{ key: 'vacY', label: 'Vacation entitlement', sub: 'days a year' }, { key: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { key: 'vac', label: 'Vacation', meterOf: 'vacY' }, { key: 'sick', label: 'Sick', meterOf: 'sickY' }, { key: 'mu', label: 'Make-up', sub: 'days (hours ÷ 8)' }, { key: 'co', label: 'Carry-over', sub: 'days' }];
+  }
+  function balTile(p, pot, readonly) {
+    var saved = +(p[pot.key] || 0);
+    var val = (state.teamEdits && state.teamEdits[pot.key] !== undefined) ? +state.teamEdits[pot.key] : saved;
+    var dirty = val !== saved, sub = pot.meterOf ? 'of ' + (+(p[pot.meterOf] || 0)) + ' a year' : pot.sub;
+    return '<button type="button" ' + (readonly ? 'disabled ' : 'data-act="editbal" data-pot="' + pot.key + '" ') + 'style="position:relative;text-align:left;font:inherit;cursor:' + (readonly ? 'default' : 'pointer') + ';display:grid;gap:2px;padding:10px 12px;border-radius:12px;border:1px solid ' + (dirty ? 'var(--accent)' : 'var(--line)') + ';background:' + (dirty ? 'color-mix(in srgb, var(--accent) 14%, var(--bg))' : 'var(--bg)') + '">' +
+      (dirty ? '<span style="position:absolute;top:6px;right:6px;font-size:11px;font-weight:700;background:var(--accent);color:#fff;border-radius:999px;padding:1px 6px">' + (val - saved > 0 ? '+' : '') + num(val - saved) + '</span>' : '') +
+      '<span class="small muted">' + pot.label + '</span><b style="font-size:22px' + (val < 0 ? ';color:var(--err)' : '') + '">' + num(val) + '</b><span class="small muted">' + sub + '</span></button>';
+  }
+  function teamPersonProfile(p) {
+    var self = p.name === ME;                                   // a manager's own record is read-only here (#372)
+    var tiles = profilePots(p).map(function (pot) { return balTile(p, pot, self); }).join('');
+    if (isBC(p)) tiles += '<div style="display:grid;gap:2px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg)"><span class="small muted">Vacation taken</span><b style="font-size:22px">' + (p.vacTaken || 0) + '</b><span class="small muted">This year. Counted, not a balance.</span></div>';
+    var others = p.mgrs.filter(function (m) { return m !== ME; });
+    var mgrChips = p.mgrs.map(function (m) {
+      var mine = m === ME;
+      return '<span class="mgrchip">' + av(m) + esc(m) + (mine ? ' (you)' : '') + (mine && !self ? ' <button class="x" type="button" data-act="removeself" data-pid="' + p.id + '" aria-label="Remove yourself from this person" style="font-size:14px">×</button>' : '') + '</span>';
+    }).join('');
+    var confirm = state.teamRemove ? '<div class="note" style="background:var(--err-soft);color:var(--err);display:grid;gap:8px"><b>Remove yourself from ' + esc(first(p.name)) + '\'s team?</b><span>' + (others.length ? 'Another manager stays on them, so their requests still have somewhere to go.' : 'You are their only manager. Their requests will have nobody to go to until an admin or another manager adds them.') + '</span><div class="acts" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="keepself">Keep</button><button class="btn err" type="button" data-act="doremoveself" data-pid="' + p.id + '">Remove</button></div></div>' : '';
+    var fact = function (l, v) { return '<div style="display:grid;gap:2px"><span class="small muted">' + l + '</span><span>' + (v ? esc(v) : '<span class="muted">Not set</span>') + '</span></div>'; };
+    var details = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">' + fact('Email', p.email) + fact('Cell', '') + fact('Location', p.loc) + fact('Department', p.dept) + fact('Salary or hourly', p.etype || 'Salary') + fact('System check', 'Ready') + '</div>';
+    var mine = REQS.filter(function (r) { return r.who === p.name; });
+    var activity = mine.length ? '<ul class="list" style="margin:0 -16px">' + mine.slice(0, 6).map(function (r) { return '<li><div><b>' + esc(r.kind) + '</b><div class="small muted">' + esc(r.when) + '</div>' + tfPills(histSegs(r)) + '</div><span class="r">' + chip(r.status, CHIP[r.status]) + '</span></li>'; }).join('') + '</ul>' : '<span class="muted small">Nothing yet.</span>';
+    var pfh = function (t, h) { return '<div style="display:flex;align-items:baseline;gap:8px;margin:16px 0 8px"><h3 style="margin:0;font-size:14px">' + t + '</h3>' + (h ? '<span class="hint">' + h + '</span>' : '') + '</div>'; };
+    var left = '<section>' + pfh('Entitlements and balances', self ? 'Your own record is read-only' : 'Click a tile to change it') +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' + tiles + '</div>' +
+      pfh('Details') + details +
+      pfh('Managers') + '<div class="mchips">' + mgrChips + '</div>' + confirm + '</section>';
+    var right = '<section>' + pfh('Activity', 'Requests, newest first') + activity + '</section>';
+    var edits = state.teamEdits || {};
+    var bar = '';
+    if (Object.keys(edits).length) {
+      var summary = Object.keys(edits).map(function (k) { var lbl = { vacY: 'Vacation entitlement', sickY: 'Sick entitlement', vac: 'Vacation', sick: 'Sick', mu: 'Make-up', co: 'Carry-over' }[k] || k; return lbl + ' <b>' + num(p[k] || 0) + ' → ' + num(edits[k]) + '</b>'; }).join(' · ');
+      bar = '<div class="savebar" style="margin-top:12px;border:1px solid var(--line2);border-radius:12px;padding:12px;display:grid;gap:10px;background:var(--paper)"><div class="small">' + (Object.keys(edits).length === 1 ? '1 change: ' : Object.keys(edits).length + ' changes: ') + summary + '</div>' +
+        '<input class="input" id="balReason" placeholder="Reason, required. e.g. Day off Oct 6, approved verbally by Sam Supervisor" aria-label="Reason for the change">' +
+        '<div class="acts" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="cancelbal">Cancel</button><button class="btn pri" type="button" data-act="savebal" data-pid="' + p.id + '">Save</button></div></div>';
+    }
+    return '<div class="paper" aria-label="' + esc(p.name) + '" style="overflow:hidden">' +
+      '<div style="padding:16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center"><button class="btn out" type="button" data-act="teamback" aria-label="Back to the team">← Back</button>' + av(p.name, true) +
+      '<div style="flex:1;min-width:0"><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div></div></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;padding:16px">' + left + right + '</div></div>' + bar;
   }
   function monthCal() {
     // November 2026 starts on a Sunday.
@@ -1228,12 +1384,17 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     } else if (s.type === 'overtime') {
       f = '<label class="field">What was the overtime for?<input class="input big" data-rp="notes" value="' + esc(s.notes) + '"></label><div class="row2"><label class="field">Date worked<input class="input big" type="date" data-rp="start" value="' + s.start + '"></label><label class="field">Hours<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-hour steps.</span></label></div>';
       if (employee) {
-        // simulate_overtime_impact: hours / 8 into Make-Up, which then pays back any negative Vacation.
-        var me2 = person(s.session), d2 = (+s.hours || 0) / 8, mu2 = me2.mu + d2, vac2 = me2.vac;
-        if (vac2 < 0 && mu2 > 0) { vac2 += mu2; mu2 = 0; if (vac2 > 0) { mu2 = vac2; vac2 = 0; } }
-        var hol2 = holidaysFor(me2.loc)[s.start];
-        var otSegs = [{ cls: 'ot', amt: '+' + tfNum(d2), label: 'added to Make-Up' }];   // hours / 8 banked to Make-Up
-        f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', otSegs);
+        var me2 = person(s.session), hol2 = holidaysFor(me2.loc)[s.start];
+        if (isBC(me2)) {
+          // hourly: overtime is paid out, not banked into a Make-Up balance (#300).
+          f += preview(me2, [['Hours', +s.hours || 0]], [], 'Hourly staff are paid for overtime. It is not banked into a Make-Up balance.', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', []);
+        } else {
+          // simulate_overtime_impact: hours / 8 into Make-Up, which then pays back any negative Vacation.
+          var d2 = (+s.hours || 0) / 8, mu2 = me2.mu + d2, vac2 = me2.vac;
+          if (vac2 < 0 && mu2 > 0) { vac2 += mu2; mu2 = 0; if (vac2 > 0) { mu2 = vac2; vac2 = 0; } }
+          var otSegs = [{ cls: 'ot', amt: '+' + tfNum(d2), label: 'added to Make-Up' }];   // hours / 8 banked to Make-Up
+          f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', otSegs);
+        }
       }
     } else {
       f = '<div class="row2"><label class="field">Request<select class="input big" data-rpsel="co">' + ['Carry over to next year', 'Pay out'].map(function (o) { return '<option' + (s.co === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></label><label class="field">Days<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-day steps.</span></label></div>';
@@ -1464,6 +1625,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           todo: 'When a manager approves or rejects, you get an email. Select <b>Open My requests</b> to see the result.',
           know: 'Approved time off updates your balance by itself. You never have to work the sums out.',
           enter: function () { tAs('Avery Example', 'employee'); } },
+        { title: 'Your whole history', target: '#main .paper',
+          todo: 'Open <b>History</b> for every request in one table: search it, filter by type or status, and read what each one took.',
+          know: 'The "Taken from" chips under a request name the balance its days came out of. A carry-over or payout names the year; a date reads like Nov 2, 2026. Work from home, bereavement and jury duty cost nothing, so they show "No balance used".',
+          enter: function () { tAs('Avery Example', 'employee'); state.etab = 'history'; } },
         { title: 'Next time, straight in', target: '#addr',
           todo: 'Open the same bookmark next time. You go straight to <b>My requests</b>.',
           know: 'You stay signed in for 30 days on this device. After that, one new code signs you back in.',
@@ -1479,15 +1644,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     managers: {
       label: 'Managers',
       steps: [
-        { title: 'Your extra tab: My team', target: '[data-nav="team"]',
-          todo: 'Managers get an extra tab, <b>My team</b>. Open it to see what is waiting on you.',
+        { title: 'Your extra view: the team dashboard', target: '[data-nav="team"]',
+          todo: 'Managers get an extra view, <b>My team</b>. Open it to see what is waiting on you.',
           know: 'Only managers see My team. Everything else works the same as your own requests.',
           enter: function () { tAs('Sam Supervisor', 'employee'); },
           signal: function () { return state.role === 'manager'; },
           act: function () { var b = document.querySelector('[data-nav="team"]'); if (b) b.click(); } },
-        { title: 'Approve or reject', target: '.dcard [data-act="approve"]',
+        { title: 'Decide from Today', target: '.dcard [data-act="approve"]',
           todo: 'Each waiting request is a card: who asked, the dates, their note, and what approving does to their balance. Select <b>Approve</b>.',
-          know: 'A decided card slides away as it is handled, so your list always shows what is left.',
+          know: 'A decided card slides away as it is handled, so your list always shows what is left. The four tiles across the top are buttons; each opens the matching list.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'today'; TV.approveId = topPendingId(); },
           signal: function () { return !pendingHas(TV.approveId); },
           act: function () { var b = document.querySelector('.dcard [data-act="approve"]'); if (b) b.click(); } },
@@ -1500,24 +1665,77 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           todo: 'You also get an email for each request, with <b>Approve</b> and <b>Reject</b> buttons. You can decide right from there.',
           know: 'Those buttons work without signing in, so you can answer from your phone.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'today'; } },
-        { title: 'Approved',
+        { title: 'Already handled, and who it reaches',
           mail: { kind: 'page', subject: 'Request approved', lines: ['You approved the leave for Avery Example.', 'They have been emailed. You can close this window.'] },
           todo: 'A short page confirms it. You can close the window.',
-          know: 'Whoever answers first wins. A second try, or another manager, is simply told it was already handled.',
+          know: 'Whoever answers first wins: a second try, or another manager, is told it was already handled. If someone has more than one manager, a full day of approved leave takes the deciding manager out of the running for anyone whose leave overlaps it, so a new full-day request goes to the first manager who is not off.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'today'; } },
-        { title: 'See your team', target: '#main .paper',
-          todo: '<b>Calendar</b> shows who is off and when. The Team tab shows the balances for each person and their next time off.',
-          know: 'A dashed bar means time that was asked for but not approved yet.',
-          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'calendar'; state.calView = 'timeline'; } },
+        { title: 'The team calendar', target: '.tl-track',
+          todo: 'Open <b>Calendar</b> to see who is off and when. Switch between <b>Timeline</b> and <b>Month</b>.',
+          know: 'A dashed bar is time that was asked for but not approved yet. A shaded column is a weekend or a holiday.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'calendar'; state.calView = 'timeline'; state.calSel = null; state.pickedDay = null; } },
+        { title: 'Decide from the calendar', target: '.dcard [data-act="approve"]',
+          todo: 'Select a bar to open it. You can <b>Approve</b> or <b>Reject</b> it, see it in History, or open the person, all without leaving the calendar.',
+          know: 'Dashed bars are the ones still waiting. Taylor\'s half day is one of them.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'calendar'; state.calView = 'timeline'; state.calSel = 1441; state.pickedDay = null; },
+          signal: function () { return !pendingHas(1441); },
+          act: function () { var b = document.querySelector('.dcard [data-act="approve"]'); if (b) b.click(); } },
+        { title: 'Who is off on a day', target: '[data-act="pickday"]',
+          todo: 'Under the calendar, <b>Who is in, day by day</b> tracks your cover. Select a day to list who is off then.',
+          know: 'The line dips below the usual cover on the days you are short-handed.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'calendar'; state.calView = 'timeline'; state.calSel = null; state.pickedDay = null; },
+          signal: function () { return state.pickedDay != null; },
+          act: function () { var b = document.querySelector('[data-act="pickday"]'); if (b) b.click(); } },
+        { title: 'Spot the busy months', target: '.barhit[data-month="Oct"]',
+          todo: 'Open <b>Trends</b>. Select a month in <b>Days off per month</b> to open just that month in History.',
+          know: 'The <b>By kind</b> rows work the same way: select one to open every request of that kind.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'trends'; state.histMonth = null; state.histKind = null; },
+          signal: function () { return state.mtab === 'history' && state.histMonth === 'Oct'; },
+          act: function () { var b = document.querySelector('.barhit[data-month="Oct"]'); if (b) b.click(); } },
+        { title: 'The month, in History', target: '[data-act="clrhistmonth"]',
+          todo: 'History opens filtered to that month. Select the <b>Oct 2026 ✕</b> chip to clear the filter and see everything again.',
+          know: 'History is every decided request for your team, with the same search, filters and Taken-from chips your people see.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'history'; state.histMonth = 'Oct'; state.histKind = null; state.filter.hist = 'All'; } },
+        { title: 'Your team, person by person', target: '[data-act="teamopen"]',
+          todo: 'Open the <b>Team</b> view. The tiles filter the list, the search finds a name, and you can switch between Cards and Table. Select a person to open them.',
+          know: 'The tiles count who is waiting on you, off this week, low on vacation, or has Make-Up banked.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; state.teamView = 'cards'; state.teamTile = null; state.teamPerson = null; state.teamEdits = null; state.teamRemove = false; },
+          signal: function () { return state.teamPerson != null; },
+          act: function () { var b = document.querySelector('[data-act="teamopen"]'); if (b) b.click(); } },
+        { title: 'A teammate\'s profile', target: '[data-act="editbal"]',
+          todo: 'Their profile shows their balances, their details, their managers and their recent requests.',
+          know: 'You can change a teammate\'s balances here, but not your own: open your own record and the tiles are locked.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; var a = person('Avery Example'); state.teamPerson = a ? a.id : null; state.teamEdits = null; state.teamRemove = false; } },
+        { title: 'Change a balance, with a reason', target: '[data-act="savebal"]',
+          todo: 'Select a balance tile to change it. A save bar appears with the change and a <b>Reason</b> box. Type a reason, then <b>Save</b>.',
+          know: 'Nothing is saved until you type a reason and press Save, so a mistaken tap costs nothing. The reason is kept with the change.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; var a = person('Avery Example'); state.teamPerson = a ? a.id : null; state.teamEdits = { vac: num((a ? a.vac : 0) + 0.5) }; state.teamRemove = false; },
+          signal: function () { return !state.teamEdits || !Object.keys(state.teamEdits).length; },
+          act: function () { var ri = $('balReason'); if (ri) ri.value = 'Day off Oct 6, approved verbally'; var b = document.querySelector('[data-act="savebal"]'); if (b) b.click(); } },
+        { title: 'Add to your team, or step away', target: '[data-act="removeself"]',
+          todo: 'Under <b>Managers</b>, the × on your own chip removes just you from this person. On the team grid, <b>Add to my team</b> adds any active staff member except yourself.',
+          know: 'People can have more than one manager, so adding or removing yourself never touches anyone else. If you are their only manager, removing yourself leaves their requests with nobody until someone adds a manager.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; var a = person('Avery Example'); state.teamPerson = a ? a.id : null; state.teamEdits = null; state.teamRemove = false; } },
+        { title: 'Log a sick day', target: '[data-act="logsick"]',
+          todo: 'For hourly staff in British Columbia, select <b>Log sick day</b> to record one on their behalf.',
+          know: 'It is approved straight away and comes off their sick balance, so a worker who is off sick does not have to send the request themselves.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; state.teamPerson = null; state.teamEdits = null; state.teamRemove = false; },
+          act: function () { var b = document.querySelector('[data-act="logsick"]'); if (b) b.click(); } },
         { title: 'A new starter names you',
           mail: { to: 'sam.supervisor@ucsh.com', subject: 'Add Jordan Sample to the Staff Directory', kind: 'decision', lines: ['Jordan Sample (jordan.sample@gmail.com, Installation) picked you as their supervisor and made a leave request on the request page.', 'Vacation, Mon Oct 26, 2026, 1 day.', 'They are not in the Staff Directory yet, so the request is on hold. Add them and it is submitted to you automatically.'], button: { label: 'Add Jordan Sample', cls: 'pri' }, foot: 'If you are not their supervisor, reply to HR so it can be redirected.' },
           todo: 'When someone new names you as their supervisor, you get an email. Select <b>Add</b> to open the form.',
           know: 'The form opens already filled in with their name, email and department.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'today'; } },
-        { title: 'Add the employee', target: '.dialog [data-act="create"]',
-          todo: 'Check the details, set their yearly entitlements, then select <b>Add Employee</b>.',
-          know: 'Their waiting request is sent to you automatically as soon as they are added to the team.',
-          enter: function () { tAs('Sam Supervisor', 'manager'); state.prefill = { name: 'Jordan Sample', email: 'jordan.sample@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'] }; state.modal = { kind: 'mgradd' }; },
+        { title: 'Review the details', target: '.dialog [data-act="review"]',
+          todo: 'Fill in the record, then select <b>Review</b> instead of adding straight away.',
+          know: 'Review tidies what you typed (it trims stray spaces and lower-cases the email) and runs the setup check before anything is saved.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.prefill = { name: 'Jordan Sample ', email: 'Jordan.Sample@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'] }; state.modal = { kind: 'mgradd' }; state.addReview = null; },
+          signal: function () { return !!state.addReview; },
+          act: function () { var b = document.querySelector('.dialog [data-act="review"]'); if (b) b.click(); } },
+        { title: 'Confirm and add', target: '.dialog [data-act="create"]',
+          todo: 'The confirm panel shows what was tidied, a before and after, and any problems. Select <b>Add employee</b>.',
+          know: 'Blocks in red, such as a matching name, a matching email, or no supervisor, must be fixed first. Warnings in amber, like a supervisor not linked to Microsoft 365 or no holidays for their location, just ask you to check. Their held request is sent to you as soon as they are added.',
+          enter: function () { tAs('Sam Supervisor', 'manager'); state.prefill = { name: 'Jordan Sample', email: 'jordan.sample@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'] }; state.modal = { kind: 'mgradd' }; state.addReview = { rawName: 'Jordan Sample ', name: 'Jordan Sample', rawEmail: 'Jordan.Sample@gmail.com', email: 'jordan.sample@gmail.com', sup: ['Sam Supervisor'], blocks: [], warns: ['Sam Supervisor is not linked to Microsoft 365, so approval texts may not reach them.'] }; },
           signal: function () { return !state.modal; },
           act: function () { var b = document.querySelector('.dialog [data-act="create"]'); if (b) b.click(); } }
       ]
@@ -1760,7 +1978,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function trackBtn(k, desc, seen) {
     return '<button class="ttrack" type="button" data-ttrack="' + k + '"><b>' + esc(TRACKS2[k].label) + (seen.indexOf(k) >= 0 ? ' <span class="tdone">done</span>' : '') + '</b><span>' + esc(desc) + '</span></button>';
   }
-  var TRACK_DESC = { everyone: 'sign in, make a request, and see what happens next', managers: 'everything above, plus deciding requests', newstarters: 'new here, with no work email yet' };
+  var TRACK_DESC = { everyone: 'sign in, make a request, and see what happens next', managers: 'decide requests, read the calendar and trends, and look after your team', newstarters: 'new here, with no work email yet' };
   function linkRow() { return '<div class="tlink"><code>' + TOUR_LINK + '</code><button class="tcopy" type="button" data-tcopy="1">Copy link</button></div>'; }
 
   function openWelcome() {
@@ -1986,6 +2204,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     { id: 1349, kind: 'Overtime', when: 'Aug 29, 2026', hours: 6, status: 'Approved', took: 1 },
     { id: 1312, kind: 'Vacation', when: 'Jul 27 to Jul 31, 2026', days: 5, status: 'Approved', took: 2 },
     { id: 1288, kind: 'Half day', when: 'Jun 12, 2026 (AM)', days: 0.5, status: 'Approved', took: 1 },
+    { id: 1265, kind: 'Work from Home', when: 'May 8, 2026', days: 1, status: 'Approved', took: 0 },   // work from home costs nothing
     { id: 1231, kind: 'Sick', when: 'Mar 3, 2026', days: 1, status: 'Approved', took: 0 },
     { id: 1204, kind: 'Vacation', when: 'Feb 16 to Feb 18, 2026', days: 3, status: 'Approved', took: 1 }
   ];
@@ -2019,8 +2238,25 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div class="paper"><div class="sect">By kind</div><div class="pad" style="display:grid;gap:12px;padding-top:4px">' + kinds.map(function (k) { return '<div class="kbar"><span>' + k[0] + '</span><span class="meter"><span class="keep" style="width:' + (k[1] / top * 100) + '%;background:' + k[2] + '"></span></span><b>' + k[1] + '</b></div>'; }).join('') + '</div></div></div>';
     }
     if (tab === 'history') {
-      return html + '<div class="paper"><div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th>Taken from</th><th class="num">Amount</th><th class="num">Request</th></tr></thead><tbody>' +
-        all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td>' + tfPills(histSegs(r)) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
+      // History uses the shared requests table (RequestsHistoryTable, #359): a
+      // search, a type filter, a date range, status pills, and the "Taken from"
+      // chips on every row. Read-only here; an employee cannot decide their own.
+      var sv = state.filter.ehist || 'all';                     // the active status pill
+      var q = (state.filter.ehistq || '').toLowerCase();        // the search text
+      var tf = state.filter.ehtype || 'All types';              // the type filter
+      var kinds = all.map(function (r) { return r.kind; }).filter(function (k, i, a) { return a.indexOf(k) === i; }).sort();   // distinct kinds present
+      var pills = [['all', 'All'], ['Pending', 'Waiting'], ['Approved', 'Approved'], ['Rejected', 'Rejected'], ['Refunded', 'Refunded']];
+      var match = function (r) { return (sv === 'all' || r.status === sv) && (tf === 'All types' || r.kind === tf) && (!q || (r.kind + ' ' + r.when + ' #' + r.id).toLowerCase().indexOf(q) >= 0); };
+      var hrows = all.filter(match);                            // the rows on screen
+      var amount = function (r) { return r.hours ? r.hours + ' h' : r.days ? r.days + (r.days === 1 ? ' day' : ' days') : '–'; };
+      return html + '<div class="paper">' +
+        '<div class="toolbar"><input class="input" data-search="ehistq" placeholder="Search details or ID" value="' + esc(state.filter.ehistq || '') + '" aria-label="Search requests">' +
+        '<select class="input" data-fsel="ehtype" aria-label="Type"><option>All types</option>' + kinds.map(function (k) { return '<option' + (k === tf ? ' selected' : '') + '>' + esc(k) + '</option>'; }).join('') + '</select>' +
+        '<select class="input" data-fsel="ehrange" aria-label="Dates">' + ['Any date', 'This week', 'This month', 'Next 30 days', 'This year'].map(function (d) { return '<option' + (d === (state.filter.ehrange || 'Any date') ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select></div>' +
+        '<div class="toolbar" style="padding-top:0">' + pills.map(function (p) { var n = p[0] === 'all' ? all.length : all.filter(function (r) { return r.status === p[0]; }).length; return '<button class="fchip" type="button" data-filter="ehist|' + p[0] + '" aria-pressed="' + (p[0] === sv) + '">' + p[1] + ' <span class="c">' + n + '</span></button>'; }).join('') + '</div>' +
+        (hrows.length ? '<div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th>Taken from</th><th class="num">Amount</th></tr></thead><tbody>' +
+        hrows.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td>' + tfPills(histSegs(r)) + '</td><td class="num">' + amount(r) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<div class="empty">No requests match.</div>') +
+        '<div class="pad small muted" style="border-top:1px solid var(--line)">' + hrows.length + ' of ' + all.length + ' ' + (all.length === 1 ? 'request' : 'requests') + '</div></div>';
     }
     var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + (of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : '') + '<div class="chg">' + note + '</div></div>'; };
     // hourly: one Sick balance, and vacation as a counted total (not a balance). No Make-Up/Carry-over/Payout. (#300)
@@ -2116,6 +2352,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           '<button class="btn ghost" type="button" data-act="wzback">Back</button><button class="btn pri" type="button" data-act="wzdone">Done</button>', true);
       case 'checklist': return dialog('What moved where', '<span class="small muted">Every part of today\'s admin dashboard, and where it lives in this design.</span><div class="scroll"><table class="checklist"><thead><tr><th>Today</th><th>Now</th></tr></thead><tbody>' + CHECKLIST.map(function (c) { return '<tr><td>' + c[0] + '</td><td>' + c[1] + '</td></tr>'; }).join('') + '</tbody></table></div>', '', true);
       case 'mgradd': return dialog('Add a new hire', addEmployee(false), '', true);
+      case 'logsick': return dialog('Log a sick day', '<span class="small muted">For hourly staff in British Columbia, a manager can record a sick day on their behalf. It is approved straight away and comes off their sick balance.</span>' +
+        '<label class="field">Who<select class="input" id="sickWho">' + team().map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field">Day<input class="input" type="date" value="2026-10-28"></label>', '<button class="btn pri" type="button" data-act="dologsick">Log and approve</button>');
+      case 'teamadd': var addable = STAFF.filter(function (p) { return p.name !== ME && p.mgrs.indexOf(ME) < 0; });
+        return dialog('Add to my team', '<span class="small muted">Pick any active staff member. They can have more than one manager, so this does not remove anyone else.</span>' +
+          (addable.length ? '<label class="field">Person<select class="input" id="teamAddPick">' + addable.map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label>' : '<div class="note">Everyone already reports to you.</div>'),
+          addable.length ? '<button class="btn pri" type="button" data-act="doteamadd">Add to my team</button>' : '');
     }
     return '';
   }
@@ -2211,7 +2454,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
 
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('button, tr[data-sel], tr[data-rsel], .modal, input[data-op]');
+    var t = e.target.closest('button, tr[data-sel], tr[data-rsel], tr[data-act], .modal, input[data-op]');
     if (!t) return;
     if (handleTourClick(t)) return;                       // tour controls win over app clicks
     if (t.classList.contains('modal') && e.target !== t) return;
@@ -2226,11 +2469,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (t.hasAttribute('data-sel')) { state.sel = +t.getAttribute('data-sel'); render(); return; }
     if (t.hasAttribute('data-rsel')) { state.reqSel = t.getAttribute('data-rsel'); render(); return; }
     if (t.hasAttribute('data-ptab')) { state.ptab = t.getAttribute('data-ptab'); render(); return; }
-    if (t.hasAttribute('data-mtab')) { state.mtab = t.getAttribute('data-mtab'); render(); return; }
+    if (t.hasAttribute('data-mtab')) { state.mtab = t.getAttribute('data-mtab'); state.teamPerson = null; state.calSel = null; state.pickedDay = null; state.teamEdits = null; state.teamRemove = false; render(); return; }
     if (t.hasAttribute('data-etab')) { state.etab = t.getAttribute('data-etab'); render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute('data-mail')) { state.mail = +t.getAttribute('data-mail'); render(); return; }
     if (t.hasAttribute('data-mailw')) { state.mailw = t.getAttribute('data-mailw'); render(); return; }
-    if (t.hasAttribute('data-cal')) { state.calView = t.getAttribute('data-cal'); render(); return; }
+    if (t.hasAttribute('data-cal') && !t.hasAttribute('data-act')) { state.calView = t.getAttribute('data-cal'); state.calSel = null; render(); return; }
     if (t.hasAttribute('data-sup')) { t.setAttribute('aria-pressed', String(t.getAttribute('aria-pressed') !== 'true')); return; }
     if (t.hasAttribute('data-msel')) { var n = t.getAttribute('data-msel'), s = state.modal.sel, i = s.indexOf(n); if (i >= 0) s.splice(i, 1); else s.push(n); render(); return; }
     if (t.id === 'modeBtn') { state.mode = { system: 'light', light: 'dark', dark: 'system' }[state.mode]; try { localStorage.setItem('proto-mode', state.mode); } catch (er) {} applyMode(); return; }
@@ -2247,10 +2490,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var r = t.hasAttribute('data-req') ? findReq(t.getAttribute('data-req')) : null;
     var m = state.modal;
     switch (act) {
-      case 'approve': slideAway(t.closest('.dcard'), function () { r.status = 'Approved'; r.age = 0; state.reqSel = null; toast('Approved. ' + (r.cur ? Object.keys(r.cur).map(function (k) { return k + ' ' + r.cur[k] + ' → ' + r.next[k]; }).join(', ') + '. ' : '') + first(r.who) + ' is emailed (example).'); render(); }); return;
+      case 'approve': slideAway(t.closest('.dcard'), function () { r.status = 'Approved'; r.age = 0; state.reqSel = null; state.calSel = null; toast('Approved. ' + (r.cur ? Object.keys(r.cur).map(function (k) { return k + ' ' + r.cur[k] + ' → ' + r.next[k]; }).join(', ') + '. ' : '') + first(r.who) + ' is emailed (example).'); render(); }); return;
       case 'reject': case 'refund': case 'reprocess': case 'cancelheld': case 'edit': case 'audit': state.modal = { kind: act, req: r }; render(); return;
       case 'closemodal': if (t.getAttribute('data-msg')) toast(t.getAttribute('data-msg')); state.modal = null; render(); return;
-      case 'doreject': var rq = m.req; state.modal = null; state.reqSel = null; render(); slideAway(document.querySelector('.dcard[data-reqid="' + rq.id + '"]'), function () { rq.status = 'Rejected'; rq.age = 0; toast('Rejected #' + rq.id + '. ' + first(rq.who) + ' is emailed (example).'); render(); }); return;
+      case 'doreject': var rq = m.req; state.modal = null; state.reqSel = null; state.calSel = null; render(); slideAway(document.querySelector('.dcard[data-reqid="' + rq.id + '"]'), function () { rq.status = 'Rejected'; rq.age = 0; toast('Rejected #' + rq.id + '. ' + first(rq.who) + ' is emailed (example).'); render(); }); return;
       case 'dorefund': m.req.status = 'Refunded'; state.modal = null; state.reqSel = null; toast('Refunded #' + m.req.id + '. ' + (m.req.back ? m.req.back + '. ' : '') + '(example)'); render(); return;
       case 'doreprocess':
         var reason = ($('reasonIn') || {}).value || '';
@@ -2271,12 +2514,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'wzdone': state.modal = null; toast('Assignments updated (example, nothing saved).'); render(); return;
       case 'addheld': state.prefill = { name: r.who, email: r.email, loc: r.loc, mgrs: [r.mgr], held: r }; state.created = null; state.reqSel = null; state.screen = 'add'; render(); window.scrollTo(0, 0); return;
       case 'create':
-        var pf = state.prefill || {}, scope = t.closest('.form');
-        var name = (scope.querySelector('input') || {}).value || 'New employee', released = 0, mgr = (pf.mgrs || [])[0];
+        var R = state.addReview;                                 // the reviewed, cleaned details (#378)
+        if (R && R.blocks.length) { toast('Fix the blocked items first.'); return; }
+        var pf = state.prefill || {};
+        var name = R ? R.name : (((t.closest('.form') || document).querySelector('input') || {}).value || 'New employee'), released = 0, mgr = R ? R.sup[0] : (pf.mgrs || [])[0];
         if (pf.held) { pf.held.status = 'Pending'; pf.held.id = 1450; pf.held.age = 0; pf.held.why = ''; pf.held.cur = { Vacation: 0 }; pf.held.next = { Vacation: -3 }; released = 1; STAFF.push({ id: 8, name: pf.name, email: pf.email, dept: pf.dept || 'Warehouse', loc: pf.loc || 'British Columbia', mgrs: pf.mgrs, vac: 0, sick: 0, mu: 0, co: 0, vacY: 10, sickY: 5 }); }
+        state.addReview = null;
         if (state.modal) { state.modal = null; toast(name + ' was added to your team (example).'); render(); return; }
         state.created = { name: name, released: released, mgr: mgr }; state.prefill = null; render(); window.scrollTo(0, 0); return;
-      case 'another': state.created = null; state.prefill = null; render(); return;
+      case 'another': state.created = null; state.prefill = null; state.addReview = null; render(); return;
       case 'openperson': var w = person(t.getAttribute('data-who')); state.screen = 'staff'; state.created = null; state.sel = w ? w.id : null; state.ptab = 'Managers'; render(); return;
       case 'closepanel': state.sel = null; state.reqSel = null; render(); return;
       case 'endflow': state.flow = null; render(); return;
@@ -2287,7 +2533,58 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'refreshsetup': toast('Employee setup refreshed: ' + SETUP.length + ' with problems (example).'); return;
       case 'maildetail': state.modal = { kind: 'mail', i: +t.getAttribute('data-i') }; render(); return;
       case 'checklist': state.modal = { kind: 'checklist' }; render(); return;
-      case 'mgradd': state.modal = { kind: 'mgradd' }; render(); return;
+      case 'mgradd': state.modal = { kind: 'mgradd' }; state.addReview = null; render(); return;
+      // ---- Add employee: Review then confirm (#378) ----
+      case 'review': {
+        var scope = t.closest('.form');
+        var rawName = (scope.querySelector('[data-ae="name"]') || {}).value || '';
+        var rawEmail = (scope.querySelector('[data-ae="email"]') || {}).value || '';
+        var cName = rawName.replace(/\s+/g, ' ').trim();        // collapse stray spaces
+        var cEmail = rawEmail.replace(/\s+/g, '').toLowerCase();   // drop every space, lower-case the email
+        var isAdm = !!scope.querySelector('[data-sup]');         // the admin form has the supervisor picker
+        var supSel = Array.prototype.map.call(scope.querySelectorAll('[data-sup][aria-pressed="true"]'), function (b) { return b.getAttribute('data-sup'); });
+        var pfm = (state.prefill || {}).mgrs || [];
+        var sup = isAdm ? supSel : (pfm.length ? pfm.slice() : [ME]);   // a manager adds to their own team
+        var blocks = [], warns = [];
+        if (!cName) blocks.push('Enter a full name.');
+        if (cName && STAFF.some(function (p) { return p.name.toLowerCase() === cName.toLowerCase(); })) blocks.push('Someone called ' + cName + ' already has a record.');
+        if (cEmail && STAFF.some(function (p) { return (p.email || '').toLowerCase() === cEmail; })) blocks.push('That email is already on another record.');
+        if (!sup.length) blocks.push('Choose at least one supervisor, or their requests reach nobody.');
+        state.addReview = { rawName: rawName, name: cName, rawEmail: rawEmail, email: cEmail, sup: sup, blocks: blocks, warns: warns };
+        render(); return;
+      }
+      case 'aeback': state.addReview = null; render(); return;
+      // ---- Team tab (#361, #362, #372, #373) ----
+      case 'teamtile': { var tk = t.getAttribute('data-tile'); state.teamTile = state.teamTile === tk ? null : tk; render(); return; }
+      case 'teamview': state.teamView = t.getAttribute('data-tv'); render(); return;
+      case 'teamopen': state.teamPerson = +t.getAttribute('data-pid'); state.teamEdits = null; state.teamRemove = false; render(); return;
+      case 'teamopenp': { var wp = person(t.getAttribute('data-who')); if (wp) { state.mtab = 'team'; state.teamPerson = wp.id; state.teamEdits = null; state.teamRemove = false; state.calSel = null; } render(); return; }
+      case 'teamback': state.teamPerson = null; state.teamEdits = null; state.teamRemove = false; render(); return;
+      case 'editbal': { var pk = t.getAttribute('data-pot'); var pp2 = STAFF.filter(function (x) { return x.id === state.teamPerson; })[0]; if (!pp2) return; state.teamEdits = state.teamEdits || {}; var base = state.teamEdits[pk] !== undefined ? state.teamEdits[pk] : +(pp2[pk] || 0); state.teamEdits[pk] = num(base + 0.5); render(); return; }
+      case 'cancelbal': state.teamEdits = null; render(); return;
+      case 'savebal': {
+        var reason = ($('balReason') || {}).value || '';
+        if (!reason.trim()) { if ($('balReason')) { $('balReason').placeholder = 'A reason is required before saving'; $('balReason').focus(); } return; }
+        var pp3 = STAFF.filter(function (x) { return x.id === +t.getAttribute('data-pid'); })[0];
+        var n2 = Object.keys(state.teamEdits || {}).length;
+        if (pp3) Object.keys(state.teamEdits).forEach(function (k) { pp3[k] = state.teamEdits[k]; });
+        state.teamEdits = null; toast(n2 + ' change' + (n2 > 1 ? 's' : '') + ' saved for ' + first(pp3.name) + ' (example).'); render(); return;
+      }
+      case 'removeself': state.teamRemove = true; render(); return;
+      case 'keepself': state.teamRemove = false; render(); return;
+      case 'doremoveself': { var pp4 = STAFF.filter(function (x) { return x.id === +t.getAttribute('data-pid'); })[0]; if (pp4) pp4.mgrs = pp4.mgrs.filter(function (mm) { return mm !== ME; }); state.teamPerson = null; state.teamRemove = false; toast('You are no longer a manager for ' + first(pp4.name) + ' (example).'); render(); return; }
+      case 'teamadd': state.modal = { kind: 'teamadd', sel: '' }; render(); return;
+      case 'doteamadd': { var who3 = ($('teamAddPick') || {}).value || ''; var pp5 = person(who3); if (pp5 && pp5.mgrs.indexOf(ME) < 0) pp5.mgrs.push(ME); state.modal = null; toast((pp5 ? first(pp5.name) : 'They') + ' joined your team (example).'); render(); return; }
+      case 'logsick': state.modal = { kind: 'logsick' }; render(); return;
+      case 'dologsick': { var who4 = ($('sickWho') || {}).value || ''; var pp6 = person(who4); state.modal = null; toast('Sick day logged for ' + (pp6 ? first(pp6.name) : 'them') + ' and approved (example).'); render(); return; }
+      // ---- Calendar and Trends click-throughs ----
+      case 'calsel': { var cid = t.getAttribute('data-cal'); state.calSel = state.calSel === cid ? null : cid; render(); return; }
+      case 'pickday': { var d2 = +t.getAttribute('data-day'); state.pickedDay = state.pickedDay === d2 ? null : d2; render(); return; }
+      case 'histopen': state.mtab = 'history'; state.calSel = null; render(); return;
+      case 'histmonth': state.mtab = 'history'; state.histMonth = t.getAttribute('data-month'); state.filter.hist = 'All'; render(); return;
+      case 'histkind': state.mtab = 'history'; state.histKind = t.getAttribute('data-kind'); state.filter.hist = 'All'; render(); return;
+      case 'clrhistmonth': state.histMonth = null; render(); return;
+      case 'clrhistkind': state.histKind = null; render(); return;
       case 'rpsend':
         var em2 = ($('rpEmail').value || '').trim();
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em2)) { state.rp.email = em2; state.rp.err = 'Enter a full email address.'; render(); return; }

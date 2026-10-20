@@ -1157,6 +1157,40 @@ async def team_create_employee(user: AuthUser, body: dict):
     return await _after_employee_created(record)
 
 
+@router.post("/team/employees/check")
+async def team_check_employee(user: AuthUser, body: dict):
+    """Dry-run the add-employee checks for the manager dashboard. Writes nothing.
+
+    The Review step behind ``POST /team/employees``: it cleans the typed details,
+    says what cleaning changed, and lists every block and warning the create
+    would hit, so the manager confirms before anything is saved. Same body and
+    same auth as the create route; the supervisor is the signed-in manager, so a
+    manager whose own record is not linked to Microsoft 365 surfaces as the
+    supervisor warning here rather than as a hard refusal.
+
+    Args:
+        user: The signed-in manager or admin, from the dashboard link.
+        body: The submitted employee form (snake_case fields).
+
+    Returns:
+        ``{"cleaned", "changes", "problems"}`` from ``check_employee``.
+    """
+    _require_role(user, "manager", "admin")
+    manager = await get_employee_by_id(user.user_id)    # the would-be supervisor
+    has_supervisor = manager is not None                # no record = nobody to approve
+    supervisor_unlinked = False                         # only meaningful in SharePoint mode
+    if manager and not await staff_in_postgres():
+        # SharePoint records a manager by their Microsoft 365 user id, resolved
+        # from their email; when that fails the request could keep no manager.
+        manager_email = (manager["fields"].get("EmailAddress") or "").strip()
+        supervisor_unlinked = not await _resolve_user_lookup_id(manager_email)
+
+    from app.services.employee_creation import check_employee
+    return await check_employee(
+        body, has_supervisor=has_supervisor, supervisor_unlinked=supervisor_unlinked,
+    )
+
+
 @router.post("/team/sick-days")
 async def team_log_sick_day(user: AuthUser, body: dict):
     """Record a sick day for one of the manager's employees and approve it.
@@ -1334,6 +1368,39 @@ async def admin_create_employee(body: dict):
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
+
+
+@router.post("/admin/employees/check")
+async def admin_check_employee(body: dict):
+    """Dry-run the add-employee checks for the admin dashboard. Writes nothing.
+
+    The Review step behind ``POST /admin/employees``: it cleans the typed
+    details, reports what cleaning changed, and lists every block and warning
+    the create would hit. Same body and same auth (the shared admin password,
+    #228) as the create route; the admin chooses the supervisor(s) via
+    ``manager_ids``, which come from the Microsoft 365 user picker and so are
+    already linked, so the supervisor warning does not arise here.
+
+    Args:
+        body: The submitted employee form plus ``manager_ids`` (the chosen
+            supervisors' SharePoint user ids).
+
+    Returns:
+        ``{"cleaned", "changes", "problems"}`` from ``check_employee``.
+    """
+    # Mirror the create route's coercion so "has a supervisor" is judged the
+    # same way: drop anything in the picker payload that will not parse.
+    manager_ids: list[int] = []
+    for raw in body.get("manager_ids") or []:
+        try:
+            manager_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+
+    from app.services.employee_creation import check_employee
+    return await check_employee(
+        body, has_supervisor=bool(manager_ids), supervisor_unlinked=False,
+    )
 
 
 async def _after_employee_created(record: dict) -> dict:

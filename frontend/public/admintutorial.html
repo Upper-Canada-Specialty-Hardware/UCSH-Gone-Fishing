@@ -792,6 +792,14 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function $(id) { return document.getElementById(id); }
   function count(st) { return REQS.filter(function (r) { return r.status === st; }).length; }
+  // Managers currently on approved leave (sample), with the day they are back.
+  // A pending request whose every manager is here has nobody to decide it, so it
+  // surfaces under Approvals > Managers on vacation for an admin to step in.
+  var MGRS_AWAY = { 'Pat Manager': 'Nov 10', 'Lee Lead': 'Nov 7' };
+  function managersOf(r) { var p = person(r.who); return (p && p.mgrs.length) ? p.mgrs : (r.mgr ? [r.mgr] : []); }   // the requester's managers, or the request's one
+  function stuckOnVacation() {
+    return REQS.filter(function (r) { var ms = managersOf(r); return r.status === 'Pending' && ms.length && ms.every(function (m) { return MGRS_AWAY[m]; }); });
+  }
   function what(r) { return esc(r.kind) + ' · ' + esc(r.when) + (r.hours ? ' · ' + r.hours + ' h' : r.days ? ' · ' + r.days + (r.days === 1 ? ' day' : ' days') : ''); }
   // ---- "Taken from" chips (#296, #307): which balances a request's days came from, worded exactly like TakenFrom.tsx. ----
   var TF_YEAR = 2026;                                            // the sample's earned year for carry-over / payout
@@ -908,7 +916,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     return {
       main: [
         [null, [['home', 'Home']]],
-        ['Approvals', [['pending', 'Pending approvals', count('Pending'), 'warm'], ['held', 'Held for new hires', count('Held'), '']]],
+        ['Approvals', [['pending', 'Pending approvals', count('Pending'), 'warm'], ['mgrsonvac', 'Managers on vacation', stuckOnVacation().length, 'warm'], ['held', 'Held for new hires', count('Held'), '']]],
         ['People', [['staff', 'Staff'], ['setup', 'Employee setup', SETUP.length, 'warm'], ['add', 'Add employee']]],
         ['Requests', [['requests', 'All requests']]],
         ['Calendar', [['holidays', 'Company holidays']]]
@@ -1077,6 +1085,19 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     },
     pending: function () { return requestsView('pending'); },
     held: function () { return requestsView('held'); },
+    // Pending requests whose managers are all on approved leave (#358). HR can
+    // decide them in the managers' place so the person is not left waiting.
+    mgrsonvac: function () {
+      var rows = stuckOnVacation();
+      var card = function (r) {
+        var away = managersOf(r).filter(function (m) { return MGRS_AWAY[m]; }).map(function (m) { return esc(m) + ' (back ' + MGRS_AWAY[m] + ')'; }).join(', ');
+        return '<article class="dcard" data-reqid="' + r.id + '" style="box-shadow:none;border:1px solid var(--line)"><div class="dhead">' + av(r.who, true) + '<div><div class="nm">' + esc(r.who) + '</div><div class="small muted">' + what(r) + '</div></div>' + chip(r.status, CHIP[r.status]) + '</div>' +
+          '<div class="small muted">Waiting on ' + away + '. No other manager can act.</div>' +
+          '<div class="dfoot">' + rowActions(r) + '</div></article>';
+      };
+      return head('Managers on vacation', 'When every manager on a request is on approved leave, the request has nobody to decide it. It shows here so you can approve or reject it in their place.') +
+        (rows.length ? '<div style="display:grid;gap:14px">' + rows.map(card).join('') + '</div>' : '<div class="paper"><div class="empty">No request is stuck on a manager\'s vacation right now.</div></div>');
+    },
     stuck: function () { return requestsView('stuck'); },
     requests: function () { return requestsView(state.filter.reqview || 'all'); },
     setup: function () {
@@ -1098,7 +1119,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       var q = (state.filter.staffq || '').toLowerCase();
       // Quick chips now match the app: All, Below zero, No manager, Setup problem.
       var F = { 'All': function () { return true; }, 'Below zero': function (p) { return p.vac < 0 || p.sick < 0 || p.mu < 0 || p.co < 0; }, 'No manager': function (p) { return !p.mgrs.length; }, 'Setup problem': function (p) { return SETUP.some(function (s) { return s.who === p.name; }); } };
-      var rows = STAFF.filter(function (p) { return F[f](p) && (!q || (p.name + ' ' + p.email + ' ' + p.mgrs.join(' ') + ' ' + (p.dept || '') + ' ' + p.loc).toLowerCase().indexOf(q) >= 0); });
+      var rows = STAFF.filter(function (p) { return !p.archived && F[f](p) && (!q || (p.name + ' ' + p.email + ' ' + p.mgrs.join(' ') + ' ' + (p.dept || '') + ' ' + p.loc).toLowerCase().indexOf(q) >= 0); });
+      var gone = STAFF.filter(function (p) { return p.archived; });        // departed employees, set aside (#358)
       // hourly: vacation is a counted total (not a balance) and there is no Make-Up or Carry-over. (#300)
       var balCells = function (x) { return isBC(x) ? '<td class="num muted">' + (x.vacTaken || 0) + ' taken</td>' + numCell(x.sick) + '<td class="num muted col-mu">n/a</td><td class="num muted col-co">n/a</td>' : numCell(x.vac) + numCell(x.sick) + numCell(x.mu, 'col-mu') + numCell(x.co, 'col-co'); };
       var rowHtml = function (x) { return '<tr class="click' + (x.id === state.sel ? ' sel' : '') + '" tabindex="0" data-sel="' + x.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(x.name) + '<div><b>' + esc(x.name) + '</b><span class="sub">' + esc(x.dept || 'No department') + ' · ' + esc(x.loc) + '</span></div></div></td><td class="col-mgrs">' + (x.mgrs.length ? esc(x.mgrs.join(', ')) : chip('None', 'err')) + '</td>' + balCells(x) + '</tr>'; };
@@ -1107,7 +1129,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         Object.keys(F).map(function (k) { return '<button class="fchip" type="button" data-filter="staff|' + k + '" aria-pressed="' + (k === f) + '">' + k + ' <span class="c">' + STAFF.filter(F[k]).length + '</span></button>'; }).join('') +
         '<button class="btn out" type="button" data-act="stafffilters">Filters</button><button class="btn out" type="button" data-act="exportstaff">Export to Excel</button></div>' +
         '<div class="small muted" style="padding:0 16px 10px">Filters narrow by location, department, salary or hourly, manager and system check; each active filter shows as a chip you can remove. Export opens a preview first, then downloads the .xlsx.</div>' +
-        (rows.length ? '<div class="scroll"><table class="stafftbl"><thead><tr><th>Employee</th><th class="col-mgrs">Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num col-mu">Make-Up</th><th class="num col-co">Carry Over</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div><div class="staffnote small muted" style="padding:0 16px 10px">Some columns are hidden at this width. Open a person to see every value.</div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
+        (rows.length ? '<div class="scroll"><table class="stafftbl"><thead><tr><th>Employee</th><th class="col-mgrs">Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num col-mu">Make-Up</th><th class="num col-co">Carry Over</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div><div class="staffnote small muted" style="padding:0 16px 10px">Some columns are hidden at this width. Open a person to see every value.</div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>' +
+        (gone.length ? '<div class="paper"><details class="actyr"><summary><span class="yrn">Archived</span>· ' + gone.length + ' departed ' + (gone.length === 1 ? 'employee' : 'employees') + '</summary><div class="small muted" style="padding:0 16px 8px">Set aside from the directory. Their pending requests stay pending until decided. Restore brings them back.</div><div class="scroll"><table><tbody>' +
+          gone.map(function (p) { return '<tr><td><div style="display:flex;gap:10px;align-items:center">' + av(p.name) + '<div><b>' + esc(p.name) + '</b><span class="sub">' + esc(p.dept || 'No department') + ' · ' + esc(p.loc) + '</span></div></div></td><td>' + REQS.filter(function (r) { return r.who === p.name && r.status === 'Pending'; }).length + ' pending</td><td style="text-align:right"><button class="btn out" type="button" data-act="restore" data-pid="' + p.id + '">Restore</button></td></tr>'; }).join('') +
+          '</tbody></table></div></details></div>' : '');
     },
     add: function () { return addEmployee(true); },
     // Reached from Staff, not the sidebar; the directory-wide view of who reports to whom.
@@ -1161,13 +1186,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     },
     checks: function () {
       return head('Data checks', 'Checks that keep the stored data in step. Rarely needed day to day.') +
-        '<div class="two"><div class="paper pad" style="display:grid;gap:8px"><b>Request storage</b><span class="small muted">Where the leave, overtime and carry-over or payout lists are read and written, and the one-time copy into Postgres before the move.</span>' +
-        '<div class="small">Requests are read and written in <b>SharePoint</b> (STORAGE_REQUESTS).</div>' +
-        '<div class="small muted">Leave: 1,284 in SharePoint, 1,200 in Postgres, 84 not copied yet</div>' +
-        '<div class="small muted">Overtime: 412 in SharePoint, 405 in Postgres, 7 not copied yet</div>' +
-        '<div class="small muted">Carry-over / payout: 96 in SharePoint, 96 in Postgres, 0 not copied yet</div>' +
-        '<div class="acts" style="justify-content:flex-start"><button class="btn out' + P + '" type="button" data-act="copyreq">Copy requests from SharePoint</button></div>' +
-        '<div class="note">The copy only reads SharePoint and writes Postgres; it changes nothing live. Switching STORAGE_REQUESTS to Postgres is a separate step the developer does in Railway, right after the last copy.</div></div>' +
+        '<div class="two"><div class="paper pad" style="display:grid;gap:8px"><b>Request storage</b><span class="small muted">Where leave, overtime and carry-over or payout are read and written. A shadow copy keeps Postgres in step so the switch is quick.</span>' +
+        '<div class="small">Reading and writing in <b>SharePoint</b>. A shadow copy keeps Postgres up to date (STORAGE_REQUESTS).</div>' +
+        '<div class="okbox">Last shadow copy 2 minutes ago. Leave 1,284 · Overtime 412 · Carry-over or payout 96, all matched in Postgres.</div>' +
+        '<div class="acts" style="justify-content:flex-start"><button class="btn out' + P + '" type="button" data-act="switchpg">Switch to Postgres</button></div>' +
+        '<div class="note">Switching does one final sync and moves requests, staff and holidays to Postgres in one go. It is one-way, and writes are refused for a few minutes while it runs, so the developer does it after hours. Until then the shadow copy runs by itself; nothing else here needs doing.</div></div>' +
         '<div class="paper pad" style="display:grid;gap:8px"><b>Request page columns</b><span class="small muted">SubmitterEmail and RequestSource on the three request lists let a request from the page reach its person without a SharePoint visit.</span>' +
         '<div class="small">SubmitterEmail and RequestSource are <b>missing from some request lists</b>. Writing them is <b>off</b> (REQUEST_EMAIL_COLUMNS_ENABLED).</div>' +
         '<div class="acts" style="justify-content:flex-start"><button class="btn out' + P + '" type="button" data-act="addcols">Add the columns</button></div></div></div>';
@@ -1192,18 +1215,37 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       return head('Add employee', intro) + '<div class="paper pad" style="display:grid;gap:12px;max-width:780px"><div class="okbox"><b>' + esc(c.name) + '</b> was added.' + (c.released ? ' ' + c.released + ' waiting request was sent to ' + esc(c.mgr) + ' for approval.' : '') + '</div>' +
         '<div class="acts" style="justify-content:flex-start">' + (c.released ? '<button class="btn pri" type="button" data-go="pending">See it in Pending</button>' : '') + '<button class="btn out" type="button" data-act="openperson" data-who="' + esc(c.name) + '">Open their record</button><button class="btn ghost" type="button" data-act="another">Add another</button></div></div>';
     }
+    // Review step (#378): the typed details are cleaned, the setup check is run,
+    // and the confirm panel shows before -> after plus any blocks or warnings.
+    if (state.addReview) return addConfirm(isAdmin);
     var sup = pf.mgrs || [];
     return (isAdmin ? head('Add employee', intro) : '<p class="muted" style="margin:0">' + intro + '</p>') +
       '<div class="' + (isAdmin ? 'paper' : '') + '">' + (pf.name ? '<div class="pad" style="padding-bottom:0"><div class="note">Filled in from <b>' + esc(pf.name) + '</b>\'s held request. Adding them sends that request to ' + esc(sup[0] || 'their supervisor') + '.</div></div>' : '') +
-      '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '><div class="row2"><label><span class="req">Full name (as in Microsoft 365)</span><input class="input" value="' + esc(pf.name || '') + '"><span class="help">Must match their Microsoft 365 display name exactly.</span></label>' +
-      '<label><span class="req">Email address</span><input class="input" type="email" value="' + esc(pf.email || '') + '"></label></div>' +
+      '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '><div class="row2"><label><span class="req">Full name (as in Microsoft 365)</span><input class="input" data-ae="name" value="' + esc(pf.name || '') + '"><span class="help">Must match their Microsoft 365 display name exactly.</span></label>' +
+      '<label><span class="req">Email address</span><input class="input" type="email" data-ae="email" value="' + esc(pf.email || '') + '"></label></div>' +
       '<div class="row2"><label><span class="req">Location</span><select class="input">' + LOCATIONS.map(function (l) { return '<option' + (l === pf.loc ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></label><label><span class="req">Department</span><input class="input" value="' + esc(pf.dept || '') + '"></label></div>' +
       '<div class="row2"><label><span class="req">Employment type</span><select class="input"><option>Salary</option><option>Hourly</option></select></label>' +
       (isAdmin ? '<div class="field"><span class="req">Supervisor(s)</span><span class="mchips" role="group" aria-label="Supervisors">' + MANAGERS.map(function (m) { return '<button type="button" data-sup="' + m + '" aria-pressed="' + (sup.indexOf(m) >= 0) + '">' + m + '</button>'; }).join('') + '</span></div>' : '<span></span>') + '</div>' +
       '<label style="max-width:360px">Cell number (optional)<input class="input"><span class="help">Only needed if they will approve requests by text.</span></label>' +
       '<div class="cap">Yearly entitlements</div><div class="row2"><label><span class="req">Vacation days / year</span><input class="input" type="number" value="10"></label><label><span class="req">Sick days / year</span><input class="input" type="number" value="5"></label></div>' +
       '<div class="cap">Opening balances</div><div class="row5">' + ['Vacation', 'Sick', 'Make-up', 'Carry-over', 'Payout'].map(function (b) { return '<label>' + b + '<input class="input" type="number"></label>'; }).join('') + '</div>' +
-      '<div><button class="btn pri' + P + '" type="button" data-act="create" style="padding:9px 18px">Add Employee</button></div></div></div>';
+      '<div><button class="btn pri' + P + '" type="button" data-act="review" style="padding:9px 18px">Review</button></div></div></div>';
+  }
+  // The confirm panel after Review (#378): before -> after for anything the
+  // cleaning changed, the setup check, blocked items in red, warnings in amber.
+  function addConfirm(isAdmin) {
+    var R = state.addReview;
+    var changed = [];
+    if (R.rawName !== R.name) changed.push(['Full name', R.rawName, R.name, 'Extra spaces removed']);
+    if (R.rawEmail !== R.email) changed.push(['Email', R.rawEmail || '(blank)', R.email, 'Made lower case']);
+    var beforeAfter = changed.length ? '<div class="cap">Tidied up before saving</div><div style="display:grid;gap:8px">' + changed.map(function (c) { return '<div style="display:grid;gap:2px"><span class="small muted">' + c[0] + ' (' + c[3] + ')</span><span><span style="text-decoration:line-through;color:var(--muted)">' + esc(c[1]) + '</span> <b>&rarr; ' + esc(c[2]) + '</b></span></div>'; }).join('') + '</div>' : '<div class="note">Nothing needed tidying. The details are clean.</div>';
+    var detail = '<div class="cap">Will be added as</div><dl class="kv"><dt>Name</dt><dd>' + esc(R.name || '(none)') + '</dd><dt>Email</dt><dd>' + esc(R.email || '(none)') + '</dd><dt>Supervisor' + (R.sup.length > 1 ? 's' : '') + '</dt><dd>' + (R.sup.length ? esc(R.sup.join(', ')) : chip('None', 'err')) + '</dd></dl>';
+    var blocks = R.blocks.length ? '<div class="note" style="background:var(--err-soft);color:var(--err-strong)"><b>Fix before adding</b><ul style="margin:6px 0 0;padding-left:18px">' + R.blocks.map(function (b) { return '<li>' + esc(b) + '</li>'; }).join('') + '</ul></div>' : '';
+    var warns = R.warns.length ? '<div class="note" style="background:var(--warn-soft);color:var(--warn)"><b>Worth a look</b><ul style="margin:6px 0 0;padding-left:18px">' + R.warns.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul></div>' : '';
+    var check = R.blocks.length ? '' : '<div class="okbox">Setup check passed: their requests will reach ' + esc(R.sup.join(' and ')) + '.</div>';
+    var body = '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '>' + beforeAfter + detail + blocks + warns + check +
+      '<div class="acts" style="justify-content:flex-start"><button class="btn out" type="button" data-act="aeback">Back</button><button class="btn pri' + P + '" type="button" data-act="create"' + (R.blocks.length ? ' disabled style="opacity:.5;cursor:not-allowed"' : '') + '>Add employee</button></div></div>';
+    return (isAdmin ? head('Add employee', 'Check these details, then add them.') + '<div class="paper">' + body + '</div>' : '<p class="muted" style="margin:0">Check these details, then add them.</p><div>' + body + '</div>');
   }
 
   function personPanel() {
@@ -1214,17 +1256,25 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     // first, grouped by year) on the right. No tabs, no side drawer.
     var mine = REQS.filter(function (r) { return r.who === p.name; });   // this person's live requests
     var setup = SETUP.filter(function (s) { return s.who === p.name; })[0];
-    var tile = function (label, val, sub) { return '<div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px;background:var(--bg)"><span class="small muted">' + label + '</span><b style="font-size:22px' + (val < 0 ? ';color:var(--err)' : '') + '">' + val + '</b><span class="small muted">' + sub + '</span></div>'; };
+    var ed = state.balEdits || {};                                      // staged tile changes, not yet saved (#306)
+    // Editable balance tile: shows the staged value, a delta badge, and stages a change on click.
+    var balTile = function (pot) {
+      var saved = +(p[pot.k] || 0), val = ed[pot.k] !== undefined ? +ed[pot.k] : saved, dirty = val !== saved;
+      var sub = pot.meterOf ? 'of ' + (+(p[pot.meterOf] || 0)) + ' a year' : pot.sub;
+      return '<button type="button" data-act="editbal" data-pot="' + pot.k + '" style="position:relative;text-align:left;font:inherit;cursor:pointer;border:1px solid ' + (dirty ? 'var(--accent)' : 'var(--line)') + ';border-radius:12px;padding:10px 12px;display:grid;gap:2px;background:' + (dirty ? 'color-mix(in srgb, var(--accent) 14%, var(--bg))' : 'var(--bg)') + '">' +
+        (dirty ? '<span style="position:absolute;top:6px;right:6px;font-size:11px;font-weight:700;background:var(--accent);color:#fff;border-radius:999px;padding:1px 6px">' + (val - saved > 0 ? '+' : '') + num(val - saved) + '</span>' : '') +
+        '<span class="small muted">' + pot.label + '</span><b style="font-size:22px' + (val < 0 ? ';color:var(--err)' : '') + '">' + num(val) + '</b><span class="small muted">' + sub + '</span></button>';
+    };
     var fact = function (label, val) { return '<div style="display:grid;gap:2px"><span class="small muted">' + label + '</span><span>' + (val || '<span class="muted">Not set</span>') + '</span></div>'; };
 
     // ---- Left column: balance tiles, then every detail ----
     // hourly: one Sick balance plus a vacation counter; no entitlement, Make-up, Carry-over or Payout tiles. (#300)
-    var tiles = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' +
-      (isBC(p)
-        ? tile('Sick entitlement', p.sickY, 'days a year') + tile('Sick', p.sick, 'of ' + p.sickY + ' a year') + tile('Vacation taken', p.vacTaken || 0, 'days, counted')
-        : tile('Vacation entitlement', p.vacY, 'days a year') + tile('Sick entitlement', p.sickY, 'days a year') +
-          tile('Vacation', p.vac, 'of ' + p.vacY + ' a year') + tile('Sick', p.sick, 'of ' + p.sickY + ' a year') +
-          tile('Make-up', p.mu, 'days (hours ÷ 8)') + tile('Carry-over', p.co, 'days') + tile('Payout', 0, 'days')) + '</div>';
+    // hourly: one Sick balance plus a vacation counter; no entitlement, Make-up, Carry-over or Payout tiles. (#300)
+    var POTS = isBC(p)
+      ? [{ k: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { k: 'sick', label: 'Sick', meterOf: 'sickY' }]
+      : [{ k: 'vacY', label: 'Vacation entitlement', sub: 'days a year' }, { k: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { k: 'vac', label: 'Vacation', meterOf: 'vacY' }, { k: 'sick', label: 'Sick', meterOf: 'sickY' }, { k: 'mu', label: 'Make-up', sub: 'days (hours ÷ 8)' }, { k: 'co', label: 'Carry-over', sub: 'days' }];
+    var tiles = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' + POTS.map(balTile).join('') +
+      (isBC(p) ? '<div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px;background:var(--bg)"><span class="small muted">Vacation taken</span><b style="font-size:22px">' + (p.vacTaken || 0) + '</b><span class="small muted">days, counted</span></div>' : '') + '</div>';
     var details = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">' +
       fact('Email', esc(p.email)) + fact('Cell', '') + fact('Location', esc(p.loc)) + fact('Department', esc(p.dept)) +
       fact('Salary or hourly', esc(p.etype || 'Salary')) + fact('System check', 'Ready') + fact('Comments', '') +
@@ -1232,9 +1282,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div><button class="btn out' + P + '" type="button" data-act="mgrs" data-who="' + esc(p.name) + '">Change managers</button></div>';
     var left = '<section>' +
       '<div class="pfh"><h3>Entitlements and balances</h3><span class="hint">Click a tile to change it</span></div>' +
-      '<div class="small muted">Change a tile with − / + or a typed value. One save bar collects every change and asks for a reason.</div>' + tiles +
-      '<div class="pfh"><h3>Details</h3><span class="hint">Click any field to change it</span></div>' +
-      '<div class="small muted">Contact, placement, managers and the Microsoft 365 links. Changed fields turn orange and save with the same reason.</div>' + details + '</section>';
+      '<div class="small muted">Click a tile to stage a change. A save bar collects every change and will not save until you type a reason and press Save.</div>' + tiles +
+      '<div class="pfh"><h3>Details</h3></div>' +
+      '<div class="small muted">Contact, placement and managers, kept in step with the Staff Directory.</div>' + details + '</section>';
 
     // ---- Right column: one Activity list, grouped by year ----
     var PENCIL = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.4a1.6 1.6 0 0 1 2.3 2.3L5.4 12.8l-3 .8.8-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
@@ -1288,12 +1338,24 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<p class="actleg">' + PENCIL + ' a change made by HR, not a request</p>' +
       (items.length ? '<div class="activity">' + activity + '</div>' : '<div class="empty">Nothing here yet.</div>') + '</section>';
 
+    // The save bar (#306): appears once a tile is changed; it lists the changes,
+    // needs a reason, and nothing is written until Save is pressed.
+    var bar = '';
+    if (Object.keys(ed).length) {
+      var LBL = { vacY: 'Vacation entitlement', sickY: 'Sick entitlement', vac: 'Vacation', sick: 'Sick', mu: 'Make-up', co: 'Carry-over' };
+      var summary = Object.keys(ed).map(function (k) { return (LBL[k] || k) + ' <b>' + num(p[k] || 0) + ' &rarr; ' + num(ed[k]) + '</b>'; }).join(' · ');
+      bar = '<div style="border-top:1px solid var(--line);padding:12px 16px;display:grid;gap:10px;background:var(--bg)"><div class="small">' + (Object.keys(ed).length === 1 ? '1 change: ' : Object.keys(ed).length + ' changes: ') + summary + '</div>' +
+        '<input class="input" id="balReason" placeholder="Reason, required. e.g. Day off Oct 6, approved verbally by Sam Supervisor" aria-label="Reason for the change">' +
+        '<div class="acts" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="cancelbal">Cancel</button><button class="btn pri" type="button" data-act="savebal" data-pid="' + p.id + '">Save</button></div></div>';
+    }
+    var archivedTag = p.archived ? ' <span class="chip info">Archived</span>' : '';
     // In place of the staff table (not a side drawer), the row grows into this profile; Back returns to the table.
     return '<div class="paper" aria-label="' + esc(p.name) + '" style="overflow:hidden">' +
-      '<div style="padding:16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center">' +
+      '<div style="padding:16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
       '<button class="btn out" type="button" data-act="closepanel" aria-label="Back to staff">← Back</button>' + av(p.name, true) +
-      '<div style="flex:1;min-width:0"><b style="font-size:16px">' + esc(p.name) + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div></div>' +
-      '<div class="pf2">' + left + right + '</div></div>';
+      '<div style="flex:1;min-width:0"><b style="font-size:16px">' + esc(p.name) + archivedTag + '</b><div class="small muted">' + esc(p.email || 'no email') + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div>' + (setup ? '<div style="margin-top:6px">' + setup.problems.map(function (i) { return chip(i, 'err'); }).join(' ') + '</div>' : '') + '</div>' +
+      (p.archived ? '<button class="btn out" type="button" data-act="restore" data-pid="' + p.id + '">Restore</button>' : '<button class="btn err" type="button" data-act="archive" data-pid="' + p.id + '">Archive</button>') + '</div>' +
+      '<div class="pf2">' + left + right + '</div>' + bar + '</div>';
   }
 
   // ---------- manager ----------
@@ -1709,6 +1771,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     state.role = 'admin'; state.screen = screen || 'home'; state.authed = true; state.coDates = null;
     state.flow = null; state.modal = null; state.created = null; state.prefill = null;
     state.sel = null; state.reqSel = null; state.setupChecked = null; state.filter = {};
+    state.balEdits = null; state.addReview = null;                           // no staged profile or add edits leak in
     state.reqChecked = []; state.reqmode = 'table'; state.reqlist = 'all';   // a tour step always lands on the plain table
     state.rp = JSON.parse(RP_BASE);
   }
@@ -1769,6 +1832,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           todo: 'Every decision emails the employee by itself. You never send anything by hand.',
           know: 'The Email log shows each attempt and the service\'s reply, names the service that sent it, and flags a likely duplicate, so you can tell a delivery problem from an app one.',
           enter: function () { adminAt('pending'); } },
+        { title: 'Managers on vacation', target: '.dcard',
+          todo: 'When every manager on a request is on approved leave, the request shows under Approvals, Managers on vacation. You can Approve or Reject it in their place.',
+          know: 'Requests usually route around a manager who is off: if someone has more than one manager, a full day of approved leave takes that manager out of the running and the request goes to the first one who is not off. This list is for when they are all away.',
+          enter: function () { adminAt('mgrsonvac'); } },
         { title: 'Stuck requests', target: '[data-act="reprocess"][data-req="1437|Drew Stub|Stuck"]',
           todo: 'Stuck requests sit in the quieter block at the foot of the sidebar: the ones the system could not finish on its own. Drew\'s days were never worked out. Select <b>Reprocess</b> on Drew\'s row.',
           know: 'Casey, above, has no manager at all. Set one from Staff first, or Reprocess refuses the request.',
@@ -1801,10 +1868,16 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           enter: function () { adminAt('held'); },
           signal: function () { return state.screen === 'add'; },
           act: function () { var b = document.querySelector('[data-act="addheld"][data-req="0|Riley Newhire|Held"]'); if (b) b.click(); } },
-        { title: 'Fill in and add', target: '.form [data-act="create"]',
-          todo: 'Check the details, set their yearly entitlements, supervisor and Salary or Hourly, then <b>Add Employee</b>. Hourly staff only have sick days taken from a balance.',
-          know: 'Adding them sends the held request straight to their supervisor; it does not touch a balance until the manager approves.',
+        { title: 'Review the details', target: '.form [data-act="review"]',
+          todo: 'Check the record, set the yearly entitlements, supervisor and Salary or Hourly, then <b>Review</b> instead of adding straight away. Hourly staff only have sick days taken from a balance.',
+          know: 'Review tidies what you typed (it trims stray spaces and lower-cases the email) and runs the setup check before anything is saved.',
           enter: function () { adminAt('add'); var held = REQS.filter(function (x) { return x.id === 0; })[0]; state.prefill = { name: 'Riley Newhire', email: 'riley.newhire@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'], held: held }; },
+          signal: function () { return !!state.addReview; },
+          act: function () { var b = document.querySelector('.form [data-act="review"]'); if (b) b.click(); } },
+        { title: 'Confirm and add', target: '.form [data-act="create"]',
+          todo: 'The confirm panel shows what was tidied, a before and after, and any problems. Select <b>Add employee</b>.',
+          know: 'Blocks in red, such as a matching name, a matching email, or no supervisor, must be fixed first. Warnings in amber, like a supervisor not linked to Microsoft 365 or no holidays for their location, just ask you to check. Adding Riley sends their held request straight to Sam Supervisor; it does not touch a balance until the manager approves.',
+          enter: function () { adminAt('add'); var held = REQS.filter(function (x) { return x.id === 0; })[0]; state.prefill = { name: 'Riley Newhire', email: 'riley.newhire@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'], held: held }; state.addReview = { rawName: 'Riley Newhire', name: 'Riley Newhire', rawEmail: 'riley.newhire@gmail.com', email: 'riley.newhire@gmail.com', sup: ['Sam Supervisor'], blocks: [], warns: ['Sam Supervisor is not linked to Microsoft 365, so approval texts may not reach them.'] }; },
           signal: function () { return !!state.created; },
           act: function () { var b = document.querySelector('.form [data-act="create"]'); if (b) b.click(); } },
         { title: 'Added, and request sent', target: '.okbox',
@@ -1821,12 +1894,22 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           enter: function () { adminAt('setup'); },
           signal: function () { return !!state.setupChecked; },
           act: function () { var pick = document.getElementById('checkPick'); if (pick) pick.value = 'Casey Demo'; var b = document.querySelector('[data-act="checkpicked"]'); if (b) b.click(); } },
-        { title: 'Staff', target: '.ph [data-go="assignments"]',
-          todo: 'Staff lists everyone with their balances and managers. Search, filter to below-zero or no-manager, or group by location. Select <b>Manage assignments</b> to see who reports to whom.',
-          know: 'Open any person for their requests, their managers, and links to their own and their team dashboards.',
+        { title: 'Staff', target: 'tr[data-sel="1"]',
+          todo: 'Staff lists everyone with their balances and managers, salaried and hourly. Search, filter to below zero or no manager, group by location, or Export to Excel. Select a person to open their whole record.',
+          know: 'Hourly staff show vacation as a counted total, not a balance, and have no Make-Up or Carry-over. Departed employees sit in the Archived section at the foot.',
           enter: function () { adminAt('staff'); },
-          signal: function () { return state.screen === 'assignments'; },
-          act: function () { var b = document.querySelector('.ph [data-go="assignments"]'); if (b) b.click(); } },
+          signal: function () { return !!state.sel; },
+          act: function () { var b = document.querySelector('tr[data-sel="1"]'); if (b) b.click(); } },
+        { title: 'Edit a balance, with a reason', target: '[data-act="savebal"]',
+          todo: 'Their record shows balances, details and an Activity list. Select a balance tile to change it; a save bar appears. Type a reason, then <b>Save</b>.',
+          know: 'Nothing is written until you type a reason and press Save, so a mistaken tap costs nothing. The change and its reason show in Activity.',
+          enter: function () { adminAt('staff'); var a = person('Avery Example'); state.sel = a ? a.id : null; state.balEdits = { vac: num((a ? a.vac : 0) + 0.5) }; },
+          signal: function () { return !state.balEdits || !Object.keys(state.balEdits).length; },
+          act: function () { var ri = document.getElementById('balReason'); if (ri) ri.value = 'Day off Oct 6, approved verbally'; var b = document.querySelector('[data-act="savebal"]'); if (b) b.click(); } },
+        { title: 'Archive someone who left', target: '.dialog [data-act="doarchive"]',
+          todo: 'When someone leaves, open their record and select <b>Archive</b>. The dialog lists any pending requests, which stay pending, and asks for a reason.',
+          know: 'Archiving only sets them aside from the directory; it never cancels a request. They drop into the Archived section, and Restore brings them back.',
+          enter: function () { adminAt('staff'); var a = person('Avery Example'); state.sel = a ? a.id : null; state.modal = { kind: 'archive', pid: a ? a.id : null }; } },
         { title: 'Manager assignments', target: '[data-act="wizard"]',
           todo: 'Change one person\'s managers on their row, or select <b>Manage Assignments</b> to add, remove or replace a manager across a whole team at once.',
           know: 'The wizard shows a preview of exactly who moves before anything is saved.',
@@ -1875,9 +1958,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           signal: function () { return !!(state.modal && state.modal.kind === 'mail'); },
           act: function () { var b = document.querySelector('[data-act="maildetail"][data-i="5"]'); if (b) b.click(); } },
         { title: 'Data checks', target: '.two',
-          todo: 'Data checks hold the rarely-needed jobs that keep the stored data in step: where the request lists are read and written with the copy into Postgres, and the two request-page columns.',
-          know: 'The copy only reads SharePoint and writes Postgres; nothing changes for anyone until the developer switches the setting. Add the columns is only needed if requests stay in SharePoint for a long time.',
+          todo: 'Data checks hold the rarely-needed jobs that keep the stored data in step: where requests are read and written, and the two request-page columns.',
+          know: 'A shadow copy keeps Postgres in step with SharePoint by itself, so nothing here needs doing day to day.',
           enter: function () { adminAt('checks'); } },
+        { title: 'The switch to Postgres', target: '.dialog [data-act="doswitchpg"]',
+          todo: 'When the time comes, <b>Switch to Postgres</b> runs one final sync and moves requests, staff and holidays over in one go.',
+          know: 'It is one-way, and writes are refused for a few minutes while it runs, so the developer does it after hours. The shadow copy has kept Postgres in step, so the final sync is quick.',
+          enter: function () { adminAt('checks'); state.modal = { kind: 'switchpg' }; } },
         { title: 'The admin password', target: '[data-act="changepw"]',
           todo: 'Change the admin password here: enter the current one, then the new one twice, and select <b>Change password</b>. Sign out below to lock this device.',
           know: 'Changing it signs everyone else out of the admin dashboard, so they need the new password to get back in.',
@@ -2050,7 +2137,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function trackBtn(k, desc, seen) {
     return '<button class="ttrack" type="button" data-ttrack="' + k + '"><b>' + esc(TRACKS2[k].label) + (seen.indexOf(k) >= 0 ? ' <span class="tdone">done</span>' : '') + '</b><span>' + esc(desc) + '</span></button>';
   }
-  var TRACK_DESC = { daily: 'the daily queue: approvals, emails and stuck requests', people: 'new hires, setup checks, staff and manager assignments', records: 'all requests, holidays, the email log and data checks' };
+  var TRACK_DESC = { daily: 'the daily queue: approvals, managers on vacation, emails and stuck requests', people: 'new hires, setup checks, staff profiles, archiving and manager assignments', records: 'all requests, holidays, the email log, data checks and the Postgres switch' };
 
   function openWelcome() {
     TV.mode = 'welcome'; stopLoop();
@@ -2398,6 +2485,14 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           '<button class="btn ghost" type="button" data-act="wzback">Back</button><button class="btn pri" type="button" data-act="wzdone">Done</button>', true);
       case 'checklist': return dialog('What moved where', '<span class="small muted">Every part of today\'s admin dashboard, and where it lives in this design.</span><div class="scroll"><table class="checklist"><thead><tr><th>Today</th><th>Now</th></tr></thead><tbody>' + CHECKLIST.map(function (c) { return '<tr><td>' + c[0] + '</td><td>' + c[1] + '</td></tr>'; }).join('') + '</tbody></table></div>', '', true);
       case 'mgradd': return dialog('Add a new hire', addEmployee(false), '', true);
+      case 'archive': {
+        var pa = STAFF.filter(function (x) { return x.id === m.pid; })[0] || {};
+        var pend = REQS.filter(function (x) { return x.who === pa.name && x.status === 'Pending'; });
+        var list = pend.length ? '<div class="note"><b>' + pend.length + ' pending request' + (pend.length === 1 ? '' : 's') + ' will stay pending</b><ul style="margin:6px 0 0;padding-left:18px">' + pend.map(function (x) { return '<li>' + esc(what(x)) + '</li>'; }).join('') + '</ul></div>' : '<div class="small muted">They have no pending requests.</div>';
+        return dialog('Archive ' + esc(pa.name) + '?', '<span class="small muted">Archiving sets them aside from the directory. It does not touch their requests: anything still pending stays pending until a manager decides it. You can restore them later.</span>' + list +
+          '<label class="field">Reason (required)<input class="input" id="archReason" placeholder="e.g. Left the company on Oct 31"></label>', '<button class="btn err" type="button" data-act="doarchive">Archive</button>');
+      }
+      case 'switchpg': return dialog('Switch request storage to Postgres?', '<span class="small muted">This runs one final sync and then moves requests, staff and holidays to Postgres in one go.</span><div class="note" style="background:var(--warn-soft);color:var(--warn)">It is one-way. Writes are refused for a few minutes while it runs, so do it after hours. The shadow copy has kept Postgres in step, so the final sync is quick.</div>', '<button class="btn pri" type="button" data-act="doswitchpg">Run the switch</button>');
       case 'newreq': return dialog('New request', '<div class="row2"><label class="field">List<select class="input">' + ['Leave', 'Make-up (overtime)', 'Carry-over or payout'].map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select></label><label class="field">Employee<select class="input">' + STAFF.map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label></div><label class="field">When<input class="input" placeholder="e.g. Nov 23 to Nov 25"></label><label class="field">Status<select class="input">' + ['Pending: ask the manager', 'Approved: apply it now'].map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select></label><div class="small muted">Pending sends it to the manager. Approved applies it at once and emails the person (example).</div>', '<button class="btn pri" type="button" data-act="donewreq">Create</button>');
       case 'calday': var dd = m.day; var dayrows = REQS.filter(function (x) { return x.from && x.from[0] === 'Nov' && dd >= x.from[1] && dd <= (x.to ? x.to[1] : x.from[1]); }); return dialog('November ' + dd + ', 2026', (dayrows.length ? '<table><tbody>' + dayrows.map(function (x) { return '<tr class="click" data-rsel="' + esc(x.id + '|' + x.who + '|' + x.status) + '"><td>' + av(x.who) + '</td><td><b>' + esc(x.who) + '</b><div class="sub">' + what(x) + '</div></td><td>' + chip(x.status, CHIP[x.status]) + '</td></tr>'; }).join('') + '</tbody></table>' : '<div class="empty">No leave on this day.</div>') + '<div class="small muted" style="margin-top:8px">Click a name to open it in the table.</div>');
     }
@@ -2485,7 +2580,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }, 1000);
   }
   function closeMenu() { $('side').classList.remove('open'); $('scrim').classList.remove('open'); $('menuBtn').setAttribute('aria-expanded', 'false'); }
-  function go(screen) { state.screen = screen; state.created = null; state.setupChecked = null; if (screen !== 'add') state.prefill = null; closeMenu(); render(); window.scrollTo(0, 0); }
+  function go(screen) { state.screen = screen; state.created = null; state.setupChecked = null; state.balEdits = null; if (screen !== 'add') { state.prefill = null; state.addReview = null; } closeMenu(); render(); window.scrollTo(0, 0); }
   function fromHash() {
     var parts = location.hash.replace(/^#\/?/, '').split('/');
     if (parts[0] === 'admin') { state.role = 'admin'; state.screen = parts[1] && SCREENS[parts[1]] ? parts[1] : 'home'; }   // #/admin or #/admin/<screen>
@@ -2572,14 +2667,60 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'wzdone': state.modal = null; toast('Assignments updated (example, nothing saved).'); render(); return;
       case 'addheld': state.prefill = { name: r.who, email: r.email, dept: r.dept, mgrs: [r.mgr], held: r }; state.created = null; state.reqSel = null; state.screen = 'add'; render(); window.scrollTo(0, 0); return;
       case 'create':
-        var pf = state.prefill || {}, scope = t.closest('.form');
-        var name = (scope.querySelector('input') || {}).value || 'New employee', released = 0, mgr = (pf.mgrs || [])[0];
+        var R = state.addReview;                                 // the reviewed, cleaned details (#378)
+        if (R && R.blocks.length) { toast('Fix the blocked items first.'); return; }
+        var pf = state.prefill || {};
+        var name = R ? R.name : (((t.closest('.form') || document).querySelector('input') || {}).value || 'New employee'), released = 0, mgr = R ? R.sup[0] : (pf.mgrs || [])[0];
         if (pf.held) { pf.held.status = 'Pending'; pf.held.id = 1450; pf.held.age = 0; pf.held.why = ''; pf.held.cur = { Vacation: 0 }; pf.held.next = { Vacation: -3 }; released = 1; STAFF.push({ id: 8, name: pf.name, email: pf.email, dept: pf.dept || 'Warehouse', loc: pf.loc || 'British Columbia', mgrs: pf.mgrs, vac: 0, sick: 0, mu: 0, co: 0, vacY: 10, sickY: 5 }); }
+        state.addReview = null;
         if (state.modal) { state.modal = null; toast(name + ' was added to your team (example).'); render(); return; }
         state.created = { name: name, released: released, mgr: mgr }; state.prefill = null; render(); window.scrollTo(0, 0); return;
-      case 'another': state.created = null; state.prefill = null; render(); return;
+      case 'another': state.created = null; state.prefill = null; state.addReview = null; render(); return;
+      // ---- Add employee: Review then confirm (#378) ----
+      case 'review': {
+        var scope = t.closest('.form');
+        var rawName = (scope.querySelector('[data-ae="name"]') || {}).value || '';
+        var rawEmail = (scope.querySelector('[data-ae="email"]') || {}).value || '';
+        var cName = rawName.replace(/\s+/g, ' ').trim();        // collapse stray spaces
+        var cEmail = rawEmail.replace(/\s+/g, '').toLowerCase();   // drop every space, lower-case the email
+        var isAdm = !!scope.querySelector('[data-sup]');         // the admin form has the supervisor picker
+        var supSel = Array.prototype.map.call(scope.querySelectorAll('[data-sup][aria-pressed="true"]'), function (b) { return b.getAttribute('data-sup'); });
+        var pfm = (state.prefill || {}).mgrs || [];
+        var sup = isAdm ? supSel : (pfm.length ? pfm.slice() : [ME]);   // a manager adds to their own team
+        var blocks = [], warns = [];
+        if (!cName) blocks.push('Enter a full name.');
+        if (cName && STAFF.some(function (p) { return p.name.toLowerCase() === cName.toLowerCase(); })) blocks.push('Someone called ' + cName + ' already has a record.');
+        if (cEmail && STAFF.some(function (p) { return (p.email || '').toLowerCase() === cEmail; })) blocks.push('That email is already on another record.');
+        if (!sup.length) blocks.push('Choose at least one supervisor, or their requests reach nobody.');
+        state.addReview = { rawName: rawName, name: cName, rawEmail: rawEmail, email: cEmail, sup: sup, blocks: blocks, warns: warns };
+        render(); return;
+      }
+      case 'aeback': state.addReview = null; render(); return;
+      // ---- Staff profile: edit balances with a required reason (#306) ----
+      case 'editbal': { var pk = t.getAttribute('data-pot'); var pe = STAFF.filter(function (x) { return x.id === state.sel; })[0]; if (!pe) return; state.balEdits = state.balEdits || {}; var base = state.balEdits[pk] !== undefined ? state.balEdits[pk] : +(pe[pk] || 0); state.balEdits[pk] = num(base + 0.5); render(); return; }
+      case 'cancelbal': state.balEdits = null; render(); return;
+      case 'savebal': {
+        var reason = ($('balReason') || {}).value || '';
+        if (!reason.trim()) { if ($('balReason')) { $('balReason').placeholder = 'A reason is required before saving'; $('balReason').focus(); } return; }
+        var pb = STAFF.filter(function (x) { return x.id === +t.getAttribute('data-pid'); })[0];
+        var nb = Object.keys(state.balEdits || {}).length;
+        if (pb) Object.keys(state.balEdits).forEach(function (k) { pb[k] = state.balEdits[k]; });
+        state.balEdits = null; toast(nb + ' change' + (nb > 1 ? 's' : '') + ' saved for ' + first(pb.name) + ' with your reason (example).'); render(); return;
+      }
+      // ---- Archive and restore a departed employee (#358) ----
+      case 'archive': state.modal = { kind: 'archive', pid: +t.getAttribute('data-pid') }; render(); return;
+      case 'doarchive': {
+        var reason2 = ($('archReason') || {}).value || '';
+        if (!reason2.trim()) { if ($('archReason')) { $('archReason').placeholder = 'A reason is required'; $('archReason').focus(); } return; }
+        var pa = STAFF.filter(function (x) { return x.id === m.pid; })[0]; if (pa) pa.archived = true;
+        state.modal = null; state.sel = null; state.balEdits = null; toast((pa ? pa.name : 'The employee') + ' is archived. Their pending requests stay pending (example).'); render(); return;
+      }
+      case 'restore': { var pr = STAFF.filter(function (x) { return x.id === +t.getAttribute('data-pid'); })[0]; if (pr) pr.archived = false; toast((pr ? pr.name : 'The employee') + ' is back in the directory (example).'); render(); return; }
+      // ---- Switch request storage to Postgres (#185), a one-way after-hours step ----
+      case 'switchpg': state.modal = { kind: 'switchpg' }; render(); return;
+      case 'doswitchpg': state.modal = null; toast('Final sync done. Requests, staff and holidays now read and write in Postgres (example).'); render(); return;
       case 'openperson': var w = person(t.getAttribute('data-who')); state.screen = 'staff'; state.created = null; state.sel = w ? w.id : null; state.ptab = 'Balances'; render(); return;
-      case 'closepanel': state.sel = null; state.reqSel = null; render(); return;
+      case 'closepanel': state.sel = null; state.reqSel = null; state.balEdits = null; render(); return;
       case 'endflow': state.flow = null; render(); return;
       case 'cmdclear': state.reqChecked = []; render(); return;                    // drop the selection
       case 'cmdapprove': { var ca = checkedReqs(), na = 0; ca.forEach(function (x) { if (x.status === 'Pending') { x.status = 'Approved'; x.age = 0; na++; } }); state.reqChecked = []; state.reqSel = null; toast('Approved ' + na + ' request' + (na === 1 ? '' : 's') + '. Each person is emailed (example).'); render(); return; }
@@ -2596,7 +2737,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'refreshsetup': toast('Employee setup refreshed: ' + SETUP.length + ' with problems (example).'); return;
       case 'maildetail': state.modal = { kind: 'mail', i: +t.getAttribute('data-i') }; render(); return;
       case 'checklist': state.modal = { kind: 'checklist' }; render(); return;
-      case 'mgradd': state.modal = { kind: 'mgradd' }; render(); return;
+      case 'mgradd': state.modal = { kind: 'mgradd' }; state.addReview = null; render(); return;
       case 'rpsend':
         var em2 = ($('rpEmail').value || '').trim();
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em2)) { state.rp.email = em2; state.rp.err = 'Enter a full email address.'; render(); return; }
