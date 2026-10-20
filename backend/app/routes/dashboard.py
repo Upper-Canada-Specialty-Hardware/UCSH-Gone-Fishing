@@ -10,6 +10,9 @@ from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
 from app.services.employee import get_all_managers_for_employee, get_employee_by_id, is_manager
+from app.services.manager_match import (  # one rule for who manages whom (#376)
+    entry_keys, lists_manager, manager_name_of, normalise_name, team_names,
+)
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_submitter import SUBMITTER_PERSON_COLUMNS, submitter_email_of
 from app.services.balance import (
@@ -137,15 +140,20 @@ def _filter_requests(items: list[dict], type_filter: str | None, status_filter: 
 
 
 def _is_in_all_managers(fields: dict, manager_name: str) -> bool:
-    """Check if manager_name appears in the AllManagers Person/Group field."""
-    all_managers = fields.get("AllManagers")
-    if not all_managers or not isinstance(all_managers, list):
-        return False
-    for entry in all_managers:
-        name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
-        if name == manager_name:
-            return True
-    return False
+    """Whether this person's AllManagers names the manager (#376).
+
+    Matches by the manager's link id when ``manager_name`` carries one (see
+    ``manager_match.manager_name_of``), else by name ignoring case and spacing,
+    so a manager set up outside the app still finds their team.
+
+    Args:
+        fields: The person's Staff Directory fields.
+        manager_name: The manager's name, plain or a ``ManagerName`` with ids.
+
+    Returns:
+        True when the person lists the manager.
+    """
+    return lists_manager(fields, manager_name)
 
 
 def _is_fully_processed(fields: dict, request_type: str) -> bool:
@@ -293,9 +301,10 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
             all_managers = fields.get("AllManagers")
             if all_managers and isinstance(all_managers, list):
                 for entry in all_managers:
-                    mgr_name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
-                    if mgr_name:
-                        mgr_to_emp_names.setdefault(mgr_name, set()).add(emp_name)
+                    # File the report under the manager's normalised name and id, so
+                    # team_names() finds them by either (#376).
+                    for key in entry_keys(entry):
+                        mgr_to_emp_names.setdefault(key, set()).add(emp_name)
 
     # SP User Information List: map SP user IDs → display names
     sp_user_to_name = _PersonNames()
@@ -722,7 +731,7 @@ async def team_members(user: AuthUser):
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
@@ -747,7 +756,7 @@ async def team_balances(user: AuthUser):
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
     items = [
@@ -767,10 +776,10 @@ async def team_pending(user: AuthUser):
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
-    my_employees = mgr_to_emp_names.get(manager_name, set())
+    my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
     pending = []
 
     # Leave — check submitter in my_employees (dynamic manager lookup)
@@ -806,7 +815,7 @@ async def team_pending(user: AuthUser):
             continue
         submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
         mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
-        if mgr_name != manager_name and submitter_name not in my_employees:
+        if normalise_name(mgr_name) != normalise_name(manager_name) and submitter_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "overtime", **f}
         _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
@@ -856,10 +865,10 @@ async def team_requests(
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
-    my_employees = mgr_to_emp_names.get(manager_name, set())
+    my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
     results = []
     pg = await requests_in_postgres()                          # Postgres: indexed team reads
     # The History tab must keep an archived teammate's past requests (#119), so the
@@ -925,7 +934,7 @@ async def team_requests(
             if not pg:
                 submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
                 mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
-                if mgr_name != manager_name and submitter_name not in my_employees:
+                if normalise_name(mgr_name) != normalise_name(manager_name) and submitter_name not in my_employees:
                     continue
             for r in _filter_requests([item], None, status, from_date, to_date):
                 if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
@@ -970,10 +979,10 @@ async def team_calendar(
     manager = await get_employee_by_id(user.user_id)
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
-    manager_name = manager["fields"].get("Title", "")
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
-    my_employees = mgr_to_emp_names.get(manager_name, set())
+    my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
 
     all_leave = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
 
@@ -1766,7 +1775,7 @@ async def admin_send_dashboard_link(target_id: str):
     if not email:
         raise HTTPException(status_code=400, detail="Employee has no email address")
     name = fields.get("Title", "")
-    if not await is_manager(name):
+    if not await is_manager(await manager_name_of(emp)):          # by id or by name (#376)
         raise HTTPException(status_code=400, detail="Employee is not a manager")
 
     dashboard_url = generate_dashboard_url("manager", target_id)

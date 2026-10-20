@@ -166,6 +166,72 @@ export function saveSession(session: EmployeeSession): void {
   }
 }
 
+/** The role check's answer: unchanged, or a new token with the right role. */
+interface RefreshAnswer {
+  changed: boolean;
+  role?: string;
+  uid?: string;
+  token?: string;
+  exp?: string;
+}
+
+let roleCheck: Promise<boolean> | null = null;   // one check per page load, shared by every caller
+let roleChecked = false;                          // true once that check has answered
+
+/** @returns Whether this page load's role check has answered yet. */
+export const sessionRoleChecked = () => roleChecked;
+
+/**
+ * Swap a refreshed token into wherever the sign-in lives (this tab's emailed
+ * link, or the device's 30-day sign-in), keeping the name and email.
+ *
+ * @param fresh - The new token fields.
+ * @returns True when the stored sign-in now carries the new role.
+ */
+function replaceSessionToken(fresh: { role: string; uid: string; token: string; exp: string }): boolean {
+  try {
+    if (linkSession()) saveLinkSession(fresh);                       // an emailed link wins, as in loadSession
+    else {
+      const current = deviceSession();
+      if (!current) return false;                                    // signed out meanwhile
+      saveSession({ ...current, ...fresh });                         // keep name and email
+    }
+  } catch {
+    return false;                                                    // storage blocked
+  }
+  return loadSession()?.role === fresh.role;                         // only report success when it stuck
+}
+
+/**
+ * Re-check the signed-in person's role once per page load (#376).
+ *
+ * The role is decided when the code is checked and kept for 30 days, so
+ * someone listed as a manager after signing in would never see My team. This
+ * asks the server again and, when the role has changed, stores the new token.
+ *
+ * @returns True when the role changed and the new token was stored (the
+ *   caller reloads so every part of the page sees it); false otherwise,
+ *   including when nobody is signed in or the check failed.
+ */
+export function refreshSessionRole(): Promise<boolean> {
+  if (roleCheck) return roleCheck;                                   // already asked on this page load
+  const session = loadSession();
+  if (!session) {
+    roleChecked = true;
+    return Promise.resolve(false);
+  }
+  const { token, role, uid, exp } = session;
+  roleCheck = intake.post<RefreshAnswer>('/session/refresh', { token, role, uid, exp })
+    .then((res) => {
+      const a = res.data;
+      if (!a.changed || !a.role || !a.uid || !a.token || !a.exp) return false;   // nothing to swap
+      return replaceSessionToken({ role: a.role, uid: a.uid, token: a.token, exp: a.exp });
+    })
+    .catch(() => false)                                              // offline or refused: keep what they have
+    .finally(() => { roleChecked = true; });
+  return roleCheck;
+}
+
 /** Sign out everywhere: this device's 30-day sign-in and this tab's link. */
 export function clearSession(): void {
   try {

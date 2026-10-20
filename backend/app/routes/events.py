@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.services.manager_match import manager_name_of  # one rule for who manages whom (#376)
 from app.routes.dashboard import (
     AuthUser,
     _build_staff_lookups,
@@ -164,7 +165,7 @@ async def _team_ids_for(manager_uid: str) -> tuple[str, set[str]]:
         (manager_id, team_ids). team_ids is empty when nothing is managed.
     """
     manager = await get_employee_by_id(manager_uid)
-    manager_name = manager["fields"].get("Title", "") if manager else ""
+    manager_name = await manager_name_of(manager)              # name + link ids (#376)
     _staff_by_name, by_id, _names, _mgr_to_emp_names = await _build_staff_lookups()
     # Include archived teammates (#119): the timeline check must still let a
     # manager open an archived teammate's past request, and an archived person

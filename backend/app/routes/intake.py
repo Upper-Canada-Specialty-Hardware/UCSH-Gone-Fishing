@@ -15,6 +15,8 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  (services/held_requests.py).
 * GET /held/status - how one held request is going, for the page that held
                  it; needs the signed status token POST /held returned.
+* POST /session/refresh - re-check a signed-in person's role on each visit, so
+                 someone made a manager after signing in gets My team (#376).
 
 Mailbox control is the identity proof. Sending goes through send_email, so
 whichever email service that routes to (SMTP2GO today; the UCSH mailer for
@@ -31,13 +33,16 @@ from app.config import settings
 from app.graph.email import send_email
 from app.services import email_codes, held_requests, request_status
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
-from app.services.dashboard_tokens import generate_dashboard_token
+from app.services.dashboard_tokens import generate_dashboard_token, validate_dashboard_token
 from app.services.employee import (
     email_belongs_to_archived,
     get_employee_by_email,
+    get_employee_by_id,
     get_employees_by_email,
     is_manager,
 )
+from app.services.manager_match import manager_name_of  # who manages whom, by id or name (#376)
+from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
 from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
@@ -60,6 +65,14 @@ class VerifyRequest(BaseModel):
     """Body of POST /verify."""
     email: str
     code: str
+
+
+class SessionBody(BaseModel):
+    """Body of POST /session/refresh: the signed-in token the page holds."""
+    token: str
+    role: str
+    uid: str
+    exp: str
 
 
 class VerifiedEmail(BaseModel):
@@ -167,24 +180,27 @@ async def request_code(body: CodeRequest, request: Request):
     return _CODE_SENT
 
 
-async def _manages_anyone(name: str) -> bool:
+async def _manages_anyone(employee: dict) -> bool | None:
     """Whether anyone in the Staff Directory lists this person as a manager.
 
+    Matches by their link id or by name ignoring case and spacing (#376), so a
+    manager set up outside the app is found too.
+
     Args:
-        name: The employee's Staff Directory name.
+        employee: The person's staff record (``{"id", "fields"}``).
 
     Returns:
-        True for a manager. False when nobody lists them, or when the check
-        fails: they still sign in, just without My team, and the next sign-in
-        tries again.
+        True for a manager, False when nobody lists them, None when the check
+        failed (sign-in treats that as an employee; the next visit's refresh
+        tries again instead of keeping the wrong answer for 30 days).
     """
-    if not name:
-        return False
+    if not (employee.get("fields", {}) or {}).get("Title"):
+        return False                                           # a blank record manages nobody
     try:
-        return await is_manager(name)
+        return await is_manager(await manager_name_of(employee))
     except Exception:  # noqa: BLE001 - a failed lookup must not block sign-in
         logger.exception("Could not check whether the signed-in person is a manager")
-        return False
+        return None
 
 
 @router.post("/verify")
@@ -249,7 +265,7 @@ async def _signed_in_as(employee: dict) -> dict:
     """
     fields = employee.get("fields", {})
     name = fields.get("Title", "")
-    role = "manager" if await _manages_anyone(name) else "employee"
+    role = "manager" if await _manages_anyone(employee) else "employee"   # None (failed) -> employee
     # Same signed token the emailed dashboard links carry; 30 days by default.
     session_token = generate_dashboard_token(role, employee["id"])
     return {
@@ -429,3 +445,44 @@ def _render_code_email(code: str) -> str:
         f'<p style="font-size:28px;font-weight:bold;letter-spacing:6px">{code}</p>'
         "<p>It works for 10 minutes. If you did not ask for it, you can ignore this email.</p>"
     )
+
+
+@router.post("/session/refresh")
+async def refresh_session(body: SessionBody):
+    """Re-check a signed-in person's role, so My team follows the Staff Directory (#376).
+
+    The role in a sign-in token is decided when the code is checked and kept for
+    30 days. Someone made a manager after that (or whose check failed that day)
+    would not see My team until the token ran out. The page calls this on every
+    visit; when the role has changed it gets a new token with the right one.
+
+    Args:
+        body: The token fields the page holds (from the code sign-in or an
+            emailed link).
+
+    Returns:
+        ``{"changed": False}`` when the role still holds (or could not be
+        checked), else ``{"changed": True, role, uid, token, exp}``.
+
+    Raises:
+        HTTPException: 401 when the token is not valid; 404 when the person's
+            record is gone; 403 when they have been archived.
+    """
+    valid, error = validate_dashboard_token(body.role, body.uid, body.token, body.exp)
+    if not valid:
+        raise HTTPException(status_code=401, detail=error)
+    if body.role not in ("employee", "manager"):              # an admin link keeps its role
+        return {"changed": False}
+    employee = await get_employee_by_id(body.uid)             # their record now
+    if not employee:
+        raise HTTPException(status_code=404, detail="Your staff record could not be found.")
+    if is_archived(employee.get("fields", {})):               # a departed person gets no new token (#119)
+        raise HTTPException(status_code=403, detail="This account is no longer active. Please contact HR.")
+    manages = await _manages_anyone(employee)
+    if manages is None:                                       # check failed: keep what they have
+        return {"changed": False}
+    role = "manager" if manages else "employee"
+    if role == body.role:                                     # nothing to change
+        return {"changed": False}
+    # A fresh token with the new role; the page swaps it in for the old one.
+    return {"changed": True, **generate_dashboard_token(role, body.uid)}

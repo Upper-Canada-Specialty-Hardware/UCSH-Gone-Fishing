@@ -21,6 +21,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.manager_match import normalise_name  # case- and space-blind names (#376)
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.models.staff import Staff, StaffSupervisor
@@ -164,13 +165,15 @@ async def _run_detectors(session: AsyncSession, sp_id: str, fields: dict, run_id
 
 
 async def _relink_supervisors(session: AsyncSession) -> int:
-    """Resolve each manager link to the manager's own staff row, by name.
+    """Resolve each manager link to the manager's own staff row.
 
-    SharePoint names a manager only by display name in AllManagers, so the
-    manager's staff row is found by matching that name to a Staff Title. Left
-    null when the manager is not in the directory (an external approver). This is
-    an internal link, not the request-submitter match, so a name match is right
-    here; it is a second pass because every staff row must exist first.
+    An AllManagers entry holds the manager's Microsoft 365 user id and display
+    name. The id is matched first, against each staff row's own account link
+    (``TitleLink``, the same id space), so a manager whose display name differs
+    from their staff name is still found (#376). Failing that, the name is
+    matched to a Staff Title ignoring case and spacing. Left null when the
+    manager is not in the directory (an external approver). It is a second pass
+    because every staff row must exist first.
 
     Args:
         session: The open session; links are updated, not committed.
@@ -178,16 +181,17 @@ async def _relink_supervisors(session: AsyncSession) -> int:
     Returns:
         How many links were newly resolved to a staff row.
     """
-    staff_by_name = {
-        (row.name or "").strip().lower(): row.id
-        for row in (await session.execute(select(Staff))).scalars().all()
-        if (row.name or "").strip()
-    }
+    rows = (await session.execute(select(Staff))).scalars().all()
+    staff_by_name = {normalise_name(row.name): row.id for row in rows if normalise_name(row.name)}
+    # Their own Microsoft 365 user id -> staff row (the id an AllManagers entry holds).
+    staff_by_account = {row.title_link_sp_user_id: row.id for row in rows if row.title_link_sp_user_id is not None}
     resolved = 0
     for link in (await session.execute(
         select(StaffSupervisor).where(StaffSupervisor.manager_staff_id.is_(None))
     )).scalars().all():
-        target = staff_by_name.get((link.manager_name or "").strip().lower())
+        target = staff_by_account.get(link.manager_sp_user_id) if link.manager_sp_user_id is not None else None
+        if target is None:                                   # no account match: fall back to the name
+            target = staff_by_name.get(normalise_name(link.manager_name))
         if target is not None:
             link.manager_staff_id = target
             resolved += 1

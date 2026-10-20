@@ -24,6 +24,7 @@ around, and flip back without leaving the app pointed at Postgres.
 import asyncio
 import logging
 
+from app.services.manager_match import normalise_name  # case- and space-blind names (#376)
 from app.database import async_session
 from app.models.app_setting import AppSetting
 from app.models.mixins import utcnow
@@ -313,8 +314,10 @@ async def _rekey_people_links(session) -> dict:
     membership is matched by that name. So, in the same transaction as the flip:
 
     * each manager or supervisor link takes the staff id of the person it names:
-      the linked staff row when the import found one, else the staff row with the
-      same name (the rule the rest of the app matches managers by);
+      the linked staff row when the import found one, else the staff row whose
+      own Microsoft 365 account is the one linked, else the staff row with the
+      same name ignoring case and spacing; a matched link also takes that row's
+      name, so every name check afterwards agrees with the staff record (#376);
     * the supervisor link, which SharePoint stores with no name, is matched by the
       record's own Supervisor text column;
     * a link whose person is not in the staff table keeps its name and loses its
@@ -335,9 +338,15 @@ async def _rekey_people_links(session) -> dict:
     by_key = {row.id: row for row in staff_rows}                  # internal key -> row
     by_name: dict[str, Staff] = {}
     for row in staff_rows:
-        name = (row.name or "").strip().lower()
+        name = normalise_name(row.name)                           # case and spacing ignored (#376)
         if name:
             by_name.setdefault(name, row)                         # first wins on a duplicate name
+    # Their own Microsoft 365 account id -> row, read BEFORE the loop below
+    # overwrites it with the staff id; a link still holds that account id (#376).
+    by_account: dict[int, Staff] = {}
+    for row in staff_rows:
+        if row.title_link_sp_user_id is not None:
+            by_account.setdefault(row.title_link_sp_user_id, row)
     for row in staff_rows:
         row.title_link_sp_user_id = _staff_number(row)            # their own link: their own staff id
     links = (await session.execute(select(StaffSupervisor))).scalars().all()
@@ -350,16 +359,18 @@ async def _rekey_people_links(session) -> dict:
             owner = by_key.get(link.staff_id)
             name = owner.supervisor_text if owner is not None else None
         target = by_key.get(link.manager_staff_id) if link.manager_staff_id else None
+        if target is None and link.manager_sp_user_id is not None:
+            target = by_account.get(link.manager_sp_user_id)      # match by their Microsoft 365 account
         if target is None:
-            target = by_name.get((name or "").strip().lower())   # match by name
+            target = by_name.get(normalise_name(name))            # match by name
         if target is None:
             link.manager_sp_user_id = None                        # not on staff: keep the name, drop the id
             unmatched += 1
             continue
         link.manager_sp_user_id = _staff_number(target)           # the id the pickers use from now on
         link.manager_staff_id = target.id
-        if not link.manager_name:
-            link.manager_name = target.name                       # fill a blank name from the row
+        if target.name:
+            link.manager_name = target.name                       # the staff name, so name checks agree (#376)
     return {"links": len(links), "unmatched": unmatched}
 
 

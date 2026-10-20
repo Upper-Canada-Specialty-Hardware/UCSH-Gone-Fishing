@@ -137,17 +137,20 @@ async def get_manager_for_employee(employee: dict) -> dict | None:
 
 
 async def is_manager(employee_name: str) -> bool:
-    """Check if anyone lists this employee in their AllManagers field."""
+    """Whether anyone lists this person in their AllManagers field (#376).
+
+    Args:
+        employee_name: Their name; a ``ManagerName`` (``manager_match``) also
+            matches by their link id, so a manager whose Microsoft 365 name
+            differs from their staff name is still found.
+
+    Returns:
+        True when at least one person lists them.
+    """
+    from app.services.manager_match import lists_manager   # lazy: manager_match imports staff_store
     # Routed through staff_store so the read follows staff_storage (SharePoint or Postgres).
     all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
-    for staff in all_staff:
-        all_managers = staff.get("fields", {}).get("AllManagers")
-        if all_managers and isinstance(all_managers, list):
-            for entry in all_managers:
-                name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""
-                if name == employee_name:
-                    return True
-    return False
+    return any(lists_manager(staff.get("fields", {}), employee_name) for staff in all_staff)
 
 
 async def get_employee_roles(employee: dict) -> list[str]:
@@ -155,7 +158,8 @@ async def get_employee_roles(employee: dict) -> list[str]:
     fields = employee.get("fields", {})
     name = fields.get("Title", "")
     roles = ["employee"]
-    if await is_manager(name):
+    from app.services.manager_match import manager_name_of   # lazy, as in is_manager
+    if await is_manager(await manager_name_of(employee)):     # by id or by name (#376)
         roles.append("manager")
     if name in ADMIN_NAMES:
         roles.append("admin")

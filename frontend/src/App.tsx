@@ -1,4 +1,4 @@
-import { ReactNode, Suspense, lazy } from 'react';
+import { ReactNode, Suspense, lazy, useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { Container } from '@mui/material';
 import { ColorModeProvider } from './colorMode';
@@ -11,8 +11,30 @@ const ManagerDashboard = lazy(() => import('./pages/ManagerDashboard'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
-import { canSeeTeam, loadSession, saveLinkSession, setAfterSignIn, setSignInNotice } from './api/intake';
+import {
+  canSeeTeam, loadSession, refreshSessionRole, saveLinkSession, sessionRoleChecked, setAfterSignIn, setSignInNotice,
+} from './api/intake';
 import { useVersionReload } from './hooks/useVersionReload';
+
+// sessionStorage flag: this tab already reloaded once for a changed role (#376).
+const ROLE_RELOAD_KEY = 'role_refresh_reloaded';
+
+/**
+ * Reload the page once per tab after the role changed, so the tabs, the route
+ * guards and the dashboards all read the new token. Never reloads twice.
+ *
+ * @returns True when a reload was started.
+ */
+function reloadOnceForNewRole(): boolean {
+  try {
+    if (sessionStorage.getItem(ROLE_RELOAD_KEY)) return false;      // already reloaded in this tab
+    sessionStorage.setItem(ROLE_RELOAD_KEY, '1');
+  } catch {
+    return false;                                                  // storage blocked: no reload loop risk
+  }
+  window.location.reload();
+  return true;
+}
 
 /**
  * Mounts the auto-update watcher once for the whole app; renders nothing (#331).
@@ -52,6 +74,15 @@ function Framed({ children }: { children: ReactNode }) {
  */
 function SignedIn({ children, team }: { children: ReactNode; team?: boolean }) {
   const { pathname } = useLocation();
+  const [checked, setChecked] = useState(sessionRoleChecked());   // role re-checked on this load yet (#376)
+  useEffect(() => {
+    let live = true;
+    refreshSessionRole().then((changed) => {
+      if (changed && reloadOnceForNewRole()) return;                // a new role: start fresh with it
+      if (live) setChecked(true);
+    });
+    return () => { live = false; };
+  }, []);
   const session = loadSession();
   if (!session) {
     setAfterSignIn(pathname);                          // back here after the code
@@ -59,7 +90,9 @@ function SignedIn({ children, team }: { children: ReactNode; team?: boolean }) {
       ? 'Sign in to make a request.' : 'Sign in to see your requests.');
     return <Navigate to="/" replace />;
   }
-  if (team && !canSeeTeam(session)) return <Navigate to="/my" replace />;
+  // Not a manager on the stored token: wait for the role check before sending
+  // them to My requests, as they may have become a manager since signing in (#376).
+  if (team && !canSeeTeam(session)) return checked ? <Navigate to="/my" replace /> : null;
   return <>{children}</>;
 }
 

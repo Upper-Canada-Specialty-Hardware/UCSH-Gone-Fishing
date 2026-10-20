@@ -100,14 +100,8 @@ def is_assigned_to(employee_fields: dict, manager_name: str) -> bool:
     Returns:
         True when the manager is one of the employee's supervisors.
     """
-    all_managers = employee_fields.get("AllManagers")
-    if not all_managers or not isinstance(all_managers, list):  # no supervisors at all
-        return False
-    for entry in all_managers:
-        name = entry.get("LookupValue", "") if isinstance(entry, dict) else ""  # Graph's person shape
-        if name and name == manager_name:
-            return True
-    return False
+    from app.services.manager_match import lists_manager   # one rule for who manages whom (#376)
+    return lists_manager(employee_fields, manager_name)     # by id when known, else by name
 
 
 def build_sick_day_fields(form_data: dict, employee_name: str, manager_name: str) -> dict:
@@ -233,7 +227,8 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         raise SickDayOnBehalfError(
             f"{employee_name} has been archived, so a sick day cannot be logged for them."
         )
-    if not is_assigned_to(emp_fields, manager_name):  # assignment gate
+    from app.services.manager_match import manager_name_of   # name + link ids (#376)
+    if not is_assigned_to(emp_fields, await manager_name_of(manager)):  # assignment gate, by id or name
         raise SickDayOnBehalfError(
             f"{employee_name} is not assigned to you, so you cannot log a sick day for them."
         )

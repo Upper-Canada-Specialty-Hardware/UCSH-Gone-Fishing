@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 
 from app.config import settings
+from app.services.manager_match import team_names  # the team map is keyed by name and id (#376)
 from app.database import async_session
 from app.graph import sharepoint as sharepoint_module
 from app.models.legacy_finding import LegacyFinding
@@ -225,8 +226,8 @@ def test_archived_name_resolves_in_request_rows_but_not_in_team_map(clean_db, mo
     assert sp_user_to_name.by_staff_id["202"] == "Departed Dan"
     assert _resolve_employee_name({"EmployeeID": "202"}, "leave", sp_user_to_name, by_id) == "Departed Dan"
     # But they are no longer an active report, so they are out of the team map.
-    assert "Active Alice" in mgr_to_emp_names.get("Manager Maria", set())
-    assert "Departed Dan" not in mgr_to_emp_names.get("Manager Maria", set())
+    assert "Active Alice" in team_names(mgr_to_emp_names, "Manager Maria")
+    assert "Departed Dan" not in team_names(mgr_to_emp_names, "Manager Maria")
 
 
 # --- never chosen as an approving manager -------------------------------------
@@ -306,7 +307,7 @@ def test_the_history_team_map_keeps_archived_teammates(clean_db, monkeypatch):
 
     _by_name, by_id, _sp_user_to_name, mgr_to_emp_names = run(_build_staff_lookups())
     # The active-only map (Today/Team/pickers/balances) drops the archived person.
-    assert "Departed Dan" not in mgr_to_emp_names.get("Manager Maria", set())
+    assert "Departed Dan" not in team_names(mgr_to_emp_names, "Manager Maria")
     # The history team map keeps both, so Dan's past requests stay on Maria's History.
     team = _team_ids_including_archived(by_id, "Manager Maria")
     assert {"201", "202"} <= team

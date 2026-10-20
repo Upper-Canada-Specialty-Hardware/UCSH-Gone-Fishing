@@ -287,7 +287,7 @@ def _lookups():
         {"pat staff": EMP_ITEM},            # staff_by_name (lowercased)
         {7: EMP_ITEM},                      # staff_by_id
         sp_user_to_name,                    # sp_user_to_name (+ by_email)
-        {"Boss One": {"Pat Staff"}},        # mgr_to_emp_names
+        {"boss one": {"Pat Staff"}},        # mgr_to_emp_names, keyed by normalised name (#376)
     )
 
 

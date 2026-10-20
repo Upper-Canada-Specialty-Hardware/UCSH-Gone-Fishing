@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from app.config import settings
 # The read-side helpers live in the dashboard router; reuse them so team
 # membership is decided one way everywhere (the brief says to use these).
+from app.services.manager_match import manager_name_of, normalise_name  # who manages whom (#376)
 from app.routes.dashboard import (
     AuthUser,
     DashboardUser,
@@ -67,7 +68,8 @@ async def _signed_in_manager(user: DashboardUser) -> tuple[dict, str]:
     manager = await get_employee_by_id(user.user_id)     # the caller's own staff record
     if not manager:                                      # signed in but no record: cannot act
         raise HTTPException(status_code=404, detail="Your own staff record could not be found")
-    return manager, manager["fields"].get("Title", "")   # name drives the team membership check
+    # The name carries the manager's link ids, so membership matches by id or name (#376).
+    return manager, await manager_name_of(manager)
 
 
 def _may_add(manager_fields: dict, person_fields: dict) -> str | None:
@@ -91,7 +93,7 @@ def _may_add(manager_fields: dict, person_fields: dict) -> str | None:
     """
     manager_name = (manager_fields.get("Title") or "").strip()
     person_name = (person_fields.get("Title") or "").strip()
-    if not person_name or person_name == manager_name:   # no blank rows, and not yourself
+    if not person_name or normalise_name(person_name) == normalise_name(manager_name):  # not yourself
         return "You cannot add yourself to your own team."
     if is_archived(person_fields):                       # archived people are out of every team (#119)
         return "That person has left and cannot be added to a team."
