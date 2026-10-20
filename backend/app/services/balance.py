@@ -3,7 +3,7 @@ from datetime import date
 
 from app.config import settings
 from app.services.employee import get_employee_by_id
-from app.services.employment import is_hourly, leave_costs_balance, whole_sick_days
+from app.services.employment import NO_COST_LEAVE, is_hourly, leave_costs_balance, whole_sick_days
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
@@ -201,8 +201,8 @@ def simulate_leave_impact(
     """Simulate balance impact of approving a leave request.
     Returns projected SP-style balance dict, or None for no-impact types.
     """
-    if leave_type in ("Bereavement", "Jury Duty"):
-        return None
+    if leave_type in NO_COST_LEAVE:      # bereavement, jury duty, work from home (#375)
+        return None                       # no impact: and no overflow step either
 
     # hourly (#300): sick is their only balance. A sick or part day takes
     # whole sick days and stops there (no cascade, so sick may go below zero);

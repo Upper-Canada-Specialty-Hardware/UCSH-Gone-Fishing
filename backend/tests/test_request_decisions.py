@@ -328,6 +328,41 @@ def test_no_cost_leave_approves_without_touching_any_balance(monkeypatch):
     assert len(outbox) == 1                                       # the employee is still told
 
 
+def test_work_from_home_moves_nothing_even_with_a_negative_carry_over(monkeypatch):
+    """#375: a negative carry-over (left by a next-year vacation) stays put."""
+    fake = _use(monkeypatch, _all_pots(sick=5, carry_over=-10, vacation=6))
+    record = _leave(leave_type="Work from Home", days=1)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["status"] == "approved"
+    fresh, ledger, _events, _outbox = run(_inspect(record))
+    assert fresh.balance_state == "no_balance"                    # no overflow step ran
+    assert fake.write_calls == [] and ledger == []                # vacation still 6, carry-over still -10
+
+
+def test_hourly_work_from_home_is_not_counted_as_vacation(monkeypatch):
+    """#375: hourly work from home adds nothing to vacation taken."""
+    fake = _use(monkeypatch, _all_pots(sick=5))
+    record = _leave(leave_type="Work from Home", days=2, employment_type="Hourly")
+
+    run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    fresh, ledger, _events, _outbox = run(_inspect(record))
+    assert fresh.balance_state == "no_balance"                    # not "counted"
+    assert fake.write_calls == [] and ledger == []                # no vacation_taken row
+
+
+def test_work_from_home_has_no_simulated_impact():
+    """#375: the shared simulator (SharePoint path and previews) returns no impact."""
+    from app.services.balance import simulate_leave_impact
+    from app.services.employment import leave_costs_balance
+
+    fields = {"SalaryHourly": "Salary", "CarryOver": -10, "CurrentVacationBalance": 6}
+    assert simulate_leave_impact(fields, "Work from Home", 1, is_next_year=False) is None
+    assert leave_costs_balance(fields, "Work from Home") is False   # the SharePoint approval returns early
+
+
 # ----- approve: the hourly rules -----
 
 

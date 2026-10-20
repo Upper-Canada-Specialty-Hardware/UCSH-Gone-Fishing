@@ -48,7 +48,7 @@ from app.models.request_record import RequestRecord
 from app.models.sync_run import SyncRun
 from app.repositories.postgres.requests import _stored
 from app.repositories.postgres.typed_requests import TypedRequestList
-from app.services.employment import HOURLY_TYPES, SALARY, employment_type
+from app.services.employment import HOURLY_TYPES, NO_COST_LEAVE, SALARY, employment_type
 from app.services.legacy_findings import record_finding  # shared writer: one row per fingerprint
 from app.services.request_journal import append_event, post_ledger, step_key
 from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
@@ -89,8 +89,8 @@ POT_FOR_BALANCE = {
 }
 # What the history step (#357) found -> the balance state it proves.
 HISTORY_STATES = {"matched": "applied", "refunded": "reversed"}
-# Leave types that never move a balance (bereavement and jury duty).
-NO_COST_LEAVE = ("Bereavement", "Jury Duty")
+# Leave types that never move a balance come from services/employment.py
+# (bereavement, jury duty, work from home), the same set the approval paths use.
 
 IMPORT_CHANNEL = "import"       # the channel every imported event and ledger row carries
 IMPORT_ACTOR = "import"         # the actor recorded on imported rows
