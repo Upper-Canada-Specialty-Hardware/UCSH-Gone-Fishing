@@ -21,7 +21,6 @@ employee once and stamps the key onto a list of rows.
 import logging
 from datetime import date
 
-from app.models.request_vocab import LEGACY_LEAVE_TYPE  # the retired "Work from Home"
 from app.services.audit_trail import extract_approval_deltas
 from app.services.employment import (
     VACATION,
@@ -554,9 +553,9 @@ async def attach_taken_from(
                     # No ledger rows on an imported approval whose audit log was
                     # missing: the pots may well have moved, there is just no
                     # record of which. Say so, unless the kind costs nothing
-                    # (the retired Work from Home never touched a balance).
+                    # (_costs_balance is False for work from home and the other
+                    # no-cost leaves, which legitimately have no ledger rows).
                     if (found["state"] == "none" and balance_state in UNPROVEN_STATES
-                            and row.get("LeaveType") != LEGACY_LEAVE_TYPE
                             and _costs_balance(row, request_type, emp_fields)):
                         found = {"state": "unrecorded", "pieces": []}
                         if gap:

@@ -24,6 +24,7 @@ from app.services.balance import (
 from app.services.business_days import calculate_business_days
 from app.services.employee import map_location_to_province
 from app.services.employment import (
+    NO_COST_LEAVE,
     PARTIAL_DAY as PART_DAY_LEAVE,
     VACATION,
     floor_warning,
@@ -41,7 +42,14 @@ from app.services.request_intake import HOURS_PER_DAY, PARTIAL_DAY
 
 logger = logging.getLogger(__name__)
 
-NO_COST_LEAVE = ("Bereavement", "Jury Duty")   # simulate_leave_impact returns None for these
+# The "uses no balance" sentence for each no-cost leave type, worded per type so
+# work from home does not read as if it were bereavement (#388). Any type in
+# employment.NO_COST_LEAVE not listed here falls back to the generic sentence.
+NO_COST_LEAVE_NOTE = {
+    "Bereavement": "Bereavement does not use any balance.",
+    "Jury Duty": "Jury duty does not use any balance.",
+    "Work from Home": "Work from home does not use any balance.",
+}
 
 
 def _holidays_in(start: date, end: date, holidays: list[dict]) -> list[str]:
@@ -136,7 +144,8 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
     # Which kinds move a balance for this person (salaried or
     # hourly) is decided in services/employment.py, same as the manager's view.
     if request_type == "leave" and form.leave_type in NO_COST_LEAVE:
-        unchanged = "Bereavement and jury duty do not use any balance."
+        projected = None                                   # nobody's balance moves for these
+        unchanged = NO_COST_LEAVE_NOTE.get(form.leave_type, "This leave does not use any balance.")
     elif request_type == "leave" and is_hourly(emp_fields) and form.leave_type == VACATION:
         projected = None                                   # counted, not spent
         unchanged = "Counted only. No balance is used."

@@ -97,7 +97,7 @@ RECOVER_HANDLERS = {
 
 # The leave types the new-request dialog offers, in a stable, sensible order;
 # the set itself is the balance engine's ALLOWED_LEAVE_TYPES (the source of truth).
-_LEAVE_TYPE_ORDER = ["Vacation", "Sick or Personal Day", "Half Day or Partial Day Off", "Bereavement", "Jury Duty"]
+_LEAVE_TYPE_ORDER = ["Vacation", "Sick or Personal Day", "Half Day or Partial Day Off", "Bereavement", "Jury Duty", "Work from Home"]
 
 
 class NewRequestBody(BaseModel):

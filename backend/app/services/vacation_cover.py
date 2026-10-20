@@ -6,7 +6,8 @@ first manager on that list who is not off that day. Managers after the first
 available one are not asked unless the earlier ones are off. A manager counts as
 "off" when they have an APPROVED full-day leave request of any leave type
 (vacation, sick, bereavement, and so on) whose dates cover the day in Toronto;
-a part-day or half-day leave does not count, and a pending leave does not count.
+a part-day or half-day leave does not count, work from home does not count (they
+are working), and a pending leave does not count.
 
 This module is the one place that decides "off", so the submission path (#369),
 the reminder re-decision and the admin cover list (#370) all agree. It reads the
@@ -21,11 +22,16 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.models.request_record import RequestRecord
-from app.services.employment import PARTIAL_DAY
+from app.services.employment import PARTIAL_DAY, WORK_FROM_HOME
 
 # The company calendar day: "off that day" is tested in Toronto, like every other
 # window in the app (carry-over dates, the April-1 reset).
 TORONTO = ZoneInfo("America/Toronto")
+
+# Leave types that do NOT make a manager unavailable: a part/half day (away only
+# part of the day) and work from home (they are working), so an approval still
+# routes to a manager on either (#388, #390).
+NOT_OFF_LEAVE_TYPES = (PARTIAL_DAY, WORK_FROM_HOME)
 
 # The request kind -> the URL segment the dashboard approve/reject calls use. Only
 # "carryover_payout" differs from its kind (the hyphen).
@@ -100,8 +106,8 @@ async def _manager_leaves(session, manager_staff_id) -> list[tuple[date, date | 
 
     A manager is matched to their own staff row by id (``manager_staff_id``),
     which is the id the ``AllManagers`` name already resolved to upstream, so this
-    reuses the name match the rest of the code uses. Part-day leave is excluded:
-    it does not make the manager unavailable.
+    reuses the name match the rest of the code uses. Part-day leave and work from
+    home are excluded: neither makes the manager unavailable.
 
     Args:
         session: An open session.
@@ -115,7 +121,7 @@ async def _manager_leaves(session, manager_staff_id) -> list[tuple[date, date | 
             RequestRecord.kind == "leave",
             RequestRecord.status == "approved",                   # pending leave does not count
             RequestRecord.employee_id == str(manager_staff_id),   # the manager, as the person on leave
-            RequestRecord.leave_type != PARTIAL_DAY,              # a half/part day does not count
+            RequestRecord.leave_type.notin_(NOT_OFF_LEAVE_TYPES), # part/half day and work from home do not count
         )
     )).all()
     return [(start, end) for start, end in rows if start is not None]
@@ -258,7 +264,7 @@ async def list_requests_awaiting_cover() -> list[dict]:
             select(RequestRecord.employee_id, RequestRecord.start_date, RequestRecord.end_date).where(
                 RequestRecord.kind == "leave",
                 RequestRecord.status == "approved",
-                RequestRecord.leave_type != PARTIAL_DAY,
+                RequestRecord.leave_type.notin_(NOT_OFF_LEAVE_TYPES),  # part/half day and work from home do not count
             )
         )).all()
         intervals_by_person: dict[str, list[tuple[date, date | None]]] = {}

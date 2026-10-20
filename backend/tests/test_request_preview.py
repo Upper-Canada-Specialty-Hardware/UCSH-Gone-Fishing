@@ -56,7 +56,36 @@ def test_bereavement_changes_nothing():
     form = _form("leave", leave_type="Bereavement", start_date="2030-11-12", end_date="2030-11-14")
     out = build_preview("leave", form, AVERY, HOLIDAYS)
     assert out["projected"] is None
-    assert out["unchanged"] == "Bereavement and jury duty do not use any balance."
+    assert out["unchanged"] == "Bereavement does not use any balance."
+
+
+def test_work_from_home_counts_days_but_uses_no_balance():
+    # A full-day leave type (first and last day, no partial hours), counted as
+    # business days like Vacation, but costing nobody any balance (#388).
+    form = _form("leave", leave_type="Work from Home", start_date="2030-11-11", end_date="2030-11-13")
+    assert form.partial_hours is None                          # no partial hours: it is a full-day type
+    out = build_preview("leave", form, AVERY, HOLIDAYS)
+    assert out["days"] == 2                                     # Mon is a holiday: Tue and Wed, same as Vacation
+    assert out["projected"] is None                            # no pots move
+    assert out["below_zero"] is None
+    assert out["unchanged"] == "Work from home does not use any balance."
+
+
+def test_work_from_home_uses_no_balance_for_hourly_staff():
+    hourly = {**AVERY, "SalaryHourly": "Hourly"}               # any hourly employee
+    form = _form("leave", leave_type="Work from Home", start_date="2030-11-12", end_date="2030-11-12")
+    out = build_preview("leave", form, hourly, HOLIDAYS)
+    assert out["projected"] is None                            # sick is not touched, nothing is counted
+    assert out["unchanged"] == "Work from home does not use any balance."
+
+
+def test_work_from_home_form_needs_a_last_day_like_vacation():
+    # Accepted as a full-day range, and refused with no last day (never a part day).
+    from app.services.request_intake import RequestFormError
+    ok = _form("leave", leave_type="Work from Home", start_date="2030-11-11", end_date="2030-11-12")
+    assert ok.leave_type == "Work from Home" and ok.end_date is not None
+    with pytest.raises(RequestFormError):
+        _form("leave", leave_type="Work from Home", start_date="2030-11-11")
 
 
 def test_part_day_on_a_holiday_warns():

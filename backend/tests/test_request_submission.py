@@ -197,6 +197,28 @@ def test_a_submission_writes_one_event_and_three_queued_messages(sp):
     assert f"/api/leave/approve/{record.item_id}" in manager_email.body and "v=1" in manager_email.body
 
 
+def test_a_work_from_home_submission_is_recorded_and_routed_to_the_manager(sp):
+    # Work from home is a full-day leave type that costs no balance (#388); a
+    # submission still records the request, asks the manager and sends the receipt,
+    # and moves no balance (balance moves only on approval, and WFH moves none then).
+    record = run(_leave_record(leave_type="Work from Home", days=1.0, end_date=date(2026, 11, 2)))
+
+    recorded = run(rs.submit("leave", record.item_id, channel="request_page"))
+
+    assert recorded is True
+    events, outbox = run(_rows(record))
+    assert len([e for e in events if e.type == "submitted"]) == 1
+    kinds = sorted((o.message_type, o.channel) for o in outbox)
+    assert kinds == [("manager_approval", "email"), ("manager_approval", "sms"), ("receipt", "email")]
+
+    async def reread():
+        async with async_session() as session:
+            return await session.get(RequestRecord, record.id)
+    fresh = run(reread())
+    assert fresh.manager_id == "20" and fresh.status == "pending"  # the manager is asked; not auto-rejected
+    assert fresh.balance_state == "not_applied"                    # submission moves no balance
+
+
 def test_a_second_identical_submission_adds_nothing(sp):
     record = run(_leave_record())
 

@@ -27,10 +27,13 @@ HOURLY_TYPES = (HOURLY, HOURLY_BC)
 VACATION = "Vacation"                       # leave kind counted for hourly staff
 SICK_LEAVE = "Sick or Personal Day"         # spends sick for everyone
 PARTIAL_DAY = "Half Day or Partial Day Off" # hourly: a whole sick day
-# Leave that never touches a balance, on every approval path. "Work from Home"
-# is the retired type the old Microsoft Form still sends (#375): working from
-# home is not time off, so its approval moves nothing and runs no overflow step.
-NO_COST_LEAVE = ("Bereavement", "Jury Duty", "Work from Home")
+# Working from home: a current leave type (#388) that costs no balance for anyone,
+# because it is not time off. Named once so the approval, preview and routing code
+# all test the same string.
+WORK_FROM_HOME = "Work from Home"
+# Leave that never touches a balance, on every approval path. Work from home joins
+# bereavement and jury duty here: its approval moves nothing and runs no overflow step.
+NO_COST_LEAVE = ("Bereavement", "Jury Duty", WORK_FROM_HOME)
 
 # The column each type's floor lives in, and its wire pot name.
 SICK_FIELD = "CurrentSickDayBalance"
