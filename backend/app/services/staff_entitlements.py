@@ -30,6 +30,7 @@ from app.services.employee import (
     get_employee_by_id,
 )
 from app.services.manager_assignments import _extract_all_managers, _manager_id_to_name
+from app.services.staff_cleanup import clean_email, collapse_whitespace
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +340,14 @@ def plan_field_changes(
             column = TEXT_FIELDS[key]                 # its SharePoint column name
             label = COLUMN_LABELS.get(column, column)  # friendly name for messages
             after = _clean_text(raw)                  # trim the new value
+            if column == "EmailAddress":              # emails carry no spaces, fold to lower case
+                after = clean_email(after)            # so an edit saves the same tidy form create does
+            elif column in ("Title", "Department"):   # names/departments keep single internal spaces only
+                after = collapse_whitespace(after)     # squeeze doubled/NBSP spaces (the Glenn Clarke case)
             before = _clean_text(current_fields.get(column))  # trim the stored value
+            if column in ("Title", "Department", "EmailAddress"):  # cleaned columns: compare to the raw stored text
+                stored = current_fields.get(column)    # untrimmed, so a stray space counts as a difference
+                before = "" if stored is None else str(stored)  # re-typing "Glenn Clarke" now saves over "Glenn Clarke "
             if key in REQUIRED_FIELDS and not after:   # closed/required column
                 raise ValueError(f"{label} cannot be blank.")
             if before != after:                        # skip no-op values

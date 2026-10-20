@@ -156,6 +156,47 @@ export const createEmployee = (payload: Record<string, unknown>) =>
 export const createEmployeeAdmin = (payload: Record<string, unknown>) =>
   api.post('/admin/employees', payload);
 
+/** One field cleaning tidied, shown as before -> after in the confirm step. */
+export interface EmployeeCheckChange {
+  field: string;
+  before: string;
+  after: string;
+}
+
+/** One block or warning the add-employee check found. */
+export interface EmployeeCheckProblem {
+  code: string;
+  level: 'block' | 'warn';
+  title: string;
+  detail: string;
+}
+
+/** What the add-employee check endpoints return: the cleaned form, what cleaning
+ *  changed, and every block/warning the create would hit. Writes nothing. */
+export interface EmployeeCheckResult {
+  cleaned: Record<string, unknown>;
+  changes: EmployeeCheckChange[];
+  problems: EmployeeCheckProblem[];
+}
+
+/**
+ * Review a new employee before the manager saves it (zero writes).
+ *
+ * @param payload - The same body createEmployee takes.
+ * @returns The cleaned form, the changes cleaning made, and the problems found.
+ */
+export const checkEmployee = (payload: Record<string, unknown>) =>
+  api.post<EmployeeCheckResult>('/team/employees/check', payload);
+
+/**
+ * Review a new employee before the admin saves it (zero writes).
+ *
+ * @param payload - The same body createEmployeeAdmin takes (with manager_ids).
+ * @returns The cleaned form, the changes cleaning made, and the problems found.
+ */
+export const checkEmployeeAdmin = (payload: Record<string, unknown>) =>
+  api.post<EmployeeCheckResult>('/admin/employees/check', payload);
+
 // Admin - Company Holidays editor (the dashboard edit surface for HR)
 export const getAdminHolidays = () => api.get('/admin/holidays');
 export const createHoliday = (payload: { title: string; date: string; province: string }) =>

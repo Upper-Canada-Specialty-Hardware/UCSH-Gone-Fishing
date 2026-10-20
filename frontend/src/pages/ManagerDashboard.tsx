@@ -37,6 +37,7 @@ import {
   approveRequest,
   rejectRequest,
   createEmployee,
+  checkEmployee,
   logSickDay,
 } from '../api/client';
 import { greeting } from '../utils/greeting';
@@ -730,6 +731,7 @@ export default function ManagerDashboard() {
         <AddEmployee
           processingEnabled={processingEnabled}
           submitEmployee={createEmployee}
+          checkEmployee={checkEmployee}
           prefill={prefill}
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })

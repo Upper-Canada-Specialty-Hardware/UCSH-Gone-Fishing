@@ -39,6 +39,10 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'A balance value is not a number',
     fix: 'Correct the balance value on their Staff Directory record.',
   },
+  identity_name_spacing: {
+    title: 'Stray spaces in the name or email',
+    fix: 'Re-save their name and email in the person panel so the extra spaces (and any capitals in the email) are tidied. Requests are matched by an exact name and email, so while they are there a request can route to the wrong person or to nobody.',
+  },
   identity_unique_name: {
     title: 'Someone else has the same name',
     fix: 'Two staff records share this name. Requests are matched back to a person by name, so one of the records needs a distinguishing name before their requests can be routed reliably.',

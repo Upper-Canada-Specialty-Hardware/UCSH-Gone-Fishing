@@ -5,6 +5,7 @@ import {
   OutlinedInput, Chip,
 } from '@mui/material';
 import { isHourly } from '../utils/employment';
+import type { EmployeeCheckResult } from '../api/client';
 
 /**
  * The Location values the backend maps to a province. Anything outside this set
@@ -42,6 +43,12 @@ interface Props {
   processingEnabled: boolean;
   /** The API call that creates the employee, e.g. createEmployee or createEmployeeAdmin. */
   submitEmployee: (payload: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * The API call that checks the typed details without writing, e.g.
+   * checkEmployee or checkEmployeeAdmin. Review runs this and shows what will be
+   * saved before the person commits.
+   */
+  checkEmployee: (payload: Record<string, unknown>) => Promise<{ data: EmployeeCheckResult }>;
   /** Notify the parent so it can toast success and refresh. */
   onCreated: (name: string) => void;
   /**
@@ -95,7 +102,7 @@ const EMPTY = {
  * @returns The Add Employee panel.
  */
 export default function AddEmployee({
-  processingEnabled, submitEmployee, onCreated, managerOptions, prefill,
+  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions, prefill,
 }: Props) {
   const [form, setForm] = useState({ ...EMPTY, ...(prefill ?? {}) });
   const [outcome, setOutcome] = useState<CreateOutcome | null>(null);
@@ -106,6 +113,10 @@ export default function AddEmployee({
   }, [prefill]);
   const [managerIds, setManagerIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  // The review result from the check endpoint; non-null means the confirm panel
+  // is showing instead of the form.
+  const [review, setReview] = useState<EmployeeCheckResult | null>(null);
   const [error, setError] = useState('');
 
   const showPicker = Array.isArray(managerOptions);
@@ -127,16 +138,36 @@ export default function AddEmployee({
       ? { ...f, salary_hourly: value, vacation_entitlement: '0', sick_entitlement: f.sick_entitlement || '5' }
       : { ...f, salary_hourly: value }));
 
+  // Only the admin path carries manager_ids; the manager path lets the server
+  // assign the supervisor from the signed-in identity.
+  const payloadOf = () => (showPicker ? { ...form, manager_ids: managerIds } : { ...form });
+
+  // Whether the review turned up anything the create would refuse.
+  const hasBlock = (review?.problems ?? []).some((p) => p.level === 'block');
+
+  /** Check the typed details (no write) and show the confirm panel. */
+  const startReview = async () => {
+    setError('');
+    setOutcome(null);
+    setChecking(true);
+    try {
+      const res = await checkEmployee(payloadOf());
+      setReview(res?.data ?? { cleaned: {}, changes: [], problems: [] });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : 'The details could not be checked. Please try again.');
+    } finally {
+      setChecking(false);
+    }
+  };
+
   /** Submit the form, showing the backend's reason on a 400. */
   const submit = async () => {
     setError('');
     setOutcome(null);
     setSaving(true);
     try {
-      // Only the admin path carries manager_ids; the manager path lets the
-      // server assign the supervisor from the signed-in identity.
-      const payload = showPicker ? { ...form, manager_ids: managerIds } : { ...form };
-      const res: any = await submitEmployee(payload);
+      const res: any = await submitEmployee(payloadOf());
       const data = res?.data ?? {};
       // Released requests are reported, never blocking.
       setOutcome({
@@ -147,6 +178,7 @@ export default function AddEmployee({
       onCreated(form.title.trim());
       setForm({ ...EMPTY });
       setManagerIds([]);
+      setReview(null);               // back to a blank form once it is saved
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'The employee could not be created. Please try again.');
@@ -192,6 +224,19 @@ export default function AddEmployee({
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {outcome && <CreatedSummary outcome={outcome} />}
 
+      {review && (
+        <ConfirmPanel
+          review={review}
+          hasBlock={hasBlock}
+          saving={saving}
+          processingEnabled={processingEnabled}
+          supervisorNames={showPicker ? managerIds.map(nameFor) : null}
+          onBack={() => setReview(null)}
+          onConfirm={submit}
+        />
+      )}
+
+      {!review && (
       <Stack spacing={2} sx={{ maxWidth: 560 }}>
         <TextField
           label="Full name (as in Microsoft 365)" required
@@ -306,15 +351,138 @@ export default function AddEmployee({
         <Box>
           <Button
             variant="contained"
-            disabled={!processingEnabled || !ready || saving}
-            onClick={submit}
-            startIcon={saving ? <CircularProgress size={16} color="inherit" /> : undefined}
+            disabled={!processingEnabled || !ready || checking}
+            onClick={startReview}
+            startIcon={checking ? <CircularProgress size={16} color="inherit" /> : undefined}
           >
-            Add Employee
+            Review
           </Button>
         </Box>
       </Stack>
+      )}
     </Paper>
+  );
+}
+
+/** A human label for each form field shown in the confirm panel, in order. */
+const DETAIL_LABELS: [string, string][] = [
+  ['title', 'Full name'],
+  ['email_address', 'Email'],
+  ['location', 'Location'],
+  ['department', 'Department'],
+  ['salary_hourly', 'Employment type'],
+  ['cell_number', 'Cell number'],
+  ['vacation_entitlement', 'Vacation days / year'],
+  ['sick_entitlement', 'Sick days / year'],
+  ['vacation_balance', 'Opening vacation'],
+  ['sick_balance', 'Opening sick'],
+  ['overtime_balance', 'Opening make-up'],
+  ['carry_over', 'Opening carry-over'],
+  ['payout', 'Opening payout'],
+];
+
+/**
+ * The confirm step: what will be saved, what cleaning changed, and every block
+ * or warning the check found. The save button is disabled while any block
+ * stands, so the person must go Back and fix it first.
+ *
+ * @param props.review - The check endpoint result.
+ * @param props.hasBlock - Whether any problem is a block.
+ * @param props.saving - Whether the create is in flight.
+ * @param props.processingEnabled - Writes allowed; the save is disabled otherwise.
+ * @param props.supervisorNames - Chosen supervisor names (admin), or null when
+ *   the manager path assigns the supervisor itself.
+ * @param props.onBack - Return to the form to edit again.
+ * @param props.onConfirm - Save the employee.
+ * @returns The confirm panel.
+ */
+function ConfirmPanel({
+  review, hasBlock, saving, processingEnabled, supervisorNames, onBack, onConfirm,
+}: {
+  review: EmployeeCheckResult;
+  hasBlock: boolean;
+  saving: boolean;
+  processingEnabled: boolean;
+  supervisorNames: string[] | null;
+  onBack: () => void;
+  onConfirm: () => void;
+}) {
+  const cleaned = review.cleaned ?? {};
+  // Only the fields that carry a value are worth a row.
+  const rows = DETAIL_LABELS.filter(([key]) => {
+    const v = cleaned[key];
+    return v !== undefined && v !== null && String(v).trim() !== '';
+  });
+  return (
+    <Stack spacing={2} sx={{ maxWidth: 560 }}>
+      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>Review before saving</Typography>
+
+      {/* What cleaning changed about the typed details, if anything. */}
+      {review.changes.length > 0 && (
+        <Alert severity="info">
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>Tidied for you</Typography>
+          <Stack spacing={0.25}>
+            {review.changes.map((c) => (
+              <Typography key={c.field} variant="body2" sx={{ wordBreak: 'break-word' }}>
+                <Box component="span" sx={{ textDecoration: 'line-through', color: 'text.secondary' }}>
+                  {`"${c.before}"`}
+                </Box>
+                {' → '}
+                <Box component="span" sx={{ fontWeight: 600 }}>{`"${c.after}"`}</Box>
+              </Typography>
+            ))}
+          </Stack>
+        </Alert>
+      )}
+
+      {/* The details as they will be saved. */}
+      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2 }}>
+        <Stack spacing={1}>
+          {rows.map(([key, label]) => (
+            <Box
+              key={key}
+              sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, justifyContent: 'space-between' }}
+            >
+              <Typography variant="body2" color="text.secondary">{label}</Typography>
+              <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: 'break-word' }}>
+                {String(cleaned[key])}
+              </Typography>
+            </Box>
+          ))}
+          {supervisorNames && (
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, justifyContent: 'space-between' }}>
+              <Typography variant="body2" color="text.secondary">Supervisor(s)</Typography>
+              <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: 'break-word' }}>
+                {supervisorNames.length ? supervisorNames.join(', ') : 'None chosen'}
+              </Typography>
+            </Box>
+          )}
+        </Stack>
+      </Box>
+
+      {/* Blocks in red, warnings in amber; a block disables the save. */}
+      {review.problems.map((p, i) => (
+        <Alert key={`${p.code}-${i}`} severity={p.level === 'block' ? 'error' : 'warning'}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>{p.title}</Typography>
+          <Typography variant="body2">{p.detail}</Typography>
+        </Alert>
+      ))}
+      {review.problems.length === 0 && (
+        <Alert severity="success">Everything checks out. They are ready to add.</Alert>
+      )}
+
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+        <Button variant="outlined" onClick={onBack} disabled={saving}>Back</Button>
+        <Button
+          variant="contained"
+          onClick={onConfirm}
+          disabled={!processingEnabled || hasBlock || saving}
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : undefined}
+        >
+          Add employee
+        </Button>
+      </Box>
+    </Stack>
   );
 }
 
