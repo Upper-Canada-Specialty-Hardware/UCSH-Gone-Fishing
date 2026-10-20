@@ -28,6 +28,8 @@ from app.routes.dashboard import (
     DashboardUser,
     _build_staff_lookups,
     _resolve_employee_name,
+    _team_ids_including_archived,
+    refuse_if_archived_caller,
     team_balances,
     team_members,
 )
@@ -269,3 +271,42 @@ def test_intake_still_signs_in_an_active_person(clean_db, monkeypatch):
     answer = run(intake_route.verify_code(body))
     assert answer["status"] == "employee"
     assert answer["name"] == "Active Alice"
+
+
+# --- an archived person's own dashboard link stops working --------------------
+
+def test_an_archived_employee_or_manager_link_is_refused(clean_db, monkeypatch):
+    # A departed person's signed link keeps validating, so the dashboard auth
+    # dependency refuses an archived employee or manager by their own id (#119).
+    _seed(monkeypatch, _sp_item("201", "Active Alice"), _sp_item("202", "Departed Dan"))
+    run(archive_employee("202", "left"))
+
+    with pytest.raises(HTTPException) as err:
+        run(refuse_if_archived_caller("employee", "202"))        # their employee link
+    assert err.value.status_code == 403
+    with pytest.raises(HTTPException):
+        run(refuse_if_archived_caller("manager", "202"))         # and their manager link
+
+    run(refuse_if_archived_caller("employee", "201"))            # an active person passes
+    run(refuse_if_archived_caller("admin", "202"))               # admin is a shared login, never checked
+
+
+# --- the manager History team keeps archived teammates ------------------------
+
+def test_the_history_team_map_keeps_archived_teammates(clean_db, monkeypatch):
+    # Today/Team/balances use the active-only map, but History scopes by a team map
+    # that keeps archived teammates, so their past requests still show (#119).
+    _seed(
+        monkeypatch,
+        _sp_item("200", "Manager Maria"),
+        _sp_item("201", "Active Alice", AllManagers=_reports_to(200, "Manager Maria")),
+        _sp_item("202", "Departed Dan", AllManagers=_reports_to(200, "Manager Maria")),
+    )
+    run(archive_employee("202", "left"))
+
+    _by_name, by_id, _sp_user_to_name, mgr_to_emp_names = run(_build_staff_lookups())
+    # The active-only map (Today/Team/pickers/balances) drops the archived person.
+    assert "Departed Dan" not in mgr_to_emp_names.get("Manager Maria", set())
+    # The history team map keeps both, so Dan's past requests stay on Maria's History.
+    team = _team_ids_including_archived(by_id, "Manager Maria")
+    assert {"201", "202"} <= team

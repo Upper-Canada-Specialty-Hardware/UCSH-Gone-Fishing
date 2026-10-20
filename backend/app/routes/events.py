@@ -34,7 +34,9 @@ from app.routes.dashboard import (
     AuthUser,
     _build_staff_lookups,
     _require_role,
+    _team_ids_including_archived,
     get_employee_by_id,
+    refuse_if_archived_caller,
 )
 from app.services.admin_auth import (
     SESSION_HEADER,
@@ -163,13 +165,11 @@ async def _team_ids_for(manager_uid: str) -> tuple[str, set[str]]:
     """
     manager = await get_employee_by_id(manager_uid)
     manager_name = manager["fields"].get("Title", "") if manager else ""
-    staff_by_name, _by_id, _names, mgr_to_emp_names = await _build_staff_lookups()
-    team_names = mgr_to_emp_names.get(manager_name, set())
-    team_ids = {
-        str(staff_by_name[nm.strip().lower()]["id"])
-        for nm in team_names
-        if staff_by_name.get(nm.strip().lower(), {}).get("id") is not None
-    }
+    _staff_by_name, by_id, _names, _mgr_to_emp_names = await _build_staff_lookups()
+    # Include archived teammates (#119): the timeline check must still let a
+    # manager open an archived teammate's past request, and an archived person
+    # makes no new requests, so the live feed is unaffected either way.
+    team_ids = _team_ids_including_archived(by_id, manager_name)
     return str(manager_uid), team_ids
 
 
@@ -210,8 +210,10 @@ async def _resolve_viewer(
         # admin-role token is deliberately NOT honoured here: the admin feed
         # requires the password session below, like every other /admin route.
         if valid and role == "employee":
+            await refuse_if_archived_caller(role, uid)         # an archived person's link stops here (#119)
             return _Viewer("employee", employee_id=uid)
         if valid and role == "manager":
+            await refuse_if_archived_caller(role, uid)         # an archived manager's link stops here (#119)
             manager_id, team_ids = await _team_ids_for(uid)
             return _Viewer("manager", manager_id=manager_id, team_ids=team_ids)
     stored = await stored_password()

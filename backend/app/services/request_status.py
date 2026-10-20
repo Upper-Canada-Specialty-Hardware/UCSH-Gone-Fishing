@@ -30,6 +30,7 @@ from app.database import async_session
 from app.models.request_event import RequestEvent
 from app.models.request_record import RequestRecord
 from app.models.request_vocab import KINDS
+from app.services.request_decisions import _decider_name
 from app.services.request_live_reads import WIRE_TO_STORED
 
 # A manager decided: the event that marks the "decided" step done.
@@ -42,6 +43,35 @@ _BALANCE_EFFECT = {
     "counted": "counted",                  # hourly vacation added to the counter
     "no_balance_used": "no_balance_used",  # bereavement, jury duty or hourly overtime
 }
+
+
+async def _decided_by_label(session, request: RequestRecord) -> str | None:
+    """Name who decided a request, for the request page's decided step (#371).
+
+    An admin decision or refund (actor ``admin`` or the ``admin_dashboard``
+    channel) reads as "an admin"; a manager decision reads as the manager who
+    actually acted, which is a stand-in when the assigned manager was off (via
+    ``request_decisions._decider_name``) and the assigned manager otherwise. A
+    system auto-rejection names no one. Returns None when the request is not
+    decided or the decider cannot be named, and the page then shows no name.
+
+    Args:
+        session: The open read session (reused for the staff name lookup).
+        request: The request row, with ``decided_by`` / ``decided_channel`` set.
+
+    Returns:
+        The decider label ("an admin" or a staff name), or None.
+    """
+    actor = (request.decided_by or "").strip()
+    channel = request.decided_channel or ""
+    if not actor and not channel:
+        return None                                            # not decided yet: no one to name
+    if actor.lower() == "admin" or channel == "admin_dashboard":
+        return "an admin"                                      # an admin acted, not the manager (finding 10)
+    if actor.lower() == "system":
+        return None                                            # an auto-rejection has no human decider
+    name = await _decider_name(session, request)               # a stand-in manager, when not the assigned one
+    return name or request.manager_name or None                # else the assigned manager
 
 
 def _sign(kind: str, item_id: int) -> str:
@@ -143,6 +173,7 @@ async def request_progress(kind: str, item_id: int) -> dict | None:
             .where(RequestEvent.request_id == request.id)
             .order_by(RequestEvent.id)                         # oldest first, so the first time per type wins
         )).scalars().all()
+        decider = await _decided_by_label(session, request)    # who decided, for the decided step (#371)
 
     first_at: dict[str, str | None] = {}                       # event type -> when it first landed (ISO)
     manager_from_event: str | None = None                      # the manager named on the approval send
@@ -174,7 +205,12 @@ async def request_progress(kind: str, item_id: int) -> dict | None:
         "finished": finished,
         "steps": {
             "sent_to_manager": {"done": sent_at is not None, "at": sent_at},
-            "decided": {"done": decided_done, "at": decided_at, "result": decided_result},
+            "decided": {
+                "done": decided_done,
+                "at": decided_at,
+                "result": decided_result,
+                "decider": decider if decided_done else None,  # who decided ("an admin" or a name), once decided
+            },
             "balance": {
                 "done": balance_type is not None,
                 "at": balance_at,

@@ -354,3 +354,76 @@ def test_the_result_email_names_whichever_manager_actually_decided(sp, monkeypat
     result = [o for o in outbox if o.message_type == "result"]
     assert result and "by Boss B" in result[0].body            # the real decider, not the assigned Boss A
     assert "by Boss A" not in result[0].body
+
+
+# ----- #370: an all-off reminder sends nothing and does not advance the cadence -----
+
+
+async def _archive(staff_id: str) -> None:
+    """Mark one seeded staff row archived, so ``is_archived`` sees it (#119)."""
+    from app.models.mixins import utcnow
+    from app.models.staff import Staff
+    async with async_session() as session:
+        row = (await session.execute(
+            select(Staff).where(Staff.sp_item_id == str(staff_id))
+        )).scalars().first()
+        row.archived_at = utcnow()                                # a set timestamp means archived
+        await session.commit()
+
+
+def test_an_all_off_reminder_sends_nothing_and_does_not_advance(sp):
+    # Both managers are off over the routing day, so a reminder pass reaches nobody.
+    run(_manager_leave("20", TODAY - timedelta(days=1), TODAY + timedelta(days=5)))
+    run(_manager_leave("30", TODAY - timedelta(days=1), TODAY + timedelta(days=5)))
+    record = run(_leave_record())
+
+    queued = run(rs.queue_reminder("leave", record.item_id, today=TODAY))
+    assert queued is False                                        # nothing was queued
+
+    fresh, _events, outbox = run(_rows(record))
+    assert [o for o in outbox if o.message_type == "reminder"] == []   # no reminder email went out
+    assert not fresh.reminder_count                               # the cadence did not advance (0 or None)
+    assert fresh.last_reminder_at is None                         # and the clock was not moved
+
+
+def test_the_sweep_first_asks_a_returned_manager_for_an_all_off_request(sp, monkeypatch):
+    # The request is sent while both managers are off, so nobody is asked at submit.
+    # Boss A (first on the list) stays off; Boss B comes back by the sweep day.
+    run(_manager_leave("20", TODAY - timedelta(days=1), TODAY + timedelta(days=10)))  # Boss A still off
+    run(_manager_leave("30", TODAY - timedelta(days=1), TODAY + timedelta(days=1)))   # Boss B back soon
+    record = run(_leave_record())
+    run(rs.submit("leave", record.item_id, channel="request_page"))
+    _f0, _e0, outbox0 = run(_rows(record))
+    assert _manager_emails(outbox0) == []                         # nobody asked at submit (#370)
+
+    # A later sweep day, once Boss B is back: the sweep asks the first available
+    # manager now, as a first ask rather than a reminder, without the 30-day wait.
+    later = TODAY + timedelta(days=3)
+    monkeypatch.setattr(rs, "today_toronto", lambda: later)
+    queued = run(rs.queue_due_reminders())
+    assert queued == 1                                            # the stand-in was first-asked
+
+    fresh, events, outbox = run(_rows(record))
+    assert _manager_emails(outbox) == ["bossb@ucsh.com"]          # the first available manager (Boss B)
+    assert fresh.manager_id == "30"                               # the request now points at Boss B
+    assert [o for o in outbox if o.message_type == "reminder"] == []     # it is not a reminder
+    assert any(o.message_type == "manager_approval" for o in outbox)     # it is a real manager ask
+    # The ask is keyed under the version's sent_to_manager step (so it is once),
+    # and the reroute past the still-off Boss A is on the timeline.
+    approval = [o for o in outbox if o.message_type == "manager_approval"][0]
+    assert ":sent_to_manager:" in approval.idempotency_key and later.isoformat() not in approval.idempotency_key
+    assert any(e.type == "sent_to_manager" for e in events)
+
+
+def test_an_archived_submitter_gets_no_manager_reminder(sp):
+    # Alice has left; a reminder pass for her pending request reaches no manager and
+    # the request simply stays pending (admins still see it) (#119, #368).
+    record = run(_leave_record())
+    run(_archive("10"))
+
+    queued = run(rs.queue_reminder("leave", record.item_id, today=TODAY))
+    assert queued is False
+
+    fresh, _events, outbox = run(_rows(record))
+    assert [o for o in outbox if o.message_type in ("reminder", "manager_approval")] == []
+    assert fresh.status == "pending"                              # still pending, just not reminded

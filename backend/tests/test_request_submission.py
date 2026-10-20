@@ -137,6 +137,25 @@ async def _leave_record(**fields) -> RequestRecord:
         return record
 
 
+async def _mark_asked(record):
+    """Give an app-native request a manager_approval outbox row, as a submit does.
+
+    A pending request on the reminder cadence was asked at submit and so carries a
+    manager_approval outbox row keyed under its version's sent_to_manager step.
+    ``_leave_record`` writes no such row, so a test that wants the reminder path
+    (not the all-off first ask, #370) adds one here.
+    """
+    from app.services.request_journal import step_key
+    key = step_key(record.kind, record.item_id, "sent_to_manager", record.approval_version)
+    async with async_session() as session:
+        session.add(Outbox(
+            request_id=record.id, message_type="manager_approval", channel="email",
+            recipient="boss@ucsh.com", subject="x", body="x", status="sent", attempts=1,
+            idempotency_key=f"{key}:email:boss@ucsh.com",
+        ))
+        await session.commit()
+
+
 async def _rows(record):
     """Read back a request's events and outbox rows."""
     async with async_session() as session:
@@ -252,6 +271,7 @@ def test_postgres_reminders_respect_the_cutoff_and_the_closed_flag(sp, monkeypat
 
     # 1) A due, in-window leave: its start date is in the future, so it is offered.
     due_leave = run(_leave_record(item_id=90_000_101, created_at=due_at))
+    run(_mark_asked(due_leave))                                    # asked at submit: on the reminder cadence
     # 2) A carry-over made last year: past its year-end, so reminders must stop.
     co_old = run(_leave_record(
         item_id=90_000_102, kind="carryover_payout", leave_type=None,
@@ -363,6 +383,7 @@ def test_imported_requests_keep_their_old_reminder_cadence(sp, monkeypatch):
     unseen = run(_leave_record(item_id=90_000_204, sp_item_id="90000204", created_at=long_ago))
     # 5) Made in the app after the switch, 40 days old: reminded on its own clock as before.
     app_made = run(_leave_record(item_id=90_000_205, created_at=utcnow() - timedelta(days=40)))
+    run(_mark_asked(app_made))                                    # asked at submit: on the reminder cadence
 
     async def seed_states():
         async with async_session() as session:

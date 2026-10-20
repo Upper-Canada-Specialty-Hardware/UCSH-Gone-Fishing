@@ -55,12 +55,14 @@ def client():
     return TestClient(app)
 
 
-async def _seed(status: str, events: list[tuple]) -> int:
+async def _seed(status: str, events: list[tuple], **record_kwargs) -> int:
     """Store one leave request and append the given timeline events.
 
     Args:
         status: The request's lifecycle status (lower case).
         events: ``(type, channel, actor, detail)`` tuples, in order.
+        **record_kwargs: Extra RequestRecord column overrides (e.g. decided_by,
+            decided_channel for the decided-step decider tests).
 
     Returns:
         The request's item_id.
@@ -69,7 +71,7 @@ async def _seed(status: str, events: list[tuple]) -> int:
         request = RequestRecord(
             kind="leave", item_id=3905, employee_id="7", manager_id="3",
             manager_name="Dave Powell", leave_type="Vacation",
-            start_date=date(2026, 11, 2), status=status,
+            start_date=date(2026, 11, 2), status=status, **record_kwargs,
         )
         session.add(request)
         await session.flush()                                   # assign id so events can reference it
@@ -163,3 +165,48 @@ def test_a_forged_token_is_refused_by_the_route(clean, client):
 def test_a_valid_token_for_a_missing_request_is_not_found(clean, client):
     token = request_status.request_status_token("leave", 999999)   # well-signed, but no such row
     assert client.get("/api/intake/request-status", params={"token": token}).status_code == 404
+
+
+# ----- #371: the decided step names who actually decided -----
+
+def test_the_decided_step_names_an_admin_when_an_admin_decided(clean, client):
+    # An admin decision (actor "admin", channel admin_dashboard) reads as "an admin".
+    item_id = run(_seed("rejected", [
+        ("submitted", "request_page", "Pat Q Staff", {}),
+        ("sent_to_manager", "system", None, {"manager": "Dave Powell"}),
+        ("rejected", "admin_dashboard", "admin", {"reason": "duplicate"}),
+        ("result_sent", "system", None, {}),
+    ], decided_by="admin", decided_channel="admin_dashboard"))
+    token = request_status.request_status_token("leave", item_id)
+    body = client.get("/api/intake/request-status", params={"token": token}).json()
+
+    assert body["steps"]["decided"]["done"] is True
+    assert body["steps"]["decided"]["decider"] == "an admin"
+
+
+def test_the_decided_step_names_the_manager_when_the_manager_decided(clean, client):
+    # The assigned manager (staff id "3", the seeded manager_id) decided: their name.
+    item_id = run(_seed("approved", [
+        ("submitted", "request_page", "Pat Q Staff", {}),
+        ("sent_to_manager", "system", None, {"manager": "Dave Powell"}),
+        ("approved", "manager_dashboard", "3", {}),
+        ("result_sent", "system", None, {}),
+    ], decided_by="3", decided_channel="manager_dashboard"))
+    token = request_status.request_status_token("leave", item_id)
+    body = client.get("/api/intake/request-status", params={"token": token}).json()
+
+    assert body["steps"]["decided"]["decider"] == "Dave Powell"
+
+
+def test_a_request_never_sent_to_a_manager_is_not_shown_as_sent(clean, client):
+    # Every manager was off at submit, so no sent_to_manager event exists: the step
+    # stays not-done (the page then says it is waiting for a manager) (#370).
+    item_id = run(_seed("pending", [
+        ("submitted", "request_page", "Pat Q Staff", {}),
+    ]))
+    token = request_status.request_status_token("leave", item_id)
+    body = client.get("/api/intake/request-status", params={"token": token}).json()
+
+    assert body["steps"]["sent_to_manager"]["done"] is False
+    assert body["steps"]["decided"]["done"] is False
+    assert body["steps"]["decided"]["decider"] is None

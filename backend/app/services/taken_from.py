@@ -506,10 +506,14 @@ async def attach_taken_from(
     name_to_item = staff_by_name
     if employee_fields is None and name_to_item is None:
         # Self-sufficient fallback: one read, built into a name -> item map.
+        # Archived people are kept (#119): a projected row may belong to someone
+        # who has left, and its "taken from" still needs their balances/name.
         from app.config import settings
         name_to_item = {}
         try:
-            for item in await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY):
+            for item in await staff_store.get_list_items(
+                settings.SP_LIST_STAFF_DIRECTORY, include_archived=True
+            ):
                 name = (item.get("fields", {}).get("Title") or "").strip().lower()
                 if name:
                     name_to_item[name] = item

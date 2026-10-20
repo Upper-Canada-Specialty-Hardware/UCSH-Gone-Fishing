@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.config import settings
 from app.repositories.postgres.staff import is_archived   # refuse an archived submitter (#119)
+from app.repositories.request_store import requests_in_postgres  # gate the status token to the Postgres path (#364)
 from app.routes.dashboard import AuthUser, _format_balances
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
@@ -102,13 +103,17 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
             detail="Your request could not be saved. Try again in a few minutes.",
         )
     item_id = item.get("id")                                   # str(item_id) on the Postgres path
+    # The page can only follow a request that has a Postgres row to read; on the
+    # SharePoint path there is none, so mint no token even though the id is numeric,
+    # and the page keeps the plain steps (#364).
+    status_token = status_token_for(request_type, item_id) if await requests_in_postgres() else None
     return {
         "status": "submitted",
         "request_type": request_type,
         "item_id": item_id,
         # The page polls GET /api/intake/request-status with this to follow the
         # request; None when it cannot be named (the SharePoint path) (#364).
-        "status_token": status_token_for(request_type, item_id),
+        "status_token": status_token,
     }
 
 

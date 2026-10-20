@@ -47,8 +47,15 @@ def client(monkeypatch):
             return {"id": "500"}
         return create
 
+    # The preview and production request page runs on Postgres, so the submit
+    # response carries a follow-the-request status token (#364). The gate reads
+    # this, separately from the (stubbed) creation path, so patch it to True here.
+    async def in_postgres():
+        return True
+
     monkeypatch.setattr(self_service, "get_employee_by_id", by_id)
     monkeypatch.setattr(self_service, "_resolve_user_lookup_id", lookup)
+    monkeypatch.setattr(self_service, "requests_in_postgres", in_postgres)
     monkeypatch.setattr(request_intake, "process_new_leave_request", recorder("leave"))
     monkeypatch.setattr(request_intake, "process_new_overtime_request", recorder("overtime"))
     monkeypatch.setattr(request_intake, "process_new_carryover_payout", recorder("carryover-payout"))
@@ -79,6 +86,18 @@ def test_a_vacation_request_is_created_for_the_signed_in_employee(client):
     assert form_data["start_date"] == "2026-11-02" and form_data["end_date"] == "2026-11-04"
     assert (form_data["first_name"], form_data["last_name"]) == ("Pat", "Q Staff")
     assert client.employee_ids == ["7"]                        # the signed-in record, not a re-match by email
+
+
+def test_no_status_token_on_the_sharepoint_path(client, monkeypatch):
+    # On the SharePoint path there is no Postgres row to follow, so no token is
+    # minted even though the id is numeric; the page keeps the plain steps (#364).
+    async def not_postgres():
+        return False
+    monkeypatch.setattr(self_service, "requests_in_postgres", not_postgres)
+
+    body = _submit(client, "leave", VACATION).json()
+    assert body["item_id"] == "500"
+    assert body["status_token"] is None
 
 
 def test_a_partial_day_is_one_date_measured_in_hours(client):

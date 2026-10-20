@@ -26,7 +26,11 @@ async def _manager_id_to_name() -> dict[int, str]:
     """
     if await staff_in_postgres():
         out: dict[int, str] = {}
-        for item in await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY):
+        # Archived people are kept (#119): a request may still name an archived
+        # manager, and the screens need that id to resolve to their name.
+        for item in await staff_store.get_list_items(
+            settings.SP_LIST_STAFF_DIRECTORY, include_archived=True
+        ):
             try:
                 out[int(item["id"])] = item.get("fields", {}).get("Title", "")  # staff id -> name
             except (TypeError, ValueError):
