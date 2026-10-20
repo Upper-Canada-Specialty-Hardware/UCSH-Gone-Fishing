@@ -14,6 +14,7 @@ export const LEAVE_TYPES = [
   'Half Day or Partial Day Off',
   'Bereavement',
   'Jury Duty',
+  'Work from Home',
 ];
 
 export const PARTIAL_DAY = 'Half Day or Partial Day Off';
@@ -26,7 +27,7 @@ export const PARTIAL_DAY = 'Half Day or Partial Day Off';
 const HOURLY_GROUPS: { heading: string; tone: 'vacation' | 'sick' | 'none'; types: string[] }[] = [
   { heading: 'Tracked, no balance used', tone: 'vacation', types: ['Vacation'] },
   { heading: 'Uses your sick days (full days)', tone: 'sick', types: ['Sick or Personal Day', 'Half Day or Partial Day Off'] },
-  { heading: 'Uses nothing', tone: 'none', types: ['Bereavement', 'Jury Duty'] },
+  { heading: 'Uses nothing', tone: 'none', types: ['Bereavement', 'Jury Duty', 'Work from Home'] },
 ];
 
 /** For hourly staff: one line under the types saying what the picked one does. */
@@ -36,11 +37,12 @@ const HOURLY_EXPLAIN: Record<string, string> = {
   'Half Day or Partial Day Off': 'Sick days are taken in full days, so any part of a day uses one sick day.',
   'Bereavement': 'Not taken from sick days and not added to vacation taken.',
   'Jury Duty': 'Not taken from sick days and not added to vacation taken.',
+  'Work from Home': 'Working from home, not time off. Not taken from sick days and not added to vacation taken.',
 };
 
 /** The three forms on the request page, with the label shown on the picker. */
 export const REQUEST_TYPES: { value: RequestType; label: string; hint: string }[] = [
-  { value: 'leave', label: 'Leave', hint: 'Vacation, sick, part day, bereavement or jury duty' },
+  { value: 'leave', label: 'Leave', hint: 'Vacation, sick, part day, bereavement, jury duty or work from home' },
   { value: 'overtime', label: 'Overtime', hint: 'Hours worked beyond your schedule' },
   { value: 'carryover-payout', label: 'Carry-over or payout', hint: 'Move vacation days to next year, or cash them out' },
 ];

@@ -657,10 +657,13 @@ ALLOWED_LEAVE_TYPES = {
     "Half Day or Partial Day Off",
     "Bereavement",
     "Jury Duty",
+    "Work from Home",            # counts business days like Vacation; costs no balance (#388)
 }
 
 # Leave types that spend a balance, so their Days must be worked out before the
-# request can be approved. Bereavement and jury duty cost nothing (#294 S4).
+# request can be approved. Bereavement, jury duty and work from home cost nothing
+# (#294 S4, #388), so they stay out: their Days are still filled in by
+# auto_calculate_days, which is what the "fully processed" check needs to reach a manager.
 DAY_COSTING_LEAVE_TYPES = {
     "Vacation",
     "Sick or Personal Day",

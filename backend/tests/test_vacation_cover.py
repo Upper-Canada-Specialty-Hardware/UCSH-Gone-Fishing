@@ -219,6 +219,19 @@ def test_a_part_day_leave_does_not_make_a_manager_off(sp):
     assert fresh.manager_id == "20"
 
 
+def test_a_work_from_home_leave_does_not_make_a_manager_off(sp):
+    # Boss A is working from home over the routing day; they are available, so the
+    # ask must still go to them, not skip to Boss B (#388, #390).
+    run(_manager_leave("20", TODAY, TODAY + timedelta(days=5), leave_type="Work from Home"))
+    record = run(_leave_record())
+
+    run(rs.submit("leave", record.item_id, channel="request_page"))
+
+    fresh, _events, outbox = run(_rows(record))
+    assert _manager_emails(outbox) == ["bossa@ucsh.com"]           # the first manager is asked
+    assert fresh.manager_id == "20"
+
+
 def test_a_pending_leave_does_not_make_a_manager_off(sp):
     # Boss A has a leave over the day, but it is only pending: it must not skip them.
     run(_manager_leave("20", TODAY - timedelta(days=1), TODAY + timedelta(days=1), status="pending"))

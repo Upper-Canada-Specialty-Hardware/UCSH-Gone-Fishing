@@ -59,18 +59,19 @@ POTS = ("sick", "make_up", "carry_over", "vacation", "payout", "vacation_taken")
 # How far a request's balance effect has been carried out (requests.balance_state).
 BALANCE_STATES = ("not_applied", "applied", "counted", "no_balance", "reversed", "legacy_unknown")
 
-# The leave types the app offers today.
+# The leave types the app offers today. Work from Home is offered again on the
+# request page (#388); it costs no balance for anyone. It stays last so the
+# generated CHECK text is unchanged from when it was the trailing legacy value.
 LEAVE_TYPES = (
     "Vacation",
     "Sick or Personal Day",
     "Half Day or Partial Day Off",
     "Bereavement",
     "Jury Duty",
+    "Work from Home",
 )
-# A retired leave type kept so old leave rows still satisfy the CHECK.
-LEGACY_LEAVE_TYPE = "Work from Home"
-# The full set a leave row's leave_type is allowed to be.
-LEAVE_TYPES_ALLOWED = LEAVE_TYPES + (LEGACY_LEAVE_TYPE,)
+# The full set a leave row's leave_type is allowed to be (now exactly LEAVE_TYPES).
+LEAVE_TYPES_ALLOWED = LEAVE_TYPES
 
 # How the person who took the leave was paid when it was decided; null for legacy.
 EMPLOYMENT_TYPES = ("Salary", "Hourly", "Hourly BC")
