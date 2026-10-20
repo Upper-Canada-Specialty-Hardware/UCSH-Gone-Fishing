@@ -30,6 +30,7 @@ grids and the audit dialog.
 import logging
 
 from app.config import settings
+from app.repositories.postgres.staff import is_archived  # refuse an archived person (#119)
 from app.repositories.request_store import request_store, requests_in_postgres
 from app.repositories.staff_store import staff_in_postgres
 from app.services.business_days import calculate_business_days
@@ -228,6 +229,10 @@ async def log_sick_day_on_behalf(manager_id: str | int, form_data: dict) -> dict
         raise SickDayOnBehalfError("That employee could not be found in the Staff Directory.")
     emp_fields = employee["fields"]
     employee_name = (emp_fields.get("Title") or "").strip()
+    if is_archived(emp_fields):  # archived people are out of every route (#119)
+        raise SickDayOnBehalfError(
+            f"{employee_name} has been archived, so a sick day cannot be logged for them."
+        )
     if not is_assigned_to(emp_fields, manager_name):  # assignment gate
         raise SickDayOnBehalfError(
             f"{employee_name} is not assigned to you, so you cannot log a sick day for them."

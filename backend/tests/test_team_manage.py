@@ -13,6 +13,7 @@ confirmation reads. The add/remove go through ``update_employee_managers`` so th
 write lands in Postgres like every other staff write.
 """
 import asyncio
+from datetime import date
 
 import pytest
 from fastapi import HTTPException
@@ -24,7 +25,14 @@ from app.graph import sharepoint as sharepoint_module
 from app.models.legacy_finding import LegacyFinding
 from app.models.staff import Staff, StaffSupervisor, StaffWriteback
 from app.models.staff_change import StaffChange
+from app.models.balance_ledger import BalanceLedger
+from app.models.outbox import Outbox
+from app.models.request_change import RequestChange
+from app.models.request_counter import RequestCounter
+from app.models.request_event import RequestEvent
+from app.models.request_record import RequestRecord
 from app.routes.dashboard import DashboardUser
+from app.routes import dashboard as dash
 from app.routes import team_manage as tm
 from app.services import staff_import
 
@@ -241,3 +249,112 @@ def test_an_employee_token_cannot_reach_team_control(seeded):
     with pytest.raises(HTTPException) as err:
         run(tm.team_addable(employee))
     assert err.value.status_code == 403
+
+
+# --- #362: a manager may never add or edit themselves (owner ruling 2026-10-19) ---
+
+def test_a_manager_cannot_add_themself_to_their_own_team(seeded):
+    # Steve's own id: a manager may add anyone active except themselves.
+    with pytest.raises(HTTPException) as err:
+        run(tm.team_add_member(STEVE_USER, "42"))
+    assert err.value.status_code == 403
+    assert "yourself" in err.value.detail.lower()
+
+
+def test_a_manager_cannot_change_their_own_entitlements(seeded):
+    # A manager edits any teammate's figures, but never their own.
+    with pytest.raises(HTTPException) as err:
+        run(tm.team_update_entitlements(
+            STEVE_USER, "42",
+            tm.TeamEntitlementChanges(changes={"sick": 1}, reason="nope"),
+        ))
+    assert err.value.status_code == 403
+    assert "your own" in err.value.detail.lower()
+    assert run(_changes_for("42")) == []                                 # nothing written to his own record
+
+
+def test_an_archived_teammate_cannot_be_edited_from_a_team_route(seeded):
+    # Roland is Steve's, then leaves: an archived person is changed from the admin
+    # staff screen, not a team route, so the edit is refused (#119).
+    run(_archive("480"))
+    with pytest.raises(HTTPException) as err:
+        run(tm.team_update_entitlements(
+            STEVE_USER, "480",
+            tm.TeamEntitlementChanges(changes={"sick": 1}, reason="covered a shift"),
+        ))
+    assert err.value.status_code == 403
+    assert "archived" in err.value.detail.lower()
+
+
+# --- #362/#369: the dashboard approve/reject own-team gate -----------------------
+
+async def _wipe_requests() -> None:
+    """Empty the request tables so a seeded request does not leak between tests."""
+    async with async_session() as session:
+        for model in (Outbox, BalanceLedger, RequestEvent, RequestChange, RequestRecord, RequestCounter):
+            await session.execute(delete(model))
+        await session.commit()
+
+
+async def _archive(staff_id: str) -> None:
+    """Mark one seeded staff row archived, so ``is_archived`` sees it (#119)."""
+    from app.models.mixins import utcnow
+    async with async_session() as session:
+        row = (await session.execute(
+            select(Staff).where(Staff.sp_item_id == str(staff_id))
+        )).scalars().first()
+        row.archived_at = utcnow()
+        await session.commit()
+
+
+async def _seed_leave(item_id: int, employee_id: str, manager_id: str) -> None:
+    """Insert one pending leave request assigned to ``manager_id`` for the gate tests."""
+    async with async_session() as session:
+        session.add(RequestRecord(
+            kind="leave", item_id=item_id, status="pending",
+            employee_id=str(employee_id), manager_id=str(manager_id), manager_name="x",
+            leave_type="Vacation", start_date=date(2026, 12, 1), end_date=date(2026, 12, 1),
+            days=1.0, approval_version=1, balance_state="not_applied", extra={},
+        ))
+        await session.commit()
+
+
+def test_a_manager_cannot_decide_a_request_off_their_team(seeded, monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")     # requests_in_postgres() -> True
+    run(_wipe_requests())
+    run(_seed_leave(90001, employee_id="482", manager_id="43"))       # Omar's request, Dana's team
+    with pytest.raises(HTTPException) as err:
+        run(dash._refuse_manager_not_on_request(STEVE_USER, "leave", "90001"))
+    assert err.value.status_code == 403
+    assert "not on your team" in err.value.detail.lower()
+    run(_wipe_requests())
+
+
+def test_a_manager_cannot_decide_their_own_request(seeded, monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    run(_wipe_requests())
+    run(_seed_leave(90002, employee_id="42", manager_id="43"))        # Steve's own request
+    with pytest.raises(HTTPException) as err:
+        run(dash._refuse_manager_not_on_request(STEVE_USER, "leave", "90002"))
+    assert err.value.status_code == 403
+    assert "your own" in err.value.detail.lower()
+    run(_wipe_requests())
+
+
+def test_a_manager_on_the_team_may_decide(seeded, monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    run(_wipe_requests())
+    # Roland lists Steve; the request is assigned to Dana, so this exercises the
+    # "on the employee's manager list" branch, not the assigned-manager shortcut.
+    run(_seed_leave(90003, employee_id="480", manager_id="43"))
+    run(dash._refuse_manager_not_on_request(STEVE_USER, "leave", "90003"))   # no raise
+    run(_wipe_requests())
+
+
+def test_an_admin_may_decide_any_request(seeded, monkeypatch):
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
+    run(_wipe_requests())
+    run(_seed_leave(90004, employee_id="482", manager_id="43"))       # off any team Steve has
+    admin = DashboardUser(role="admin", user_id="999")
+    run(dash._refuse_manager_not_on_request(admin, "leave", "90004"))     # admins are unchanged
+    run(_wipe_requests())

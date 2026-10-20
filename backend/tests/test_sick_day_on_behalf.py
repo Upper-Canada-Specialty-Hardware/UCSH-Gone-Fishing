@@ -264,6 +264,19 @@ def test_an_unknown_employee_is_refused(monkeypatch):
     assert calls["created"] is None
 
 
+def test_an_archived_employee_is_refused_before_anything_is_written(monkeypatch):
+    # An archived teammate (#119) is out of every route, so no sick day is logged
+    # for them; the refusal happens before the request is created.
+    archived = copy.deepcopy(EMPLOYEE)
+    archived["fields"]["ArchivedAt"] = "2026-09-01T00:00:00Z"   # a set timestamp means archived
+    calls = _patch(monkeypatch, employee=archived)
+
+    with pytest.raises(SickDayOnBehalfError, match="archived"):
+        asyncio.run(log_sick_day_on_behalf("42", FORM))
+
+    assert calls["created"] is None
+
+
 def test_a_range_with_no_working_days_is_refused(monkeypatch):
     calls = _patch(monkeypatch)
     weekend = {**FORM, "start_date": "2026-09-05", "end_date": "2026-09-06"}  # Sat-Sun

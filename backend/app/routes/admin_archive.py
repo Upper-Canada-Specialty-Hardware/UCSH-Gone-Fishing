@@ -30,6 +30,7 @@ from app.services.staff_archive import (
     list_archived,
     restore_employee,
 )
+from app.services.switch_pause import SystemPaused  # the mid-switch write refusal -> 503
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,8 @@ async def admin_archive_staff(employee_id: str, body: ArchiveBody):
     await _require_postgres()
     try:
         result = await archive_employee(employee_id, body.reason)
+    except SystemPaused as e:                             # switch in progress: same 503 as the write routes
+        raise HTTPException(status_code=503, detail=e.message)
     except ArchiveError as e:                              # blank reason / already archived
         # "Already archived" is a conflict; a blank reason is a bad request.
         code = 409 if "already archived" in str(e).lower() else 400
@@ -107,6 +110,8 @@ async def admin_restore_staff(employee_id: str):
     await _require_postgres()
     try:
         result = await restore_employee(employee_id)
+    except SystemPaused as e:                             # switch in progress: same 503 as the write routes
+        raise HTTPException(status_code=503, detail=e.message)
     except ArchiveError as e:                              # not archived
         raise HTTPException(status_code=409, detail=str(e))
     except LookupError:

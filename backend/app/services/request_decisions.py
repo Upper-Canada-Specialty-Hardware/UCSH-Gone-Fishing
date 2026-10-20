@@ -375,14 +375,22 @@ async def _refuse(session, request, channel, actor, version, why, reason) -> Non
     log_step(request, "refused", channel=channel, actor=actor, why=why)
 
 
-async def _decider_name(request: RequestRecord) -> str | None:
+async def _decider_name(session, request: RequestRecord) -> str | None:
     """The name of the manager who actually decided, when it is not the assigned one.
 
     Any manager on the person's list can decide from their own dashboard or link,
     and since #342 the assigned manager may be a stand-in, so the decider is read
     from the recorded actor rather than assumed to be ``manager_name`` (#371).
 
+    The name is read with the session already in hand (a direct ``Staff`` select
+    by id), not a second ``staff_store`` call: this path runs only once staff live
+    in Postgres (``decisions_active``), so the id resolves there, and opening a
+    second session while the decision transaction holds the request row risks a
+    connection-pool stall under load (finding for #371). Any failure returns None,
+    so a missing name never fails the decision.
+
     Args:
+        session: The open decision (or read) session; reused for the lookup.
         request: The decided request, with ``decided_by`` set.
 
     Returns:
@@ -393,13 +401,14 @@ async def _decider_name(request: RequestRecord) -> str | None:
     if not actor.isdigit() or actor == str(request.manager_id or ""):
         return None                                                # admin, unknown, or the assigned manager
     try:
-        from app.config import settings
-        from app.repositories.staff_store import staff_store
-        item = await staff_store.get_list_item_or_none(settings.SP_LIST_STAFF_DIRECTORY, actor)
+        from app.models.staff import Staff                         # local: keeps this module's imports light
+        row = (await session.execute(
+            select(Staff.name).where(Staff.sp_item_id == actor)    # the decider's staff row by id
+        )).first()
     except Exception:  # noqa: BLE001 - a name lookup must never block the result message
         logger.exception("Decider lookup failed for %s #%s", request.kind, request.item_id)
         return None
-    name = ((item or {}).get("fields") or {}).get("Title") or ""  # the decider's display name
+    name = (row[0] if row else "") or ""                           # the decider's display name
     return name.strip() or None
 
 
@@ -683,7 +692,7 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             await append_event(session, request, "approved", channel, actor, {}, approved_key)
             outcome_key = step_key(kind, request.item_id, event_type, version)
             event = await append_event(session, request, event_type, channel, actor, {"note": note}, outcome_key)
-            decider_name = await _decider_name(request)             # who really decided (#371)
+            decider_name = await _decider_name(session, request)    # who really decided (#371)
             subject, html, sms_text = _result_context(request, "Approved", rows, note, decider_name)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "approved", channel=channel, actor=actor, outcome=event_type)
@@ -750,7 +759,7 @@ async def reject(kind, item_id, actor, channel, link_version=None, reason=None) 
             rejected_key = step_key(kind, request.item_id, "rejected", version)
             event = await append_event(session, request, "rejected", channel, actor, {"reason": reason}, rejected_key)
             note = reason or "The request was not approved."
-            decider_name = await _decider_name(request)             # who really decided (#371)
+            decider_name = await _decider_name(session, request)    # who really decided (#371)
             subject, html, sms_text = _result_context(request, "Rejected", [], note, decider_name)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "rejected", channel=channel, actor=actor)
@@ -859,7 +868,7 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
             reversed_key = step_key(kind, request.item_id, "balance_reversed", version)
             event = await append_event(session, request, "balance_reversed", channel, actor, {}, reversed_key)
             note = "" if rows else "This request used no balance, so nothing was reversed."
-            decider_name = await _decider_name(request)             # who really decided (#371)
+            decider_name = await _decider_name(session, request)    # who really decided (#371)
             subject, html, sms_text = _result_context(request, "Refunded", rows, note, decider_name)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "refunded", channel=channel, actor=actor)

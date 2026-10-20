@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.graph.sharepoint import sp_client
 from app.services.dashboard_tokens import validate_dashboard_token, generate_dashboard_url
-from app.services.employee import get_employee_by_id, is_manager
+from app.services.employee import get_all_managers_for_employee, get_employee_by_id, is_manager
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_submitter import SUBMITTER_PERSON_COLUMNS, submitter_email_of
 from app.services.balance import (
@@ -36,7 +36,7 @@ from app.services.employment import (
 )
 from app.routes.approval import HANDLERS
 from app.repositories.request_store import request_store, requests_in_postgres
-from app.services.request_live_reads import indexed_request_items
+from app.services.request_live_reads import WIRE_TO_STORED, indexed_request_items
 from app.repositories.staff_store import staff_store, staff_in_postgres  # Staff Directory reads/writes follow staff_storage
 from app.repositories.postgres.staff import is_archived  # tells an archived staff record from an active one (#119)
 from app.services.switch_pause import PAUSE_MESSAGE, is_paused
@@ -66,6 +66,36 @@ class DashboardUser:
         self.user_id = user_id
 
 
+# The message an archived employee or manager sees when their old signed link is
+# used; plain, and it points them at HR rather than explaining the archive flag.
+ARCHIVED_CALLER_MESSAGE = "This account is no longer active. Please contact HR."
+
+
+async def refuse_if_archived_caller(role: str, uid: str) -> None:
+    """403 when an archived person uses an employee or manager dashboard link (#119).
+
+    A departed employee's signed link keeps validating (the token never expires),
+    so their own data and their team views would still open after they are
+    archived. One single-id staff lookup (never filtered, so it still resolves an
+    archived record) decides it. The admin role is a shared login, not a person,
+    so it is never archived and is left untouched.
+
+    Args:
+        role: The token's role ("employee", "manager" or "admin").
+        uid: The caller's Staff Directory id from the signed token.
+
+    Raises:
+        HTTPException: 403 when the caller's own staff record is archived.
+    """
+    if role not in ("employee", "manager"):            # admin is a shared login, not a person
+        return
+    if not await staff_in_postgres():                  # SharePoint has no archive; skip the extra Graph read
+        return
+    person = await get_employee_by_id(uid)             # single lookup: archived records resolve
+    if person is not None and is_archived(person.get("fields", {})):
+        raise HTTPException(status_code=403, detail=ARCHIVED_CALLER_MESSAGE)
+
+
 async def get_dashboard_user(
     token: str = Query(...),
     role: str = Query(...),
@@ -77,6 +107,8 @@ async def get_dashboard_user(
         raise HTTPException(status_code=401, detail=error_msg)
     if role not in ("employee", "manager", "admin"):
         raise HTTPException(status_code=400, detail="Invalid role")
+    # An archived employee or manager (#119) can no longer use their signed link.
+    await refuse_if_archived_caller(role, uid)
     return DashboardUser(role=role, user_id=uid)
 
 
@@ -238,7 +270,15 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
         fields = item.get("fields", {})
         name = fields.get("Title", "")
         if name:
-            by_name[name.strip().lower()] = item
+            key = name.strip().lower()
+            existing = by_name.get(key)
+            # Prefer the active row when an archived and an active person share a
+            # name (#119): never let an archived record shadow an active one, so a
+            # name lookup resolves the person who is still here.
+            if existing is None or (
+                is_archived(existing.get("fields", {})) and not is_archived(fields)
+            ):
+                by_name[key] = item
         item_id = item.get("id")
         if item_id is not None:
             try:
@@ -282,6 +322,31 @@ async def _build_staff_lookups() -> tuple[dict, dict, dict, dict]:
             logger.exception("Failed to fetch User Information List for name resolution")
 
     return by_name, by_id, sp_user_to_name, mgr_to_emp_names
+
+
+def _team_ids_including_archived(by_id: dict, manager_name: str) -> set[str]:
+    """The manager's team as Staff Directory ids, archived teammates included (#119).
+
+    The active-only ``mgr_to_emp_names`` from ``_build_staff_lookups`` drops an
+    archived person, which is right for Today, Team, the pickers and balances but
+    wrong for the History tab and the timeline check, where an archived teammate's
+    past requests must still show. This reads the same prebuilt id map (which
+    holds archived people too) and keeps everyone who lists this manager, so the
+    history scopes to the whole team, departed members and all.
+
+    Args:
+        by_id: The staff id -> item map from ``_build_staff_lookups`` (archived
+            people included).
+        manager_name: The manager's display name, matched against ``AllManagers``.
+
+    Returns:
+        The team's Staff Directory ids as strings; empty when nobody lists them.
+    """
+    team: set[str] = set()
+    for item in by_id.values():                                # id-keyed map: no name collisions
+        if _is_in_all_managers(item.get("fields", {}), manager_name):   # lists this manager
+            team.add(str(item.get("id")))                      # keep archived teammates too
+    return team
 
 
 def _resolve_sp_user_name(item_data: dict, field_prefix: str, sp_user_to_name: dict) -> str:
@@ -797,12 +862,10 @@ async def team_requests(
     my_employees = mgr_to_emp_names.get(manager_name, set())
     results = []
     pg = await requests_in_postgres()                          # Postgres: indexed team reads
-    # The team as Staff Directory ids, for the indexed Postgres query by employee_id.
-    team_ids = {
-        str(staff_by_name[nm.strip().lower()]["id"])
-        for nm in my_employees
-        if staff_by_name.get(nm.strip().lower(), {}).get("id") is not None
-    }
+    # The History tab must keep an archived teammate's past requests (#119), so the
+    # Postgres query is scoped by the team INCLUDING archived people, not the
+    # active-only map Today/Team/pickers use.
+    team_ids = _team_ids_including_archived(staff_by_id, manager_name)
 
     async def _team_items(request_type: str, list_id: str) -> list[dict]:
         """The team's rows of one kind: indexed in Postgres, whole-list in SharePoint.
@@ -941,12 +1004,63 @@ async def team_calendar(
     return {"events": events}
 
 
+async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str, request_id: str) -> None:
+    """403 unless this manager may decide this request (own-team gate for #362/#369).
+
+    The dashboard Approve/Reject buttons used to run the decision for any signed-in
+    manager, so a manager could decide another team's request, or their own, from a
+    valid token (the email-link and SMS paths already bind the decider: the link is
+    HMAC-signed over the manager and request, and the SMS path checks the sender is
+    on the submitter's manager list). This closes that hole on the dashboard: a
+    manager may decide only a request whose employee lists them (or one assigned to
+    them, so a #342 stand-in still works), and never their own request. Admins are
+    unchanged. Postgres only (the preview path); the SharePoint path keeps its
+    existing behaviour, as nothing reads SharePoint after the switch.
+
+    Args:
+        user: The signed-in caller (manager or admin).
+        request_type: The url-form request kind.
+        request_id: The item_id being decided.
+
+    Raises:
+        HTTPException: 403 when a manager is not on the request's team, or is the
+            request's own employee.
+    """
+    if user.role != "manager":                                 # admins may decide any request
+        return
+    if not await requests_in_postgres():                       # legacy SharePoint path: unchanged
+        return
+    from app.database import async_session
+    from app.models.request_record import RequestRecord
+    from sqlalchemy import select
+    stored_kind = WIRE_TO_STORED.get(request_type, request_type)   # url form -> stored kind
+    try:
+        key = int(request_id)
+    except (TypeError, ValueError):
+        return                                                 # not a Postgres id: let the handler report it
+    async with async_session() as session:
+        record = (await session.execute(
+            select(RequestRecord).where(RequestRecord.kind == stored_kind, RequestRecord.item_id == key)
+        )).scalars().first()
+    if record is None:
+        return                                                 # gone: the handler returns the "no longer exists" error
+    if str(record.employee_id) == str(user.user_id):           # a manager cannot decide their own request
+        raise HTTPException(status_code=403, detail="You cannot decide your own request.")
+    if record.manager_id is not None and str(record.manager_id) == str(user.user_id):
+        return                                                 # the assigned manager (or a #342 stand-in)
+    employee = await get_employee_by_id(record.employee_id)    # resolve the submitter's managers
+    managers = await get_all_managers_for_employee(employee) if employee else []
+    if str(user.user_id) not in {str(m["id"]) for m in managers}:   # not on this employee's manager list
+        raise HTTPException(status_code=403, detail="This request is not on your team.")
+
+
 @router.post("/team/approve/{request_type}/{request_id}")
 async def team_approve(user: AuthUser, request_type: str, request_id: str):
     _require_role(user, "manager", "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     await _refuse_if_paused()                                    # refuse mid-switch
+    await _refuse_manager_not_on_request(user, request_type, request_id)  # own-team gate
 
     handler = HANDLERS.get((request_type, "approve"))
     if not handler:
@@ -966,6 +1080,7 @@ async def team_reject(user: AuthUser, request_type: str, request_id: str):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     await _refuse_if_paused()                                    # refuse mid-switch
+    await _refuse_manager_not_on_request(user, request_type, request_id)  # own-team gate
 
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:

@@ -245,7 +245,11 @@ async def build_staff_index() -> StaffIndex:
     Returns:
         A StaffIndex built from one read of each list.
     """
-    staff_items = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    # Archived people are kept (#119): a past request's submitter may have left,
+    # and it must still resolve to their staff record so the row keeps their name.
+    staff_items = await staff_store.get_list_items(
+        settings.SP_LIST_STAFF_DIRECTORY, include_archived=True
+    )
     # Lowest id first: SharePoint lists items in id order, and SharePoint mode took
     # the first match, so a shared email or name resolves to the same record here.
     staff_items = sorted(staff_items, key=lambda i: (0, int(i["id"])) if str(i["id"]).isdigit() else (1, 0))

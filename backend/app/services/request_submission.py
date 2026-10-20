@@ -27,6 +27,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.models.request_record import RequestRecord
+from app.repositories.postgres.staff import is_archived  # tells an archived staff record from an active one (#119)
 from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.approval_links import generate_approval_url
 from app.services.balance import (
@@ -752,19 +753,27 @@ async def _queue_reminder(session, kind, item_id, today) -> bool:
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to remind
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
+    # An archived submitter (#119) is off every approval route: no manager is
+    # reminded, and the request simply stays pending and visible to admins (#368).
+    if employee is not None and is_archived(employee.get("fields", {})):
+        return False
     managers = await get_all_managers_for_employee(employee) if employee else []
     if not managers:
         return False                                              # nobody to remind
     from app.models.mixins import utcnow
-    on_date = today or date.today()
+    on_date = today or today_toronto()                            # Toronto day, matching submit routing (#369)
     # Re-decide on the reminder's own day: a request moves on when its manager
     # leaves and goes back to them when they return (#369). The reminder goes to
-    # whoever is available; when everyone is off, [] queues nothing and the request
-    # stays on the admin cover list (#370).
+    # whoever is available.
     chosen, skipped = await choose_available_manager(session, managers, on_date)
+    if chosen is None:
+        # Everyone is still off: nothing is sent, so the cadence must not advance
+        # (no count bump, no reminder_sent log). The request stays on the admin
+        # cover list and the next sweep tries again (#370).
+        return False
     _assign_manager(record, chosen)                               # the request follows whoever is asked
     suffix = on_date.isoformat()
-    await _enqueue_notifications(session, record, employee, [chosen] if chosen else [], event=None, suffix=suffix)
+    await _enqueue_notifications(session, record, employee, [chosen], event=None, suffix=suffix)
     await _record_reroute(session, record, chosen, skipped, "system", suffix)
     record.reminder_count = (record.reminder_count or 0) + 1      # bookkeeping for the cadence
     record.last_reminder_at = utcnow()
@@ -880,6 +889,90 @@ def _reminder_due(record: RequestRecord, now, clock: tuple | None = None) -> boo
     return now - last >= timedelta(days=threshold)
 
 
+async def _manager_ever_asked(session, record: RequestRecord) -> bool:
+    """Whether a manager-approval message was ever queued for this request's version.
+
+    A request submitted while every manager was off has no manager asked, so no
+    ``manager_approval`` outbox row exists for its current approval version; it
+    waits on the admin cover list until a manager is back (#370). This tells that
+    case apart from a request already asked and merely due a reminder.
+
+    An imported request (``sp_item_id`` set) was asked by the old SharePoint path,
+    which left no Postgres outbox row, so it counts as asked here (the truly
+    never-emailed imported ones are already filtered out of the sweep above). An
+    app-native request is asked once its ``manager_approval`` outbox row exists,
+    scoped to the current approval version, so a re-ask after an admin edit (a new
+    version) is treated as never-asked again until its own ask goes out.
+
+    Args:
+        session: The open sweep session.
+        record: The pending request row.
+
+    Returns:
+        True when the manager was asked (imported, or a manager_approval outbox
+        row exists for the row's version).
+    """
+    if record.sp_item_id is not None:
+        return True                                            # imported: the old path asked the manager
+    from app.models.outbox import Outbox
+    # The manager ask carries the version's sent_to_manager step key, with the
+    # channel and recipient appended, so match on that prefix.
+    prefix = step_key(record.kind, record.item_id, "sent_to_manager", record.approval_version)
+    found = (await session.execute(
+        select(Outbox.id).where(
+            Outbox.request_id == record.id,
+            Outbox.message_type == "manager_approval",
+            Outbox.idempotency_key.like(f"{prefix}:%"),
+        ).limit(1)
+    )).first()
+    return found is not None
+
+
+async def _first_ask(session, record: RequestRecord, today: date) -> bool:
+    """Ask the first available manager for an all-off request once one is back (#370).
+
+    A request submitted while every manager was off is never sent to a manager and
+    sits on the admin cover list. This makes the daily sweep ask the first manager
+    who is available again, straight away rather than after the 30-day reminder
+    wait, because the request was never asked at all. The ask reuses the version's
+    ``sent_to_manager`` outbox key, so it happens once; the employee receipt
+    already went out at submit, so none is sent here. The reminder clock is started
+    from this ask, so the first real reminder follows the usual wait after it.
+
+    Args:
+        session: The open sweep session (not committed here).
+        record: The pending, never-asked request row.
+        today: Today in Toronto, for deciding which managers are off.
+
+    Returns:
+        True when a manager was asked; False when every manager is still off, or the
+        submitter or managers cannot be resolved, or the submitter is archived,
+        leaving the request on the admin cover list.
+    """
+    from app.models.mixins import utcnow
+    employee = await _resolve_employee(record, TypedRequestList(record.kind)._item_shape(record)["fields"])
+    # An archived submitter (#119) is off every approval route: never ask a manager.
+    if employee is not None and is_archived(employee.get("fields", {})):
+        return False
+    managers = await get_all_managers_for_employee(employee) if employee else []
+    if not employee or not managers:
+        return False                                              # cannot resolve: leave it on cover
+    chosen, skipped = await choose_available_manager(session, managers, today)
+    if chosen is None:
+        return False                                              # still everyone off: nothing to ask yet
+    _assign_manager(record, chosen)                               # the request now points at who was asked
+    # A genuine first ask, not a reminder: suffix None uses the version's
+    # sent_to_manager key (so it happens once) and the manager_approval message,
+    # and include_receipt False skips the receipt the employee already got.
+    await _enqueue_notifications(
+        session, record, employee, [chosen], event=None, include_receipt=False,
+    )
+    await _record_reroute(session, record, chosen, skipped, "system", "first-ask")
+    record.last_reminder_at = utcnow()                            # start the reminder clock from this ask
+    log_step(record, "sent_to_manager", late=True)
+    return True
+
+
 async def queue_due_reminders() -> int:
     """Queue a reminder for every pending Postgres request whose cadence is due.
 
@@ -890,13 +983,18 @@ async def queue_due_reminders() -> int:
     past cutoff). Each request still reminds at most once a day (the dated outbox
     key).
 
+    A request submitted while every manager was off is never asked at submit and
+    waits on the admin cover list (#370). For those this sweep does a first ask,
+    not a reminder, as soon as a manager is available again, without the 30-day
+    reminder wait, because the manager was never asked at all.
+
     Returns:
-        How many requests had a reminder queued this run.
+        How many requests had a reminder (or a first ask) queued this run.
     """
     from app.models import RequestApprovalState
     from app.models.mixins import utcnow
     now = utcnow()
-    today = date.today()
+    today = today_toronto()                                       # Toronto day, matching submit routing (#369)
     async with async_session() as session:
         pending = (await session.execute(
             select(RequestRecord).where(RequestRecord.status == "pending")
@@ -918,6 +1016,12 @@ async def queue_due_reminders() -> int:
             if _reminder_cutoff_passed(record, today, clock[1]):
                 if state is not None and not state.reminders_closed:
                     state.reminders_closed = True                 # close it so later scans skip without recomputing
+                continue
+            if not await _manager_ever_asked(session, record):
+                # Never asked (all managers were off at submit): ask the first
+                # available one now, bypassing the reminder cadence (#370).
+                if await _first_ask(session, record, today):
+                    queued += 1
                 continue
             if not _reminder_due(record, now, clock):
                 continue

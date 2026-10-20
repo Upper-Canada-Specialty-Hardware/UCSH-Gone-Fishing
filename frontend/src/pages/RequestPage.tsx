@@ -79,18 +79,29 @@ function balanceTitle(effect: 'applied' | 'counted' | 'no_balance_used' | null):
 function staffNextSteps(progress: RequestProgress | null): NextItem[] {
   const manager = progress?.manager_name || 'your manager';   // filled in once the send names them
   const steps = progress?.steps;
-  // The request is routed to the manager at submit, so this is done from the
-  // start; the event just fills in the name and the exact time.
-  const sent: NextItem = {
-    title: `Sent to ${manager}`,
-    note: stepTime(steps?.sent_to_manager.at ?? null) || 'Just now',
-    done: true,
-  };
   const result = steps?.decided.result ?? null;
-  const decided: NextItem = steps?.decided.done
+  const decided = steps?.decided.done;                         // a decision has landed
+  // The ask reaches a manager only once the sent_to_manager event lands; a request
+  // sent while every manager is off waits on the admin cover list and this step is
+  // not yet done (#370). Before the first poll answers (no steps) assume the common
+  // case (a manager was asked); once a decision has landed the ask is moot, so show
+  // it done either way.
+  let sent: NextItem;
+  if (!steps) {
+    sent = { title: `Sent to ${manager}`, note: 'Just now', done: true };   // optimistic until the poll answers
+  } else if (steps.sent_to_manager.done || decided) {
+    sent = { title: `Sent to ${manager}`, note: stepTime(steps.sent_to_manager.at) || 'Just now', done: true };
+  } else {
+    // No manager was asked yet: everyone is off, so it waits until one is back.
+    sent = { title: 'Waiting for a manager to be available', note: 'No manager is free right now', done: false };
+  }
+  // Name who decided: "an admin" or the manager who acted (a stand-in when the
+  // assigned manager was off), falling back to the assigned manager (#371).
+  const decider = steps?.decided.decider || manager;
+  const decidedItem: NextItem = decided
     ? {
-        title: result === 'rejected' ? `${manager} rejected it` : `${manager} approved it`,
-        note: stepTime(steps.decided.at),
+        title: result === 'rejected' ? `${decider} rejected it` : `${decider} approved it`,
+        note: stepTime(steps!.decided.at),
         done: true,
       }
     : { title: 'They approve or reject', note: 'From the email, a text reply or their dashboard' };
@@ -98,11 +109,11 @@ function staffNextSteps(progress: RequestProgress | null): NextItem[] {
     ? { title: 'You got an email with the decision', note: stepTime(steps.result_sent.at), done: true }
     : { title: 'You get an email with the decision' };
   // A rejection moves no balance, so the balance point is left out once rejected.
-  if (result === 'rejected') return [sent, decided, emailed];
+  if (result === 'rejected') return [sent, decidedItem, emailed];
   const balance: NextItem = steps?.balance.done
     ? { title: balanceTitle(steps.balance.effect), note: stepTime(steps.balance.at), done: true }
     : { title: 'Your balance updates', note: 'When it is approved' };
-  return [sent, decided, balance, emailed];
+  return [sent, decidedItem, balance, emailed];
 }
 
 /** The steps in the order they come, for which way a change of step slides. */

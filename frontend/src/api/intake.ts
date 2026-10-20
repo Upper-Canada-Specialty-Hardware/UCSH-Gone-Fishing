@@ -370,8 +370,11 @@ export interface RequestProgress {
   steps: {
     /** The approval ask reached the manager. */
     sent_to_manager: ProgressStep;
-    /** A manager approved or rejected; "result" says which once done. */
-    decided: ProgressStep & { result: 'approved' | 'rejected' | null };
+    /**
+     * A manager or admin approved or rejected; "result" says which once done, and
+     * "decider" names who decided ("an admin", or the manager's name) once done.
+     */
+    decided: ProgressStep & { result: 'approved' | 'rejected' | null; decider: string | null };
     /** How the balance moved on approval; "effect" says which once done. */
     balance: ProgressStep & { effect: 'applied' | 'counted' | 'no_balance_used' | null };
     /** The decision email went to the employee. */

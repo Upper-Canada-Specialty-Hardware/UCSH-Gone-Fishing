@@ -261,7 +261,7 @@ export interface VacationCoverRequest {
 export const getAdminVacationCover = () =>
   api.get<{ requests: VacationCoverRequest[] }>('/admin/vacation-cover');
 
-// Manager — control over their own team (#362, #363). A manager edits a
+// Manager: control over their own team (#362, #363). A manager edits a
 // teammate's balances/entitlements with a reason, and adds or removes people on
 // their team. Every change is recorded under the manager's name server-side.
 
