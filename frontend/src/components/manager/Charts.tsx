@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { Box, Button, Tooltip, Typography } from '@mui/material';
+import { Box, Button, Chip, IconButton, Tooltip, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import CloseIcon from '@mui/icons-material/Close';
 import { AnimatePresence, m } from 'motion/react';
+import KindPill from '../KindPill';
 import { kindColor } from '../../constants/leaveColors';
-import { addDays, dayKey, isWeekend, today } from '../../utils/dates';
+import { addDays, dayKey, formatDay, isWeekend, today } from '../../utils/dates';
 import { ColorOf, LabelOf } from '../../utils/personColor';
 import { isHourly } from '../../utils/employment';
 import { shortDate } from '../../utils/requestText';
@@ -34,13 +36,18 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
  * @param props.showToggle - Offer the "only off / everyone" toggle.
  * @param props.maxRows - Show at most this many rows, with a "more" link.
  * @param props.onShowMore - Called by the "more" link (e.g. open the Calendar tab).
+ * @param props.onSelectAbsence - When set, each bar becomes a button that selects
+ *   its absence (#373); keyboard reachable with an aria-label of the figures.
+ * @param props.selectedKey - The selected absence's key, drawn with a ring.
  * @returns The timeline.
  */
 export function LeaveTimeline({
   names, absences, from, days, colorOf, labelOf, showToggle = false, maxRows, onShowMore,
+  onSelectAbsence, selectedKey,
 }: {
   names: string[]; absences: Absence[]; from: Date; days: number;
   colorOf: ColorOf; labelOf: LabelOf; showToggle?: boolean; maxRows?: number; onShowMore?: () => void;
+  onSelectAbsence?: (a: Absence) => void; selectedKey?: string | null;
 }) {
   const theme = useTheme();
   const calm = useCalm();
@@ -125,16 +132,29 @@ export function LeaveTimeline({
                   const s = Math.max(0, Math.round((a.start.getTime() - from.getTime()) / 86400000));
                   const e = Math.min(days - 1, Math.round((a.end.getTime() - from.getTime()) / 86400000));
                   const c = colorOf(who);
+                  const interactive = Boolean(onSelectAbsence);          // bars click through only when asked (#373)
+                  const selected = selectedKey === a.key;                // the open bar gets a ring
+                  // The spoken label carries the figures (who, kind, dates, state).
+                  const aria = `${who}: ${a.label}, ${shortDate(dayKey(a.start))}${a.end > a.start ? ` to ${shortDate(dayKey(a.end))}` : ''}${a.pending ? ', asked, waiting' : ', approved'}`;
                   return (
                     <Tooltip key={a.key} title={`${who}: ${a.label}, ${shortDate(dayKey(a.start))}${a.end > a.start ? ` to ${shortDate(dayKey(a.end))}` : ''}${a.pending ? ' (asked, not approved yet)' : ''}`}>
                       <Box
+                        role={interactive ? 'button' : undefined}
+                        tabIndex={interactive ? 0 : undefined}
+                        aria-label={interactive ? aria : undefined}
+                        aria-pressed={interactive ? selected : undefined}
+                        onClick={interactive ? () => onSelectAbsence!(a) : undefined}
+                        onKeyDown={interactive ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onSelectAbsence!(a); } } : undefined}
                         sx={{
                           position: 'absolute', top: 3, bottom: 3, left: `calc(${pct(s)} + 2px)`, width: `calc(${((e - s + 1) / days) * 100}% - 4px)`,
                           borderRadius: '6px', px: 0.75, overflow: 'hidden', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 700, lineHeight: '22px',
-                          // Approved: solid colour. Asked: dashed outline in the same colour.
+                          cursor: interactive ? 'pointer' : 'default',
+                          // Approved: solid colour. Asked: dashed outline in the same colour (unfilled).
                           ...(a.pending
                             ? { color: c, border: `1.5px dashed ${c}`, bgcolor: alpha(c, 0.08) }
                             : { color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', bgcolor: c }),
+                          // The selected bar carries a ring in the accent colour.
+                          ...(selected ? { outline: `2px solid ${theme.tokens.accent}`, outlineOffset: 1 } : {}),
                           transformOrigin: 'left', animation: `${KF.growXFade} .5s ${EASE.out} ${0.1 + 0.06 * n++}s both`,
                         }}
                       >
@@ -171,6 +191,82 @@ export function LeaveTimeline({
 }
 
 /**
+ * The detail card under the Calendar timeline for a selected leave bar (#373):
+ * the person, the kind and days, the full date range read "Nov 2, 2026 to
+ * Nov 6, 2026", and whether it is approved or still asked. It offers Approve and
+ * Reject (only while pending), "Open in History", and "Open <first name>" to the
+ * person profile. The parent owns what each action does.
+ *
+ * @param props.absence - The selected absence.
+ * @param props.days - The request's day count, or null when unknown.
+ * @param props.colorOf - The person's avatar colour.
+ * @param props.processingEnabled - Whether writes are on (gates Approve/Reject).
+ * @param props.busy - Whether a decision on this request is in flight.
+ * @param props.openPersonLabel - The "Open <first name>" button label.
+ * @param props.onApprove - Approve the request.
+ * @param props.onReject - Reject the request.
+ * @param props.onOpenHistory - Open the request's row in History.
+ * @param props.onOpenPerson - Open the person's profile (#372).
+ * @param props.onClose - Close the card.
+ * @returns The detail card.
+ */
+export function AbsenceDetail({
+  absence, days, colorOf, processingEnabled, busy, openPersonLabel,
+  onApprove, onReject, onOpenHistory, onOpenPerson, onClose,
+}: {
+  absence: Absence; days: number | null; colorOf: ColorOf; processingEnabled: boolean; busy: boolean;
+  openPersonLabel: string; onApprove: () => void; onReject: () => void;
+  onOpenHistory: () => void; onOpenPerson: () => void; onClose: () => void;
+}) {
+  const theme = useTheme();
+  const a = absence;
+  const letters = (a.who || '').split(' ').map((w) => w[0] || '').slice(0, 2).join('');  // avatar initials
+  // The full range always carries both years, as the brief asks ("Nov 2, 2026 to
+  // Nov 6, 2026"); formatDayRange would drop the first year in the same year.
+  const range = dayKey(a.start) === dayKey(a.end)
+    ? formatDay(dayKey(a.start))
+    : `${formatDay(dayKey(a.start))} to ${formatDay(dayKey(a.end))}`;
+  const dayText = days != null ? `${days} day${days === 1 ? '' : 's'}` : '';   // "3 days", or nothing
+  return (
+    <Box sx={{ mt: 2, p: 2, border: 1, borderColor: theme.tokens.line2, borderRadius: 2, display: 'grid', gap: 1.25 }}>
+      {/* Head: avatar, name, close. */}
+      <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center' }}>
+        <Box sx={{ width: 34, height: 34, borderRadius: 999, flex: 'none', bgcolor: colorOf(a.who), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 12.5 }}>
+          {letters}
+        </Box>
+        <Typography sx={{ fontWeight: 700, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{a.who}</Typography>
+        <IconButton size="small" aria-label="Close" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
+      </Box>
+      {/* Kind, days and the full date range. */}
+      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+        {a.kind && <KindPill kind={a.kind} label={a.label} />}
+        {dayText && <Typography variant="body2" color="text.secondary">{dayText}</Typography>}
+      </Box>
+      <Typography sx={{ fontWeight: 600 }}>{range}</Typography>
+      {/* Approved, or asked and sitting on this manager. */}
+      <Chip
+        size="small" label={a.pending ? 'Asked, waiting on you' : 'Approved'}
+        color={a.pending ? 'warning' : 'success'} variant={a.pending ? 'outlined' : 'filled'}
+        sx={{ justifySelf: 'start' }}
+      />
+      {/* Actions: Approve/Reject only while pending, then the two "open" links. */}
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+        {a.pending && (
+          <>
+            <Button size="small" variant="contained" color="success" disabled={busy || !processingEnabled} onClick={onApprove}>
+              {busy ? 'Working...' : 'Approve'}
+            </Button>
+            <Button size="small" variant="outlined" color="error" disabled={busy || !processingEnabled} onClick={onReject}>Reject</Button>
+          </>
+        )}
+        <Button size="small" variant="outlined" onClick={onOpenHistory}>Open in History</Button>
+        <Button size="small" variant="outlined" onClick={onOpenPerson}>{openPersonLabel}</Button>
+      </Box>
+    </Box>
+  );
+}
+
+/**
  * A small line for a tile, drawing itself in.
  *
  * @param props.values - The points, oldest first (two or more).
@@ -201,14 +297,21 @@ export function Sparkline({ values, height = 30 }: { values: number[]; height?: 
  *
  * @param props.points - {day, in} per working day.
  * @param props.team - Team size (the top of the scale).
+ * @param props.onPickDay - When set, each day is a button that picks it (#373);
+ *   keyboard reachable, with an aria-label of the figures.
+ * @param props.pickedDay - The picked day, drawn with a faint band.
  * @returns The chart.
  */
-export function InPerDayChart({ points, team }: { points: { day: Date; in: number }[]; team: number }) {
+export function InPerDayChart({ points, team, onPickDay, pickedDay }: {
+  points: { day: Date; in: number }[]; team: number;
+  onPickDay?: (day: Date) => void; pickedDay?: Date | null;
+}) {
   const theme = useTheme();
   if (points.length < 2 || team === 0) return null;
   const W = 700, H = 170, pad = 28;
   const x = (k: number) => pad + k * (W - pad * 2) / (points.length - 1);
   const y = (v: number) => H - pad - v / team * (H - pad * 2);
+  const half = (W - pad * 2) / (points.length - 1) / 2;   // half the gap between days, for the hit area
   const line = points.map((p, k) => `${k ? 'L' : 'M'}${x(k).toFixed(1)} ${y(p.in).toFixed(1)}`).join(' ');
   const area = `${line} L${x(points.length - 1)} ${H - pad} L${x(0)} ${H - pad} Z`;
   const usual = Math.max(0, team - 1);                   // one person away is a normal day
@@ -237,6 +340,24 @@ export function InPerDayChart({ points, team }: { points: { day: Date; in: numbe
       {points.map((p, k) => k % 3 === 0 && (
         <text key={`l${k}`} x={x(k)} y={H - 6} textAnchor="middle">{shortDate(dayKey(p.day))}</text>
       ))}
+      {/* Clickable, keyboard-reachable hit area per working day (#373): a faint
+          band marks the picked day; the transparent rect catches the click. */}
+      {onPickDay && points.map((p, k) => {
+        const picked = pickedDay != null && dayKey(pickedDay) === dayKey(p.day);
+        return (
+          <g key={`hit-${k}`}>
+            {picked && <rect x={x(k) - half} y={pad} width={half * 2} height={H - pad * 2} fill={alpha(theme.tokens.accent, 0.12)} rx={4} />}
+            <Box
+              component="rect" x={x(k) - half} y={0} width={half * 2} height={H} fill="transparent"
+              role="button" tabIndex={0}
+              aria-label={`${shortDate(dayKey(p.day))}: ${p.in} of ${team} in. Show who is off.`}
+              onClick={() => onPickDay(p.day)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPickDay(p.day); } }}
+              sx={{ cursor: 'pointer', '&:focus-visible': { outline: `2px solid ${theme.tokens.accent}` } }}
+            />
+          </g>
+        );
+      })}
     </Box>
   );
 }
@@ -246,13 +367,19 @@ export function InPerDayChart({ points, team }: { points: { day: Date; in: numbe
  *
  * @param props.months - Twelve {vacation, sick, other} totals.
  * @param props.upTo - Show months up to this index (0 = January).
+ * @param props.onPickMonth - When set, each month is a button that picks it by
+ *   index (#373); keyboard reachable, with an aria-label of the month's total.
  * @returns The chart.
  */
-export function MonthlyBars({ months, upTo }: { months: { vacation: number; sick: number; other: number }[]; upTo: number }) {
+export function MonthlyBars({ months, upTo, onPickMonth }: {
+  months: { vacation: number; sick: number; other: number }[]; upTo: number;
+  onPickMonth?: (monthIndex: number) => void;
+}) {
   const theme = useTheme();
   const mode = theme.palette.mode;
   const shown = months.slice(0, upTo + 1);
   const W = 700, H = 200, pad = 28, n = shown.length;
+  const colW = (W - pad * 2) / n;                          // one month's column width, for the hit area
   const top = Math.max(4, ...shown.map((m) => m.vacation + m.sick + m.other));
   const max = Math.ceil(top / 4) * 4;                    // round the scale up to a multiple of 4
   const bw = (W - pad * 2) / n * 0.56;
@@ -287,6 +414,21 @@ export function MonthlyBars({ months, upTo }: { months: { vacation: number; sick
             })}
             <text x={cx} y={H - 8} textAnchor="middle">{MONTHS[k]}</text>
           </g>
+        );
+      })}
+      {/* Clickable, keyboard-reachable hit area per month (#373): the transparent
+          rect over the whole column opens that month's leave in History. */}
+      {onPickMonth && shown.map((m, k) => {
+        const total = Math.round((m.vacation + m.sick + m.other) * 10) / 10;
+        return (
+          <Box
+            component="rect" key={`hit-${k}`} x={pad + k * colW} y={0} width={colW} height={H} fill="transparent"
+            role="button" tabIndex={0}
+            aria-label={`${MONTHS[k]}: ${total} day${total === 1 ? '' : 's'} off. Open in History.`}
+            onClick={() => onPickMonth(k)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPickMonth(k); } }}
+            sx={{ cursor: 'pointer', '&:focus-visible': { outline: `2px solid ${theme.tokens.accent}` } }}
+          />
         );
       })}
     </Box>

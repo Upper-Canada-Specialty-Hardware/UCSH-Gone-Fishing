@@ -40,7 +40,7 @@ from app.services.concurrency import lock_manager  # serialise the AllManagers r
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.manager_assignments import _extract_all_managers, update_employee_managers
-from app.services.staff_entitlements import StaffWriteError, apply_entitlement_changes
+from app.services.staff_entitlements import StaffWriteError, apply_entitlement_changes, get_staff_record
 from app.services.switch_pause import SystemPaused  # the mid-switch write refusal -> 503
 
 router = APIRouter()
@@ -229,6 +229,40 @@ async def team_update_entitlements(user: AuthUser, employee_id: str, body: TeamE
 
 
 # ============================
+# #372 - the full record for the manager person view
+# ============================
+
+@router.get("/team/members/{employee_id}/record")
+async def team_member_record(user: AuthUser, employee_id: str):
+    """One teammate's full record for the manager person view (#372).
+
+    Returns the same payload as the admin ``GET /admin/employees/{id}`` (the
+    editable entitlements and balances, the resolved people fields and the change
+    history), so the admin ``PersonProfile`` is reused in a manager-scoped mode
+    rather than copied. Only the calling manager's own team may be read; an
+    archived person is seen from the admin staff screen, not here (#119).
+
+    Args:
+        user: The signed-in manager or admin.
+        employee_id: Staff Directory item id of the teammate.
+
+    Returns:
+        The staff record payload (``employee_id``, ``fields``, ``people``,
+        ``history``), identical in shape to the admin employee record.
+
+    Raises:
+        HTTPException: 403 for an employee token or a non-teammate (an archived
+            person included), 404 when the person is gone.
+    """
+    _manager, manager_name = await _signed_in_manager(user)   # role check + the caller's name
+    await _require_teammate(employee_id, manager_name)        # 403 unless on my team (and not archived)
+    record = await get_staff_record(employee_id)              # the same payload the admin panel reads
+    if record is None:                                        # vanished between the guard and the read
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return record
+
+
+# ============================
 # #363 - add and remove people on the team
 # ============================
 
@@ -244,7 +278,8 @@ async def team_addable(user: AuthUser):
 
     Returns:
         ``{"people": [{id, name, email, department, location, employment_type,
-        system_check}, ...]}`` in name order.
+        system_check, managers}, ...]}`` in name order. ``managers`` is the names
+        already on the person, so the add-to-team module can show them (#372).
     """
     manager, _manager_name = await _signed_in_manager(user)
     all_staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)  # active people only
@@ -253,7 +288,11 @@ async def team_addable(user: AuthUser):
         f = item.get("fields", {})
         if _may_add(manager["fields"], f) is not None:    # skip self, archived and already-on-team (#362)
             continue
-        people.append(_format_employee(f, item["id"]))    # the same shape the team list uses
+        person = _format_employee(f, item["id"])          # the same shape the team list uses
+        # Their current managers by name, so the add-to-team module can show who
+        # already manages them before the manager confirms the add (#372).
+        person["managers"] = [m["name"] for m in _extract_all_managers(f)]
+        people.append(person)
     people.sort(key=lambda p: (p.get("name") or "").lower())  # name order, like the team cards
     return {"people": people}
 

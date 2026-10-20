@@ -19,7 +19,7 @@ import {
 } from '../components/Motion';
 import { TeamSkeleton } from '../components/Skeletons';
 import PillToggle from '../components/PillToggle';
-import { InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline } from '../components/manager/Charts';
+import { AbsenceDetail, InPerDayChart, LeaveTimeline, MonthlyBars, Sparkline } from '../components/manager/Charts';
 import {
   absencesFrom, approveSummary, clashesFor, daysOffByMonth, inPerDay, insights, offThisWeek, totalsByKind, workingDays,
 } from '../components/manager/teamStats';
@@ -143,6 +143,14 @@ export default function ManagerDashboard() {
   }, [arrived, navigate]);
 
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');
+  // The leave bar selected on the Calendar timeline, and the day picked on the
+  // "who is in" chart (#373); both local to the Calendar tab. The absence is
+  // held by key so it always resolves against the live absences list.
+  const [selectedAbsenceKey, setSelectedAbsenceKey] = useState<string | null>(null);
+  const [pickedDay, setPickedDay] = useState<Date | null>(null);
+  // A person the Calendar tab asked the Team tab to open (#373), with a nonce so
+  // asking for the same person twice still re-opens them.
+  const [teamPersonReq, setTeamPersonReq] = useState<{ id: string; nonce: number } | null>(null);
   // Today's decision queue starts folded to its oldest few; this reveals the rest.
   const [queueExpanded, setQueueExpanded] = useState(false);
   // A filter a Today tile asks the Team tab to apply (with a nonce so clicking
@@ -320,6 +328,21 @@ export default function ManagerDashboard() {
   // One short, unambiguous label per person (first name, or "First L" when a first name repeats).
   const labelOf = useMemo(() => teamLabeler(names), [names]);
   const absences = useMemo(() => absencesFrom(calendarEvents, pending), [calendarEvents, pending]);
+  // The selected Calendar bar, resolved from the live absences so a decision that
+  // removes it also clears the detail card (#373); its full request row (for the
+  // day count); and who is off on the picked day, in team order.
+  const selectedAbsence = useMemo(
+    () => (selectedAbsenceKey ? absences.find((a) => a.key === selectedAbsenceKey) || null : null),
+    [selectedAbsenceKey, absences],
+  );
+  const selectedAbsenceReq = useMemo(
+    () => (selectedAbsence ? requests.find((r) => r.request_type === selectedAbsence.request_type && String(r.id) === selectedAbsence.id) || null : null),
+    [selectedAbsence, requests],
+  );
+  const offOnPickedDay = useMemo(
+    () => (pickedDay ? absences.filter((a) => a.start <= pickedDay! && pickedDay! <= a.end) : []),
+    [pickedDay, absences],
+  );
   const waiting = useMemo(() => [...pending].sort((a, b) => (daysWaiting(b) ?? 0) - (daysWaiting(a) ?? 0)), [pending]);
   const approve = useMemo(() => approveSummary(requests), [requests]);
   const year = today().getFullYear();
@@ -347,6 +370,15 @@ export default function ManagerDashboard() {
     setTeamFilterReq({ key, nonce: Date.now() });         // nonce so the same tile re-applies
     go('team');
   }, [go]);
+
+  /** Open a person's profile on the Team tab from the Calendar (#373).
+   *  @param name - The person's display name (from the selected absence). */
+  const openTeamPerson = useCallback((name: string) => {
+    const m = members.find((x) => x.name === name);       // their row carries the id the profile needs
+    if (!m) return;                                        // not on the team (archived or gone): do nothing
+    setTeamPersonReq({ id: String(m.id), nonce: Date.now() });  // nonce so the same person re-opens
+    go('team');
+  }, [members, go]);
 
   if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
@@ -519,8 +551,23 @@ export default function ManagerDashboard() {
                 <m.div key={calendarView} initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: 0.22 } }} exit={{ opacity: 0, transition: EXIT }}>
                   <Box sx={{ p: 2 }}>
                     {calendarView === 'timeline'
-                      ? <LeaveTimeline names={names} absences={absences} from={calFrom} days={28} colorOf={colorOf} labelOf={labelOf} showToggle />
-                      : <TeamCalendar events={calendarEvents} />}
+                      ? (
+                        // Clicking a bar selects it (toggles off on a second click);
+                        // its detail card shows below (#373).
+                        <LeaveTimeline
+                          names={names} absences={absences} from={calFrom} days={28} colorOf={colorOf} labelOf={labelOf} showToggle
+                          selectedKey={selectedAbsenceKey}
+                          onSelectAbsence={(a) => setSelectedAbsenceKey((cur) => (cur === a.key ? null : a.key))}
+                        />
+                      )
+                      : (
+                        // Clicking a block in the month grid selects that request and
+                        // jumps to the timeline with its card open (#373).
+                        <TeamCalendar
+                          events={calendarEvents}
+                          onSelectEvent={(ev) => { setSelectedAbsenceKey(`a-${ev.id}`); setCalendarView('timeline'); }}
+                        />
+                      )}
                   </Box>
                 </m.div>
               </AnimatePresence>
@@ -533,9 +580,51 @@ export default function ManagerDashboard() {
                 </Box>
               </Box>
             )}
+            {/* The selected leave bar's detail card, under the timeline (#373). */}
+            {calendarView === 'timeline' && selectedAbsence && (
+              <Box sx={{ px: 2, pb: 2 }}>
+                <AbsenceDetail
+                  absence={selectedAbsence}
+                  days={selectedAbsenceReq ? Number(selectedAbsenceReq.Days || 0) : null}
+                  colorOf={colorOf}
+                  processingEnabled={processingEnabled}
+                  busy={actionLoading === `${selectedAbsence.request_type}-${selectedAbsence.id}`}
+                  openPersonLabel={`Open ${firstName(selectedAbsence.who)}`}
+                  onApprove={async () => { await decide(selectedAbsence.request_type, selectedAbsence.id, true); setSelectedAbsenceKey(null); }}
+                  onReject={async () => { await decide(selectedAbsence.request_type, selectedAbsence.id, false); setSelectedAbsenceKey(null); }}
+                  onOpenHistory={() => openHistory({ request_type: selectedAbsence.request_type, id: selectedAbsence.id })}
+                  onOpenPerson={() => openTeamPerson(selectedAbsence.who)}
+                  onClose={() => setSelectedAbsenceKey(null)}
+                />
+              </Box>
+            )}
           </Paper>
           <Panel title="Who is in, day by day" aside="if every request is approved; weekdays only, holidays not marked">
-            <Seen><InPerDayChart points={inPerDay(names, absences, workingDays(calFrom, 28))} team={names.length} /></Seen>
+            <Seen>
+              <InPerDayChart
+                points={inPerDay(names, absences, workingDays(calFrom, 28))} team={names.length}
+                pickedDay={pickedDay}
+                onPickDay={(d) => setPickedDay((cur) => (cur && dayKey(cur) === dayKey(d) ? null : d))}
+              />
+            </Seen>
+            {/* The picked day's roster: who is off (kind, and "(asked)" when pending),
+                or that everyone is in (#373). A second click on the day hides it. */}
+            {pickedDay && (
+              <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: 'divider', display: 'grid', gap: 0.75 }}>
+                <Typography sx={{ fontWeight: 700 }}>{shortDate(dayKey(pickedDay))}</Typography>
+                {offOnPickedDay.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">Everyone is in.</Typography>
+                ) : (
+                  offOnPickedDay.map((a) => (
+                    <Box key={a.key} sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Box sx={{ width: 8, height: 8, borderRadius: 999, bgcolor: colorOf(a.who), flex: 'none' }} />
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>{labelOf(a.who)}</Typography>
+                      <Typography variant="body2" color="text.secondary">{a.label}{a.pending ? ' (asked)' : ''}</Typography>
+                    </Box>
+                  ))
+                )}
+              </Box>
+            )}
           </Panel>
         </>
       )}
@@ -550,12 +639,16 @@ export default function ManagerDashboard() {
           pending={pending}
           absences={absences}
           colorOf={colorOf}
+          labelOf={labelOf}
+          managerName={managerName}
           processingEnabled={processingEnabled}
           canLogSickDays={canLogSickDays}
           requestedFilter={teamFilterReq}
           onFilterApplied={() => setTeamFilterReq(null)}
+          requestedPerson={teamPersonReq}
+          onPersonRequested={() => setTeamPersonReq(null)}
+          onAddNewHire={() => go('add')}
           onLogSickDay={() => setSickDialogOpen(true)}
-          onOpenHistory={(r: any) => openHistory({ request_type: r?.request_type, id: r?.id })}
           onRefresh={refreshTeam}
           onNotify={(message, severity) => setSnack({ open: true, message, severity })}
         />
@@ -572,7 +665,8 @@ export default function ManagerDashboard() {
                   </Box>
                 ))}
               </Box>
-              <Seen><MonthlyBars months={monthly} upTo={today().getMonth()} /></Seen>
+              {/* Clicking a month opens History filtered to that month's approved leave (#373). */}
+              <Seen><MonthlyBars months={monthly} upTo={today().getMonth()} onPickMonth={(k) => openHistory({ status: 'Approved', month: k, year })} /></Seen>
             </Panel>
           </Box>
           <Panel title="By kind" aside={`${year}, approved`}>

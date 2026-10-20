@@ -251,6 +251,42 @@ def test_an_employee_token_cannot_reach_team_control(seeded):
     assert err.value.status_code == 403
 
 
+# --- #372: the full record for the manager person view ------------------------
+
+def test_a_manager_reads_a_teammates_record(seeded):
+    # Steve opens Roland (his teammate): the admin-shaped record comes back, with
+    # the item id, the directory fields and Steve among the resolved managers.
+    record = run(tm.team_member_record(STEVE_USER, "480"))
+    assert record["employee_id"] == "480"                               # the person asked for
+    assert record["fields"]["Title"] == "Roland Alvarez"                # directory fields present
+    assert "Steve Faith" in [m["name"] for m in record["people"]["managers"]]  # managers resolved
+
+
+def test_reading_a_non_teammates_record_is_refused(seeded):
+    # Omar is Dana's, not Steve's, so Steve cannot read his record.
+    with pytest.raises(HTTPException) as err:
+        run(tm.team_member_record(STEVE_USER, "482"))
+    assert err.value.status_code == 403
+
+
+def test_reading_an_archived_teammates_record_is_refused(seeded):
+    # Roland is Steve's, then leaves: an archived person is seen from the admin
+    # staff screen, not a team route, so the read is refused (#119).
+    run(_archive("480"))
+    with pytest.raises(HTTPException) as err:
+        run(tm.team_member_record(STEVE_USER, "480"))
+    assert err.value.status_code == 403
+    assert "archived" in err.value.detail.lower()
+
+
+def test_an_employee_token_cannot_read_a_team_record(seeded):
+    # The role guard refuses an employee token before any team check.
+    employee = DashboardUser(role="employee", user_id="480")
+    with pytest.raises(HTTPException) as err:
+        run(tm.team_member_record(employee, "480"))
+    assert err.value.status_code == 403
+
+
 # --- #362: a manager may never add or edit themselves (owner ruling 2026-10-19) ---
 
 def test_a_manager_cannot_add_themself_to_their_own_team(seeded):
