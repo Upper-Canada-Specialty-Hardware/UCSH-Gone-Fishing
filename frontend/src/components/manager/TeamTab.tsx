@@ -1,21 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Autocomplete, Box, Button, Chip, IconButton, MenuItem, Paper, TextField, Tooltip, Typography,
+  Autocomplete, Box, Button, ClickAwayListener, IconButton, Paper, TextField, Tooltip, Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
 import EventBusyIcon from '@mui/icons-material/EventBusy';
+import { AnimatePresence, m } from 'motion/react';
 import KindPill from '../KindPill';
 import PillToggle from '../PillToggle';
-import { STATUS_COLOR } from '../dataGridDefaults';
+import { Panel } from '../Panels';
+import { EXIT, riseAt } from '../Motion';
+import PersonProfile from '../admin/PersonProfile';
+import { VacationRings } from './Charts';
 import { Absence } from './teamStats';
-import { requestKind, requestWhat, requestWhen } from '../../utils/requestText';
 import { addDays, dayKey, formatDayRange, mondayOf, today } from '../../utils/dates';
 import { isHourly } from '../../utils/employment';
 import { kindColor } from '../../constants/leaveColors';
+import { StaffRecord } from '../../api/staff';
 import {
-  AddableMember, addTeamMember, getAddableMembers, getTeamMemberManagers,
-  removeTeamMember, updateTeamEntitlements,
+  AddableMember, addTeamMember, getAddableMembers, getTeamMemberRecord,
 } from '../../api/client';
 
 /** A tile filter key, or null for "show everyone". */
@@ -24,36 +27,6 @@ type FilterKey = 'waiting' | 'off' | 'low' | 'mu' | null;
 /** A filter asked for by another tab (a Today tile), with a nonce so the same
  *  tile re-applies on a second click. */
 export interface RequestedTeamFilter { key: Exclude<FilterKey, null>; nonce: number }
-
-/**
- * One editable balance pot: its backend wire key, the balances field it reads,
- * its label and its - / + step. Managers change these with a reason (#362).
- */
-interface Pot { key: string; balKey: string; label: string; step: number }
-
-/** The seven pots, in the admin profile's order: two grants then five balances. */
-const POTS: Pot[] = [
-  { key: 'vacation', balKey: 'vacation_balance', label: 'Vacation left', step: 0.5 },
-  { key: 'vacation_entitlement', balKey: 'vacation_entitlement', label: 'Vacation entitlement', step: 0.5 },
-  { key: 'sick', balKey: 'sick_balance', label: 'Sick left', step: 0.5 },
-  { key: 'sick_entitlement', balKey: 'sick_entitlement', label: 'Sick entitlement', step: 0.5 },
-  { key: 'make_up', balKey: 'overtime', label: 'Make-Up', step: 0.125 },
-  { key: 'carry_over', balKey: 'carryover', label: 'Carry-over', step: 0.5 },
-  { key: 'payout', balKey: 'payout', label: 'Payout', step: 0.5 },
-];
-// Hourly staff have no vacation balance and no make-up/carry-over/payout pots
-// (#300), so only these three may be changed for them.
-const HOURLY_POT_KEYS = new Set(['vacation_entitlement', 'sick_entitlement', 'sick']);
-
-/**
- * The pots a person's panel may change, by their type.
- *
- * @param hourly - Whether the person is hourly.
- * @returns The applicable pots.
- */
-function potsFor(hourly: boolean): Pot[] {
-  return hourly ? POTS.filter((p) => HOURLY_POT_KEYS.has(p.key)) : POTS;
-}
 
 /**
  * A short number: at most three decimals, trailing zeros trimmed.
@@ -78,14 +51,18 @@ function initials(name: string): string {
 interface Props {
   /** The team, each with a ``balances`` blob (from GET /team/members). */
   members: any[];
-  /** The team's requests (from GET /team/requests), for recent-requests and sorting. */
+  /** The team's requests (from GET /team/requests), for the person profile's activity. */
   requests: any[];
   /** The waiting requests (from GET /team/pending), for the "Waiting on you" tile. */
   pending: any[];
   /** Approved + asked absences, for "off this week" and "coming up". */
   absences: Absence[];
-  /** One stable colour per person, for the avatars. */
+  /** One stable colour per person, for the avatars and the vacation rings. */
   colorOf: (name: string) => string;
+  /** One short, unambiguous label per person, for the vacation rings. */
+  labelOf: (name: string) => string;
+  /** The signed-in manager's own name, for the person profile's manager mode (#372). */
+  managerName: string;
   /** Whether writes are on; Save / Add / Remove are disabled when off. */
   processingEnabled: boolean;
   /** Whether the manager's location may log a sick day (#130); shows the button. */
@@ -95,10 +72,15 @@ interface Props {
   /** Called once the requested filter has been applied, so the parent can drop
    *  it and a later manual open of the tab does not re-apply a stale filter. */
   onFilterApplied: () => void;
+  /** A person the Calendar tab asked to open (#373), with a nonce so the same
+   *  person re-opens on a second ask; applied once, then cleared. */
+  requestedPerson: { id: string; nonce: number } | null;
+  /** Called once the requested person has been opened, so the parent drops it. */
+  onPersonRequested: () => void;
+  /** Open the Add-a-new-hire screen (the dashboard's "add" tab). */
+  onAddNewHire: () => void;
   /** Open the sick-day dialog. */
   onLogSickDay: () => void;
-  /** Open a person's request in the History tab. */
-  onOpenHistory: (request: any) => void;
   /** Re-pull the team after a change (balances, add, remove) so the cards follow. */
   onRefresh: () => void;
   /** Surface a message on the dashboard snackbar. */
@@ -106,19 +88,20 @@ interface Props {
 }
 
 /**
- * The manager dashboard's Team tab (#361, #362, #363): tiles that filter the
- * team, a Cards or Table view, and a person panel that shows balances, what is
- * coming up and recent requests and lets the manager change balances and
- * entitlements, add people, or remove themselves. Everything is drawn from the
- * team endpoints the dashboard already loads; the balance and membership
- * changes call the new ``/team`` manage endpoints.
+ * The manager dashboard's Team tab (#361, #362, #363, #372): tiles that filter
+ * the team, a Cards or Table view, the vacation rings and a card per person in
+ * the old style, plus a dashed "add a new hire" card and an inline "add to my
+ * team" module. Clicking a person opens the admin person profile in manager mode
+ * in the grid's place, so a manager gets the same balances, entitlements,
+ * details and activity view admins get, scoped to their own team.
  *
  * @param props - See {@link Props}.
  * @returns The Team tab body.
  */
 export default function TeamTab({
-  members, requests, pending, absences, colorOf, processingEnabled, canLogSickDays,
-  requestedFilter, onFilterApplied, onLogSickDay, onOpenHistory, onRefresh, onNotify,
+  members, requests, pending, absences, colorOf, labelOf, managerName, processingEnabled,
+  canLogSickDays, requestedFilter, onFilterApplied, requestedPerson, onPersonRequested,
+  onAddNewHire, onLogSickDay, onRefresh, onNotify,
 }: Props) {
   const theme = useTheme();
   const t = theme.tokens;
@@ -127,8 +110,10 @@ export default function TeamTab({
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<'name' | 'vac' | 'sick' | 'mu' | 'off'>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);               // the Add-to-team picker is open
+  const [adding, setAdding] = useState(false);               // the inline "add to my team" module is open
+  const [selectedId, setSelectedId] = useState<string | null>(null);  // the open person's id
+  const [record, setRecord] = useState<StaffRecord | null>(null);     // their fetched full record
+  const [recordLoading, setRecordLoading] = useState(false);
 
   // A Today tile asks for a filter by bumping a nonce; apply it once, then tell
   // the parent to drop it so a later manual open does not re-apply a stale one.
@@ -188,7 +173,7 @@ export default function TeamTab({
     ];
   }, [members, waitingNames, absences]);
 
-  // The people the current tile and the search text keep.
+  // The people the current tile and the search text keep, sorted by the column.
   const shown = useMemo(() => {
     let list = members.slice();
     if (filter === 'low') list = list.filter((m) => !isHourly(m.balances) && Number(m.balances?.vacation_balance ?? 0) < 3);
@@ -212,11 +197,24 @@ export default function TeamTab({
     });
   }, [members, filter, search, sortKey, sortDir, waitingNames, absences]);
 
-  // The open person, re-read from members so a change (or a removal) follows live.
+  // Cards split into Salaried and Hourly bands (#300, #338): salaried keep every
+  // pot, hourly show a vacation-taken counter and Sick only.
+  const salariedShown = useMemo(() => shown.filter((m) => !isHourly(m.balances)), [shown]);
+  const hourlyShown = useMemo(() => shown.filter((m) => isHourly(m.balances)), [shown]);
+
+  // The open person's summary, re-read from members so a removal elsewhere closes
+  // the profile; their requests feed the profile's Activity list.
   const selected = selectedId ? members.find((m) => String(m.id) === selectedId) || null : null;
+  const theirRequests = useMemo(
+    () => (selected ? requests.filter((r) => (r.employee_name || '') === selected.name) : []),
+    [requests, selected],
+  );
   useEffect(() => {
-    // The selected person left the team (removed, or filtered out by a refetch).
-    if (selectedId && !members.some((m) => String(m.id) === selectedId)) setSelectedId(null);
+    // The open person left the team (removed, or filtered out by a refetch).
+    if (selectedId && !members.some((m) => String(m.id) === selectedId)) {
+      setSelectedId(null);
+      setRecord(null);
+    }
   }, [members, selectedId]);
 
   /** Toggle a tile filter; clicking the active one clears it. @param key - The tile. */
@@ -228,7 +226,40 @@ export default function TeamTab({
     else { setSortKey(key); setSortDir(1); }
   };
 
-  /** Add a picked person to this manager's team, then refresh. @param id - Staff id. */
+  /**
+   * Open a person: fetch their full record, then show the profile in the grid's
+   * place. Mirrors the admin staff screen's openPerson.
+   *
+   * @param id - Staff Directory id.
+   */
+  const openPerson = async (id: string) => {
+    setSelectedId(id);
+    setRecord(null);
+    setRecordLoading(true);
+    try {
+      const res = await getTeamMemberRecord(id);             // GET /team/members/{id}/record
+      setRecord(res.data);
+    } catch {
+      onNotify('That person could not be loaded.', 'error');
+      setSelectedId(null);
+    } finally {
+      setRecordLoading(false);
+    }
+  };
+
+  /** Re-read the team and the open person's record after a save, so both follow. */
+  const reloadRecord = async () => {
+    onRefresh();                                             // the team cards and the waiting count
+    if (!selectedId) return;
+    try {
+      const res = await getTeamMemberRecord(selectedId);     // the profile's own record
+      setRecord(res.data);
+    } catch {
+      /* the save already landed; the view just keeps the pre-save figures */
+    }
+  };
+
+  /** Add a picked person to this manager's team, then refresh. @param id - Staff id. @param name - Their name. */
   const doAdd = async (id: string, name: string) => {
     try {
       const res = await addTeamMember(id);
@@ -238,6 +269,126 @@ export default function TeamTab({
     } catch (err: any) {
       onNotify(err.response?.data?.detail || 'Could not add them to your team.', 'error');
     }
+  };
+
+  // The Calendar tab asked to open a person (#373): open them once per nonce,
+  // then tell the parent to drop the request so it is not re-applied on return.
+  const lastPersonNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (requestedPerson && requestedPerson.nonce !== lastPersonNonce.current) {
+      lastPersonNonce.current = requestedPerson.nonce;
+      openPerson(requestedPerson.id);                      // fetch the record and show the profile
+      onPersonRequested();                                 // parent clears it
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedPerson]);
+
+  // A person is open: the admin profile in manager mode takes the grid's place,
+  // exactly as the admin staff screen replaces its table (#372).
+  if (selectedId && record) {
+    return (
+      <PersonProfile
+        mode="manager"
+        managerName={managerName}
+        record={record}
+        requests={theirRequests}
+        users={[]}
+        setupProblems={[]}
+        processingEnabled={processingEnabled}
+        onBack={() => { setSelectedId(null); setRecord(null); }}
+        onSaved={reloadRecord}
+        onRemovedSelf={() => { setSelectedId(null); setRecord(null); onRefresh(); }}
+        onNotify={onNotify}
+      />
+    );
+  }
+  if (selectedId && recordLoading) {
+    return <Paper sx={{ p: 4 }}><Typography color="text.secondary">Loading the person...</Typography></Paper>;
+  }
+
+  /**
+   * One team member's balance card, in the pre-#361 style: avatar, placement,
+   * the balance lines for their type, and their next time off. The card lifts
+   * under the pointer and opens the person's profile on click.
+   *
+   * @param mem - The member and their balances.
+   * @param k - The card's index in its group, for the entrance stagger.
+   * @returns The animated, clickable card.
+   */
+  const renderMemberCard = (mem: any, k: number) => {
+    const b = mem.balances || {};
+    const n = nextOff(mem.name);                             // their next time away, approved or asked
+    const hourly = isHourly(b);                              // hourly: Sick plus a vacation counter
+    /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
+    const line = (label: string, v: number, of?: number) => (
+      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+        <Typography variant="body2" color="text.secondary">{label}</Typography>
+        <Typography variant="body2" sx={{ fontWeight: 700, color: v < 0 ? 'error.main' : 'text.primary' }}>{fmt(v)}{of ? ` of ${fmt(of)}` : ''}</Typography>
+      </Box>
+    );
+    return (
+      <m.div
+        key={mem.id}
+        layout
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96, transition: EXIT }}
+        style={{ display: 'grid' }}
+      >
+        {/* A card lifts slightly under the pointer so it reads as one object. */}
+        <Paper
+          role="button" tabIndex={0} aria-label={`Open ${mem.name}`}
+          onClick={() => openPerson(String(mem.id))}
+          onKeyDown={(e) => { if (e.key === 'Enter') openPerson(String(mem.id)); }}
+          sx={{
+            p: 2, display: 'grid', gap: 0.75, alignContent: 'start', cursor: 'pointer', ...riseAt(k, { step: 40, max: 8 }),
+            transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
+            '&:hover': { transform: 'translateY(-2px)', borderColor: t.line2 },
+          }}
+        >
+          <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center', mb: 0.5 }}>
+            <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(mem.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
+              {initials(mem.name)}
+            </Box>
+            <Box sx={{ minWidth: 0 }}>
+              {/* Wrap a long name onto a second line instead of cutting it off. */}
+              <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{mem.name}</Typography>
+              <Typography variant="caption" color="text.secondary">{mem.department || 'No department'} · {mem.location || 'No location'}</Typography>
+            </Box>
+          </Box>
+          {hourly ? (
+            <>
+              {/* Vacation is a counter here, not a balance: no "of", with a caption. */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>{fmt(b.vacation_taken ?? 0)}</Typography>
+              </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>This year. Counted, not a balance.</Typography>
+              {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+            </>
+          ) : (
+            <>
+              {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
+              {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
+              {line('Make-Up', b.overtime ?? 0)}
+              {line('Carry Over', b.carryover ?? 0)}
+            </>
+          )}
+          <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>
+            {n ? (
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Typography variant="body2" color="text.secondary">Next off</Typography>
+                {n.kind && <KindPill kind={n.kind} label={n.label} />}
+                <Typography variant="body2">
+                  {/* Full day format; formatDayRange shows one date when start == end. */}
+                  {formatDayRange(dayKey(n.start), dayKey(n.end))}{n.pending ? ' (asked)' : ''}
+                </Typography>
+              </Box>
+            ) : <Typography variant="body2" color="text.secondary">No time off booked.</Typography>}
+          </Box>
+        </Paper>
+      </m.div>
+    );
   };
 
   return (
@@ -269,7 +420,7 @@ export default function TeamTab({
         })}
       </Box>
 
-      {/* Toolbar: search, Cards/Table, Log sick day (where enabled), Add to my team. */}
+      {/* Toolbar: search, Cards/Table, and Log sick day (where enabled). */}
       <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
         <TextField
           label="Search by name" value={search} onChange={(e) => setSearch(e.target.value)}
@@ -280,20 +431,9 @@ export default function TeamTab({
           options={[{ key: 'cards', label: 'Cards' }, { key: 'table', label: 'Table' }]}
         />
         {canLogSickDays && (
-          <Button variant="outlined" startIcon={<EventBusyIcon />} disabled={!processingEnabled} onClick={onLogSickDay}>
+          <Button variant="outlined" startIcon={<EventBusyIcon />} disabled={!processingEnabled} onClick={onLogSickDay} sx={{ ml: { sm: 'auto' } }}>
             Log sick day
           </Button>
-        )}
-        {adding ? (
-          <AddPicker onPick={doAdd} onClose={() => setAdding(false)} />
-        ) : (
-          <Tooltip title={processingEnabled ? '' : 'Adding is off while the system is in reporting-only mode.'}>
-            <span>
-              <Button variant="contained" disabled={!processingEnabled} onClick={() => setAdding(true)}>
-                Add to my team
-              </Button>
-            </span>
-          </Tooltip>
         )}
       </Box>
 
@@ -303,154 +443,158 @@ export default function TeamTab({
         </Typography>
       )}
 
-      {/* The list (cards or table) beside the person panel when one is open. */}
-      <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: selected ? 'minmax(0, 1.4fr) minmax(0, 1fr)' : 'minmax(0, 1fr)' }, alignItems: 'start' }}>
-        <Box sx={{ minWidth: 0 }}>
-          {shown.length === 0 ? (
-            <Paper sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>Nobody matches this tile.</Paper>
-          ) : view === 'cards' ? (
-            <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: 'repeat(auto-fill, minmax(min(220px, 100%), 1fr))' }}>
-              {shown.map((m) => (
-                <MemberCard
-                  key={m.id} member={m} colorOf={colorOf} current={String(m.id) === selectedId} nextOff={nextOff(m.name)}
-                  onOpen={() => setSelectedId((id) => (id === String(m.id) ? null : String(m.id)))}
-                />
-              ))}
-            </Box>
-          ) : (
-            <MemberTable
-              members={shown} sortKey={sortKey} sortDir={sortDir} onSort={sortBy}
-              selectedId={selectedId} nextOffOf={nextOff}
-              onOpen={(id) => setSelectedId((cur) => (cur === id ? null : id))}
-            />
-          )}
-        </Box>
-        {selected && (
-          <PersonPanel
-            member={selected} requests={requests} absences={absences} processingEnabled={processingEnabled}
-            onClose={() => setSelectedId(null)} onOpenHistory={onOpenHistory}
-            onRefresh={onRefresh} onNotify={onNotify}
+      {shown.length === 0 && view === 'cards' && !search && !filter ? (
+        <Paper sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>Nobody is on your team yet.</Paper>
+      ) : view === 'table' ? (
+        shown.length === 0 ? (
+          <Paper sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>Nobody matches this tile.</Paper>
+        ) : (
+          <MemberTable
+            members={shown} sortKey={sortKey} sortDir={sortDir} onSort={sortBy}
+            selectedId={selectedId} nextOffOf={nextOff} onOpen={openPerson}
           />
-        )}
-      </Box>
+        )
+      ) : (
+        <>
+          {/* Vacation left is a salaried figure; hourly staff have a counter, not a balance. */}
+          {salariedShown.length > 0 && (
+            <Panel title="Vacation left"><VacationRings members={salariedShown} colorOf={colorOf} labelOf={labelOf} /></Panel>
+          )}
+          {/* The grid: Salaried and Hourly bands when both are present, then the two
+              dashed modules. A search fades out who no longer matches. */}
+          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', position: 'relative' }}>
+            <AnimatePresence mode="popLayout" initial={false}>
+              {salariedShown.length > 0 && hourlyShown.length > 0
+                ? [
+                    <GroupBanner key="band-salaried" label="Salaried" count={salariedShown.length} />,
+                    ...salariedShown.map((mem, k) => renderMemberCard(mem, k)),
+                    <GroupBanner key="band-hourly" label="Hourly" count={hourlyShown.length} />,
+                    ...hourlyShown.map((mem, k) => renderMemberCard(mem, k)),
+                  ]
+                : shown.map((mem, k) => renderMemberCard(mem, k))}
+              {/* The dashed "add a new hire" card, unchanged from the old look. */}
+              <m.div key="add-new-hire" layout style={{ display: 'grid' }}>
+                <Button variant="outlined" onClick={onAddNewHire} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px` }}>
+                  + Add a new hire
+                </Button>
+              </m.div>
+              {/* "Add to my team" as a dashed card that turns into an inline module. */}
+              <m.div key="add-to-team" layout style={{ display: 'grid' }}>
+                {adding ? (
+                  <AddToTeamCard processingEnabled={processingEnabled} onAdd={doAdd} onClose={() => setAdding(false)} />
+                ) : (
+                  <Tooltip title={processingEnabled ? '' : 'Adding is off while the system is in reporting-only mode.'}>
+                    <span style={{ display: 'grid' }}>
+                      <Button variant="outlined" disabled={!processingEnabled} onClick={() => setAdding(true)} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px`, width: '100%' }}>
+                        + Add to my team
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
+              </m.div>
+            </AnimatePresence>
+          </Box>
+        </>
+      )}
     </>
   );
 }
 
 /**
- * The inline "Add to my team" picker: it loads addable staff and adds the one
- * the manager chooses.
+ * A full-width banner heading one group of team cards in the balances grid.
  *
- * @param props.onPick - Called with the chosen person's id and name.
- * @param props.onClose - Close the picker without adding.
- * @returns The autocomplete.
+ * @param props.label - "Salaried" or "Hourly".
+ * @param props.count - How many people are in the group.
+ * @returns The banner, spanning every grid column.
  */
-function AddPicker({ onPick, onClose }: { onPick: (id: string, name: string) => void; onClose: () => void }) {
-  const [options, setOptions] = useState<AddableMember[]>([]);
+function GroupBanner({ label, count }: { label: string; count: number }) {
+  return (
+    <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'baseline', gap: 1, pt: 0.5 }}>
+      <Typography sx={{ fontWeight: 700 }}>{label}</Typography>
+      <Typography variant="caption" color="text.secondary">{count} {count === 1 ? 'person' : 'people'}</Typography>
+    </Box>
+  );
+}
+
+/**
+ * The inline "add to my team" module (#372): the dashed card becomes a search
+ * over the addable staff; once a person is picked it shows their name, placement
+ * and current managers, with a confirm action. Escape or a click away closes it.
+ *
+ * @param props.processingEnabled - Whether adding is on (the confirm is disabled otherwise).
+ * @param props.onAdd - Add the picked person (their id and name).
+ * @param props.onClose - Close the module without adding.
+ * @returns The inline module card.
+ */
+function AddToTeamCard({ processingEnabled, onAdd, onClose }: {
+  processingEnabled: boolean; onAdd: (id: string, name: string) => void; onClose: () => void;
+}) {
+  const [options, setOptions] = useState<AddableMember[]>([]);   // the addable staff
+  const [picked, setPicked] = useState<AddableMember | null>(null);  // the chosen person
   useEffect(() => {
     let live = true;
     getAddableMembers().then((r) => { if (live) setOptions(r.data.people || []); }).catch(() => { if (live) setOptions([]); });
     return () => { live = false; };
   }, []);
   return (
-    <Autocomplete
-      openOnFocus size="small" sx={{ minWidth: 260 }} options={options}
-      getOptionLabel={(o) => o.name}
-      isOptionEqualToValue={(a, b) => a.id === b.id}
-      onChange={(_, picked) => { if (picked) onPick(picked.id, picked.name); }}
-      onBlur={onClose}
-      renderOption={(props, o) => (
-        <li {...props} key={o.id}>
-          <Box>
-            <Typography sx={{ fontSize: 14 }}>{o.name}</Typography>
-            <Typography variant="caption" color="text.secondary">{o.department || 'No department'} · {o.location || 'No location'}</Typography>
+    // Click away closes; disablePortal keeps the options inside this subtree so a
+    // click on an option is not read as "away".
+    <ClickAwayListener onClickAway={onClose}>
+      <Paper
+        onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+        sx={{ p: 2, display: 'grid', gap: 1.25, border: '1px dashed', borderColor: 'primary.main', minHeight: 180, alignContent: 'start' }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Typography sx={{ fontWeight: 700 }}>Add to my team</Typography>
+          <IconButton size="small" aria-label="Close" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
+        </Box>
+        <Autocomplete
+          openOnFocus disablePortal size="small" options={options} value={picked}
+          getOptionLabel={(o) => o.name}
+          isOptionEqualToValue={(a, b) => a.id === b.id}
+          onChange={(_, p) => setPicked(p)}
+          renderOption={(props, o) => (
+            <li {...props} key={o.id}>
+              <Box>
+                <Typography sx={{ fontSize: 14 }}>{o.name}</Typography>
+                <Typography variant="caption" color="text.secondary">{o.department || 'No department'} · {o.location || 'No location'}</Typography>
+              </Box>
+            </li>
+          )}
+          renderInput={(params) => <TextField {...params} autoFocus placeholder="Search staff to add" aria-label="Add to my team" />}
+        />
+        {picked && (
+          <Box sx={{ display: 'grid', gap: 0.25 }}>
+            <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere' }}>{picked.name}</Typography>
+            <Typography variant="caption" color="text.secondary">{picked.department || 'No department'} · {picked.location || 'No location'}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Managers: {picked.managers && picked.managers.length ? picked.managers.join(', ') : 'None'}
+            </Typography>
           </Box>
-        </li>
-      )}
-      renderInput={(params) => <TextField {...params} autoFocus placeholder="Search staff to add" aria-label="Add to my team" />}
-    />
-  );
-}
-
-/**
- * One team member card: avatar, name, placement, a vacation-left bar (hourly
- * show a vacation-taken counter), sick left, and their next time off.
- *
- * @param props.member - The member and their balances.
- * @param props.colorOf - The avatar colour by name.
- * @param props.current - Whether this card's person is open in the panel.
- * @param props.nextOff - Their next absence, or null.
- * @param props.onOpen - Open this person in the panel.
- * @returns The card.
- */
-function MemberCard({ member, colorOf, current, nextOff, onOpen }: {
-  member: any; colorOf: (n: string) => string; current: boolean; nextOff: Absence | null; onOpen: () => void;
-}) {
-  const theme = useTheme();
-  const b = member.balances || {};
-  const hourly = isHourly(b);
-  const vac = Number(b.vacation_balance ?? 0);
-  const of = Number(b.vacation_entitlement ?? 0);
-  const low = vac < 3;
-  const pct = of > 0 ? Math.max(4, Math.min(100, (vac / of) * 100)) : 0;
-  return (
-    <Box
-      component="button" type="button" aria-current={current} onClick={onOpen}
-      sx={{
-        textAlign: 'left', font: 'inherit', cursor: 'pointer', display: 'grid', gap: 1,
-        p: 1.75, borderRadius: 2, border: 1, bgcolor: 'background.paper',
-        borderColor: current ? 'primary.main' : 'divider',
-        boxShadow: current ? `inset 0 0 0 1px ${theme.palette.primary.main}` : 'none',
-        '&:hover': { borderColor: theme.tokens.line2, bgcolor: theme.tokens.hover },
-      }}
-    >
-      <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center' }}>
-        <Box sx={{ width: 34, height: 34, borderRadius: 999, flex: 'none', bgcolor: colorOf(member.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 12.5 }}>
-          {initials(member.name)}
+        )}
+        <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', mt: 'auto' }}>
+          <Button size="small" onClick={onClose}>Cancel</Button>
+          <Button size="small" variant="contained" disabled={!picked || !processingEnabled} onClick={() => picked && onAdd(picked.id, picked.name)}>
+            Add
+          </Button>
         </Box>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere' }}>{member.name}</Typography>
-          <Typography variant="caption" color="text.secondary">{member.department || 'No department'} · {member.employment_type || 'Salaried'}</Typography>
-        </Box>
-      </Box>
-      {hourly ? (
-        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Typography variant="body2" color="text.secondary">Vacation taken</Typography>
-          <Typography variant="body2" sx={{ fontWeight: 700 }}>{fmt(b.vacation_taken ?? 0)}</Typography>
-        </Box>
-      ) : (
-        <Box sx={{ display: 'grid', gap: 0.5 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: 'text.secondary' }}>
-            <span>Vacation left</span><b style={{ color: low ? theme.palette.error.main : undefined }}>{fmt(vac)} of {fmt(of)}</b>
-          </Box>
-          {/* The bar fills to vacation-left; red when under three days. */}
-          <Box sx={{ height: 7, borderRadius: 999, bgcolor: theme.tokens.chip, overflow: 'hidden' }}>
-            <Box sx={{ height: '100%', width: `${pct}%`, borderRadius: 999, bgcolor: low ? theme.palette.error.main : kindColor('vacation', theme.palette.mode) }} />
-          </Box>
-        </Box>
-      )}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-        <Typography variant="body2" color="text.secondary">Sick left</Typography>
-        <Typography variant="body2" sx={{ fontWeight: 700 }}>{fmt(b.sick_balance ?? 0)}</Typography>
-      </Box>
-      <Typography variant="caption" sx={{ color: kindColor('vacation', theme.palette.mode), fontWeight: 600 }}>
-        {nextOff ? `Next off: ${formatDayRange(dayKey(nextOff.start), dayKey(nextOff.end))}${nextOff.pending ? ' (asked)' : ''}` : 'No time off booked'}
-      </Typography>
-    </Box>
+      </Paper>
+    </ClickAwayListener>
   );
 }
 
 /**
  * The team as a sortable table that never scrolls sideways: it drops the Make-Up
- * and next-off columns on a phone and wraps names instead of scrolling.
+ * and next-off columns on a phone and wraps names instead of scrolling. A row
+ * opens the person's profile.
  *
  * @param props.members - The people to list (already filtered and sorted).
  * @param props.sortKey - The active sort column.
  * @param props.sortDir - 1 ascending, -1 descending.
  * @param props.onSort - Sort by a column.
- * @param props.selectedId - The open person's id.
+ * @param props.selectedId - The open person's id (for the row highlight).
  * @param props.nextOffOf - A person's next absence.
- * @param props.onOpen - Open a person in the panel.
+ * @param props.onOpen - Open a person's profile.
  * @returns The table.
  */
 function MemberTable({ members, sortKey, sortDir, onSort, selectedId, nextOffOf, onOpen }: {
@@ -508,282 +652,6 @@ function MemberTable({ members, sortKey, sortDir, onSort, selectedId, nextOffOf,
           </Box>
         );
       })}
-    </Box>
-  );
-}
-
-/**
- * The person panel: balances, what is coming up, recent requests, and a Manage
- * block to change a balance or entitlement (#362) or remove the manager (#363).
- *
- * @param props.member - The open person and their balances.
- * @param props.requests - The team's requests, filtered here to this person.
- * @param props.absences - Absences, for the coming-up line.
- * @param props.processingEnabled - Whether writes are on.
- * @param props.onClose - Close the panel.
- * @param props.onOpenHistory - Open one of their requests in the History tab.
- * @param props.onRefresh - Re-pull the team after a change.
- * @param props.onNotify - Surface a message.
- * @returns The panel.
- */
-function PersonPanel({ member, requests, absences, processingEnabled, onClose, onOpenHistory, onRefresh, onNotify }: {
-  member: any; requests: any[]; absences: Absence[]; processingEnabled: boolean;
-  onClose: () => void; onOpenHistory: (r: any) => void; onRefresh: () => void;
-  onNotify: (m: string, s: 'success' | 'error') => void;
-}) {
-  const theme = useTheme();
-  const t = theme.tokens;
-  const b = member.balances || {};
-  const hourly = isHourly(b);
-  const [mode, setMode] = useState<null | 'adjust' | 'remove'>(null);
-  // The remove confirmation needs to know whether another manager would remain.
-  const [otherManager, setOtherManager] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // The person's own requests, newest first, for the recent list.
-  const theirRequests = useMemo(
-    () => requests
-      .filter((r) => (r.employee_name || '') === member.name)
-      .sort((a, c) => String(c.StartDate || '').localeCompare(String(a.StartDate || '')))
-      .slice(0, 6),
-    [requests, member.name],
-  );
-  // Their next time away, for the coming-up line.
-  const soon = absences
-    .filter((a) => a.who === member.name && a.end >= today())
-    .sort((x, y) => x.start.getTime() - y.start.getTime())[0];
-
-  // Reset the manage state whenever a different person opens.
-  useEffect(() => { setMode(null); setOtherManager(null); }, [member.id]);
-
-  /** Open the remove confirmation, first reading whether anyone else manages them. */
-  const openRemove = async () => {
-    setMode('remove');
-    setOtherManager(null);
-    try {
-      const res = await getTeamMemberManagers(String(member.id));
-      setOtherManager(Boolean(res.data.has_other_manager));
-    } catch {
-      setOtherManager(null);                                 // unknown: the warning stays cautious
-    }
-  };
-
-  /** Remove this manager from the person, then refresh and close. */
-  const doRemove = async () => {
-    setBusy(true);
-    try {
-      await removeTeamMember(String(member.id));
-      onNotify(`${member.name} removed from your team.`, 'success');
-      onClose();
-      onRefresh();
-    } catch (err: any) {
-      onNotify(err.response?.data?.detail || 'Could not remove them from your team.', 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const pots = potsFor(hourly);
-
-  return (
-    <Paper sx={{ p: 2, display: 'grid', gap: 2, alignContent: 'start', minWidth: 0, border: 1, borderColor: t.line2 }}>
-      {/* Head: name, placement, close. */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'start' }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h6" sx={{ overflowWrap: 'anywhere' }}>{member.name}</Typography>
-          <Typography variant="caption" color="text.secondary">{member.department || 'No department'} · {member.employment_type || 'Salaried'}</Typography>
-        </Box>
-        <IconButton aria-label="Close" size="small" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
-      </Box>
-
-      {/* Pots: hourly show a vacation-taken counter plus sick; salaried show all four. */}
-      <Box sx={{ display: 'grid', gap: 1, gridTemplateColumns: 'repeat(auto-fit, minmax(min(110px, 100%), 1fr))' }}>
-        {hourly ? (
-          <>
-            <PotTile label="vacation taken" value={b.vacation_taken ?? 0} />
-            <PotTile label="sick left" value={b.sick_balance ?? 0} />
-          </>
-        ) : (
-          <>
-            <PotTile label={`vacation left of ${fmt(b.vacation_entitlement ?? 0)}`} value={b.vacation_balance ?? 0} />
-            <PotTile label="sick left" value={b.sick_balance ?? 0} />
-            <PotTile label="Make-Up" value={b.overtime ?? 0} />
-            <PotTile label="carry-over" value={b.carryover ?? 0} />
-          </>
-        )}
-      </Box>
-
-      {/* Coming up. */}
-      <Box>
-        <PanelHead>Coming up</PanelHead>
-        <Typography variant="body2" color="text.secondary">
-          {soon ? `${formatDayRange(dayKey(soon.start), dayKey(soon.end))}${soon.pending ? ' (asked)' : ''}` : 'Nothing booked.'}
-        </Typography>
-      </Box>
-
-      {/* Recent requests: each opens its full row in History. */}
-      <Box>
-        <PanelHead>Recent requests</PanelHead>
-        {theirRequests.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">No requests this year.</Typography>
-        ) : (
-          <Box sx={{ display: 'grid' }}>
-            {theirRequests.map((r) => {
-              const status = r.Status || 'Pending';
-              return (
-                <Box
-                  key={`${r.request_type}-${r.id}`} component="button" type="button" onClick={() => onOpenHistory(r)}
-                  sx={{
-                    display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', width: '100%', textAlign: 'left',
-                    border: 0, borderBottom: 1, borderColor: 'divider', background: 'none', font: 'inherit', cursor: 'pointer',
-                    py: 0.75, '&:hover': { background: t.hover },
-                  }}
-                >
-                  <KindPill kind={requestKind(r)} label={requestWhat(r)} />
-                  <Typography variant="body2" color="text.secondary" sx={{ flex: '1 1 auto', minWidth: 0 }}>{requestWhen(r)}</Typography>
-                  <Chip size="small" color={STATUS_COLOR[status] || 'default'} label={status} />
-                </Box>
-              );
-            })}
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75 }}>Each request opens its full row in History.</Typography>
-          </Box>
-        )}
-      </Box>
-
-      {/* Manage: change a balance/entitlement, or remove from the team. */}
-      <Box sx={{ display: 'grid', gap: 1 }}>
-        <PanelHead>Manage</PanelHead>
-        {mode === 'adjust' ? (
-          <AdjustForm
-            member={member} pots={pots} processingEnabled={processingEnabled}
-            onDone={() => { setMode(null); onRefresh(); }} onCancel={() => setMode(null)} onNotify={onNotify}
-          />
-        ) : mode === 'remove' ? (
-          <Box sx={{ display: 'grid', gap: 1, p: 1.5, borderRadius: 2, border: 1, borderColor: 'error.main', bgcolor: alpha(theme.palette.error.main, 0.08) }}>
-            <Typography sx={{ fontWeight: 700 }}>Remove {member.name} from your team?</Typography>
-            <Typography variant="body2" color="text.secondary">
-              {otherManager === null
-                ? 'Checking whether anyone else manages them...'
-                : otherManager
-                  ? 'Another manager stays on them, so their requests still have somewhere to go.'
-                  : 'You are their only manager. Their requests will have nobody to go to until an admin or another manager adds them.'}
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
-              <Button size="small" onClick={() => setMode(null)} disabled={busy}>Keep</Button>
-              <Button size="small" color="error" variant="contained" onClick={doRemove} disabled={busy || !processingEnabled}>
-                {busy ? 'Removing...' : 'Remove'}
-              </Button>
-            </Box>
-          </Box>
-        ) : (
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            <Tooltip title={processingEnabled ? '' : 'Changes are off while the system is in reporting-only mode.'}>
-              <span>
-                <Button size="small" variant="outlined" disabled={!processingEnabled} onClick={() => setMode('adjust')}>
-                  Change a balance or entitlement
-                </Button>
-              </span>
-            </Tooltip>
-            <Button size="small" variant="outlined" color="error" onClick={openRemove}>Remove from my team</Button>
-          </Box>
-        )}
-      </Box>
-    </Paper>
-  );
-}
-
-/** A small uppercase section heading inside the panel. */
-function PanelHead({ children }: { children: React.ReactNode }) {
-  return (
-    <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'text.secondary', mb: 0.5 }}>
-      {children}
-    </Typography>
-  );
-}
-
-/**
- * One read-only balance tile in the panel.
- *
- * @param props.label - What it measures.
- * @param props.value - The days.
- * @returns The tile.
- */
-function PotTile({ label, value }: { label: string; value: number }) {
-  const theme = useTheme();
-  return (
-    <Box sx={{ bgcolor: theme.tokens.hover, borderRadius: 2, p: 1.25 }}>
-      <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 20, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: Number(value) < 0 ? 'error.main' : 'text.primary' }}>{fmt(value)}</Typography>
-      <Typography variant="caption" color="text.secondary">{label}</Typography>
-    </Box>
-  );
-}
-
-/**
- * The "change a balance or entitlement" form: pick a pot, enter a new value and
- * a required reason, and save through the team entitlements endpoint (#362).
- *
- * @param props.member - The person being changed.
- * @param props.pots - The pots that may be changed (fewer for hourly staff).
- * @param props.processingEnabled - Whether saving is on.
- * @param props.onDone - Called after a successful save.
- * @param props.onCancel - Drop the form.
- * @param props.onNotify - Surface a message.
- * @returns The form.
- */
-function AdjustForm({ member, pots, processingEnabled, onDone, onCancel, onNotify }: {
-  member: any; pots: Pot[]; processingEnabled: boolean;
-  onDone: () => void; onCancel: () => void; onNotify: (m: string, s: 'success' | 'error') => void;
-}) {
-  const b = member.balances || {};
-  const [potKey, setPotKey] = useState(pots[0].key);
-  const pot = pots.find((p) => p.key === potKey) || pots[0];
-  const current = Number(b[pot.balKey] ?? 0);
-  const [value, setValue] = useState(String(current));
-  const [reason, setReason] = useState('');
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  // Switching pots prefills the new pot's current value.
-  useEffect(() => { setValue(String(Number(b[pot.balKey] ?? 0))); }, [potKey]);
-
-  /** Validate and save the one change with its reason. */
-  const save = async () => {
-    const num = parseFloat(value);
-    if (Number.isNaN(num)) { setError('Enter a number.'); return; }
-    if (!reason.trim()) { setError('A reason is required.'); return; }
-    setError('');
-    setSaving(true);
-    try {
-      const res = await updateTeamEntitlements(String(member.id), { changes: { [pot.key]: num }, reason: reason.trim() });
-      onNotify(res.data.notice || `${pot.label} updated for ${member.name}.`, res.data.notice ? 'error' : 'success');
-      onDone();
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'The change could not be saved.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Box sx={{ display: 'grid', gap: 1 }}>
-      <TextField select size="small" label="Balance" value={potKey} onChange={(e) => setPotKey(e.target.value)}>
-        {pots.map((p) => <MenuItem key={p.key} value={p.key}>{p.label}</MenuItem>)}
-      </TextField>
-      <TextField
-        size="small" type="number" label="New value (days)" value={value}
-        onChange={(e) => setValue(e.target.value)} inputProps={{ step: pot.step }}
-      />
-      <TextField
-        size="small" label="Reason" value={reason} onChange={(e) => setReason(e.target.value)}
-        placeholder="For example: corrected after payroll check"
-      />
-      {error && <Typography variant="caption" color="error">{error}</Typography>}
-      <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
-        <Button size="small" onClick={onCancel} disabled={saving}>Cancel</Button>
-        <Button size="small" variant="contained" onClick={save} disabled={saving || !processingEnabled}>
-          {saving ? 'Saving...' : 'Save'}
-        </Button>
-      </Box>
     </Box>
   );
 }

@@ -65,6 +65,10 @@ export interface HistoryFocus {
   kind_label?: string;
   /** Filter to this status pill value ("Approved", "Pending" ...). */
   status?: string;
+  /** Filter to one calendar month (#373): 0-based month and its year, used
+   *  together. The manager Trends "days off per month" bars open History here. */
+  month?: number;
+  year?: number;
 }
 
 /** What the shared history table needs. */
@@ -93,6 +97,10 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
   const [statusView, setStatusView] = useState('all');                       // the active status pill
   const [kind, setKind] = useState('all');                                   // the type filter
   const [range, setRange] = useState('any');                                 // the date range
+  // One specific calendar month to narrow to (#373), set by a Trends focus and
+  // cleared when the reader touches the date dropdown. Separate from ``range``
+  // because ``range`` only knows relative windows (this week, this month...).
+  const [monthFocus, setMonthFocus] = useState<{ year: number; month: number } | null>(null);
   const [sort, setSort] = useState<{ k: string; dir: 1 | -1 }>({ k: 'when', dir: -1 });   // newest first by default
   const [openKey, setOpenKey] = useState<string | null>(null);               // the opened row, or none
   const [fitNote, setFitNote] = useState('');                                // the dropped-columns note
@@ -126,8 +134,18 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
     if (q && !searchText(r).includes(q)) return false;
     if (statusView !== 'all' && r.status !== statusView) return false;
     if (kind !== 'all' && r.kindLabel !== kind) return false;
+    if (monthFocus) {
+      // Narrow to one calendar month (#373): the row's span must overlap it.
+      const d = refDate(r);                               // the date this row sits on
+      if (!d) return false;                               // undated rows cannot be in a month
+      const start = parseDate(d);
+      const end = r.src === 'leave' && r.end ? parseDate(r.end) : start;   // leave spans start..end
+      const a = new Date(monthFocus.year, monthFocus.month, 1);            // the month's first day
+      const b = new Date(monthFocus.year, monthFocus.month + 1, 0);        // its last day
+      if (!(end >= a && start <= b)) return false;        // no overlap with the month
+    }
     return inRange(r);
-  }, [query, statusView, kind, inRange]);
+  }, [query, statusView, kind, inRange, monthFocus]);
 
   // A click on another tab (#361) lands here: open one request, or filter to a
   // kind and status. Runs when a new focus object arrives; rows that are not
@@ -135,6 +153,8 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
   useEffect(() => {
     if (!focus) return;                                                     // nothing asked for
     setRange('any');                                                        // never hide the target by date
+    // A month focus (#373) narrows to one calendar month; any other focus clears it.
+    setMonthFocus(focus.month != null && focus.year != null ? { year: focus.year, month: focus.month } : null);
     if (focus.id != null && focus.request_type) {
       const hit = allRows.find((r) => r.request_type === focus.request_type && r.id === String(focus.id));
       setQuery('');                                                         // clear anything that could hide it
@@ -232,13 +252,24 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
           <MenuItem value="all">All types</MenuItem>
           {kindOptions.map((k) => <MenuItem key={k} value={k}>{k}</MenuItem>)}
         </TextField>
-        <TextField select size="small" value={range} onChange={(e) => setRange(e.target.value)} aria-label="Dates" sx={{ minWidth: 130 }}>
+        <TextField select size="small" value={range} onChange={(e) => { setRange(e.target.value); setMonthFocus(null); }} aria-label="Dates" sx={{ minWidth: 130 }}>
           <MenuItem value="any">Any date</MenuItem>
           <MenuItem value="week">This week</MenuItem>
           <MenuItem value="month">This month</MenuItem>
           <MenuItem value="next30">Next 30 days</MenuItem>
           <MenuItem value="year">This year</MenuItem>
         </TextField>
+        {/* A month picked from Trends (#373), shown as a removable filter. */}
+        {monthFocus && (
+          <Button
+            size="small" variant="contained" color="primary" onClick={() => setMonthFocus(null)}
+            aria-label={`Clear the month filter ${new Date(monthFocus.year, monthFocus.month, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`}
+            sx={{ borderRadius: 999, py: 0.25 }}
+          >
+            {new Date(monthFocus.year, monthFocus.month, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+            <Box component="span" sx={{ ml: 0.75 }}>✕</Box>
+          </Button>
+        )}
         {mode === 'team' && (
           <Button size="small" variant="outlined" color="inherit" onClick={doExport}>Export to Excel</Button>
         )}

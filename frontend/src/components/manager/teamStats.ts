@@ -22,6 +22,11 @@ export interface Absence {
   kind: RequestKind | null;
   /** Asked but not approved yet. */
   pending: boolean;
+  /** The source request's url-form type ("leave"), so a click can open or decide
+   *  it (#373). Leave is the only kind that is time away. */
+  request_type: string;
+  /** The source request's id, paired with request_type to find the full row. */
+  id: string;
 }
 
 /**
@@ -38,13 +43,13 @@ export function absencesFrom(events: any[], pending: any[]): Absence[] {
     const start = parseDay(e.start), end = parseDay(e.end) || start;
     if (!start || !end) continue;                        // an event without dates cannot be placed
     const row = { request_type: 'leave', LeaveType: e.leave_type };
-    out.push({ key: `a-${e.id}`, who: e.employee, start, end, label: requestWhat(row), kind: requestKind(row), pending: false });
+    out.push({ key: `a-${e.id}`, who: e.employee, start, end, label: requestWhat(row), kind: requestKind(row), pending: false, request_type: 'leave', id: String(e.id) });
   }
   for (const p of pending) {
     if (p.request_type !== 'leave') continue;
     const start = parseDay(p.StartDate), end = parseDay(p.EndDate) || start;
     if (!start || !end) continue;
-    out.push({ key: `p-${p.id}`, who: requestWho(p), start, end, label: requestWhat(p), kind: requestKind(p), pending: true });
+    out.push({ key: `p-${p.id}`, who: requestWho(p), start, end, label: requestWhat(p), kind: requestKind(p), pending: true, request_type: 'leave', id: String(p.id) });
   }
   return out;
 }

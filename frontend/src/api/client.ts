@@ -1,6 +1,9 @@
 import axios from 'axios';
 import { clearSession, loadSession, setSignInNotice } from './intake';
 import { ADMIN_SIGNED_OUT, AdminSession, adminSessionToken, clearAdminSession } from './adminSession';
+// Type only (erased at build time, so no runtime import cycle): the manager
+// person view reuses the admin record shape (#372).
+import type { StaffRecord } from './staff';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -274,6 +277,9 @@ export interface AddableMember {
   location: string;
   employment_type: string;
   system_check: string;
+  /** The names already managing this person, so the add-to-team module can show
+   *  them before the add (#372). */
+  managers: string[];
 }
 
 /**
@@ -324,3 +330,19 @@ export const addTeamMember = (employeeId: string) =>
  */
 export const removeTeamMember = (employeeId: string) =>
   api.delete(`/team/members/${employeeId}`);
+
+/*
+ * #372 - the manager dashboard's team person view reuses the admin PersonProfile.
+ */
+
+/**
+ * One teammate's full record for the manager person view (#372). Same payload as
+ * the admin ``GET /admin/employees/{id}``, so the admin ``PersonProfile`` is
+ * reused in manager mode; refused (403) for anyone not on the caller's team (an
+ * archived person included).
+ *
+ * @param employeeId - Staff Directory id of the teammate.
+ * @returns The staff record (``employee_id``, ``fields``, ``people``, ``history``).
+ */
+export const getTeamMemberRecord = (employeeId: string) =>
+  api.get<StaffRecord>(`/team/members/${employeeId}/record`);
