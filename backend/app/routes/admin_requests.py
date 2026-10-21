@@ -16,7 +16,11 @@ table calls them unchanged. Only the genuinely new behaviour lives here:
 * POST /admin/requests/preview  - what a new request would do to balances;
 * POST /admin/requests/export   - an .xlsx of the requests the admin is viewing;
 * GET  /admin/requests/new-options - the Staff Directory people and leave types
-                                   the new-request dialog needs.
+                                   the new-request dialog needs;
+* GET  /admin/requests/{type}/{id}/settle - what settling an approved request
+                                   that never moved a balance would do (#400);
+* POST /admin/requests/{type}/{id}/settle - settle it: take it off now, already
+                                   taken off by hand, or no balance needed.
 """
 
 import logging
@@ -32,6 +36,7 @@ from app.database import async_session
 from app.models.request_deletion import RequestDeletion
 from app.repositories.postgres.staff import is_archived   # refuse an archived person a new request (#119)
 from app.repositories.request_store import request_store
+from app.services import balance_settle   # settle an approved request that never moved a balance (#400)
 # The same creation, validation, preview and approval pieces every other way
 # of making a request uses, so an admin-made request is identical to a normal one.
 # _format_balances and _resolve_managers are the dashboard router's own helpers;
@@ -128,6 +133,14 @@ class DeleteBody(BaseModel):
 
     reason: str                       # required, never blank
     refund: bool = False              # True: reverse an approved item's balance change first
+
+
+class SettleBody(BaseModel):
+    """What one step of the settle dialog posts (#400)."""
+
+    outcome: str                      # "now", "hand" or "none"
+    reason: str                       # required, never blank
+    pieces: dict[str, float] | None = None   # "hand" leave only: {pot: days taken}
 
 
 class ExportBody(BaseModel):
@@ -388,6 +401,77 @@ async def admin_delete_request(request_type: str, request_id: str, body: DeleteB
 
     logger.info("Admin deleted %s request #%s (refunded=%s)", request_type, request_id, refunded)
     return {"status": "deleted", "request_type": request_type, "request_id": str(request_id), "refunded": refunded}
+
+
+# The url's request type to the stored kind the settle service reads.
+SETTLE_KIND = {"leave": "leave", "overtime": "overtime", "carryover-payout": "carryover_payout"}
+
+
+def _settle_kind(request_type: str) -> str:
+    """The stored kind for a url request type, or a 400.
+
+    Args:
+        request_type: "leave", "overtime" or "carryover-payout".
+
+    Returns:
+        The stored kind.
+
+    Raises:
+        HTTPException: 400 for an unknown type.
+    """
+    kind = SETTLE_KIND.get(request_type)
+    if kind is None:
+        raise HTTPException(status_code=400, detail="Invalid request type")
+    return kind
+
+
+@router.get("/admin/requests/{request_type}/{request_id}/settle")
+async def admin_settle_preview(request_type: str, request_id: str):
+    """What settling one approved, never-applied request would do. Writes nothing.
+
+    Args:
+        request_type: "leave", "overtime" or "carryover-payout".
+        request_id: The item id.
+
+    Returns:
+        The request, the person's pots now, and the planned moves (see
+        ``balance_settle.settle_preview``).
+
+    Raises:
+        HTTPException: 400 bad type, 404 gone, 409 not settleable.
+    """
+    try:
+        return await balance_settle.settle_preview(_settle_kind(request_type), request_id)
+    except balance_settle.SettleError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/admin/requests/{request_type}/{request_id}/settle")
+async def admin_settle_request(request_type: str, request_id: str, body: SettleBody):
+    """Settle one approved request that never moved a balance (#400).
+
+    Args:
+        request_type: "leave", "overtime" or "carryover-payout".
+        request_id: The item id.
+        body: outcome ("now", "hand", "none"), the required reason, and for a
+            "hand" leave the days taken per pot.
+
+    Returns:
+        ``{"status": "settled", "outcome", "balance_state", "moves"}``.
+
+    Raises:
+        HTTPException: 400 bad input, 404 gone, 409 already settled or not
+            possible, 503 while processing is off.
+    """
+    kind = _settle_kind(request_type)
+    if not settings.PROCESSING_ENABLED:                        # a balance write, like every other admin action
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    try:
+        result = await balance_settle.settle(kind, request_id, body.outcome, body.reason, body.pieces)
+    except balance_settle.SettleError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    logger.info("Admin settled %s request #%s: %s", request_type, request_id, result["outcome"])
+    return result
 
 
 @router.post("/admin/requests/export")

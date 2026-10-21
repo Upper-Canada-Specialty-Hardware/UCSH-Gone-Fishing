@@ -18,7 +18,7 @@ import { TableActions } from './RequestsTable';
 import SplitRequestsTable from './SplitRequestsTable';
 import RequestsCalendar from './RequestsCalendar';
 import { useFitColumns } from './useFitColumns';
-import DeleteRequestDialog from './DeleteRequestDialog';
+import DeleteRequestDialog, { movedBalance } from './DeleteRequestDialog';
 import NewRequestDialog from './NewRequestDialog';
 import { StaffOption, deleteAdminRequest, exportAdminRequests, flushDeleteBeacon, getNewRequestOptions } from '../../api/requestsAdmin';
 import { getAdminHolidays } from '../../api/client';
@@ -174,16 +174,18 @@ export default function RequestsScreen(props: Props) {
     if (!p) return;
     clearTimeout(p.timer);
     pendingDelete.current = null;
-    const body = { reason: p.reason, refund: p.refund };
+    // Refund only a row whose balance change is on record (#402): a refund of an
+    // approved row with nothing recorded would re-derive and give back days never taken.
+    const bodyFor = (r: Row) => ({ reason: p.reason, refund: p.refund && movedBalance(r) });
     if (viaBeacon) {
-      p.rows.forEach((r) => flushDeleteBeacon(r.request_type, r.id, body));   // keepalive: survives the page unload
+      p.rows.forEach((r) => flushDeleteBeacon(r.request_type, r.id, bodyFor(r)));   // keepalive: survives the page unload
       return;
     }
     // Delete each on the server, keeping which succeeded. A failed delete means
     // the item is still there, so it must come back into view with a clear
     // reason, not disappear silently (#294 S10).
     Promise.all(p.rows.map((r) =>
-      deleteAdminRequest(r.request_type, r.id, body)
+      deleteAdminRequest(r.request_type, r.id, bodyFor(r))
         .then(() => ({ r, ok: true, detail: '' }))
         .catch((e) => ({ r, ok: false, detail: typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : '' })),
     )).then((results) => {
