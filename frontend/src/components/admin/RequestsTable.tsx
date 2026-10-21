@@ -568,13 +568,16 @@ function BalanceSteps({ r, showRawLog, onAudit }: { r: Row; showRawLog: boolean;
   }
 
   return (
-    <Box sx={{ display: 'grid' }}>
+    // minWidth 0 lets this shrink inside the card instead of forcing it wider (#426).
+    <Box sx={{ display: 'grid', minWidth: 0 }}>
       {steps.map((s, i) => (
         <Box key={i} sx={{ display: 'grid', gridTemplateColumns: '22px minmax(0, 1fr)', gap: 1.25, pb: 1.5, position: 'relative', '&:not(:last-of-type)::before': { content: '""', position: 'absolute', left: 10, top: 20, bottom: 0, width: 2, bgcolor: theme.tokens.line } }}>
           <Box sx={{ width: 22, height: 22, borderRadius: '50%', bgcolor: 'primary.main', color: 'primary.contrastText', fontSize: 11.5, fontWeight: 700, display: 'grid', placeItems: 'center' }}>{i + 1}</Box>
-          <Box>
-            <Box sx={{ fontSize: 14, fontWeight: 600 }}>{s.op || 'Then'}</Box>
-            {s.field && <Box sx={{ fontSize: 13, color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>{s.field} <b style={{ color: theme.palette.text.primary }}>{num(s.before)} → {num(s.after)}</b> ({s.after - s.before > 0 ? '+' : ''}{num(s.after - s.before)})</Box>}
+          {/* minWidth 0 + overflowWrap so a long field name or figure wraps inside
+              the card at every width, rather than running into its edge (#426). */}
+          <Box sx={{ minWidth: 0 }}>
+            <Box sx={{ fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere' }}>{s.op || 'Then'}</Box>
+            {s.field && <Box sx={{ fontSize: 13, color: 'text.secondary', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>{s.field} <b style={{ color: theme.palette.text.primary }}>{num(s.before)} → {num(s.after)}</b> ({s.after - s.before > 0 ? '+' : ''}{num(s.after - s.before)})</Box>}
           </Box>
         </Box>
       ))}

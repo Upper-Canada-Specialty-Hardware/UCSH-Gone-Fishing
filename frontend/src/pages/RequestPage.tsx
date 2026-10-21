@@ -255,6 +255,8 @@ export default function RequestPage() {
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
+  // The carry-over/payout window HR set (ISO dates), or null; shown in the policy above that form (#429).
+  const [carryoverWindow, setCarryoverWindow] = useState<{ start: string; end: string } | null>(null);
   const [myBalances, setMyBalances] = useState<Balances | null>(null);  // signed-in employee's balances (#300)
   const hourlyStaff = isHourly(myBalances);                     // hourly: forms and summary adapt
   const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
@@ -275,9 +277,12 @@ export default function RequestPage() {
   // Carry-over and payout are only taken between the dates an admin set (#176).
   useEffect(() => {
     getRequestTypes()
-      .then(({ data }) => setCarryoverClosed(
-        carryoverClosedReason(data.carryover_payout_open, data.carryover_payout_window, data.today),
-      ))
+      .then(({ data }) => {
+        setCarryoverClosed(
+          carryoverClosedReason(data.carryover_payout_open, data.carryover_payout_window, data.today),
+        );
+        setCarryoverWindow(data.carryover_payout_window);    // the dates HR set, for the policy (#429)
+      })
       .catch(() => setCarryoverClosed(CARRYOVER_UNKNOWN));    // unknown: do not offer them
   }, []);
   // A closed form (or an hourly employee, who has no vacation balance to move)
@@ -664,7 +669,7 @@ export default function RequestPage() {
                 <AutoHeight>
                   <AnimatePresence mode="wait" initial={false}>
                     <m.div key={type} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: EXIT }}>
-                      <RequestForm type={type} values={values} onChange={setValue} hourlyStaff={hourlyStaff} />
+                      <RequestForm type={type} values={values} onChange={setValue} hourlyStaff={hourlyStaff} carryoverWindow={carryoverWindow} />
                     </m.div>
                   </AnimatePresence>
                 </AutoHeight>
@@ -707,7 +712,7 @@ export default function RequestPage() {
                 <AutoHeight>
                   <AnimatePresence mode="wait" initial={false}>
                     <m.div key={type} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: EXIT }}>
-                      <RequestForm type={type} values={values} onChange={setValue} />
+                      <RequestForm type={type} values={values} onChange={setValue} carryoverWindow={carryoverWindow} />
                     </m.div>
                   </AnimatePresence>
                 </AutoHeight>

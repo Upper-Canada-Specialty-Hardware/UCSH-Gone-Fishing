@@ -43,7 +43,7 @@ reads and feeds the pure core.
 import logging
 from datetime import date, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from app.config import settings
 from app.database import async_session
@@ -66,7 +66,7 @@ from app.services.balance import (
     simulate_overtime_impact,
     simulate_carryover_payout_impact,
 )
-from app.repositories.request_store import request_store
+from app.repositories.request_store import request_store, requests_in_postgres
 from app.repositories.staff_store import staff_in_postgres, staff_store  # Staff Directory reads follow staff_storage
 from app.services.staff_cleanup import clean_email, collapse_whitespace  # the normal form names/emails are held to
 
@@ -1337,6 +1337,117 @@ async def fetch_approval_email_records(matched: list[tuple]) -> set[tuple[str, s
         return None
 
 
+# The url-form kind each caller passes -> the kind stored in requests.kind, so a
+# step key is built with the value the outbox rows actually carry (#416).
+_URL_TO_STORED_KIND = {"leave": "leave", "overtime": "overtime", "carryover-payout": "carryover_payout"}
+
+
+async def fetch_manager_asked_records(matched: list[tuple]) -> set[tuple[str, str]] | None:
+    """Which of these requests had a manager actually asked, on the Postgres path (#416).
+
+    In Postgres mode the record that a manager was asked is a ``manager_approval``
+    outbox row for the request's CURRENT approval version (aligned with
+    ``_manager_ever_asked`` in request_submission). An imported request
+    (``sp_item_id`` set) was asked by the old SharePoint path, which left no outbox
+    row, so it is also accepted when it has a ``request_approval_state`` row (the
+    old record of a send). One bulk query per table, never one per request.
+
+    Args:
+        matched: (kind, list_id, item) triples, kind in url form.
+
+    Returns:
+        The (list_id, item_id) pairs whose manager was asked, or None when the
+        tables could not be read (reported as unknown, never as "never asked").
+    """
+    if not matched:
+        return set()
+    from app.models.outbox import Outbox
+    from app.models.request_record import RequestRecord
+    from app.services.request_journal import step_key
+
+    # (stored_kind, item_id_int, list_id, item_id_str) for each readable entry.
+    wanted: list[tuple] = []
+    for kind, list_id, item in matched:
+        try:
+            item_id_int = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue                                              # not a numeric id: cannot match a typed row
+        wanted.append((_URL_TO_STORED_KIND.get(kind, kind), item_id_int, list_id, str(item.get("id"))))
+    if not wanted:
+        return set()
+    try:
+        async with async_session() as session:
+            # Load the typed rows for every wanted (kind, item_id), grouped by kind.
+            ids_by_kind: dict[str, set] = {}
+            for stored_kind, item_id_int, _, _ in wanted:
+                ids_by_kind.setdefault(stored_kind, set()).add(item_id_int)
+            records = []
+            for stored_kind, ids in ids_by_kind.items():
+                records.extend((await session.execute(
+                    select(RequestRecord).where(
+                        RequestRecord.kind == stored_kind, RequestRecord.item_id.in_(ids)
+                    )
+                )).scalars().all())
+            rec_by_key = {(r.kind, r.item_id): r for r in records}
+            rec_ids = [r.id for r in records]
+
+            # The manager_approval outbox rows for those requests, keys collected
+            # per request so each is tested against its own current-version prefix.
+            keys_by_request: dict[int, list[str]] = {}
+            if rec_ids:
+                for rid, key in (await session.execute(
+                    select(Outbox.request_id, Outbox.idempotency_key).where(
+                        Outbox.request_id.in_(rec_ids),
+                        Outbox.message_type == "manager_approval",
+                        # Count a row as an ask only while it still stands a chance
+                        # of reaching the manager: sent, queued, in flight, or a
+                        # failed row still scheduled to retry. A permanently failed
+                        # or dropped row is NOT an ask, so a request whose every
+                        # manager ask failed reads as stuck, not emailed (finding 9).
+                        or_(
+                            Outbox.status.in_(("sent", "pending", "sending")),
+                            and_(Outbox.status == "failed", Outbox.next_attempt_at.isnot(None)),
+                        ),
+                    )
+                )).all():
+                    keys_by_request.setdefault(rid, []).append(key)
+
+            # The old approval-state rows, which still count for imported requests.
+            list_ids = {list_id for _, _, list_id, _ in wanted}
+            item_id_strs = {s for _, _, _, s in wanted}
+            state_pairs = {
+                (row.list_id, row.item_id) for row in (await session.execute(
+                    select(RequestApprovalState.list_id, RequestApprovalState.item_id).where(
+                        RequestApprovalState.list_id.in_(list_ids),
+                        RequestApprovalState.item_id.in_(item_id_strs),
+                    )
+                )).all()
+            }
+    except Exception:  # noqa: BLE001 - an unreadable table is reported as unknown, never as "never asked"
+        logger.exception("Setup check: could not read the manager-asked records")
+        return None
+
+    asked: set[tuple[str, str]] = set()
+    for stored_kind, item_id_int, list_id, item_id_str in wanted:
+        record = rec_by_key.get((stored_kind, item_id_int))
+        asked_via_outbox = False
+        imported = False
+        if record is not None:
+            imported = record.sp_item_id is not None              # only an imported row trusts the old table
+            prefix = step_key(stored_kind, item_id_int, "sent_to_manager", record.approval_version)
+            asked_via_outbox = any(
+                key.startswith(f"{prefix}:") for key in keys_by_request.get(record.id, [])
+            )
+        # The old approval-state table proves a send only for an IMPORTED request.
+        # An app-made request also gains a state row (from an edit via
+        # _sync_version_state / apply_admin_edit) without a manager ever being
+        # asked, so it must rely on its own manager_approval outbox row, never that
+        # state row (finding 8).
+        if asked_via_outbox or (imported and (list_id, item_id_str) in state_pairs):
+            asked.add((list_id, item_id_str))
+    return asked
+
+
 async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) -> list[dict]:
     """Read this employee's own requests from the three request lists.
 
@@ -1403,7 +1514,14 @@ async def _fetch_employee_requests(employee_id: str | int, submitter_lookup_id) 
         if str(item.get("fields", {}).get("EmployeeID") or "") == str(employee_id):
             matched.append(("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT, item))
 
-    emailed = await fetch_approval_email_records(matched)
+    # In Postgres mode the record of a manager ask is a manager_approval outbox
+    # row (imported rows also honour the old table); in SharePoint mode it is the
+    # approval-state row the old send wrote (#416).
+    emailed = (
+        await fetch_manager_asked_records(matched)
+        if await requests_in_postgres()
+        else await fetch_approval_email_records(matched)
+    )
     return [
         summarise_request(
             kind, item,

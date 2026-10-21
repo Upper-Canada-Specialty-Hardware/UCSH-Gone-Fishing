@@ -131,7 +131,12 @@ export function eventToRow(ev: LiveEvent): Record<string, unknown> {
     request_type: requestTypeOf(ev.kind),                  // merge key: which list
     id: String(ev.item_id),                                // merge key: which item
   };
-  if (ev.stage) patch.stage = ev.stage;                    // the live stage in words
+  // A pending row's live stage ("Waiting for <manager>") is derived server-side
+  // only in the list read, not carried on the event payload, which holds the
+  // stored stage (e.g. "Submitted, receipt sent"). Patching it from a pending
+  // event would revert the derived label, so the stage is only taken from a
+  // decided event, where the stored stage is right and should update live (finding 11).
+  if (ev.stage && ev.status !== 'pending') patch.stage = ev.stage;
   if (ev.status) patch.Status = statusLabel(ev.status);    // Pending/Approved/...
   if (ev.employee_name) patch.employee_name = ev.employee_name;
   if (ev.leave_type) patch.LeaveType = ev.leave_type;

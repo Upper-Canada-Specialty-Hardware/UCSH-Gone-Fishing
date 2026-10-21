@@ -87,8 +87,9 @@ export const getTeamCalendar = (params?: Record<string, string>) =>
   api.get('/team/calendar', { params });
 export const approveRequest = (type: string, id: string) =>
   api.post(`/team/approve/${type}/${id}`);
-export const rejectRequest = (type: string, id: string) =>
-  api.post(`/team/reject/${type}/${id}`);
+// A reject now carries the reason the manager typed; the backend requires it (#433).
+export const rejectRequest = (type: string, id: string, reason: string) =>
+  api.post(`/team/reject/${type}/${id}`, { reason });
 
 // Manager - log a sick day for a team member; the backend creates the "Sick or
 // Personal Day" request in their name and approves it on the spot. Offered only
@@ -107,8 +108,9 @@ export const getAdminStats = () => api.get('/admin/stats');
 
 export const adminApproveRequest = (type: string, id: string) =>
   api.post(`/admin/approve/${type}/${id}`);
-export const adminRejectRequest = (type: string, id: string) =>
-  api.post(`/admin/reject/${type}/${id}`);
+// A reject now carries the reason HR typed; the backend requires it (#433).
+export const adminRejectRequest = (type: string, id: string, reason: string) =>
+  api.post(`/admin/reject/${type}/${id}`, { reason });
 
 export const adminSendReminder = (type: string, id: string) =>
   api.post(`/admin/send-reminder/${type}/${id}`);
@@ -322,17 +324,6 @@ export interface AddableMember {
    *  them before the add (#372). */
   managers: string[];
 }
-
-/**
- * Change one teammate's balances and entitlements, with a required reason (#362).
- *
- * @param employeeId - Staff Directory id of the teammate.
- * @param payload - The balance-pot wire keys to change and the reason.
- * @returns The save result (what changed, whether history was recorded).
- */
-export const updateTeamEntitlements = (
-  employeeId: string, payload: { changes: Record<string, number>; reason: string },
-) => api.patch(`/team/members/${employeeId}/entitlements`, payload);
 
 /**
  * Staff the manager may still add (everyone not already on their team) (#363).

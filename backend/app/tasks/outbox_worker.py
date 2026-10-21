@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from app.database import async_session
 from app.models.mixins import utcnow
@@ -62,7 +62,14 @@ async def _claim_due(limit: int) -> list[int]:
             .where(
                 Outbox.status.in_(("pending", "failed")),          # never a sent/sending/dropped row
                 Outbox.attempts < MAX_OUTBOX_ATTEMPTS,              # an abandoned row (at the cap) is left alone
-                or_(Outbox.next_attempt_at.is_(None), Outbox.next_attempt_at <= now),  # due now
+                # A pending row with no scheduled time is due now; a failed row is
+                # due only once its backoff time has passed. A failed row with no
+                # next_attempt_at is terminal (permanent failure or the cap) and is
+                # never re-claimed (#419).
+                or_(
+                    Outbox.next_attempt_at <= now,                 # a scheduled retry that is due
+                    and_(Outbox.status == "pending", Outbox.next_attempt_at.is_(None)),  # a fresh/reclaimed row
+                ),
             )
             .order_by(Outbox.id)
             .limit(limit)

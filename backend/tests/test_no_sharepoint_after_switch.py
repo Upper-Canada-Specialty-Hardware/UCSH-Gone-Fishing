@@ -413,7 +413,7 @@ def test_actions_on_one_request_or_person_never_touch_sharepoint(switched):
         ("post", f"/api/dashboard/admin/reprocess/leave/{first}", {"reason": "resend"}),
         ("post", f"/api/dashboard/admin/approve/leave/{first}", None),
         ("post", f"/api/dashboard/admin/refund/leave/{first}", None),
-        ("post", f"/api/dashboard/admin/reject/leave/{second}", None),
+        ("post", f"/api/dashboard/admin/reject/leave/{second}", {"reason": "not needed"}),  # reject now requires a reason (#433)
         ("post", f"/api/dashboard/admin/requests/leave/{third}/delete", {"reason": "duplicate", "refund": False}),
         # Health and status pages.
         ("get", "/health", None),

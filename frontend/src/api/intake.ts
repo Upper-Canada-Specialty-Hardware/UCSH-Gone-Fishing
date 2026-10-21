@@ -207,7 +207,13 @@ function replaceSessionToken(fresh: { role: string; uid: string; token: string; 
  *
  * The role is decided when the code is checked and kept for 30 days, so
  * someone listed as a manager after signing in would never see My team. This
- * asks the server again and, when the role has changed, stores the new token.
+ * asks the server again and, when it hands back a new token, stores it.
+ *
+ * The server only ever promotes an employee to manager; it never demotes a
+ * manager back to employee (#395), so a supervisor opening the add-new-hire
+ * link, or an admin's open-as-manager link, keeps My team (and Add Employee)
+ * even with nobody under them. This call just applies whatever the server
+ * returns, so it too can only move someone up.
  *
  * @returns True when the role changed and the new token was stored (the
  *   caller reloads so every part of the page sees it); false otherwise,

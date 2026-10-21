@@ -83,6 +83,20 @@ export interface SaveStaffResult {
 export const saveStaffRecord = (id: string, payload: SaveStaffPayload) =>
   api.patch<SaveStaffResult>(`/admin/employees/${id}/entitlements`, payload);
 
+/**
+ * Save a teammate's balance and directory changes through the manager route,
+ * with one reason (#432). Same payload and result as the admin save; the server
+ * gates it by the manager's token and team membership and records the change
+ * under the manager's name. The manager person panel uses this instead of the
+ * admin route so a manager edits every field an admin can, on their team only.
+ *
+ * @param id - Staff Directory item id of the teammate.
+ * @param payload - The pots, fields and reason.
+ * @returns The save result.
+ */
+export const saveTeamRecord = (id: string, payload: SaveStaffPayload) =>
+  api.patch<SaveStaffResult>(`/team/members/${id}/entitlements`, payload);
+
 /** What the export dialog sends: the people, columns and extra sheets. */
 export interface StaffExportPayload {
   /** The shown people's ids, in the table's order. An empty list means nobody;

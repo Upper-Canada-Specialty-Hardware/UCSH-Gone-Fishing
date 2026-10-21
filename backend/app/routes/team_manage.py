@@ -165,49 +165,57 @@ async def _manager_link_id(user: DashboardUser, manager_fields: dict) -> int:
 # ============================
 
 class TeamEntitlementChanges(BaseModel):
-    """Body for the team entitlements PATCH: the new balance values and a reason.
+    """Body for the team profile PATCH: new balances and/or directory fields, and a reason.
 
-    Managers may change only the numeric pots (the two entitlements and the five
-    balances); the directory fields (name, managers, system check, ...) stay
-    admin-only, so there is no ``fields`` key here.
+    A manager edits every field of a teammate that an admin can edit in the admin
+    staff profile, balances and the directory fields (email, placement, ...)
+    alike, with no restriction; the only difference from an admin is whose records
+    they may edit (their own team only) (#432). So this mirrors the admin
+    ``EntitlementChanges`` body: both a ``changes`` map and a ``fields`` map.
 
     Attributes:
         changes: snake_case wire key -> new numeric value (see
-            ``staff_entitlements.EDITABLE``).
+            ``staff_entitlements.EDITABLE``); empty when only fields change.
+        fields: snake_case wire key -> new value for the Staff Directory text,
+            choice and person fields (see ``staff_entitlements.TEXT_FIELDS`` /
+            ``PERSON_FIELDS`` and the managers key); empty when only pots change.
         reason: Why the manager made the change; required and recorded.
     """
     # ``Any`` not ``float``: the service's ``_as_number`` does the real
     # type-checking and rejects non-numbers with a message written for the UI.
     changes: dict[str, Any] = {}
+    fields: dict[str, Any] = {}
     reason: str
 
 
 @router.patch("/team/members/{employee_id}/entitlements")
 async def team_update_entitlements(user: AuthUser, employee_id: str, body: TeamEntitlementChanges):
-    """Change one teammate's balances and entitlements, with a recorded reason (#362).
+    """Edit one teammate's full profile (balances and directory fields), with a reason (#432).
 
     The manager-scoped twin of the admin person panel's save: it reuses the admin
-    service (``apply_entitlement_changes``), so the same validation, the same
-    per-employee lock and the same ``staff_store`` write (and its live-update
-    notify) all apply. The change is recorded under the manager's name, channel
-    ``manager_dashboard``. Only the manager's own team may be edited.
+    service (``apply_entitlement_changes``) with both the balance pots and the
+    directory fields, so the same validation, the same per-employee lock and the
+    same ``staff_store`` write (and its live-update notify) all apply. A manager
+    edits every field an admin can, with no restriction; the change is recorded
+    under the manager's name, channel ``manager_dashboard``. Only the manager's
+    own team may be edited, and never the manager's own record.
 
     Args:
         user: The signed-in manager or admin.
         employee_id: Staff Directory item id of the teammate being edited.
-        body: The new balance values and the reason.
+        body: The new balance values, the new directory fields, and the reason.
 
     Returns:
         The service result: what changed and whether the history was recorded.
 
     Raises:
-        HTTPException: 403 for a non-teammate, 503 when processing is off, 400 on
-            a blank reason or bad value, 404 when the person is gone, 502 on a
-            write failure.
+        HTTPException: 403 for a non-teammate or the manager's own record, 503
+            when processing is off, 400 on a blank reason or bad value, 404 when
+            the person is gone, 502 on a write failure.
     """
     manager, manager_name = await _signed_in_manager(user)   # role + the caller's name
-    if str(employee_id) == str(user.user_id):                 # a manager cannot change their own figures
-        raise HTTPException(status_code=403, detail="You cannot change your own balances or entitlements.")
+    if str(employee_id) == str(user.user_id):                 # a manager cannot edit their own record
+        raise HTTPException(status_code=403, detail="You cannot edit your own record.")
     await _require_teammate(employee_id, manager_name)        # 403 unless they are on my team (and not archived)
     if not settings.PROCESSING_ENABLED:                       # same gate as the admin save
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
@@ -219,8 +227,11 @@ async def team_update_entitlements(user: AuthUser, employee_id: str, body: TeamE
     # name leads the stored reason, as the approved mockup shows ("changed by ...").
     recorded_reason = f"Changed by {manager_name}: {reason}"
     try:
+        # Pass the directory fields too (#432): the admin save does the same, so a
+        # manager's edit to email, placement or any field runs the identical plan,
+        # write and history path as the admin's, only under the manager's channel.
         return await apply_entitlement_changes(
-            employee_id, body.changes, recorded_reason, None, source=MANAGER_CHANNEL,
+            employee_id, body.changes, recorded_reason, body.fields, source=MANAGER_CHANNEL,
         )
     except LookupError as e:                                   # the person disappeared mid-edit
         raise HTTPException(status_code=404, detail=str(e))

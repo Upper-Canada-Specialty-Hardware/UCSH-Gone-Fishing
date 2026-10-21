@@ -120,7 +120,10 @@ def test_action_result_page_renders(client, monkeypatch, processing_on, version_
 
     monkeypatch.setitem(approval_route.HANDLERS, (request_type, action), _handler)
 
-    resp = client.post(_path(request_type, action), data=_form(request_type, action))
+    data = _form(request_type, action)
+    if action == "reject":
+        data["reason"] = "not this week"          # a reject now needs a reason to reach the result page (#433)
+    resp = client.post(_path(request_type, action), data=data)
 
     assert resp.status_code == 200, resp.text
     assert "3402" in resp.text

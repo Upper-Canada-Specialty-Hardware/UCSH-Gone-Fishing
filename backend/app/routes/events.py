@@ -395,7 +395,14 @@ def _timeline_line(event) -> str:
         parts.append("automatically")                          # a background step with no person
     if event.actor:
         parts.append(f"by {event.actor}")                      # who did it
-    return " ".join(parts)
+    line = " ".join(parts)
+    # A rejection stores its reason on the event detail (#433); show it inline so
+    # the timeline says why, not just that it was rejected.
+    if event.type == "rejected":
+        reason = ((event.detail or {}).get("reason") or "").strip()   # the typed reason, when there is one
+        if reason:
+            line = f"{line} (reason: {reason})"                # e.g. "Rejected by Dave (reason: too busy)"
+    return line
 
 
 async def _load_timeline(stored_kind: str, item_id: int):

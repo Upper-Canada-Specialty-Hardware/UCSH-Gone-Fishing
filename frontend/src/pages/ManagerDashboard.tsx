@@ -13,6 +13,7 @@ import RequestsHistoryTable, { HistoryFocus } from '../components/RequestsHistor
 import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
 import AddEmployee from '../components/AddEmployee';
 import DecisionCard from '../components/manager/DecisionCard';
+import RejectDialog from '../components/RejectDialog';
 import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
 import {
   AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, staggerChildren, useDirection,
@@ -26,7 +27,7 @@ import {
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { addDays, dayKey, mondayOf, today } from '../utils/dates';
 import { firstName, teamColors, teamLabeler } from '../utils/personColor';
-import { daysWaiting, shortDate } from '../utils/requestText';
+import { daysWaiting, requestWhat, requestWho, shortDate } from '../utils/requestText';
 import {
   getMyBalances,
   getTeamMembers,
@@ -173,6 +174,11 @@ export default function ManagerDashboard() {
   // Decided cards showing their outcome before they leave: key to true (approved) or false (rejected).
   const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+  // The request awaiting a reject reason (#433), with an optional follow-up to
+  // run once the reject is sent (e.g. closing the calendar's absence card).
+  const [rejectTarget, setRejectTarget] = useState<
+    { type: string; id: string; name: string; label: string; after?: () => void } | null
+  >(null);
 
   // Live updates: merge each timeline event into the team's requests, and refresh
   // the pending queue when a decision lands from another channel. A decision that
@@ -274,11 +280,12 @@ export default function ManagerDashboard() {
    * @param type - 'leave', 'overtime' or 'carryover-payout'.
    * @param id - The SharePoint item id.
    * @param yes - True to approve, false to reject.
+   * @param reason - The reject reason (ignored when approving); required to reject (#433).
    */
-  const decide = useCallback(async (type: string, id: string, yes: boolean) => {
+  const decide = useCallback(async (type: string, id: string, yes: boolean, reason = '') => {
     setActionLoading(`${type}-${id}`);
     try {
-      await (yes ? approveRequest(type, id) : rejectRequest(type, id));
+      await (yes ? approveRequest(type, id) : rejectRequest(type, id, reason));
       const key = `${type}-${id}`;
       setDecided((prev) => new Map(prev).set(key, yes));             // the card shows its outcome
       setTimeout(() => {
@@ -472,7 +479,7 @@ export default function ManagerDashboard() {
                         processingEnabled={processingEnabled}
                         busy={actionLoading === key}
                         onApprove={() => decide(item.request_type, String(item.id), true)}
-                        onReject={() => decide(item.request_type, String(item.id), false)}
+                        onReject={() => setRejectTarget({ type: item.request_type, id: String(item.id), name: requestWho(item), label: requestWhat(item) })}
                         colorOf={colorOf}
                       />
                     </m.div>
@@ -592,7 +599,7 @@ export default function ManagerDashboard() {
                   busy={actionLoading === `${selectedAbsence.request_type}-${selectedAbsence.id}`}
                   openPersonLabel={`Open ${firstName(selectedAbsence.who)}`}
                   onApprove={async () => { await decide(selectedAbsence.request_type, selectedAbsence.id, true); setSelectedAbsenceKey(null); }}
-                  onReject={async () => { await decide(selectedAbsence.request_type, selectedAbsence.id, false); setSelectedAbsenceKey(null); }}
+                  onReject={() => setRejectTarget({ type: selectedAbsence.request_type, id: selectedAbsence.id, name: selectedAbsence.who, label: selectedAbsence.label || '', after: () => setSelectedAbsenceKey(null) })}
                   onOpenHistory={() => openHistory({ request_type: selectedAbsence.request_type, id: selectedAbsence.id })}
                   onOpenPerson={() => openTeamPerson(selectedAbsence.who)}
                   onClose={() => setSelectedAbsenceKey(null)}
@@ -750,6 +757,22 @@ export default function ManagerDashboard() {
           onLogged={handleSickDayLogged}
         />
       )}
+
+      {/* Every reject asks for a reason first (#433), then runs the decision. */}
+      <RejectDialog
+        open={rejectTarget !== null}
+        personName={rejectTarget?.name}
+        requestLabel={rejectTarget?.label}
+        busy={rejectTarget !== null && actionLoading === `${rejectTarget.type}-${rejectTarget.id}`}
+        onCancel={() => setRejectTarget(null)}
+        onConfirm={async (reason) => {
+          const t = rejectTarget;
+          setRejectTarget(null);
+          if (!t) return;
+          await decide(t.type, t.id, false, reason);       // the queue/card animation runs as before
+          t.after?.();                                     // e.g. close the calendar's absence card
+        }}
+      />
 
       <Snackbar
         open={snack.open}
