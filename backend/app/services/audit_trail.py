@@ -100,6 +100,43 @@ def extract_approval_deltas(
     return result if result else None
 
 
+def extract_approval_before(raw_audit_log: str, key: str) -> float | None:
+    """The value of one balance key just before the last approve entry touched it.
+
+    The carry-over refund split needs the balance the approval started from, which
+    is the ``before`` of the first step in the last approve entry that carried the
+    key. Parsed the same way as ``extract_approval_deltas`` (#407 review).
+
+    Args:
+        raw_audit_log: The BalanceAuditLog JSON blob.
+        key: The balance key to read (e.g. "CarryOver").
+
+    Returns:
+        The pre-approval value, or None when it cannot be read.
+    """
+    try:
+        entries = json.loads(raw_audit_log) if raw_audit_log and raw_audit_log.strip() else []
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(entries, list):
+        return None
+    approve_entry = None                                           # the latest approve entry, as above
+    for entry in reversed(entries):
+        if isinstance(entry, dict) and entry.get("action") == "approve":
+            approve_entry = entry
+            break
+    if not approve_entry:
+        return None
+    for step in approve_entry.get("steps", []):                    # first step carrying the key wins
+        before = step.get("before", {})
+        if key in before:
+            try:
+                return float(before[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 async def write_audit_log(
     list_id: str, item_id: str | int, builder: AuditTrailBuilder
 ) -> None:

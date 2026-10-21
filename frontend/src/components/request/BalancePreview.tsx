@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { Alert, Box, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
-import { Balances, EmployeeSession, RequestPreview, RequestType, previewMyRequest } from '../../api/intake';
+import { Balances, BookingLimit, EmployeeSession, RequestPreview, RequestType, previewMyRequest } from '../../api/intake';
 import { AutoHeight, CountUp, Fold, riseAt } from '../Motion';
 import TakenFrom from '../TakenFrom';
 import { describeTakenFrom, takenFromPreview } from '../../utils/takenFrom';
@@ -29,6 +29,8 @@ interface Props {
   body: Record<string, unknown> | null;
   /** hourly: vacation days taken this year so far (the counter), else null (#300). */
   vacationTaken?: number | null;
+  /** Called on each preview update with the vacation booking limit (null when none), so the page can block Send (#407). */
+  onBookingLimit?: (limit: BookingLimit | null) => void;
 }
 
 /**
@@ -41,7 +43,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The preview box, or nothing.
  */
-export default function BalancePreview({ session, type, body, vacationTaken = null }: Props) {
+export default function BalancePreview({ session, type, body, vacationTaken = null, onBookingLimit }: Props) {
   const theme = useTheme();
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const key = body ? JSON.stringify(body) : '';         // a stable value for the effect to watch
@@ -56,6 +58,12 @@ export default function BalancePreview({ session, type, body, vacationTaken = nu
     }, WAIT_MS);
     return () => { live = false; clearTimeout(t); };
   }, [session, type, key]);
+
+  // Hand the booking limit up on every preview change so the page can disable
+  // Send and echo the refusal; null when hidden or not a limited request (#407).
+  useEffect(() => {
+    onBookingLimit?.(preview?.booking_limit ?? null);
+  }, [preview, onBookingLimit]);
 
   // The amount line: leave counts working days, overtime adds days, carry-over moves them.
   const amountLabel = type === 'leave' ? 'Working days' : type === 'overtime' ? 'Adds (8 hours = 1 day)' : 'Days';
@@ -111,6 +119,8 @@ export default function BalancePreview({ session, type, body, vacationTaken = nu
             {preview.notes.map((n) => <Typography key={n} variant="body2" color="text.secondary">{n}</Typography>)}
             {/* Approving would take the floor below zero: the shared sentence in red. Sending stays allowed (#300). */}
             {preview.below_zero && <Typography variant="body2" color="error.main" sx={{ fontWeight: 600 }}>{belowZeroSentence(preview.below_zero)}</Typography>}
+            {/* Dates past the booking limit: the refusal sentence in red. Send is blocked by the page (#407). */}
+            {preview.booking_limit?.refused && <Alert severity="error" sx={{ mt: 0.5 }}>{preview.booking_limit.message}</Alert>}
             {preview.warning && <Alert severity="warning" sx={{ mt: 0.5 }}>{preview.warning}</Alert>}
           </Box>
         )}

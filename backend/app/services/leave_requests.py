@@ -26,10 +26,11 @@ from app.services.holidays import (
     _parse_date,
 )
 from app.services.business_days import calculate_business_days
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
+    booking_refusal,
+    carryover_available_for,
     cascade_current_year,
-    cascade_next_year,
-    is_next_year_request,
     recalculate_request_allow_date,
     simulate_leave_impact,
 )
@@ -59,6 +60,7 @@ from app.services.audit_trail import (
     describe_cascade_changes,
     write_audit_log,
     extract_approval_deltas,
+    extract_approval_before,
 )
 from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.switch_pause import guarded  # refuse writes mid-switch and count them in flight
@@ -519,7 +521,7 @@ async def send_approval_email(
     # Compute projected balances
     leave_type = fields.get("LeaveType", "")
     days = float(fields.get("Days", 0) or 0)
-    is_next_year = False
+    carryover_avail = True                                 # carry-over usable unless the dates run past its expiry (#407)
     start_str = fields.get("StartDate", "")
     end_str = fields.get("EndDate", "")
     if start_str and end_str:
@@ -527,13 +529,13 @@ async def send_approval_email(
             start = _parse_date(start_str)
             end = _parse_date(end_str)
             if start and end:
-                is_next_year = is_next_year_request(start, end)
+                carryover_avail = carryover_available_for(end, toronto_today())  # dates past expiry remove carry-over (#407)
         except (ValueError, TypeError):
             pass
     # Only project a change for leave that really moves a balance for this
     # person (#300): hourly vacation, for one, used to show a deduction here.
     projected = (
-        simulate_leave_impact(emp_fields, leave_type, days, is_next_year)
+        simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
         if leave_costs_balance(emp_fields, leave_type) else None
     )
     # Red notice when approving takes the floor below zero (sick for hourly,
@@ -802,6 +804,21 @@ async def approve_leave_request(
         # whether to reject it. The system does not cancel on their behalf.
         return {"error": conflict}
 
+    # Booking-limit refusal (#407): a salaried Vacation/part-day whose last day is
+    # past what the person may book is refused here too, so the SharePoint path
+    # matches the Postgres one. Placed before the claim (like the conflict check)
+    # so a blocked approval never consumes the one-shot claim; nothing is written
+    # and the request stays Pending for the manager.
+    booking_employee = await resolve_request_submitter(pre_claim["fields"], "SubmittedTest")
+    if booking_employee:                                         # unresolved submitter falls through to normal handling
+        pre_fields = pre_claim["fields"]
+        last_day = _parse_date(pre_fields.get("EndDate")) or _parse_date(pre_fields.get("StartDate"))
+        booking = booking_refusal(
+            booking_employee["fields"], pre_fields.get("LeaveType", ""), last_day, toronto_today(),
+        )
+        if booking:
+            return {"error": booking}
+
     if not await claim_action(settings.SP_LIST_LEAVE_REQUESTS, request_id, "approve"):
         return {"error": "Already processed"}
 
@@ -861,8 +878,7 @@ async def approve_leave_request(
             return {"status": "approved", "no_balance_change": True}
         return {"status": "approved", "hourly": True}
 
-    start_date = _parse_date(fields.get("StartDate"))
-    end_date = _parse_date(fields.get("EndDate"))
+    end_date = _parse_date(fields.get("EndDate"))                 # the last day sets the carry-over expiry test
 
     # Deduct balance by leave type
     async with lock_manager.lock(employee_id):
@@ -927,13 +943,11 @@ async def approve_leave_request(
             elif leave_type == "Sick or Personal Day":
                 pre_cascade["CurrentSickDayBalance"] = new_sick
 
-            # Determine cascade sequence
-            if start_date and end_date and is_next_year_request(start_date, end_date):
-                balances = await cascade_next_year(employee_id)
-                cascade_label = "Cascade (next year)"
-            else:
-                balances = await cascade_current_year(employee_id)
-                cascade_label = "Cascade (current year)"
+            # One cascade for every date (#407): carry-over is skipped when the
+            # request runs past its expiry, so a deficit lands on Vacation instead.
+            carryover_avail = carryover_available_for(end_date, toronto_today())
+            balances = await cascade_current_year(employee_id, carryover_avail)
+            cascade_label = "Cascade" if carryover_avail else "Cascade (carry-over expired)"
 
             cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
             audit.add_step(
@@ -947,9 +961,11 @@ async def approve_leave_request(
             )
 
     # Send balance update email
-    is_next_year = start_date and end_date and is_next_year_request(start_date, end_date)
+    # One update email for every date (#407): there is no next-year cascade any
+    # more, so the old next-year wording (deductions only to Overtime and Carry
+    # Over) would be wrong. Always use the normal balance-update template.
     from app.templates_render import render_leave_balance_update
-    html = render_leave_balance_update(submitter_name, balances, is_next_year, hourly=is_hourly(emp_fields))
+    html = render_leave_balance_update(submitter_name, balances, hourly=is_hourly(emp_fields))
 
     recipients = [emp_fields.get("EmailAddress", "")]
     if mgr_fields.get("EmailAddress"):
@@ -1089,6 +1105,26 @@ async def refund_leave_request(
                 current_val = float(ef.get(key, 0) or 0)
                 updates[key] = current_val - delta
 
+            # A carry-over spend that went below zero (the old next-year path) must
+            # not come back as carry-over the setup fix already moved on to vacation.
+            # Split it exactly as the Postgres refund does: the real carry-over spent
+            # returns to carry-over, the part that went below zero only up to today's
+            # shortfall, and the rest to vacation (#407 review).
+            carry_delta = approval_deltas.get("CarryOver", 0.0)
+            if carry_delta < 0:                                    # only a spend is split (leave never adds carry-over)
+                current_c = float(ef.get("CarryOver", 0) or 0)     # carry-over now, after any setup fix
+                approval_before_c = extract_approval_before(raw_audit_log, "CarryOver")  # before the approval
+                if approval_before_c is None:                      # unreadable audit: treat as none was real
+                    approval_before_c = 0.0
+                spent = -carry_delta                               # days the approval took from carry-over
+                real = min(spent, max(approval_before_c, 0.0))     # part that was actual positive carry-over
+                borrowed = spent - real                            # part that drove carry-over below zero
+                to_carryover = min(borrowed, max(-current_c, 0.0))  # cover only the shortfall carry-over has now
+                give_v = borrowed - to_carryover                   # the remainder is restored to vacation
+                updates["CarryOver"] = current_c + real + to_carryover
+                v_current = float(ef.get("CurrentVacationBalance", 0) or 0)
+                updates["CurrentVacationBalance"] = updates.get("CurrentVacationBalance", v_current) + give_v
+
             if updates:
                 await sp_client.update_list_item_fields(
                     settings.SP_LIST_STAFF_DIRECTORY, employee_id, updates,
@@ -1171,14 +1207,12 @@ async def refund_leave_request(
             elif leave_type == "Sick or Personal Day":
                 pre_cascade["CurrentSickDayBalance"] = new_sick
 
-            start_date = _parse_date(fields.get("StartDate"))
-            end_date = _parse_date(fields.get("EndDate"))
-            if start_date and end_date and is_next_year_request(start_date, end_date):
-                balances = await cascade_next_year(employee_id)
-                cascade_label = "Cascade (next year)"
-            else:
-                balances = await cascade_current_year(employee_id)
-                cascade_label = "Cascade (current year)"
+            end_date = _parse_date(fields.get("EndDate"))          # the last refunded day sets the expiry test
+            # Same single cascade as approval (#407): skip carry-over when the
+            # refunded leave ran past its expiry, matching how it was applied.
+            carryover_avail = carryover_available_for(end_date, toronto_today())
+            balances = await cascade_current_year(employee_id, carryover_avail)
+            cascade_label = "Cascade" if carryover_avail else "Cascade (carry-over expired)"
 
             cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
             audit.add_step(

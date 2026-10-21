@@ -15,11 +15,12 @@ from app.services.manager_match import (  # one rule for who manages whom (#376)
 )
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_submitter import SUBMITTER_PERSON_COLUMNS, submitter_email_of
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
     simulate_carryover_payout_impact,
-    is_next_year_request,
+    carryover_available_for,
 )
 from app.services.employee_validation import (
     fetch_approval_email_records,
@@ -565,17 +566,16 @@ def _enrich_pending_item(
     if request_type == "leave":
         leave_type = item_data.get("LeaveType", "")
         days = float(item_data.get("Days", 0) or 0)
-        is_next_year = False
+        carryover_avail = True                             # carry-over usable unless the dates run past its expiry (#407)
         start_str = item_data.get("StartDate", "")
         end_str = item_data.get("EndDate", "")
         if start_str and end_str:
             try:
-                start = dt_date.fromisoformat(start_str[:10])
                 end = dt_date.fromisoformat(end_str[:10])
-                is_next_year = is_next_year_request(start, end)
+                carryover_avail = carryover_available_for(end, toronto_today())
             except (ValueError, TypeError):
                 pass
-        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, is_next_year)
+        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, carryover_avail)
         balance_unchanged = f"No balance deduction for {leave_type}" if projected_sp is None else ""
     elif request_type == "overtime":
         hours = float(item_data.get("Hours", 0) or 0)

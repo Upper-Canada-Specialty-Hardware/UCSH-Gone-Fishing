@@ -56,12 +56,15 @@ from app.services.employee import (
     map_location_to_province,
     resolve_person_field,
 )
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.employment import is_hourly
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.overlap_detection import _extract_lookup_id
 from app.services.holidays import get_holidays_for_province, get_half_friday_season
 from app.services.business_days import calculate_business_days
 from app.services.balance import (
+    LEAVE_BOOKING_TYPES,
+    booking_limit,
     simulate_leave_impact,
     simulate_overtime_impact,
     simulate_carryover_payout_impact,
@@ -104,9 +107,11 @@ LEAVE_TYPE_CASES = [
 BALANCE_BOUNDS = {
     "CurrentSickDayBalance": (0, None),
     "CurrentOvertimeBalance": (None, None),
-    "CarryOver": (0, None),
     "Payout": (0, 5),  # approval refuses a payout that would push the total past 5
 }
+# Carry-over is graded by its own dedicated check (carry_over_negative, #407),
+# which also carries the HR fix action, so it is left out of BALANCE_BOUNDS to
+# avoid flagging the same value twice.
 
 # The four pots leave spending moves between. The cascade passes a deficit down
 # the chain rather than clamping it, so their total falls by exactly the days
@@ -286,6 +291,7 @@ def build_validation_report(
     sample_start: date,
     sample_end: date,
     today: date,
+    toronto_day: date | None = None,
 ) -> dict:
     """Pure core: assemble the full report from already-fetched inputs.
 
@@ -310,6 +316,10 @@ def build_validation_report(
         sample_end: Last day of that range.
         today: The date the report is being run, used to decide which automatic
             rejections are still recent enough to matter.
+        toronto_day: Today in Toronto, used only for the booking-limit check so it
+            matches submission/approval/preview (which all read ``toronto_today``);
+            defaults to ``toronto_today()`` when not supplied. ``today`` is left
+            on the server clock so the auto-rejection window is unchanged (#407).
 
     Returns:
         The full report: overall verdict, measurement tally, current balances
@@ -635,13 +645,29 @@ def build_validation_report(
             ),
         ))
 
-    # --- Per-leave-type dry runs (current year) ---
-    for code, leave_type, days in LEAVE_TYPE_CASES:
-        checks.append(_simulate_leave_case(code, leave_type, employee_fields, days, is_next_year=False))
+    # --- Carry-over is never negative (#407) ---
+    # Carry-over only pays down to zero; a stored negative is old data from before
+    # that rule. The admin setup screens offer a one-click fix on this problem
+    # that moves the negative onto vacation.
+    carry_over_value = _as_float(employee_fields.get("CarryOver"))
+    checks.append(_measured(
+        "carry_over_negative", "balances",
+        label="Carry-over at or above zero",
+        actual=carry_over_value, expected=0, comparison="at_least",
+        ok_detail=f"Carry-over is {carry_over_value:g}, not negative.",
+        bad_detail=(
+            f"Carry-over is {carry_over_value:g}, below zero. Carry-over should never "
+            "be negative; move it onto vacation to correct it."
+        ),
+    ))
 
-    # --- Next-year cascade branch (Vacation) ---
+    # --- Per-leave-type dry runs (carry-over available) ---
+    for code, leave_type, days in LEAVE_TYPE_CASES:
+        checks.append(_simulate_leave_case(code, leave_type, employee_fields, days, carryover_available=True))
+
+    # --- Carry-over-expired branch (a Vacation request dated past the expiry, #407) ---
     checks.append(_simulate_leave_case(
-        "sim_next_year_vacation", "Vacation", employee_fields, SAMPLE_LEAVE_DAYS, is_next_year=True,
+        "sim_next_year_vacation", "Vacation", employee_fields, SAMPLE_LEAVE_DAYS, carryover_available=False,
     ))
 
     # --- Business-day calculation over the sample range ---
@@ -792,6 +818,36 @@ def build_validation_report(
         bad_status="warn",
     ))
 
+    # Pending vacation/part-day requests already past the booking limit (#407).
+    # These will be refused at approval, so flag them before a manager tries.
+    # Hourly staff are never limited, so the check is skipped for them.
+    vacation_now = _as_float(employee_fields.get("CurrentVacationBalance"))
+    carry_now = _as_float(employee_fields.get("CarryOver"))
+    # The booking limit reads the Toronto day, like submission/approval/preview, so
+    # the setup screen flags exactly what approval would refuse (UTC on Railway can
+    # be a day ahead) (#407). Falls back to today's Toronto date when not passed.
+    booking_today = toronto_day if toronto_day is not None else toronto_today()
+    limit = booking_limit(vacation_now, carry_now, booking_today)  # the person's current booking limit
+    past_limit = []
+    if not is_hourly(employee_fields):
+        for r in pending:
+            if r["kind"] != "leave" or r.get("leave_type", "") not in LEAVE_BOOKING_TYPES:
+                continue                                           # only vacation and part days are booked
+            last_day = r.get("end_date") or r.get("start_date") or ""   # "YYYY-MM-DD", or "" when undated
+            if last_day and last_day > limit.isoformat():          # ISO strings compare chronologically
+                past_limit.append(r)
+    checks.append(_measured(
+        "pending_over_booking_limit", "requests",
+        label="Pending vacation requests past the booking limit",
+        actual=len(past_limit), expected=0, comparison="equals",
+        ok_detail="No pending vacation request runs past what they can book.",
+        bad_detail=(
+            f"Pending vacation request(s) dated past {limit:%b} {limit.day}, {limit.year}, "
+            "which will be refused at approval: " + _describe_requests(past_limit)
+        ),
+        bad_status="warn",
+    ))
+
     # Reported, not graded: holding approved dates is normal. It is listed
     # because these are the only requests that can block a new one.
     approved = [r for r in requests if r["status"] == "Approved"]
@@ -916,6 +972,7 @@ def summarise_request(kind: str, item: dict, notified: bool | None = None) -> di
         "kind": kind,
         "item_id": str(item.get("id", "")),
         "status": status,
+        "leave_type": f.get("LeaveType") or "",                 # for the booking-limit check (#407); "" for non-leave
         "has_amount": amount > 0,
         "has_manager": bool(f.get("ManagerLookupId") or f.get("ManagerID")),   # SharePoint lookup id, or the staff id on Postgres
         "notified": notified,
@@ -951,7 +1008,7 @@ def _describe_requests(items: list[dict], with_reason: bool = False) -> str:
     return ", ".join(parts)
 
 
-def _simulate_leave_case(code, leave_type, fields, days, is_next_year) -> dict:
+def _simulate_leave_case(code, leave_type, fields, days, carryover_available=True) -> dict:
     """Dry-run one leave type and check the arithmetic, not just that it ran.
 
     Which pot a day comes out of depends on the balances, because spending
@@ -965,14 +1022,15 @@ def _simulate_leave_case(code, leave_type, fields, days, is_next_year) -> dict:
         leave_type: SharePoint leave type being simulated.
         fields: The employee's current Staff Directory values.
         days: How many days to simulate.
-        is_next_year: Take the next-year cascade branch.
+        carryover_available: False dry-runs a request past the carry-over expiry,
+            which skips carry-over in the cascade (#407).
 
     Returns:
         One report row carrying the days actually deducted.
     """
-    label = f"{leave_type}{' (next-year)' if is_next_year else ''}"
+    label = f"{leave_type}{'' if carryover_available else ' (carry-over expired)'}"
     try:
-        projected = simulate_leave_impact(fields, leave_type, days, is_next_year)
+        projected = simulate_leave_impact(fields, leave_type, days, carryover_available)
     except Exception as e:  # noqa: BLE001
         return _check(code, "simulation", "fail", f"{leave_type} simulation raised: {e}")
 

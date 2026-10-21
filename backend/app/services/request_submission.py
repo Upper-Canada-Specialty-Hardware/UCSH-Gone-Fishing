@@ -30,8 +30,9 @@ from app.models.request_record import RequestRecord
 from app.repositories.postgres.staff import is_archived  # tells an archived staff record from an active one (#119)
 from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.approval_links import generate_approval_url
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
-    is_next_year_request,
+    carryover_available_for,
     simulate_leave_impact,
     simulate_overtime_impact,
 )
@@ -294,10 +295,10 @@ def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict
     if kind == "leave":
         leave_type = record.leave_type or ""
         days = float(record.days or 0)
-        start, end = record.start_date, record.end_date or record.start_date
-        is_next = bool(start and end and is_next_year_request(start, end))
+        last_day = record.end_date or record.start_date
+        carryover_avail = carryover_available_for(last_day, toronto_today())   # carry-over expired for these dates? (#407)
         projected = (
-            simulate_leave_impact(emp_fields, leave_type, days, is_next)
+            simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
             if leave_costs_balance(emp_fields, leave_type) else None
         )
         below_zero = floor_warning(emp_fields, projected)           # red when approving goes below zero
@@ -384,10 +385,10 @@ def _build_receipt_content(record: RequestRecord, emp_fields: dict, fields: dict
     if record.kind == "leave":
         leave_type = record.leave_type or ""
         days = float(record.days or 0)
-        start, end = record.start_date, record.end_date or record.start_date
-        is_next = bool(start and end and is_next_year_request(start, end))
+        last_day = record.end_date or record.start_date
+        carryover_avail = carryover_available_for(last_day, toronto_today())   # carry-over expired for these dates? (#407)
         projected = (
-            simulate_leave_impact(emp_fields, leave_type, days, is_next)
+            simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
             if leave_costs_balance(emp_fields, leave_type) else None
         )
         html = tr.render_leave_confirmation(fields, emp_fields, projected, conflict_warning=None)

@@ -95,4 +95,12 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'Dates already booked',
     fix: 'These approved requests hold their dates. A new request covering the same days will be refused at approval.',
   },
+  carry_over_negative: {
+    title: 'Carry-over is below zero',
+    fix: 'Carry-over should never be negative. Use the fix on this problem to move the shortfall onto vacation, which sets carry-over back to zero.',
+  },
+  pending_over_booking_limit: {
+    title: 'A pending vacation runs past the booking limit',
+    fix: 'The dates on this request are later than this person can book vacation for, so it will be refused at approval. Ask them to pick earlier dates, or reject it.',
+  },
 };

@@ -20,7 +20,7 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, EmployeeSession, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
+  Balances, BookingLimit, EmployeeSession, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
   clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, holdRequest, loadNewHire,
   loadSession, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
   takeSignInNotice, verifyCode,
@@ -256,6 +256,7 @@ export default function RequestPage() {
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
   const [myBalances, setMyBalances] = useState<Balances | null>(null);  // signed-in employee's balances (#300)
+  const [bookingLimit, setBookingLimit] = useState<BookingLimit | null>(null);  // vacation booking limit from the preview (#407)
   const hourlyStaff = isHourly(myBalances);                     // hourly: forms and summary adapt
   const [sends, setSends] = useState(0);                       // codes sent, to restart the resend ring
   const [misses, setMisses] = useState(0);                     // refused codes, to shake the boxes
@@ -669,8 +670,9 @@ export default function RequestPage() {
                   </AnimatePresence>
                 </AutoHeight>
                 {/* Days and balances after approval, once the form is complete. */}
-                <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} vacationTaken={myBalances?.vacation_taken ?? null} />
-                <Button variant="contained" size="large" sx={big} disabled={!formReady || busy} onClick={submitAsEmployee}>
+                <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} vacationTaken={myBalances?.vacation_taken ?? null} onBookingLimit={setBookingLimit} />
+                {/* Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407). */}
+                <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
                   <BusyLabel busy={busy}>Send request</BusyLabel>
                 </Button>
               </>

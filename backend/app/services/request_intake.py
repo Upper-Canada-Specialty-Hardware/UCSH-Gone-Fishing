@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
+from app.services.balance import booking_refusal  # the vacation booking limit, refused at submission (#407)
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.leave_requests import ALLOWED_LEAVE_TYPES, process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
@@ -237,6 +238,14 @@ async def submit_request(
     email = (fields.get("EmailAddress") or "").strip()
     if not email:
         raise RequestFormError("Your staff record has no email address. Ask your manager to fix it.")
+    # Booking-limit refusal (#407): a salaried Vacation/part-day request whose last
+    # day is past what the person may book is refused before any row is created,
+    # on every path into here (the request page, held-request release, admin New
+    # request, /api/forms). Hourly staff and other leave types are never limited.
+    if request_type == "leave":
+        refusal = booking_refusal(fields, form.leave_type, form.end_date, toronto_today())
+        if refusal:
+            raise RequestFormError(refusal)
     name = (fields.get("Title") or "").strip()
     first_name, _, last_name = name.partition(" ")             # the title is "<first> <last>"
 

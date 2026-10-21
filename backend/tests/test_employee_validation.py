@@ -90,6 +90,7 @@ def _report(**overrides):
         sample_start=SAMPLE[0],
         sample_end=SAMPLE[1],
         today=TODAY,
+        toronto_day=TODAY,            # pin the booking-limit day so the check is clock-independent (#407)
     )
     kwargs.update(overrides)
     return build_validation_report(**kwargs)
@@ -297,6 +298,35 @@ def test_missing_entitlements_warn():
     entitlements = _by_code(report, "entitlements_set")
     assert entitlements["status"] == "warn"
     assert entitlements["measure"]["actual"] == 0
+
+
+def test_carry_over_below_zero_fails():
+    # A stored negative carry-over is old data; its own check grades it red (#407).
+    report = _report(employee_fields={**GOOD_FIELDS, "CarryOver": -5})
+    carry = _by_code(report, "carry_over_negative")
+    assert carry["status"] == "fail"
+    assert carry["measure"]["actual"] == -5
+
+
+def test_carry_over_at_zero_passes():
+    # Zero carry-over is healthy, so the dedicated check stays green (#407).
+    assert _by_code(_report(), "carry_over_negative")["status"] == "pass"
+
+
+def test_a_pending_vacation_past_the_booking_limit_warns():
+    # Vacation dated past the person's booking limit will be refused at approval,
+    # so flag it on the setup screen before a manager tries (#407). GOOD_FIELDS has
+    # vacation 10 and no carry-over, so the limit is 31 March of next year.
+    past = _request(kind="leave", leave_type="Vacation", start_date="2027-05-20", end_date="2027-06-01")
+    check = _by_code(_report(requests=[past]), "pending_over_booking_limit")
+    assert check["status"] == "warn"
+    assert check["measure"]["actual"] == 1
+
+
+def test_a_pending_vacation_within_the_booking_limit_passes():
+    # A vacation inside the limit is not flagged (#407).
+    ok = _request(kind="leave", leave_type="Vacation", start_date="2026-09-01", end_date="2026-09-05")
+    assert _by_code(_report(requests=[ok]), "pending_over_booking_limit")["status"] == "pass"
 
 
 # ----- simulations measure the arithmetic, not just "it ran" -----
