@@ -10,6 +10,20 @@ import { Row, amountText, whenText } from './requestTable';
 /** How an approved request's balance change is handled on delete. */
 export type DeleteMode = 'refund' | 'keep';
 
+/**
+ * Whether an approved request's balance change is on record (#402): its
+ * "Taken from" says recorded or counted. An approved request with nothing on
+ * record (never applied, or settled as no balance needed) has nothing a refund
+ * should give back, so it is never refunded on delete.
+ *
+ * @param r - A request row.
+ * @returns True when deleting it could refund recorded days.
+ */
+export function movedBalance(r: Row): boolean {
+  const state = r.raw?.taken_from?.state;                       // stamped by the admin endpoints
+  return r.status === 'Approved' && (state === 'recorded' || state === 'counted');
+}
+
 interface Props {
   /** The rows to delete, or null when the dialog is closed. */
   rows: Row[] | null;
@@ -39,7 +53,8 @@ export default function DeleteRequestDialog({ rows, onClose, onConfirm }: Props)
   }, [open]);
 
   const list = rows || [];
-  const approved = list.filter((r) => r.status === 'Approved');
+  const approved = list.filter(movedBalance);                   // only these changed balances
+  const unmoved = list.filter((r) => r.status === 'Approved' && !movedBalance(r));   // approved, nothing on record
   const canDelete = reason.trim().length > 0;
 
   return (
@@ -77,6 +92,15 @@ export default function DeleteRequestDialog({ rows, onClose, onConfirm }: Props)
               />
             </RadioGroup>
           </Box>
+        )}
+
+        {/* Approved, but no balance change on record: deleting moves nothing (#402). */}
+        {unmoved.length > 0 && (
+          <Typography variant="body2" color="text.secondary">
+            {unmoved.length === 1
+              ? '1 of these is approved but has no balance change on record, so deleting it changes no balances.'
+              : `${unmoved.length} of these are approved but have no balance change on record, so deleting them changes no balances.`}
+          </Typography>
         )}
 
         <TextField
