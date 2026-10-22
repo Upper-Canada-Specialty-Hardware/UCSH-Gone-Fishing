@@ -50,6 +50,9 @@ export interface Row {
   waiting: number | null;            // days since created, or null for decided
   diagnostics: string[];             // stuck diagnostic codes
   auditLog: string;                  // BalanceAuditLog JSON, or ''
+  // True when the request's result email/text failed to send (#424). Optional so
+  // the build passes before the backend adds it to the row.
+  failed_send?: boolean;
   raw: any;
 }
 
@@ -137,6 +140,7 @@ export function toRow(raw: any, source: RowSource): Row {
     waiting: source === 'history' ? null : daysWaiting(item),
     diagnostics: item.diagnostics || [],
     auditLog: typeof item.BalanceAuditLog === 'string' ? item.BalanceAuditLog : '',
+    failed_send: !!item.failed_send,                       // the backend flags a result send that failed (#424)
     raw: item,
   };
 }
@@ -336,5 +340,8 @@ export function filterDefs(rows: Row[]): FilterDef[] {
     { key: 'mgr', label: 'Manager', options: uniq(rows.flatMap((r) => r.managers)), test: (r, v) => r.managers.includes(v) },
     { key: 'dept', label: 'Department', options: uniq(rows.map((r) => r.dept)), test: (r, v) => r.dept === v },
     { key: 'loc', label: 'Location', options: uniq(rows.map((r) => r.loc)), test: (r, v) => r.loc === v },
+    // A "Failed sends" chip, shown only when some row's result email/text failed
+    // to send (#424); it keeps those rows so an admin can chase the delivery.
+    { key: 'delivery', label: 'Delivery', options: rows.some((r) => r.failed_send) ? ['Failed sends'] : [], test: (r) => !!r.failed_send },
   ];
 }

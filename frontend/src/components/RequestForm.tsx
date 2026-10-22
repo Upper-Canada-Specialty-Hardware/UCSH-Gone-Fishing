@@ -3,6 +3,7 @@ import { useTheme } from '@mui/material/styles';
 import { AnimatePresence, m } from 'motion/react';
 import type { RequestType } from '../api/intake';
 import { EXIT, SPRING, Swap } from './Motion';
+import CarryoverPolicy from './request/CarryoverPolicy';
 
 /**
  * The leave types the backend accepts, worded exactly as the balance engine
@@ -43,7 +44,9 @@ const HOURLY_EXPLAIN: Record<string, string> = {
 /** The three forms on the request page, with the label shown on the picker. */
 export const REQUEST_TYPES: { value: RequestType; label: string; hint: string }[] = [
   { value: 'leave', label: 'Leave', hint: 'Vacation, sick, part day, bereavement, jury duty or work from home' },
-  { value: 'overtime', label: 'Overtime', hint: 'Hours worked beyond your schedule' },
+  // The staff-facing name is the old Microsoft Form's "Time make up request", and
+  // the hint says plainly where the hours go; the internal code stays 'overtime' (#428).
+  { value: 'overtime', label: 'Time make up request', hint: 'Extra hours you worked, banked as make-up time' },
   { value: 'carryover-payout', label: 'Carry-over or payout', hint: 'Move vacation days to next year, or cash them out' },
 ];
 
@@ -116,6 +119,9 @@ interface Props {
   onChange: (key: keyof RequestValues, value: string) => void;
   /** True for an hourly employee: a part day uses one whole sick day (#300). */
   hourlyStaff?: boolean;
+  /** The carry-over/payout window HR set (ISO dates), or null; shown in the
+   *  carry-over/payout policy above that form (#429). */
+  carryoverWindow?: { start: string; end: string } | null;
 }
 
 /**
@@ -195,7 +201,7 @@ const ROW2 = { display: 'grid', gap: 2, gridTemplateColumns: { xs: 'minmax(0, 1f
  * @param props - See {@link Props}.
  * @returns The form fields, without a submit button.
  */
-export default function RequestForm({ type, values: v, onChange, hourlyStaff = false }: Props) {
+export default function RequestForm({ type, values: v, onChange, hourlyStaff = false, carryoverWindow = null }: Props) {
   /** A change handler for one field. @param key - The field. */
   const field = (key: keyof RequestValues) =>
     (e: React.ChangeEvent<HTMLInputElement>) => onChange(key, e.target.value);
@@ -244,24 +250,32 @@ export default function RequestForm({ type, values: v, onChange, hourlyStaff = f
   if (type === 'overtime') {
     return (
       <Stack spacing={2}>
-        <TextField label="What was the overtime for?" required value={v.description} onChange={field('description')} />
+        {/* Say plainly where the hours go: this is the old "Time make up request" (#428). */}
+        <Typography variant="caption" color="text.secondary">
+          Extra hours you work beyond your schedule are banked as make-up time, which you can take later as time off.
+        </Typography>
+        <TextField label="What was the extra time for?" required value={v.description} onChange={field('description')} />
         <Box sx={ROW2}>
           <TextField label="Date worked" required {...dateProps} value={v.date} onChange={field('date')} />
           <TextField label="Hours" required type="number" value={v.hours} onChange={field('hours')}
-            slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-hour steps." />
+            slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-hour steps, banked as make-up time." />
         </Box>
       </Stack>
     );
   }
 
   return (
-    <Box sx={ROW2}>
-      <TextField label="Request" required select value={v.type_of_request} onChange={field('type_of_request')}>
-        <MenuItem value="Carry Over">Carry over to next year</MenuItem>
-        <MenuItem value="Payout">Pay out</MenuItem>
-      </TextField>
-      <TextField label="Days" required type="number" value={v.days} onChange={field('days')}
-        slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-day steps." />
-    </Box>
+    <Stack spacing={2}>
+      {/* HR's policy shows before the carry-over/payout form is filled in (#429). */}
+      <CarryoverPolicy window={carryoverWindow} />
+      <Box sx={ROW2}>
+        <TextField label="Request" required select value={v.type_of_request} onChange={field('type_of_request')}>
+          <MenuItem value="Carry Over">Carry over to next year</MenuItem>
+          <MenuItem value="Payout">Pay out</MenuItem>
+        </TextField>
+        <TextField label="Days" required type="number" value={v.days} onChange={field('days')}
+          slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-day steps." />
+      </Box>
+    </Stack>
   );
 }

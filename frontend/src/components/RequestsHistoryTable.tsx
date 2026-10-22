@@ -4,6 +4,7 @@ import { useTheme } from '@mui/material/styles';
 import SplitRequestsTable from './admin/SplitRequestsTable';
 import { TableActions } from './admin/RequestsTable';
 import { Row, columnValue, columnsFor, refDate, searchText, toRow } from './admin/requestTable';
+import RejectDialog from './RejectDialog';
 import { LiveScope } from '../api/events';
 import { approveRequest, exportTeamRequests, rejectRequest } from '../api/client';
 
@@ -106,6 +107,7 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
   const [fitNote, setFitNote] = useState('');                                // the dropped-columns note
   const [busyKey, setBusyKey] = useState<string | null>(null);               // the row a decision is running on
   const [snack, setSnack] = useState({ open: false, message: '' });          // a short confirmation/error
+  const [rejectRow, setRejectRow] = useState<Row | null>(null);              // the row awaiting a reject reason (#433)
 
   // Every request flattened to the one table row shape; 'history' means no waiting badge.
   const allRows = useMemo<Row[]>(() => requests.map((r) => toRow(r, 'history')), [requests]);
@@ -197,12 +199,13 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
    *
    * @param r - The row.
    * @param yes - True to approve, false to reject.
+   * @param reason - The reject reason (ignored when approving); required to reject (#433).
    */
-  const decide = useCallback(async (r: Row, yes: boolean) => {
+  const decide = useCallback(async (r: Row, yes: boolean, reason = '') => {
     if (mode !== 'team') return;                         // the employee table never decides
     setBusyKey(`${r.request_type}-${r.id}`);             // disable this row's buttons while it runs
     try {
-      await (yes ? approveRequest(r.request_type, r.id) : rejectRequest(r.request_type, r.id));
+      await (yes ? approveRequest(r.request_type, r.id) : rejectRequest(r.request_type, r.id, reason));
       setSnack({ open: true, message: yes ? `Request ${r.id} approved.` : `Request ${r.id} rejected.` });
     } catch (err: any) {
       const detail = err?.response?.data?.detail;        // the backend's reason, when it sent one
@@ -214,10 +217,11 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
 
   // The read-only tables still pass a full actions object; only approve/reject
   // are ever reached (and only in team mode), the rest are never rendered.
+  // Rejecting opens the reason dialog first (#433); approving runs at once.
   const noop = useCallback(() => {}, []);
   const actions: TableActions = useMemo(() => ({
     approve: (r) => decide(r, true),
-    reject: (r) => decide(r, false),
+    reject: (r) => setRejectRow(r),
     refund: noop, edit: noop, remind: noop, reprocess: noop, audit: noop, delete: noop,
   }), [decide, noop]);
 
@@ -320,6 +324,15 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
         <span>{shown.length} of {allRows.length} {allRows.length === 1 ? 'request' : 'requests'}</span>
         <span>{fitNote}</span>
       </Box>
+
+      {/* Every reject asks for a reason first (#433). */}
+      <RejectDialog
+        open={rejectRow !== null}
+        personName={rejectRow?.person}
+        requestLabel={rejectRow?.kindLabel}
+        onCancel={() => setRejectRow(null)}
+        onConfirm={(reason) => { const r = rejectRow; setRejectRow(null); if (r) void decide(r, false, reason); }}
+      />
 
       <Snackbar open={snack.open} autoHideDuration={4000} onClose={() => setSnack((s) => ({ ...s, open: false }))} message={snack.message} />
     </Paper>

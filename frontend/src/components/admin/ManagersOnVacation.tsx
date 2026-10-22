@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Box, Button, Paper, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { VacationCoverRequest } from '../../api/client';
+import RejectDialog from '../RejectDialog';
 import { riseAt } from '../Motion';
 
 interface Props {
@@ -12,8 +14,8 @@ interface Props {
   actionLoading: string | null;
   /** Approve a request. @param type - leave/overtime/carryover-payout. @param id - The request id. */
   onApprove: (type: string, id: string) => void;
-  /** Reject a request. @param type - leave/overtime/carryover-payout. @param id - The request id. */
-  onReject: (type: string, id: string) => void;
+  /** Reject a request with a reason (#433). @param type - leave/overtime/carryover-payout. @param id - The request id. @param reason - Why it was turned down. */
+  onReject: (type: string, id: string, reason: string) => void;
 }
 
 /**
@@ -29,6 +31,7 @@ interface Props {
  */
 export default function ManagersOnVacation({ requests, processingEnabled, actionLoading, onApprove, onReject }: Props) {
   const theme = useTheme();
+  const [rejectTarget, setRejectTarget] = useState<VacationCoverRequest | null>(null);   // the card awaiting a reason (#433)
 
   if (requests.length === 0) {
     return (
@@ -87,7 +90,7 @@ export default function ManagersOnVacation({ requests, processingEnabled, action
                 <Button
                   size="small" variant="outlined" color="error"
                   disabled={busy || !processingEnabled}
-                  onClick={() => onReject(r.request_type, r.id)}
+                  onClick={() => setRejectTarget(r)}
                 >
                   Reject
                 </Button>
@@ -96,6 +99,16 @@ export default function ManagersOnVacation({ requests, processingEnabled, action
           );
         })}
       </Box>
+
+      {/* Every reject asks for a reason first (#433). */}
+      <RejectDialog
+        open={rejectTarget !== null}
+        personName={rejectTarget?.employee_name}
+        requestLabel={rejectTarget?.what}
+        busy={rejectTarget !== null && actionLoading === `${rejectTarget.request_type}-${rejectTarget.id}`}
+        onCancel={() => setRejectTarget(null)}
+        onConfirm={(reason) => { const r = rejectTarget; setRejectTarget(null); if (r) onReject(r.request_type, r.id, reason); }}
+      />
     </Paper>
   );
 }

@@ -454,15 +454,22 @@ async def refresh_session(body: SessionBody):
     The role in a sign-in token is decided when the code is checked and kept for
     30 days. Someone made a manager after that (or whose check failed that day)
     would not see My team until the token ran out. The page calls this on every
-    visit; when the role has changed it gets a new token with the right one.
+    visit; when the person has since become a manager it gets a manager token.
+
+    This only ever promotes an employee to manager; it never demotes a manager
+    back to employee (#395). A supervisor opening the add-this-new-hire link
+    before anyone is under them, and an admin's open-as-manager link, keep their
+    manager role (and Add Employee) rather than being dropped to employee just
+    because nobody lists them yet.
 
     Args:
         body: The token fields the page holds (from the code sign-in or an
             emailed link).
 
     Returns:
-        ``{"changed": False}`` when the role still holds (or could not be
-        checked), else ``{"changed": True, role, uid, token, exp}``.
+        ``{"changed": False}`` when there is nothing to promote (already a
+        manager or admin, still only an employee, or the check could not run),
+        else ``{"changed": True, role, uid, token, exp}`` with a manager token.
 
     Raises:
         HTTPException: 401 when the token is not valid; 404 when the person's
@@ -478,11 +485,14 @@ async def refresh_session(body: SessionBody):
         raise HTTPException(status_code=404, detail="Your staff record could not be found.")
     if is_archived(employee.get("fields", {})):               # a departed person gets no new token (#119)
         raise HTTPException(status_code=403, detail="This account is no longer active. Please contact HR.")
+    # Only ever promote (#395): a manager link is never demoted to employee, even
+    # when nobody lists them yet, so it keeps My team and Add Employee. Only an
+    # employee is re-checked, to raise them up once someone lists them.
+    if body.role == "manager":                                # already a manager: nothing to raise
+        return {"changed": False}
     manages = await _manages_anyone(employee)
-    if manages is None:                                       # check failed: keep what they have
+    if not manages:                                           # None (check failed) or False: stay an employee
         return {"changed": False}
-    role = "manager" if manages else "employee"
-    if role == body.role:                                     # nothing to change
-        return {"changed": False}
-    # A fresh token with the new role; the page swaps it in for the old one.
-    return {"changed": True, **generate_dashboard_token(role, body.uid)}
+    # Someone now lists this employee as a manager: hand back a manager token for
+    # the page to swap in for the old one.
+    return {"changed": True, **generate_dashboard_token("manager", body.uid)}

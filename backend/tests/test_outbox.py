@@ -142,7 +142,10 @@ def test_a_successful_send_marks_the_row_sent_and_logs_a_result_event(monkeypatc
     assert any(event.type == "result_sent" for event in events)
 
 
-def test_a_failed_send_sets_failed_with_a_backoff_and_a_send_failed_event(monkeypatch):
+def test_a_transient_failure_backs_off_and_adds_no_timeline_row_yet(monkeypatch):
+    # A transient error (network/5xx-shaped) retries with a backoff, and now adds
+    # NO send_failed event: only the FINAL failure records one line, so a flaky
+    # provider does not leave ten (#424).
     _stub_email(monkeypatch, error=RuntimeError("provider down"))
     request = run(_request())
     row_id = run(_enqueue(request))
@@ -166,7 +169,7 @@ def test_a_failed_send_sets_failed_with_a_backoff_and_a_send_failed_event(monkey
     row, events = run(read())
     assert row.status == "failed" and row.attempts == 1
     assert row.next_attempt_at is not None and "provider down" in row.last_error
-    assert any(event.type == "send_failed" for event in events)
+    assert not any(event.type == "send_failed" for event in events)   # no row until the final failure
 
 
 def test_the_backoff_doubles_and_is_capped_at_an_hour():

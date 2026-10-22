@@ -50,6 +50,16 @@
     <input type="hidden" name="mgr" value="{{ mgr }}">
     <input type="hidden" name="exp" value="{{ exp }}">
     <input type="hidden" name="v" value="{{ v }}">
+    {# Rejecting needs a reason typed here (#433); the box is required, and the
+       server asks again if it somehow arrives blank. Approving shows no box. #}
+    {% if action == "reject" %}
+    {% if reason_error %}<p style="color:#dc2626;font-weight:600;margin:0 0 8px;">{{ reason_error }}</p>{% endif %}
+    <div style="text-align:left;margin:0 0 16px;">
+      <label for="reason" style="display:block;font-weight:600;margin-bottom:6px;color:#333;">Reason for rejecting</label>
+      <textarea id="reason" name="reason" required rows="3" placeholder="Tell the employee why"
+        style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit;resize:vertical;">{{ reason | default('') }}</textarea>
+    </div>
+    {% endif %}
     <button type="submit" class="btn btn-{{ action }}">Yes, {{ action | title }}</button>
   </form>
   <p style="color: #888; font-size: 13px; margin-top: 20px;">This page was loaded to confirm your action. Nothing has been processed yet.</p>

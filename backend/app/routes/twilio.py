@@ -13,9 +13,21 @@ from app.services.carryover_payout import approve_carryover_payout, reject_carry
 from app.repositories.request_store import request_store
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 from app.services.switch_pause import PAUSE_MESSAGE, is_paused
+from app.services.request_decisions import MAX_REJECT_REASON_LEN  # the reject-reason length cap (finding 14)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# The reply sent when an inbound SMS cannot be parsed. It shows that a reject may
+# carry a free-text reason after the number, and that the reason is optional, so
+# a bare "LR Reject 123" still works (owner ruling) (finding 2).
+UNRECOGNIZED_SMS_REPLY = (
+    "Could not understand your response. "
+    "Reply 'LR Approve {ID}' or 'LR Reject {ID} <reason>' for leave, "
+    "'OT Approve {ID}' or 'OT Reject {ID} <reason>' for overtime, "
+    "'CO Approve {ID}' or 'CO Reject {ID} <reason>' for carry over/payout. "
+    "A reject reason is optional."
+)
 
 REQUEST_TYPE_CONFIG = {
     "leave": {
@@ -74,16 +86,10 @@ async def receive_sms(request: Request):
     # Extract last 10 digits
     from_digits = re.sub(r"\D", "", from_number)[-10:]
 
-    # Parse decision, request ID, and request type from body
-    decision, item_id, request_type = _parse_sms_body(body)
+    # Parse decision, request ID, request type, and (for a reject) the reason.
+    decision, item_id, request_type, reason = _parse_sms_body(body)
     if not decision or not item_id or not request_type:
-        await send_sms(
-            from_number,
-            "Could not understand your response. "
-            "Reply 'LR Approve {ID}' or 'LR Reject {ID}' for leave, "
-            "'OT Approve {ID}' or 'OT Reject {ID}' for overtime, "
-            "'CO Approve {ID}' or 'CO Reject {ID}' for carry over/payout.",
-        )
+        await send_sms(from_number, UNRECOGNIZED_SMS_REPLY)
         return ""
 
     config = REQUEST_TYPE_CONFIG[request_type]
@@ -158,8 +164,9 @@ async def receive_sms(request: Request):
             f"Response has been received. An email will be sent to ({manager_email}) once the process is completed.",
         )
     else:
-        # channel="sms" for the reject path too; no link version by SMS.
-        result = await config["reject"](item_id, sender_id, "sms") or {}
+        # channel="sms"; no link version by SMS. Any words after the number in
+        # the reply become the reason (#433); no words means no reason, as before.
+        result = await config["reject"](item_id, sender_id, "sms", None, reason) or {}
         if result.get("error"):
             await send_sms(from_number, f"Request #{item_id} was not rejected. {result['error']}")
             return ""
@@ -176,35 +183,62 @@ _PREFIX_MAP = {
 }
 
 
-def _parse_sms_body(body: str) -> tuple[str | None, str | None, str | None]:
-    """Extract decision (Approve/Reject), item ID, and request type from SMS body.
+def _parse_sms_body(body: str) -> tuple[str | None, str | None, str | None, str | None]:
+    """Extract decision, item ID, request type, and a reject reason from an SMS.
 
-    Expected formats:
+    Expected formats (the reason is anything after the number, reject only):
         LR Approve 123
         OT Reject 45
-        CO Approve 12
-    """
-    body_lower = body.lower().strip()
+        CO Reject 12 covered already
 
-    # Check for prefix
+    The item number splits the command from the reason: the DECISION word is read
+    only from the text BEFORE the number, and the reason only from AFTER it.
+    Reading the decision from the whole message let a reject reason that mentioned
+    "approve" ("LR Reject 123 can't approve, short staffed") flip the decision to
+    Approve (finding 1). The decision is matched case-insensitively; the reason
+    keeps the sender's original wording.
+
+    Args:
+        body: The raw SMS body.
+
+    Returns:
+        ``(decision, item_id, request_type, reason)``; each is None when absent.
+        The reason is None for approvals and for a reject with no trailing words,
+        and is capped at ``MAX_REJECT_REASON_LEN`` characters (finding 14).
+    """
+    stripped = body.strip()                                    # keep original case for the reason
+    body_lower = stripped.lower()                              # match the prefix/decision case-insensitively
+
+    # Check for a prefix, and keep the remainder in its original case.
     request_type = None
+    remainder = stripped                                       # the text after the prefix, original case
     for prefix, rtype in _PREFIX_MAP.items():
         if body_lower.startswith(prefix + " "):
             request_type = rtype
-            body_lower = body_lower[len(prefix) + 1:].strip()
+            remainder = stripped[len(prefix) + 1:].strip()     # drop "LR "/"OT "/"CO "
             break
 
     if not request_type:
-        return None, None, None
+        return None, None, None, None
 
+    # The first run of digits is the item id; the command is before it, the reason
+    # after it. With no number, the whole remainder is the command (no item id).
+    match = re.search(r"\d+", remainder)
+    item_id = match.group(0) if match else None
+    before = remainder[: match.start()] if match else remainder   # the command, before the number
+    after = remainder[match.end():].strip() if match else ""      # the reason, after the number
+
+    before_lower = before.lower()                              # decision matched on the command only
     decision = None
-    if "approve" in body_lower:
-        decision = "Approve"
-    elif "reject" in body_lower or "yeet" in body_lower:
+    # Reject first: "disapprove" contains "approve", so an approve-first test would
+    # misread it; a reject word always wins over an approve substring in it.
+    if "reject" in before_lower or "disapprove" in before_lower or "yeet" in before_lower:
         decision = "Reject"
+    elif "approve" in before_lower:
+        decision = "Approve"
 
-    # Extract number from remaining body
-    numbers = re.findall(r"\d+", body_lower)
-    item_id = numbers[0] if numbers else None
+    reason = after or None                                     # no trailing words means no reason
+    if reason and len(reason) > MAX_REJECT_REASON_LEN:         # cap the reason at this entry (finding 14)
+        reason = reason[:MAX_REJECT_REASON_LEN]
 
-    return decision, item_id, request_type
+    return decision, item_id, request_type, reason

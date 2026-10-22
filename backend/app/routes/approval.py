@@ -11,6 +11,7 @@ from app.services.switch_pause import PAUSE_MESSAGE, is_paused
 from app.services.leave_requests import approve_leave_request, reject_leave_request
 from app.services.overtime_requests import approve_overtime_request, reject_overtime_request
 from app.services.carryover_payout import approve_carryover_payout, reject_carryover_payout
+from app.services.request_decisions import MAX_REJECT_REASON_LEN  # the reject-reason length cap (finding 14)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -144,19 +145,45 @@ async def handle_approval(
     mgr: str = Form(...),
     exp: str = Form(...),
     v: int = Form(1),
+    reason: str = Form(""),
 ):
     """Process the approval/rejection action (requires POST from confirmation page)."""
     error_response = await _validate_and_check(request, request_type, action, request_id, token, mgr, exp, v)
     if error_response:
         return error_response
 
+    # Rejecting from the email page now needs a reason typed on the page (#433),
+    # and it is capped like the other entry points (finding 14). On a missing or
+    # over-long reason, re-show the same confirm page with a friendly note and
+    # process nothing; approving is unchanged and carries no reason.
+    reason = reason.strip()
+    if action == "reject" and (not reason or len(reason) > MAX_REJECT_REASON_LEN):
+        reason_error = (
+            "Please enter a reason for rejecting this request."
+            if not reason else
+            f"Please keep the reason to {MAX_REJECT_REASON_LEN} characters or fewer."
+        )
+        return templates.TemplateResponse(
+            request,
+            "approval_confirm.html",
+            {
+                "request_type": request_type, "action": action, "request_id": request_id,
+                "token": token, "mgr": mgr, "exp": exp, "v": v,
+                "reason": reason[:MAX_REJECT_REASON_LEN], "reason_error": reason_error,
+            },
+        )
+
     handler = HANDLERS[(request_type, action)]
 
     try:
         # Tag the decision with the channel and the link version so the Postgres
         # path can log who acted and reject a stale link; the SharePoint handlers
-        # accept and ignore the extra args, so this is safe in both modes.
-        result = await handler(request_id, mgr, "email_link", v)
+        # accept and ignore the extra args, so this is safe in both modes. A
+        # rejection also carries the reason; approve takes no reason argument.
+        if action == "reject":
+            result = await handler(request_id, mgr, "email_link", v, reason)
+        else:
+            result = await handler(request_id, mgr, "email_link", v)
     except Exception as e:
         logger.exception("Error processing approval for %s #%s", request_type, request_id)
         return _error_page(request, request_id, str(e))

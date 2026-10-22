@@ -24,6 +24,13 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# httpx logs every request at INFO as "HTTP Request: POST <url>", and the Twilio
+# send URL carries the Account SID; httpcore logs the same at a lower layer. Hold
+# both at WARNING so the SID never reaches the logs (finding 6, #420). A named
+# logger's level survives a later basicConfig(force=True), so setting it once here
+# covers the re-config Alembic forces in the lifespan.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

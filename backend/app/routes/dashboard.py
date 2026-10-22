@@ -23,6 +23,7 @@ from app.services.balance import (
 )
 from app.services.employee_validation import (
     fetch_approval_email_records,
+    fetch_manager_asked_records,
     validate_all_employee_setups,
     validate_employee_setup,
 )
@@ -38,6 +39,7 @@ from app.services.employment import (
     vacation_days_counted,
 )
 from app.routes.approval import HANDLERS
+from app.services.request_decisions import MAX_REJECT_REASON_LEN  # the reject-reason length cap (finding 14)
 from app.repositories.request_store import request_store, requests_in_postgres
 from app.services.request_live_reads import WIRE_TO_STORED, indexed_request_items
 from app.repositories.staff_store import staff_store, staff_in_postgres  # Staff Directory reads/writes follow staff_storage
@@ -1083,20 +1085,57 @@ async def team_approve(user: AuthUser, request_type: str, request_id: str):
     return result
 
 
+class RejectBody(BaseModel):
+    """The body of a reject route: why the request is being turned down (#433).
+
+    Defaulted to blank so a body with no reason field is a clean 400 here, not a
+    422 from the body parser; the route parameter itself defaults to None so a
+    request with no body at all is also a 400, not a 422 (finding 13).
+    """
+    reason: str = ""
+
+
+def _reject_reason_or_400(body: "RejectBody | None") -> str:
+    """The trimmed reject reason, or a 400 when it is missing, blank or too long.
+
+    Args:
+        body: The parsed reject body, or None when the request carried no body.
+
+    Returns:
+        The trimmed reason.
+
+    Raises:
+        HTTPException: 400 when there is no reason (finding 13), or it is longer
+            than ``MAX_REJECT_REASON_LEN`` (finding 14).
+    """
+    reason = (body.reason if body else "").strip()               # a missing body reads as no reason
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required.")
+    if len(reason) > MAX_REJECT_REASON_LEN:                      # cap it at entry (finding 14)
+        raise HTTPException(
+            status_code=400,
+            detail=f"A reason must be {MAX_REJECT_REASON_LEN} characters or fewer.",
+        )
+    return reason
+
+
 @router.post("/team/reject/{request_type}/{request_id}")
-async def team_reject(user: AuthUser, request_type: str, request_id: str):
+async def team_reject(user: AuthUser, request_type: str, request_id: str, body: RejectBody | None = None):
     _require_role(user, "manager", "admin")
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     await _refuse_if_paused()                                    # refuse mid-switch
     await _refuse_manager_not_on_request(user, request_type, request_id)  # own-team gate
 
+    reason = _reject_reason_or_400(body)                         # every reject needs a capped reason (#433, finding 14)
+
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
 
-    # channel="manager_dashboard" for the reject path too.
-    result = await handler(request_id, user.user_id, "manager_dashboard")
+    # channel="manager_dashboard"; no link version from the dashboard, so pass
+    # None for it and the typed reason as the last argument.
+    result = await handler(request_id, user.user_id, "manager_dashboard", None, reason)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -1504,6 +1543,7 @@ async def admin_requests(
         if pg:
             return await indexed_request_items(
                 request_type, status=status, from_date=from_date, to_date=to_date,
+                with_send_status=True,                             # the table shows a failed-send chip (#424)
             )
         return await request_store.get_list_items(list_id)
 
@@ -1693,12 +1733,17 @@ async def admin_stuck_requests():
 
     pending_items = [i for i in items if i.get("fields", {}).get("Status") == "Pending"]
 
-    # Which of these have had an approval email composed, read in one query for
-    # the whole list. The approval-state row that the email build writes is the
-    # only record of a send; ApproveProcessedFlag is set when a decision is
-    # applied, so reading that listed every request awaiting a manager as stuck.
-    emailed = await fetch_approval_email_records(
-        [("leave", settings.SP_LIST_LEAVE_REQUESTS, item) for item in pending_items]
+    # Which of these had a manager actually asked, read in one bulk query. In
+    # Postgres mode that record is a manager_approval outbox row for the current
+    # version (imported rows also honour the old table); in SharePoint mode it is
+    # the approval-state row the email build wrote. ApproveProcessedFlag is set
+    # only when a decision is applied, so reading it listed every healthy pending
+    # request as stuck (#416).
+    entries = [("leave", settings.SP_LIST_LEAVE_REQUESTS, item) for item in pending_items]
+    emailed = (
+        await fetch_manager_asked_records(entries)
+        if await requests_in_postgres()
+        else await fetch_approval_email_records(entries)
     )
 
     for item in pending_items:
@@ -1979,15 +2024,16 @@ async def admin_approve(request_type: str, request_id: str):
 
 
 @router.post("/admin/reject/{request_type}/{request_id}")
-async def admin_reject(request_type: str, request_id: str):
+async def admin_reject(request_type: str, request_id: str, body: RejectBody | None = None):
     if not settings.PROCESSING_ENABLED:
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     await _refuse_if_paused()                                    # refuse mid-switch
+    reason = _reject_reason_or_400(body)                         # every reject needs a capped reason (#433, finding 14)
     handler = HANDLERS.get((request_type, "reject"))
     if not handler:
         raise HTTPException(status_code=400, detail="Invalid request type")
-    # channel="admin_dashboard" for the reject path too.
-    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard")
+    # channel="admin_dashboard"; pass None for the link version and the reason last.
+    return await _run_request_action(handler, request_id, ADMIN_DEFAULT_ID, "admin_dashboard", None, reason)
 
 
 @router.post("/admin/refund/{request_type}/{request_id}")
@@ -2058,14 +2104,15 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
     # version; the admin asked for a resend, so that case asks for a new version.
     from app.tasks.dispatcher import dispatch_change
     from app.services.leave_requests import send_approval_email
+    sent = None                                                  # None = the SharePoint paths (no boolean to honour)
     try:
         if await requests_in_postgres():
             # In Postgres mode re-ask the manager through the outbox, which keeps
-            # the typed approval version and the links in step. The direct send
-            # bumps request_approval_state but not the typed version (every link
-            # then dies) and queues nothing for an app-made row (#326, finding 4).
-            from app.services.request_submission import queue_reminder
-            await queue_reminder("leave", request_id)
+            # the typed approval version and the links in step. Reprocess is not a
+            # reminder: it sends email AND text with fresh links on every press and
+            # does not advance the reminder cadence (#421).
+            from app.services.request_submission import reprocess_request
+            sent = await reprocess_request("leave", request_id, body.reason.strip())
         elif fields.get("ManagerLookupId"):
             await send_approval_email(request_id, new_version=True)
         else:
@@ -2073,6 +2120,17 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
     except Exception:
         logger.exception("Reprocess: failed for leave #%s", request_id)
         raise HTTPException(status_code=500, detail="Reprocessing failed — check server logs")
+
+    # reprocess_request returns False when nothing actually went out: the request
+    # is no longer pending, its submitter/managers cannot be resolved, or every
+    # manager is away today. Status was Pending just above, so report that cause
+    # honestly rather than claiming a resend happened (finding 12). Raised outside
+    # the try so it is not swallowed into the 500 above.
+    if sent is False:
+        raise HTTPException(
+            status_code=409,
+            detail="Nothing was sent: every manager is away, or no manager could be resolved for this request.",
+        )
 
     # Re-fetch and diagnose remaining issues
     updated = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, request_id)
@@ -2082,8 +2140,11 @@ async def admin_reprocess_leave(request_id: str, body: ReprocessRequest):
 
     # Reprocessing is what sends the approval email, so the send record is read
     # again here rather than reporting the state the request was in before it ran.
-    emailed = await fetch_approval_email_records(
-        [("leave", settings.SP_LIST_LEAVE_REQUESTS, {"id": request_id})]
+    entries = [("leave", settings.SP_LIST_LEAVE_REQUESTS, {"id": request_id})]
+    emailed = (
+        await fetch_manager_asked_records(entries)
+        if await requests_in_postgres()
+        else await fetch_approval_email_records(entries)
     )
     notified = (
         None if emailed is None

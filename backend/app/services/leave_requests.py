@@ -444,21 +444,36 @@ async def notify_manager_after_failed_admin_approval(leave_request_id: str | int
     return True
 
 
+# The HR alert for a bereavement or jury-duty leave: who it goes to, its subject,
+# and the leave types that trigger it. Shared by the SharePoint direct send here
+# and the Postgres outbox enqueue in request_submission, so the two never drift (#427).
+BEREAVEMENT_ALERT_RECIPIENTS = ("mandyl@ucsh.com", "generalmail@ucsh.com")
+BEREAVEMENT_ALERT_SUBJECT = "Jury Duty / Bereavement Alert"
+BEREAVEMENT_ALERT_LEAVE_TYPES = ("Bereavement", "Jury Duty")
+
+
 async def send_bereavement_alert(leave_request_id: str | int):
     """Send alert email if bereavement or jury duty."""
+    # On the Postgres submission path the alert is queued through the outbox
+    # (request_submission._do_submit), so sending it here too would send it
+    # twice; skip the direct send then and let the outbox own it (#427).
+    from app.services.request_submission import submission_active
+    if await submission_active():
+        return
+
     item = await request_store.get_list_item(settings.SP_LIST_LEAVE_REQUESTS, leave_request_id)
     fields = item["fields"]
     leave_type = fields.get("LeaveType", "")
 
-    if leave_type not in ("Bereavement", "Jury Duty"):
+    if leave_type not in BEREAVEMENT_ALERT_LEAVE_TYPES:
         return
 
     submitter_name = await resolve_request_submitter_name(fields, "SubmittedTest")
     from app.templates_render import render_bereavement_alert
     html = render_bereavement_alert(fields, submitter_name)
     await send_email(
-        to=["mandyl@ucsh.com", "generalmail@ucsh.com"],
-        subject="Jury Duty / Bereavement Alert",
+        to=list(BEREAVEMENT_ALERT_RECIPIENTS),
+        subject=BEREAVEMENT_ALERT_SUBJECT,
         html_body=html,
     )
     logger.info("Sent bereavement/jury duty alert for leave request #%s", leave_request_id)
