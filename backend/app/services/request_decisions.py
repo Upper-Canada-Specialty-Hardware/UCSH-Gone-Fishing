@@ -808,7 +808,10 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
 
             net_by_pot = await _approval_net_by_pot(session, request)
             reconstructed = False
-            if not net_by_pot:                                     # legacy: no ledger rows for this approval
+            # Legacy: no ledger rows for this approval. A request an admin settled as
+            # "no balance needed" (#399) also has none, and must stay that way: never
+            # re-derive days for it, or the refund would give back days never taken.
+            if not net_by_pot and request.balance_state != "no_balance":
                 net_by_pot = _legacy_refund_net(request)           # re-derive what it moved, as the SharePoint path does
                 reconstructed = bool(net_by_pot)                   # empty still means a genuine no-balance approval
             balances = await get_staff_balances()
