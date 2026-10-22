@@ -73,7 +73,7 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
   },
   approved_balance_unmoved: {
     title: 'An approved request never moved a balance',
-    fix: 'Open each request named above and check their balances. Correct the balance with the usual edit if the days were never taken off.',
+    fix: 'Use Settle requests to go through each one: take the days off now, record that they were already taken off by hand, or mark that no balance was needed.',
   },
   requests_missing_days: {
     title: 'A request never got its days worked out',

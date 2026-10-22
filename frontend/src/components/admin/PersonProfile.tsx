@@ -1,12 +1,14 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Autocomplete, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  IconButton, MenuItem, Stack, TextField,
+  IconButton, MenuItem, Popper, Stack, TextField,
   ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material';
-import { alpha, useTheme } from '@mui/material/styles';
+import { alpha, SxProps, Theme, useTheme } from '@mui/material/styles';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import AddIcon from '@mui/icons-material/Add';
+import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import RemoveIcon from '@mui/icons-material/Remove';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
@@ -15,7 +17,7 @@ import TakenFrom from '../TakenFrom';
 import { STATUS_COLOR } from '../dataGridDefaults';
 import { ManagerOption } from '../AddEmployee';
 import { requestAmount, requestKind, requestWhat, requestWhen } from '../../utils/requestText';
-import { Enter } from '../Motion';
+import { EASE, Enter, KF } from '../Motion';
 import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord, archiveStaff } from '../../api/staff';
 // Manager-mode writes (#372): the same team endpoints the Team tab already uses,
 // so a manager's balance save and self-removal run through the guarded routes.
@@ -28,9 +30,13 @@ import { isHourly } from '../../utils/employment';
  * panel in the table's place (no side drawer): the left column holds balance and
  * entitlement tiles as click-to-edit tiles and every Staff Directory detail as a
  * click-to-edit field; the right column holds one Activity list that merges the
- * person's requests and HR's hand edits, newest first, grouped by year. One save
- * bar covers every change and needs a reason.
+ * person's requests and HR's hand edits, newest first, grouped by year. One
+ * change at a time: the changed tile or field opens a save card right under it,
+ * which needs a reason before Save (#396).
  */
+
+/** How long the "Saved" mark stays on an item after its save, in ms. */
+const SAVED_MARK_MS = 4000;
 
 /** A balance pot: its wire key, SharePoint column, label, step and entitlement. */
 interface Pot {
@@ -195,6 +201,19 @@ export default function PersonProfile({
   const [archiveOpen, setArchiveOpen] = useState(false);         // the archive confirmation dialog (#119)
   const [archiveReason, setArchiveReason] = useState('');        // required reason for the archive
   const [archiving, setArchiving] = useState(false);             // archive request in flight
+  const [nudge, setNudge] = useState(0);                         // bumps when another item is clicked mid-change (#398)
+  const [savedKey, setSavedKey] = useState<string | null>(null); // the item just saved -> its "Saved" mark
+  const [leaveOpen, setLeaveOpen] = useState(false);             // "leave without saving?" dialog (#398)
+  const [arrowEl, setArrowEl] = useState<HTMLElement | null>(null);   // the save card's pointer, for Popper
+  const anchors = useRef<Record<string, HTMLElement | null>>({});    // wire key -> element its save card hangs under
+  const reasonRef = useRef<HTMLInputElement>(null);              // the save card's reason box
+
+  // The "Saved" mark fades after a few seconds; a newer save restarts the clock.
+  useEffect(() => {
+    if (!savedKey) return;                                        // nothing marked
+    const id = window.setTimeout(() => setSavedKey(null), SAVED_MARK_MS);
+    return () => window.clearTimeout(id);                         // a newer save or unmount wins
+  }, [savedKey]);
 
   // The saved managers are {sp_user_id, name}; the editor works in names, so keep
   // a names list and fold their ids into the name -> id map used on save.
@@ -236,8 +255,46 @@ export default function PersonProfile({
     return String(value) === fieldOriginal(key);
   };
 
+  const changedKeys = Object.keys(edits);
+  // One change at a time (#398), so at most one key is ever staged.
+  const pendingKey: string | null = changedKeys[0] ?? null;
+
+  /** Move focus to the save card's reason box once the card has rendered. */
+  const focusReason = () => {
+    // A short wait: the card mounts in this commit and Popper places it after.
+    window.setTimeout(() => reasonRef.current?.focus({ preventScroll: true }), 30);
+  };
+
+  /**
+   * Point back at the unsaved change: scroll its item into view, shake the
+   * card's note and put the cursor in the reason box (#398).
+   */
+  const pointAtPending = () => {
+    setNudge((n) => n + 1);                                       // re-keys the note so it shakes again
+    if (pendingKey) anchors.current[pendingKey]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    focusReason();
+  };
+
+  /**
+   * Whether an item may start a change: only when nothing else is unsaved.
+   *
+   * @param key - The wire key of the item being opened.
+   * @returns True when free to edit; false after pointing back at the open change.
+   */
+  const canStart = (key: string): boolean => {
+    if (pendingKey && pendingKey !== key) {                       // another item holds an unsaved change
+      pointAtPending();
+      return false;
+    }
+    return true;
+  };
+
+  /** Open a detail field's inline editor, unless another change is unsaved. @param key - Wire key. */
+  const openField = (key: string) => { if (canStart(key)) setEditingKey(key); };
+
   /** Record or clear an edit; a value equal to the saved one clears it. */
   const setEdit = (key: string, value: any) => {
+    if (pendingKey && pendingKey !== key) { pointAtPending(); return; }   // one change at a time (#398)
     setEdits((prev) => {
       const next = { ...prev };
       if (equalsOriginal(key, value)) delete next[key];
@@ -246,7 +303,14 @@ export default function PersonProfile({
     });
   };
 
-  const changedKeys = Object.keys(edits);
+  /** Forget one item's unsaved change. @param key - Wire key. */
+  const dropEdit = (key: string) => {
+    setEdits((prev) => {
+      const next = { ...prev };
+      delete next[key];                                           // back to the saved value
+      return next;
+    });
+  };
 
   /** The label for a change-summary / history key. @param key - Wire key. */
   const labelOf = (key: string) => (POT_BY_KEY[key] ? POT_BY_KEY[key].label : FIELDS[key]?.label || key);
@@ -276,9 +340,11 @@ export default function PersonProfile({
       setSaving(true);
       try {
         const res = await updateTeamEntitlements(record.employee_id, { changes, reason: reason.trim() });
+        if (!res.data.notice) setSavedKey(pendingKey);            // mark the item "Saved" (not on a soft refusal)
         setEdits({});                                              // clear the staged edits
         setReason('');                                            // and the reason box
         setEditingKey(null);
+        setNudge(0);                                              // the card is gone, so is its note
         onNotify(res.data.notice || 'Saved.', res.data.notice ? 'error' : 'success');  // notice => a soft refusal
         onSaved();                                                // parent re-reads the record + team
       } catch (err: any) {
@@ -307,9 +373,11 @@ export default function PersonProfile({
     setSaving(true);
     try {
       const res = await saveStaffRecord(record.employee_id, payload);
+      if (!res.data.notice) setSavedKey(pendingKey);              // mark the item "Saved" (not on a soft refusal)
       setEdits({});
       setReason('');
       setEditingKey(null);
+      setNudge(0);                                                // the card is gone, so is its note
       onNotify(res.data.notice || 'Saved to the Staff Directory.', res.data.notice ? 'error' : 'success');
       onSaved();                                                 // parent refetches record + row
     } catch (err: any) {
@@ -320,8 +388,11 @@ export default function PersonProfile({
     }
   };
 
-  /** Undo every unsaved change. */
-  const cancel = () => { setEdits({}); setReason(''); setEditingKey(null); };
+  /** Undo the unsaved change and close its card. */
+  const cancel = () => { setEdits({}); setReason(''); setEditingKey(null); setNudge(0); };
+
+  /** Back to the table, asking first when a change is still unsaved (#398). */
+  const goBack = () => (pendingKey ? setLeaveOpen(true) : onBack());
 
   // The person's still-pending requests, shown in the archive dialog so the admin
   // knows they stay pending (they are not auto-rejected) and an admin will still
@@ -382,15 +453,10 @@ export default function PersonProfile({
 
   return (
     <>
-      <Box sx={{
-        bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 3, overflow: 'hidden',
-        // Leave room under the profile for the fixed save bar, so its last fields
-        // are never hidden behind it while there are unsaved changes.
-        mb: changedKeys.length > 0 ? { xs: 34, sm: 26 } : 0,
-      }}>
+      <Box sx={{ bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 3, overflow: 'hidden' }}>
         {/* Header: back, avatar, name (editable), email, placement, badges. */}
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', p: 2.25, borderBottom: 1, borderColor: 'divider', flexWrap: 'wrap' }}>
-          <IconButton aria-label="Back to staff" onClick={onBack} sx={{ border: 1, borderColor: t.line2, borderRadius: 2 }}>
+          <IconButton aria-label="Back to staff" onClick={goBack} sx={{ border: 1, borderColor: t.line2, borderRadius: 2 }}>
             <ArrowBackIcon />
           </IconButton>
           <Box sx={{ width: 52, height: 52, borderRadius: 2, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'grid', placeItems: 'center', fontFamily: t.display, fontSize: 22 }}>
@@ -404,18 +470,24 @@ export default function PersonProfile({
               <TextField
                 autoFocus size="small" defaultValue={currentName} inputProps={{ 'aria-label': 'Name' }}
                 onBlur={(e) => { setEdit('name', e.target.value.trim() || currentName); setEditingKey(null); }}
-                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLElement).blur(); if (e.key === 'Escape') setEditingKey(null); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { (e.target as HTMLElement).blur(); focusReason(); }   // done typing: on to the reason
+                  if (e.key === 'Escape') setEditingKey(null);
+                }}
                 sx={{ maxWidth: 360 }}
               />
             ) : (
-              <Typography
-                variant="h5" tabIndex={0} role="button" title="Click to rename"
-                onClick={() => setEditingKey('name')}
-                onKeyDown={(e) => { if (e.key === 'Enter') setEditingKey('name'); }}
-                sx={{ cursor: 'pointer', borderRadius: 1, px: 0.5, mx: -0.5, bgcolor: edits.name !== undefined ? alpha(t.accent, 0.18) : 'transparent', '&:hover': { bgcolor: t.hover } }}
-              >
-                {currentName}
-              </Typography>
+              <Box ref={(el: HTMLElement | null) => { anchors.current.name = el; }} sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, maxWidth: '100%' }}>
+                <Typography
+                  variant="h5" tabIndex={0} role="button" title="Click to rename"
+                  onClick={() => openField('name')}
+                  onKeyDown={(e) => { if (e.key === 'Enter') openField('name'); }}
+                  sx={{ cursor: 'pointer', borderRadius: 1, px: 0.5, mx: -0.5, minWidth: 0, overflowWrap: 'anywhere', bgcolor: edits.name !== undefined ? alpha(t.accent, 0.18) : 'transparent', '&:hover': { bgcolor: t.hover } }}
+                >
+                  {currentName}
+                </Typography>
+                {savedKey === 'name' && <SavedMark />}
+              </Box>
             )}
             <Stack direction="row" spacing={1.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.25, color: 'text.secondary', fontSize: 13.5 }}>
               <Box
@@ -468,6 +540,10 @@ export default function PersonProfile({
                     onChange={(v) => setEdit(p.key, v)}
                     // A manager's view of their own record is read-only (#372).
                     readOnly={selfView}
+                    onOpen={() => canStart(p.key)}                       // refused while another item is unsaved (#398)
+                    onDone={focusReason}                                 // Enter in the tile: on to the reason
+                    boxRef={(el) => { anchors.current[p.key] = el; }}    // the save card hangs under this tile
+                    justSaved={savedKey === p.key}
                   />
                 );
                 // For hourly, the vacation counter sits just before Sick, in place of the vacation balance tile.
@@ -489,8 +565,8 @@ export default function PersonProfile({
             <FieldGroup title="Placement">
               {['location', 'department', 'salary_hourly', 'supervisor_text', 'system_check', 'request_allow_date', 'comments'].map((k) => renderField(k))}
             </FieldGroup>
-            <Box>
-              <GroupTitle>Managers</GroupTitle>
+            <Box ref={(el: HTMLElement | null) => { anchors.current.managers = el; }}>
+              <GroupTitle>Managers{savedKey === 'managers' && <SavedMark sx={{ ml: 1 }} />}</GroupTitle>
               {manager ? (
                 // Manager mode (#372): every manager is shown; only the calling
                 // manager's own chip can be removed (that is "remove from my team").
@@ -526,46 +602,118 @@ export default function PersonProfile({
         </Box>
       </Box>
 
-      {/* Save bar: slides up when anything changed; Save needs a reason. */}
-      {changedKeys.length > 0 && (
-        <Box
-          sx={{
-            position: 'fixed', left: '50%', bottom: 16, transform: 'translateX(-50%)',
-            width: 'min(760px, calc(100% - 32px))', bgcolor: 'background.paper', border: 1, borderColor: t.line2,
-            borderRadius: 3, boxShadow: 6, p: 1.5, zIndex: (th) => th.zIndex.snackbar, display: 'grid', gap: 1.25,
-          }}
-          role="region" aria-label="Unsaved changes"
-        >
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: 13.5, alignItems: 'baseline' }}>
-            <Typography component="span" color="text.secondary" sx={{ fontSize: 13.5 }}>
-              {changedKeys.length === 1 ? '1 change:' : `${changedKeys.length} changes:`}
-            </Typography>
-            {changedKeys.map((k) => (
-              <Typography component="span" key={k} sx={{ fontSize: 13.5 }}>
-                {labelOf(k)}{' '}
-                <b style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {showValue(k, POT_BY_KEY[k] ? potOriginal(POT_BY_KEY[k]) : fieldOriginal(k))} → {showValue(k, edits[k])}
-                </b>
+      {/* The save card (#397): hangs right under the changed tile or field, so the
+          change cannot read as done while it still needs a reason and Save. */}
+      <Popper
+        open={!!pendingKey && !!anchors.current[pendingKey]}
+        anchorEl={pendingKey ? anchors.current[pendingKey] : null}
+        placement="bottom-start"
+        modifiers={[
+          { name: 'offset', options: { offset: [0, 12] } },                           // a gap for the pointer
+          { name: 'flip', options: { fallbackPlacements: ['top-start', 'bottom-end', 'top-end'] } },
+          { name: 'preventOverflow', options: { padding: 16 } },                     // stays on screen at phone width
+          { name: 'arrow', enabled: !!arrowEl, options: { element: arrowEl, padding: 18 } },
+        ]}
+        sx={{
+          // Under the dialogs (leave, archive), over everything else on the page.
+          zIndex: (th) => th.zIndex.modal - 1, width: 'min(380px, calc(100vw - 32px))',
+          // The pointer sits on whichever edge faces the item.
+          '&[data-popper-placement^="bottom"] .save-arrow': { top: -7 },
+          '&[data-popper-placement^="top"] .save-arrow': { bottom: -7, '&::before': { transform: 'rotate(225deg)' } },
+        }}
+      >
+        {pendingKey && (
+          <Box
+            role="region" aria-label={`Unsaved change to ${labelOf(pendingKey)}`}
+            sx={{
+              position: 'relative', bgcolor: 'background.paper', border: 1, borderColor: t.line2, borderRadius: '18px',
+              p: 2, display: 'grid', gap: 1.5,
+              boxShadow: `0 22px 48px -16px ${alpha(theme.palette.text.primary, 0.28)}, 0 2px 8px -2px ${alpha(theme.palette.text.primary, 0.16)}`,
+              animation: `${KF.rise} 240ms ${EASE.out} both`, '--enter-y': '6px',   // eases in under the item
+            }}
+          >
+            {/* The pointer up to the item; Popper slides it along the edge. */}
+            <Box
+              ref={setArrowEl} className="save-arrow" aria-hidden
+              sx={{
+                position: 'absolute', width: 14, height: 14,
+                '&::before': {
+                  content: '""', position: 'absolute', inset: 0, bgcolor: 'background.paper',
+                  borderLeft: 1, borderTop: 1, borderColor: t.line2, transform: 'rotate(45deg)',
+                },
+              }}
+            />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: t.accent }} />
+              <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'text.secondary' }}>
+                Not saved yet
               </Typography>
-            ))}
+            </Stack>
+            {/* What changes: old value struck through, then the new one. */}
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 1.25, rowGap: 0.5 }}>
+              <Typography sx={{ fontSize: 14, color: 'text.secondary' }}>{labelOf(pendingKey)}</Typography>
+              <Typography sx={{ fontSize: 16, color: 'text.secondary', textDecoration: 'line-through', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>
+                {showValue(pendingKey, POT_BY_KEY[pendingKey] ? potOriginal(POT_BY_KEY[pendingKey]) : fieldOriginal(pendingKey))}
+              </Typography>
+              <ArrowForwardIcon sx={{ fontSize: 16, color: 'text.secondary', alignSelf: 'center' }} />
+              <Typography sx={{ fontFamily: t.display, fontSize: 24, fontWeight: 600, lineHeight: 1.15, fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>
+                {showValue(pendingKey, edits[pendingKey])}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography component="label" htmlFor="save-card-reason" sx={{ display: 'block', mb: 0.75, fontSize: 12.5, fontWeight: 600, color: 'text.secondary' }}>
+                Reason <Box component="span" sx={{ fontWeight: 400 }}>· needed to save</Box>
+              </Typography>
+              <TextField
+                id="save-card-reason" fullWidth size="small" value={reason} inputRef={reasonRef}
+                onChange={(e) => setReason(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); save(); }      // save straight from the reason
+                  if (e.key === 'Escape') { e.preventDefault(); cancel(); }   // drop the change
+                }}
+                placeholder="e.g. Day off Oct 6, approved verbally by Sam Supervisor"
+              />
+            </Box>
+            {/* Shown when another item was clicked; re-keyed so each click shakes it again (#398). */}
+            {nudge > 0 && (
+              <Box
+                key={nudge} role="alert"
+                sx={{ px: 1.25, py: 1, borderRadius: '10px', bgcolor: t.warnSoft, color: 'warning.main', fontSize: 13, fontWeight: 500, animation: `${KF.shake} 360ms ease-in-out` }}
+              >
+                Save or cancel this change before you edit something else.
+              </Box>
+            )}
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography sx={{ flex: 1, fontSize: 12, color: 'text.secondary' }}>Goes into Activity with your reason</Typography>
+              <Button onClick={cancel} disabled={saving}>Cancel</Button>
+              <Tooltip title={processingEnabled ? '' : 'Saving is off while the system is in reporting-only mode.'}>
+                <span>
+                  <Button variant="contained" onClick={save} disabled={saving || !reason.trim() || !processingEnabled}>
+                    {saving ? 'Saving...' : 'Save'}
+                  </Button>
+                </span>
+              </Tooltip>
+            </Stack>
           </Box>
-          <TextField
-            size="small" value={reason} onChange={(e) => setReason(e.target.value)}
-            placeholder="Reason, required. e.g. Day off Oct 6, approved verbally by Sam Supervisor"
-            inputProps={{ 'aria-label': 'Reason for the change' }}
-          />
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
-            <Button onClick={cancel} disabled={saving}>Cancel</Button>
-            <Tooltip title={processingEnabled ? '' : 'Saving is off while the system is in reporting-only mode.'}>
-              <span>
-                <Button variant="contained" onClick={save} disabled={saving || !reason.trim() || !processingEnabled}>
-                  {saving ? 'Saving...' : 'Save'}
-                </Button>
-              </span>
-            </Tooltip>
-          </Stack>
-        </Box>
-      )}
+        )}
+      </Popper>
+
+      {/* Leaving with an unsaved change asks first, so it is never dropped silently (#398). */}
+      <Dialog open={leaveOpen} onClose={() => setLeaveOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Leave without saving?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            {pendingKey
+              ? `${labelOf(pendingKey)} ${showValue(pendingKey, POT_BY_KEY[pendingKey] ? potOriginal(POT_BY_KEY[pendingKey]) : fieldOriginal(pendingKey))} → ${showValue(pendingKey, edits[pendingKey])} is not saved yet. `
+              : ''}
+            It only takes effect once it has a reason and you press Save.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button color="error" onClick={() => { setLeaveOpen(false); cancel(); onBack(); }}>Discard and leave</Button>
+          <Button variant="contained" onClick={() => { setLeaveOpen(false); focusReason(); }}>Stay and finish</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Archive confirmation (#119): a required reason, and the pending requests
           that will stay pending so the admin knows to handle them. */}
@@ -637,17 +785,27 @@ export default function PersonProfile({
     return (
       <Box
         key={key}
+        ref={(el: HTMLElement | null) => { anchors.current[key] = el; }}   // the save card hangs under this field
         sx={{ gridColumn: f.wide ? '1 / -1' : undefined, borderRadius: 1.5, p: 0.75, mx: -0.75, bgcolor: dirty ? alpha(t.accent, 0.18) : 'transparent', '&:hover': open ? {} : { bgcolor: t.hover }, cursor: open ? 'default' : 'pointer' }}
         tabIndex={open ? -1 : 0} role="button" aria-label={`Change ${f.label}`}
-        onClick={() => { if (!open) setEditingKey(key); }}
-        onKeyDown={(e) => { if (!open && e.key === 'Enter') setEditingKey(key); }}
+        onClick={() => { if (!open) openField(key); }}
+        onKeyDown={(e) => { if (!open && e.key === 'Enter') openField(key); }}
       >
-        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, display: 'block' }}>{f.label}</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
+          {f.label}
+          {savedKey === key && <SavedMark />}
+        </Typography>
         {open ? (
           <FieldEditor
             field={f} value={value} people={peopleNames} nameToId={nameToId}
-            onCommit={(v) => { setEdit(key, v); setEditingKey(null); }}
-            onCancel={() => setEditingKey(null)}
+            onCommit={(v, close = true) => {
+              setEdit(key, v);                                         // a typed field stages each keystroke
+              if (!close) return;                                      // still typing: keep the editor open
+              setEditingKey(null);
+              if (!['text', 'email', 'tel', 'date', 'area'].includes(f.type)) focusReason();   // a pick is final: on to the reason
+            }}
+            onDone={focusReason}                                       // Enter in a typed field: on to the reason
+            onCancel={() => { dropEdit(key); setEditingKey(null); }}   // Escape drops this field's change
           />
         ) : (
           <>
@@ -704,21 +862,24 @@ function Fact({ label, value, system }: { label: string; value: string; system?:
 }
 
 /**
- * The inline editor for one field, by its type. Commits on Enter / blur / pick,
- * cancels on Escape.
+ * The inline editor for one field, by its type. A pick commits and closes; a
+ * typed field stages every keystroke (so the save card shows while typing) and
+ * closes on blur; Enter moves on to the reason; Escape drops the change.
  *
  * @param props.field - The field definition.
  * @param props.value - The current value (text, name, or PersonEdit).
  * @param props.people - Names for the person picker.
  * @param props.nameToId - Resolves a picked name to its SharePoint user id.
- * @param props.onCommit - Called with the new value.
+ * @param props.onCommit - Called with the new value; ``close`` false while still typing.
+ * @param props.onDone - Called when Enter finishes a typed field.
  * @param props.onCancel - Called to drop the edit.
  * @returns The editor control.
  */
-function FieldEditor({ field, value, people, nameToId, onCommit, onCancel }: {
+function FieldEditor({ field, value, people, nameToId, onCommit, onDone, onCancel }: {
   field: FieldDef; value: any; people: string[]; nameToId: Map<string, number>;
-  onCommit: (v: any) => void; onCancel: () => void;
+  onCommit: (v: any, close?: boolean) => void; onDone: () => void; onCancel: () => void;
 }) {
+  const cancelled = useRef(false);                                // Escape pressed: ignore the blur that follows
   if (field.type === 'seg') {
     return (
       <ToggleButtonGroup
@@ -765,10 +926,11 @@ function FieldEditor({ field, value, people, nameToId, onCommit, onCancel }: {
       type={field.type === 'area' ? undefined : field.type} defaultValue={initial} sx={{ mt: 0.5 }}
       inputProps={{ 'aria-label': field.label }}
       InputLabelProps={field.type === 'date' ? { shrink: true } : undefined}
-      onBlur={(e) => onCommit(e.target.value.trim())}
+      onChange={(e) => onCommit(e.target.value.trim(), false)}       // stage live, editor stays open
+      onBlur={(e) => { if (!cancelled.current) onCommit(e.target.value.trim()); }}   // leaving the box closes it
       onKeyDown={(e) => {
-        if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
-        if (e.key === 'Enter' && !isArea) (e.target as HTMLElement).blur();
+        if (e.key === 'Escape') { e.preventDefault(); cancelled.current = true; onCancel(); }   // no re-commit on the blur after
+        if (e.key === 'Enter' && !isArea) { (e.target as HTMLElement).blur(); onDone(); }   // on to the reason
       }}
     />
   );
@@ -909,6 +1071,33 @@ function ManagerChips({ names, managerName, employeeId, canRemove, onNotify, onR
 }
 
 /**
+ * The small green "Saved" mark an item wears for a few seconds after its save (#397).
+ *
+ * @param props.sx - Placement from the caller (absolute on a tile, inline on a field).
+ * @returns The mark.
+ */
+function SavedMark({ sx }: { sx?: SxProps<Theme> }) {
+  const theme = useTheme();
+  return (
+    <Box
+      component="span"
+      sx={[
+        {
+          display: 'inline-flex', alignItems: 'center', gap: 0.25, px: 0.75, borderRadius: 999,
+          fontSize: 11.5, fontWeight: 700, lineHeight: 1.6, letterSpacing: 0, textTransform: 'none',
+          bgcolor: theme.tokens.okSoft, color: 'success.main',
+          animation: `${KF.pop} 260ms ${EASE.out} both`,               // pops in once
+        },
+        ...(Array.isArray(sx) ? sx : [sx]),
+      ]}
+    >
+      <CheckIcon sx={{ fontSize: 13 }} aria-hidden />
+      Saved
+    </Box>
+  );
+}
+
+/**
  * One balance tile: the label, the value and (for a balance) a meter against its
  * entitlement. Click opens an inline editor with - / + steps or a typed value.
  *
@@ -917,12 +1106,18 @@ function ManagerChips({ names, managerName, employeeId, canRemove, onNotify, onR
  * @param props.saved - Its saved value, for the change delta.
  * @param props.entitlement - The entitlement total, for the meter.
  * @param props.onChange - Called with the new number.
+ * @param props.readOnly - Display only: no click-to-edit, no - / + (#372).
+ * @param props.onOpen - Asked before the editor opens; false keeps it shut (another change is unsaved).
+ * @param props.onDone - Called when Enter finishes the edit, to move on to the reason.
+ * @param props.boxRef - Receives the tile's element, so the save card can hang under it.
+ * @param props.justSaved - Show the "Saved" mark.
  * @returns The tile.
  */
-function Tile({ pot, value, saved, entitlement, onChange, readOnly = false }: {
+function Tile({ pot, value, saved, entitlement, onChange, readOnly = false, onOpen, onDone, boxRef, justSaved = false }: {
   pot: Pot; value: number; saved: number; entitlement?: number; onChange: (v: number) => void;
   /** When true the tile only displays: no click-to-edit, no - / + (#372). */
   readOnly?: boolean;
+  onOpen?: () => boolean; onDone?: () => void; boxRef?: (el: HTMLElement | null) => void; justSaved?: boolean;
 }) {
   const theme = useTheme();
   const t = theme.tokens;
@@ -937,13 +1132,16 @@ function Tile({ pot, value, saved, entitlement, onChange, readOnly = false }: {
     onChange(v);
   };
   const meterPct = entitlement ? Math.max(4, Math.min(100, (Math.abs(value) / (entitlement || 1)) * 100)) : 0;
+  /** Open the - / + editor, unless read-only or another item's change is unsaved. */
+  const open = () => { if (!editing && !readOnly && (onOpen ? onOpen() : true)) setEditing(true); };
 
   return (
     <Box
+      ref={boxRef}
       // readOnly: no focus, no click handler, no pointer cursor (#372).
       tabIndex={editing || readOnly ? -1 : 0} role="button" aria-label={readOnly ? pot.label : `Change ${pot.label}`}
-      onClick={() => !editing && !readOnly && setEditing(true)}
-      onKeyDown={(e) => { if (!editing && !readOnly && e.key === 'Enter') setEditing(true); }}
+      onClick={open}
+      onKeyDown={(e) => { if (e.key === 'Enter') open(); }}
       sx={{
         position: 'relative', border: 1, borderRadius: 2, p: 1.5, display: 'grid', gap: 0.5, textAlign: 'left',
         cursor: editing || readOnly ? 'default' : 'pointer',
@@ -957,6 +1155,7 @@ function Tile({ pot, value, saved, entitlement, onChange, readOnly = false }: {
           {value - saved > 0 ? '+' : ''}{fmt(value - saved)}
         </Box>
       )}
+      {justSaved && !dirty && <SavedMark sx={{ position: 'absolute', top: 8, right: 8 }} />}
       <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>{pot.label}</Typography>
       {editing ? (
         <Stack direction="row" spacing={0.5} alignItems="center" onClick={(e) => e.stopPropagation()}>
@@ -964,7 +1163,10 @@ function Tile({ pot, value, saved, entitlement, onChange, readOnly = false }: {
           <TextField
             autoFocus inputRef={inputRef} size="small" type="number" defaultValue={fmt(value)} inputProps={{ step: pot.step, min: pot.min, 'aria-label': `New ${pot.label}`, style: { textAlign: 'center', fontVariantNumeric: 'tabular-nums' } }}
             onChange={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) onChange(v); }}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') setEditing(false); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setEditing(false);
+              if (e.key === 'Enter') { setEditing(false); onDone?.(); }   // done stepping: on to the reason
+            }}
             onBlur={() => setEditing(false)}
           />
           <IconButton size="small" aria-label="More" onClick={() => step(pot.step)} sx={{ border: 1, borderColor: t.line2 }}><AddIcon fontSize="small" /></IconButton>

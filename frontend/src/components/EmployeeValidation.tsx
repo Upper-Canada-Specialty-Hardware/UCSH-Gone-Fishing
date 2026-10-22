@@ -12,6 +12,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { validateEmployee, fixNegativeCarryover } from '../api/client';
 import EmployeeSetupList, { EmployeeSetupSummary } from './EmployeeSetupList';
 import { PROBLEM_INFO } from './employeeSetupProblems';
+import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
 
 // Matches the backend employee_validation.build_validation_report shape.
 // What a check measured and what it was held against. `comparison` is
@@ -38,6 +39,8 @@ interface Report {
   measurements: { total: number; within_range: number };
   current_balances: Record<string, number | null>;
   checks: Check[];
+  /** Approved requests that never moved a balance, for Settle requests (#400). */
+  unmoved_requests?: UnmovedRequest[];
 }
 
 /**
@@ -184,6 +187,7 @@ export default function EmployeeValidation({
   const [error, setError] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [techOpen, setTechOpen] = useState(false);
+  const [settleOpen, setSettleOpen] = useState(false);          // the settle dialog for this report's person
 
   // Set when a check is started from the list above. The report renders under
   // the picker, below the fold on a desktop viewport, so without this the click
@@ -408,6 +412,12 @@ export default function EmployeeValidation({
                               Move carry-over onto vacation
                             </Button>
                           )}
+                          {/* The same Settle requests the list offers (#400). */}
+                          {c.code === 'approved_balance_unmoved' && (report.unmoved_requests || []).length > 0 && (
+                            <Button size="small" variant="contained" sx={{ mt: 1 }} onClick={() => setSettleOpen(true)}>
+                              Settle requests
+                            </Button>
+                          )}
                         </Box>
                       </Box>
                     );
@@ -519,6 +529,13 @@ export default function EmployeeValidation({
           </Box>
         )}
       </Box>
+
+      <SettleRequestsDialog
+        personName={name}
+        requests={settleOpen && report ? report.unmoved_requests || [] : null}
+        // Re-check this person and refresh the list, so settled flags drop off both.
+        onClose={(settled) => { setSettleOpen(false); if (settled) { run(); onRefreshSetup(); } }}
+      />
     </Box>
   );
 }

@@ -96,6 +96,64 @@ export const previewAdminRequest = (body: { request_type: string; employee_id: s
 export const deleteAdminRequest = (requestType: string, requestId: string, body: { reason: string; refund: boolean }) =>
   api.post(`/admin/requests/${requestType}/${requestId}/delete`, body);
 
+/** One pot movement a settle plans or did; change is signed (negative = taken out). */
+export interface SettleMove {
+  pot: string;
+  before: number;
+  after: number;
+  change: number;
+}
+
+/** What GET /settle answers: the request, the pots now, and what "take it off now" would do (#400). */
+export interface SettlePreview {
+  request: {
+    kind: string;
+    item_id: number;
+    employee_name: string;
+    leave_type: string | null;
+    request_option: string | null;
+    start_date: string | null;
+    end_date: string | null;
+    days: number | null;
+    hours: number | null;
+    decided_at: string | null;
+    decided_by: string | null;
+  };
+  pots: Record<string, number>;
+  plan: { outcome: 'balance_applied' | 'counted' | 'no_balance_used' | 'refused_negative'; moves: SettleMove[]; note: string };
+  /** True for a leave that spends pots: the admin can say which pots it came from by hand. */
+  hand_editable: boolean;
+}
+
+/** The three ways to settle an approved request that never moved a balance. */
+export type SettleOutcome = 'now' | 'hand' | 'none';
+
+/**
+ * What settling one approved, never-applied request would do. Saves nothing.
+ *
+ * @param requestType - 'leave', 'overtime' or 'carryover-payout'.
+ * @param requestId - The item id.
+ * @returns The preview.
+ */
+export const getSettlePreview = (requestType: string, requestId: string | number) =>
+  api.get<SettlePreview>(`/admin/requests/${requestType}/${requestId}/settle`);
+
+/**
+ * Settle one approved request that never moved a balance, with a reason.
+ *
+ * @param requestType - 'leave', 'overtime' or 'carryover-payout'.
+ * @param requestId - The item id.
+ * @param body - outcome, the required reason, and for a by-hand leave the days taken per pot.
+ * @returns The axios response ({status, outcome, balance_state, moves}).
+ */
+export const settleRequest = (
+  requestType: string,
+  requestId: string | number,
+  body: { outcome: SettleOutcome; reason: string; pieces?: Record<string, number> },
+) => api.post<{ status: string; outcome: SettleOutcome; balance_state: string; moves: SettleMove[] }>(
+  `/admin/requests/${requestType}/${requestId}/settle`, body,
+);
+
 /**
  * The Staff Directory people and leave types the new-request dialog needs.
  *

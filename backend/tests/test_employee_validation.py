@@ -989,11 +989,11 @@ def test_approved_requests_without_balance_change_keeps_only_recent_costing_ones
     person = f"emp-{uuid.uuid4().hex[:8]}"                      # the test database persists between runs
     base = 900_000_000 + uuid.uuid4().int % 50_000_000           # item ids no other test uses
 
-    def row(offset, leave_type, decided, state="not_applied", status="approved"):
+    def row(offset, leave_type, decided, state="not_applied", status="approved", days=1):
         return RequestRecord(
             kind="leave", item_id=base + offset, employee_id=person, employee_name="Pat Staff",
             status=status, stage="Approved", leave_type=leave_type, balance_state=state,
-            start_date=decided, days=1,                         # a leave row needs its dates and cost
+            start_date=decided, days=days,                      # a leave row needs its dates and cost
             decided_at=datetime.combine(decided, datetime.min.time(), tzinfo=timezone.utc), extra={},
         )
 
@@ -1005,6 +1005,7 @@ def test_approved_requests_without_balance_change_keeps_only_recent_costing_ones
                 row(3, "Vacation", date(2025, 6, 1)),                # before the cut-off: legacy, skipped
                 row(4, "Vacation", date(2026, 9, 30), state="applied"),   # moved: fine
                 row(5, "Vacation", date(2026, 9, 30), status="pending"),  # not approved: skipped
+                row(6, "Vacation", date(2026, 8, 3), days=0),        # a closed-office day, 0 days: skipped (#401)
             ])
             await s.commit()
         return await ev.approved_requests_without_balance_change()
@@ -1012,3 +1013,15 @@ def test_approved_requests_without_balance_change_keeps_only_recent_costing_ones
     found = asyncio.run(flow())[person]
     assert [r["item_id"] for r in found] == [base + 1]
     assert found[0]["decided"] == date(2026, 9, 29)
+    # The settle dialog's facts ride along (#400).
+    assert found[0]["days"] == 1.0 and found[0]["start_date"] == date(2026, 9, 29)
+    # One person's requests only, for the single-employee check.
+    only = asyncio.run(ev.approved_requests_without_balance_change(person))
+    assert list(only) == [person]
+
+
+def test_zero_days_costs_nothing_but_an_unrecorded_amount_does():
+    assert ev._costs_nothing("leave", 0, None) is True
+    assert ev._costs_nothing("overtime", None, 0) is True
+    assert ev._costs_nothing("leave", None, None) is False          # unknown amount stays flagged
+    assert ev._costs_nothing("carryover_payout", 2, None) is False

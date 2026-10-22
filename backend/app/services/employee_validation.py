@@ -1543,6 +1543,13 @@ async def validate_employee_setup(employee_id: str | int) -> dict:
         sample_end=sample_end,
         today=date.today(),
     )
+    # The same unmoved-balance flag the list shows, so the single check can offer
+    # Settle requests too (#400). It reads Postgres; before the switch it is empty.
+    unmoved = (await approved_requests_without_balance_change(str(employee_id))).get(str(employee_id), [])
+    report["unmoved_requests"] = unmoved
+    if unmoved:
+        report["checks"].append(_unmoved_check(unmoved))
+        report["overall"] = "fail"                                 # a flagged request is a real problem
     logger.info(
         "Employee setup validation for #%s (%s): overall=%s, %s of %s measurements in range",
         employee_id, name, report["overall"],
@@ -1736,44 +1743,78 @@ UNMOVED_SKIP_LEAVE_TYPES = ("Bereavement", "Jury Duty", "Work from Home")
 UNMOVED_NAMED = 5
 
 
-async def approved_requests_without_balance_change() -> dict[str, list[dict]]:
+def _costs_nothing(kind: str, days, hours) -> bool:
+    """Whether a request is worth zero days, so it could never move a balance (#401).
+
+    A leave on a closed-office day (Civic Holiday) is approved with 0 days; it is
+    not a balance that failed to move.
+
+    Args:
+        kind: The request kind.
+        days: The request's days (leave, carry-over/payout), or None.
+        hours: The request's hours (overtime), or None.
+
+    Returns:
+        True when the amount is recorded and is zero. An unrecorded amount is
+        not zero: it stays flagged, since nothing says it cost nothing.
+    """
+    amount = hours if kind == "overtime" else days                 # overtime is entered in hours
+    return amount is not None and float(amount) == 0
+
+
+async def approved_requests_without_balance_change(employee_id: str | None = None) -> dict[str, list[dict]]:
     """Recent approved requests whose balance never moved, by staff id.
 
     Only requests decided on or after the legacy cut-off count: older ones
     predate the current balance rules, so a missing move says nothing about
     them. A request counts when it is approved, its balance state is still
-    ``not_applied`` (it should have moved a pot and did not), and its leave type
-    is one that costs days.
+    ``not_applied`` (it should have moved a pot and did not), its leave type is
+    one that costs days, and it is worth more than zero days.
+
+    Args:
+        employee_id: Only this person's requests, or None for everyone.
 
     Returns:
         Staff id -> that person's requests, each {"kind", "item_id",
-        "leave_type", "decided"} (decided is a date), newest first.
+        "leave_type", "decided" (a date), "start_date", "end_date", "days",
+        "hours", "decided_by"}, newest first. The extra fields feed the settle
+        dialog (#400).
     """
     from app.models.request_record import RequestRecord          # lazy: keeps this module's imports light
     from app.services.request_import import LEGACY_CUTOFF          # lazy: the importer imports the staff store
     when = func.coalesce(RequestRecord.decided_at, RequestRecord.created_at)   # old rows may lack a decided date
+    query = (
+        select(RequestRecord.employee_id, RequestRecord.kind, RequestRecord.item_id,
+               RequestRecord.leave_type, when, RequestRecord.start_date, RequestRecord.end_date,
+               RequestRecord.days, RequestRecord.hours, RequestRecord.decided_by)
+        .where(
+            RequestRecord.status == "approved",
+            RequestRecord.balance_state == "not_applied",          # should have moved a pot; nothing recorded
+            or_(RequestRecord.leave_type.is_(None),                # overtime and carry-over carry no leave type
+                RequestRecord.leave_type.not_in(UNMOVED_SKIP_LEAVE_TYPES)),
+            RequestRecord.employee_id.is_not(None),
+        )
+        .order_by(when.desc())
+    )
+    if employee_id is not None:                                    # the single-employee check: one person only
+        query = query.where(RequestRecord.employee_id == str(employee_id))
     async with async_session() as session:
-        rows = (await session.execute(
-            select(RequestRecord.employee_id, RequestRecord.kind, RequestRecord.item_id,
-                   RequestRecord.leave_type, when)
-            .where(
-                RequestRecord.status == "approved",
-                RequestRecord.balance_state == "not_applied",      # should have moved a pot; nothing recorded
-                or_(RequestRecord.leave_type.is_(None),            # overtime and carry-over carry no leave type
-                    RequestRecord.leave_type.not_in(UNMOVED_SKIP_LEAVE_TYPES)),
-                RequestRecord.employee_id.is_not(None),
-            )
-            .order_by(when.desc())
-        )).all()
+        rows = (await session.execute(query)).all()
     by_person: dict[str, list[dict]] = {}
-    for employee_id, kind, item_id, leave_type, decided in rows:
+    for person, kind, item_id, leave_type, decided, start, end, days, hours, decided_by in rows:
         # The cut-off is applied here, on the date alone, so it reads the same on
         # Postgres and SQLite (their stored datetimes compare differently).
         if decided is None or decided.date() < LEGACY_CUTOFF:
             continue                                               # undated, or before the current rules
-        by_person.setdefault(str(employee_id), []).append({
+        if _costs_nothing(kind, days, hours):
+            continue                                               # 0 days: nothing to move (#401)
+        by_person.setdefault(str(person), []).append({
             "kind": kind, "item_id": item_id, "leave_type": leave_type,
             "decided": decided.date() if decided else None,
+            "start_date": start, "end_date": end,
+            "days": float(days) if days is not None else None,
+            "hours": float(hours) if hours is not None else None,
+            "decided_by": decided_by,
         })
     return by_person
 
@@ -1891,6 +1932,8 @@ def build_setup_row(
         "location": fields.get("Location", ""),
         "fails": [_setup_problem(c) for c in kept if c["status"] == "fail"],
         "warns": [_setup_problem(c) for c in kept if c["status"] == "warn"],
+        # The requests behind the unmoved flag, for the Settle requests action (#400).
+        "unmoved_requests": unmoved or [],
         # Who to tell about a broken record, and where to send them to fix it.
         "creator_email": _creator_email(record),
         "record_url": record.get("webUrl") or None,

@@ -10,6 +10,8 @@ import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { SHARED_DATA_GRID_PROPS } from './dataGridDefaults';
 import { PROBLEM_INFO } from './employeeSetupProblems';
 import { fixNegativeCarryover } from '../api/client';
+import BalanceIcon from '@mui/icons-material/Balance';
+import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
 
 // One failing check, as the sweep reports it.
 interface Problem {
@@ -26,6 +28,8 @@ export interface EmployeeSetupSummary {
     location: string;
     fails: Problem[];
     warns: Problem[];
+    /** Approved requests that never moved a balance, for Settle requests (#400). */
+    unmoved_requests?: UnmovedRequest[];
   }[];
   total_checked: number;
   directory_unreadable: boolean;
@@ -47,6 +51,9 @@ interface Props {
  * it. This is the same set of checks run across everyone.
  */
 export default function EmployeeSetupList({ setupList, loading, onRefresh, onSelect }: Props) {
+  // The person whose flagged requests the settle dialog is walking through, or null.
+  const [settling, setSettling] = useState<{ name: string; requests: UnmovedRequest[] } | null>(null);
+
   const rows = useMemo(
     () =>
       (setupList?.flagged || []).map((r) => ({
@@ -55,6 +62,7 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
         department: r.department || '',
         location: r.location || '',
         fails: r.fails || [],
+        unmoved: r.unmoved_requests || [],
       })),
     [setupList],
   );
@@ -143,7 +151,7 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
       field: 'actions',
       headerName: 'Actions',
       type: 'actions',
-      width: 120,
+      width: 160,
       getActions: (params) => {
         const actions: React.ReactElement<GridActionsCellItemProps>[] = [
           <GridActionsCellItem
@@ -165,6 +173,18 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
               label="Fix carry-over"
               onClick={() => openFix(String(params.id), String(params.row.employee_name))}
               showInMenu={false}
+            />,
+          );
+        }
+        // Approved requests that never moved a balance: settle them one by one (#400).
+        const unmoved = params.row.unmoved as UnmovedRequest[];
+        if (unmoved.length > 0) {
+          actions.push(
+            <GridActionsCellItem
+              key="settle"
+              icon={<BalanceIcon color="primary" />}
+              label="Settle requests"
+              onClick={() => setSettling({ name: params.row.employee_name, requests: unmoved })}
             />,
           );
         }
@@ -237,6 +257,13 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
           </Button>
         </DialogActions>
       </Dialog>
+
+      <SettleRequestsDialog
+        personName={settling?.name || ''}
+        requests={settling ? settling.requests : null}
+        // Anything saved clears flags, so re-run the sweep to drop settled people.
+        onClose={(settled) => { setSettling(null); if (settled) onRefresh(); }}
+      />
     </Box>
   );
 }
