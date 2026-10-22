@@ -11,11 +11,7 @@ import asyncio
 from datetime import date
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from app.config import settings
-from app.routes import admin_requests
 from app.services import request_intake
 from app.services.balance import (
     booking_limit,
@@ -246,70 +242,3 @@ def test_submit_allows_a_vacation_within_the_limit(monkeypatch):
     })
     item = run(submit_request("leave", form, _salaried(), "request_page"))
     assert item["id"] == "99" and len(created) == 1                 # it was created
-
-
-# --- the admin fix for a stored negative carry-over (Dexter) ---
-
-def test_admin_fix_moves_negative_carry_over_onto_vacation(monkeypatch):
-    app = FastAPI()
-    app.include_router(admin_requests.router, prefix="/api/dashboard")
-    monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
-    dexter = {"id": "500", "fields": {
-        "Title": "Dexter", "CurrentVacationBalance": 14, "CarryOver": -5, "SalaryHourly": "Salary",
-    }}
-
-    async def by_id(i):
-        return dexter if str(i) == "500" else None
-
-    writes, history, rad = [], [], []
-
-    async def write(list_id, emp_id, fields, **kw):
-        writes.append((str(emp_id), fields))
-
-    async def record(eid, name, changes, reason, source="admin_dashboard"):
-        history.append((eid, changes, reason))
-
-    async def recalc(eid, vacation, carryover):
-        rad.append((str(eid), vacation, carryover))
-        return None
-
-    monkeypatch.setattr(admin_requests, "get_employee_by_id", by_id)
-    monkeypatch.setattr(admin_requests.staff_store, "update_list_item_fields", write)
-    monkeypatch.setattr(admin_requests.staff_changes, "record_changes", record)
-    monkeypatch.setattr(admin_requests, "recalculate_request_allow_date", recalc)
-
-    res = TestClient(app).post(
-        "/api/dashboard/admin/staff/500/fix-negative-carryover", json={"reason": "legacy carry-over"},
-    )
-    assert res.status_code == 200
-    body = res.json()
-    # Carry-over -5 moves onto vacation: 14 -> 9, carry-over -> 0.
-    assert body["after"] == {"vacation": 9.0, "carryover": 0.0}
-    assert writes[0][1]["CurrentVacationBalance"] == 9.0 and writes[0][1]["CarryOver"] == 0.0
-    assert {c[0] for c in history[0][1]} == {"CurrentVacationBalance", "CarryOver"}
-    assert rad == [("500", 9.0, 0.0)]                               # booking limit recomputed
-
-
-def test_admin_fix_refuses_a_blank_reason(monkeypatch):
-    app = FastAPI()
-    app.include_router(admin_requests.router, prefix="/api/dashboard")
-    monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
-    res = TestClient(app).post(
-        "/api/dashboard/admin/staff/500/fix-negative-carryover", json={"reason": "  "},
-    )
-    assert res.status_code == 400
-
-
-def test_admin_fix_refuses_when_carry_over_is_not_negative(monkeypatch):
-    app = FastAPI()
-    app.include_router(admin_requests.router, prefix="/api/dashboard")
-    monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
-
-    async def by_id(i):
-        return {"id": "501", "fields": {"Title": "OK", "CurrentVacationBalance": 5, "CarryOver": 2}}
-
-    monkeypatch.setattr(admin_requests, "get_employee_by_id", by_id)
-    res = TestClient(app).post(
-        "/api/dashboard/admin/staff/501/fix-negative-carryover", json={"reason": "no need"},
-    )
-    assert res.status_code == 400

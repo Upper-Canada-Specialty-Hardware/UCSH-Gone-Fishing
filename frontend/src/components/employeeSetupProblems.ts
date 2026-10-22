@@ -23,17 +23,9 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'A supervisor does not match a real employee',
     fix: 'Re-pick their supervisor from the directory so approvals reach the right person.',
   },
-  manager_reachable: {
-    title: 'A supervisor has no email address',
-    fix: 'Add an email address for the supervisor so approval emails can reach them.',
-  },
   location_province: {
     title: 'Office location not recognized',
     fix: 'Choose a valid office location so vacation and leave days calculate correctly.',
-  },
-  holidays_load: {
-    title: 'No holiday calendar for their province',
-    fix: 'Add holidays for their province, otherwise every weekday counts as a workday.',
   },
   identity_name_spacing: {
     title: 'Stray spaces in the name or email',
@@ -46,22 +38,6 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
   manager_m365_match: {
     title: 'A supervisor’s email is not recognised',
     fix: 'Correct the supervisor’s email in their profile. Until it does, their requests cannot record a manager - nobody is asked to approve, and the request stays hidden from the dashboards.',
-  },
-  supervisor_not_self: {
-    title: 'They are listed as their own supervisor',
-    fix: 'Change their supervisor in their profile, otherwise their requests are sent to them to approve.',
-  },
-  holidays_current_year: {
-    title: 'No holidays for the current year',
-    fix: 'Add this year’s holidays for their province. Without them, holidays are counted as ordinary workdays and leave is over-deducted.',
-  },
-  balances_in_range: {
-    title: 'A balance value looks wrong',
-    fix: 'Check the balance against their history - a value outside the expected range usually means an approval only half-applied.',
-  },
-  entitlements_set: {
-    title: 'A yearly entitlement is missing',
-    fix: 'Set their yearly vacation and sick entitlements in their profile so their annual grant can be worked out.',
   },
   employment_type_fits: {
     title: 'Employment type looks wrong',

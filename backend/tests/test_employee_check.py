@@ -50,7 +50,7 @@ def _codes(result, level):
 
 def test_a_clean_supervised_linked_form_has_no_problems(monkeypatch):
     _wire(monkeypatch)
-    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True, supervisor_unlinked=False))
+    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True))
     assert result["problems"] == []
     assert result["changes"] == []
     assert result["cleaned"]["email_address"] == "newhire@ucsh.com"
@@ -60,29 +60,29 @@ def test_an_invalid_form_is_the_only_block_and_short_circuits(monkeypatch):
     _wire(monkeypatch)
     # No location -> build_employee_fields raises, so nothing else is checked.
     result = asyncio.run(ec.check_employee(
-        {**GOOD, "location": ""}, has_supervisor=True, supervisor_unlinked=False,
+        {**GOOD, "location": ""}, has_supervisor=True,
     ))
     assert _codes(result, "block") == {"invalid_form"}
 
 
 def test_a_duplicate_name_and_email_are_blocks(monkeypatch):
     _wire(monkeypatch, name_clash=True, email_clash=True)
-    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True, supervisor_unlinked=False))
+    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True))
     assert {"same_name", "same_email"} <= _codes(result, "block")
 
 
 def test_no_supervisor_is_a_block(monkeypatch):
     _wire(monkeypatch)
-    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=False, supervisor_unlinked=False))
+    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=False))
     assert "no_supervisor" in _codes(result, "block")
 
 
-def test_the_soft_notices_are_warnings(monkeypatch):
-    # Supervisor not linked and no holidays warn; an email not on the SharePoint
-    # site is no longer a notice at all (ruled 2026-10-22).
+def test_no_holidays_is_the_one_warning(monkeypatch):
+    # The Microsoft 365 notices (email or supervisor not linked) are gone
+    # (ruled 2026-10-22); a province with no holidays still warns.
     _wire(monkeypatch, holidays=False)
-    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True, supervisor_unlinked=True))
-    assert _codes(result, "warn") == {"supervisor_unlinked", "no_holidays"}
+    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True))
+    assert _codes(result, "warn") == {"no_holidays"}
     assert _codes(result, "block") == set()
 
 
@@ -90,7 +90,7 @@ def test_the_cleaned_form_and_changes_come_back(monkeypatch):
     _wire(monkeypatch)
     result = asyncio.run(ec.check_employee(
         {**GOOD, "title": "Glenn  Clarke ", "email_address": "Glenn@UCSH.com"},
-        has_supervisor=True, supervisor_unlinked=False,
+        has_supervisor=True,
     ))
     assert result["cleaned"]["title"] == "Glenn Clarke"
     assert result["cleaned"]["email_address"] == "glenn@ucsh.com"

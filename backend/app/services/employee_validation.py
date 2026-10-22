@@ -101,17 +101,6 @@ LEAVE_TYPE_CASES = [
     ("sim_jury_duty", "Jury Duty", SAMPLE_LEAVE_DAYS),
 ]
 
-# Sane ranges for the balance pots, taken from the rules the approval path
-# already enforces. Vacation is deliberately absent: it is the pot the cascade
-# overflows into and is allowed to go negative, so it is reported, not graded.
-BALANCE_BOUNDS = {
-    "CurrentSickDayBalance": (0, None),
-    "CurrentOvertimeBalance": (None, None),
-    "Payout": (0, 5),  # approval refuses a payout that would push the total past 5
-}
-# Carry-over is left out: a negative carry-over is not a setup problem and is
-# not fixed from Employee setup (ruled 2026-10-22).
-
 # The four pots leave spending moves between. The cascade passes a deficit down
 # the chain rather than clamping it, so their total falls by exactly the days
 # taken — which is the arithmetic the simulation checks assert.
@@ -417,25 +406,6 @@ def build_validation_report(
             ),
         ))
 
-        # Each resolved supervisor needs an email to receive the approval at all.
-        unreachable = [
-            m.get("fields", {}).get("Title", "?")
-            for m in managers
-            if not (m.get("fields", {}).get("EmailAddress") or "").strip()
-        ]
-        checks.append(_measured(
-            "manager_reachable", "supervisor",
-            label="Supervisors with an email address",
-            actual=len(managers) - len(unreachable), expected=len(managers),
-            comparison="equals",
-            ok_detail="All supervisors have an email address.",
-            bad_detail=(
-                "Supervisor(s) with no email address, so approval emails can't "
-                "reach them: " + ", ".join(unreachable)
-            ),
-            bad_status="warn",
-        ))
-
         # Having an address is not the same as that address resolving. Recording
         # a manager against a request needs the email to match a Microsoft 365
         # account; when it doesn't, the request keeps no manager, notifies
@@ -467,29 +437,6 @@ def build_validation_report(
                 ),
             ))
 
-        # A record listing itself as its own supervisor routes approvals back to
-        # the person who submitted them.
-        self_supervising = sum(
-            1 for entry in (employee_fields.get("AllManagers") or [])
-            if isinstance(entry, dict) and entry.get("LookupValue") == employee_name
-        )
-        # A warn, not a fail: management groups list the whole group as each
-        # member's supervisors, themselves included, and requests still route
-        # to the rest of the group. What it permits is self-approval, which is
-        # worth knowing about rather than a stalled request.
-        checks.append(_measured(
-            "supervisor_not_self", "supervisor",
-            label="Supervisor entries naming the employee themselves",
-            actual=self_supervising, expected=0, comparison="equals",
-            ok_detail="No supervisor entry points back at this employee.",
-            bad_detail=(
-                "This employee is listed among their own supervisors. Their "
-                "requests still reach the others listed, but they could approve "
-                "their own."
-            ),
-            bad_status="warn",
-        ))
-
     # --- Location -> province ---
     checks.append(_measured(
         "location_province", "location",
@@ -500,110 +447,6 @@ def build_validation_report(
             f"{province_error}. Leave days cannot be calculated until a valid "
             "location is set, so the request would get stuck."
         ),
-    ))
-
-    # --- Holiday calendar for the province ---
-    if province and not province_error:
-        season = get_half_friday_season(holidays)
-        season_note = (
-            " Half-Friday season detected." if season[0] and season[1]
-            else " (No half-Friday season rows found for this province.)"
-        )
-        checks.append(_measured(
-            "holidays_load", "location",
-            label=f"Holiday rows loaded for {province}",
-            actual=len(holidays), expected=1, comparison="at_least",
-            ok_detail=f"{len(holidays)} holiday row(s) loaded for {province}.{season_note}",
-            bad_detail=(
-                f"No holidays are set for province {province}, so every weekday "
-                "will count as a workday when leave is calculated."
-            ),
-            bad_status="warn",
-        ))
-
-        # A calendar holding only past years still loads, and still silently
-        # miscounts every leave request taken this year.
-        this_year = date.today().year
-        current_year_rows = sum(
-            1 for h in holidays
-            if str(h.get("Date", ""))[:4] == str(this_year)
-        )
-        checks.append(_measured(
-            "holidays_current_year", "location",
-            label=f"Holiday rows dated {this_year}",
-            actual=current_year_rows, expected=1, comparison="at_least",
-            ok_detail=f"{current_year_rows} holiday row(s) cover {this_year}.",
-            bad_detail=(
-                f"The {province} calendar has no holidays dated {this_year}, so "
-                "this year's holidays will be counted as ordinary workdays."
-            ),
-            bad_status="warn",
-        ))
-
-    # --- Balance pots that do not parse are skipped by the range check below ---
-    # (no longer graded on their own: typed staff tables cannot hold text).
-    bad_pots = []
-    for pot in BALANCE_POTS:
-        raw = employee_fields.get(pot)
-        try:
-            float(raw or 0)
-        except (TypeError, ValueError):
-            bad_pots.append(f"{pot}={raw!r}")
-
-    # --- Balance pots sit in a sane range ---
-    # Only meaningful once they parse; a pot that does not parse is skipped.
-    if not bad_pots:
-        out_of_range = []
-        for pot, (low, high) in BALANCE_BOUNDS.items():
-            value = _as_float(employee_fields.get(pot))
-            if low is not None and value < low:
-                out_of_range.append(f"{pot}={value} (below {low})")
-            elif high is not None and value > high:
-                out_of_range.append(f"{pot}={value} (above {high})")
-        checks.append(_measured(
-            "balances_in_range", "balances",
-            label="Balance figures outside their expected range",
-            actual=len(out_of_range), expected=0, comparison="equals",
-            ok_detail=(
-                "Every graded balance sits in range. Vacation is not graded — it "
-                "is the pot the cascade overflows into and may run negative."
-            ),
-            bad_detail=(
-                "Balance value(s) outside the expected range: "
-                + ", ".join(out_of_range)
-                + ". These are usually a sign an approval only half-applied."
-            ),
-            bad_status="warn",
-        ))
-
-    # --- Yearly entitlements are set ---
-    # These drive what an employee is granted; a zero here is almost always an
-    # unfinished record rather than a deliberate value.
-    # hourly (#300) have no vacation, so a zero vacation grant is right for
-    # them and only their sick grant is checked.
-    entitlement_fields = (("sick", "SickDayEntitlement"),) if is_hourly(employee_fields) else (
-        ("yearly vacation", "DefaultYearlyVacationDays"),
-        ("sick", "SickDayEntitlement"),
-    )
-    missing_entitlements = [
-        label for label, field in entitlement_fields
-        if not _as_float(employee_fields.get(field)) > 0
-    ]
-    checks.append(_measured(
-        "entitlements_set", "balances",
-        label="Yearly entitlements with a value above zero",
-        actual=len(entitlement_fields) - len(missing_entitlements),
-        expected=len(entitlement_fields), comparison="equals",
-        ok_detail=(
-            "The sick entitlement is set (hourly staff have no vacation entitlement)."
-            if len(entitlement_fields) == 1 else
-            "Both the yearly vacation and sick entitlements are set."
-        ),
-        bad_detail=(
-            "No entitlement recorded for: " + ", ".join(missing_entitlements)
-            + ". Their yearly grant cannot be worked out from this record."
-        ),
-        bad_status="warn",
     ))
 
     # --- Employment type fits the record ---

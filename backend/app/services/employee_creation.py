@@ -261,17 +261,16 @@ def _problem(code: str, level: str, title: str, detail: str) -> dict:
 
 
 async def check_employee(
-    form_data: dict, *, has_supervisor: bool, supervisor_unlinked: bool
+    form_data: dict, *, has_supervisor: bool
 ) -> dict:
     """Dry-run the add-employee checks without writing anything.
 
     Produces the cleaned form, the list of fields cleaning changed, and every
     problem the create would hit. Blocks are the four things the create route
     refuses outright (an invalid form, a duplicate name, a duplicate email, no
-    supervisor); warns are the softer notices the create only reports (a
-    supervisor not linked to Microsoft 365, no holidays for the person's
-    province). Nothing here writes: it reads the
-    directory, the Microsoft 365 user list and the holiday list only.
+    supervisor); the one warn is a notice the create only reports (no holidays
+    for the person's province). Nothing here writes: it reads the directory
+    and the holiday list only.
 
     Args:
         form_data: The submitted form, snake_case keys (the same body the create
@@ -279,8 +278,6 @@ async def check_employee(
         has_supervisor: Whether the caller resolved at least one supervisor for
             this new hire (the admin picks them; the manager route uses the
             signed-in manager).
-        supervisor_unlinked: Whether a supervisor was named but does not resolve
-            to a Microsoft 365 account, so a request could not record them.
 
     Returns:
         ``{"cleaned": {...}, "changes": [{"field","before","after"}, ...],
@@ -323,15 +320,6 @@ async def check_employee(
         ))
 
     # --- warnings: the create still goes through, but these are worth knowing ---
-
-    # A supervisor who does not resolve to a Microsoft 365 account cannot be
-    # recorded against a request, so nobody would be asked to approve it.
-    if supervisor_unlinked:
-        problems.append(_problem(
-            "supervisor_unlinked", "warn", "Supervisor not linked to Microsoft 365",
-            "The chosen supervisor does not resolve to a Microsoft 365 account, "
-            "so a request could not record them as the approver.",
-        ))
 
     # No holidays for the province means every weekday is counted as a workday,
     # which over-deducts leave. Location already validated above, so this maps.
