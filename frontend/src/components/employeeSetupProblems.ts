@@ -35,10 +35,6 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     title: 'No holiday calendar for their province',
     fix: 'Add holidays for their province, otherwise every weekday counts as a workday.',
   },
-  balances_numeric: {
-    title: 'A balance value is not a number',
-    fix: 'Correct the balance value in their profile.',
-  },
   identity_name_spacing: {
     title: 'Stray spaces in the name or email',
     fix: 'Re-save their name and email in the person panel so the extra spaces (and any capitals in the email) are tidied. Requests are matched by an exact name and email, so while they are there a request can route to the wrong person or to nobody.',
@@ -94,10 +90,6 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
   requests_approved_dates: {
     title: 'Dates already booked',
     fix: 'These approved requests hold their dates. A new request covering the same days will be refused at approval.',
-  },
-  carry_over_negative: {
-    title: 'Carry-over is below zero',
-    fix: 'Carry-over should never be negative. Use the fix on this problem to move the shortfall onto vacation, which sets carry-over back to zero.',
   },
   pending_over_booking_limit: {
     title: 'A pending vacation runs past the booking limit',

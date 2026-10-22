@@ -244,10 +244,6 @@ def test_add_employee_lands_only_in_postgres(clean_db, monkeypatch):
         return {"name": None, "email": None}               # nobody already in the directory
     monkeypatch.setattr(ec, "find_directory_clashes", no_clash)
 
-    async def fake_resolve(email):
-        return 501                                         # linked to the site -> no notice
-    monkeypatch.setattr(ec, "_resolve_user_lookup_id", fake_resolve)
-
     async def fake_rad(*a, **k):
         return None                                        # the derived date is balance.py's job
     monkeypatch.setattr(ec, "recalculate_request_allow_date", fake_rad)

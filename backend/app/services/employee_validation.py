@@ -109,9 +109,8 @@ BALANCE_BOUNDS = {
     "CurrentOvertimeBalance": (None, None),
     "Payout": (0, 5),  # approval refuses a payout that would push the total past 5
 }
-# Carry-over is graded by its own dedicated check (carry_over_negative, #407),
-# which also carries the HR fix action, so it is left out of BALANCE_BOUNDS to
-# avoid flagging the same value twice.
+# Carry-over is left out: a negative carry-over is not a setup problem and is
+# not fixed from Employee setup (ruled 2026-10-22).
 
 # The four pots leave spending moves between. The cascade passes a deficit down
 # the chain rather than clamping it, so their total falls by exactly the days
@@ -541,7 +540,8 @@ def build_validation_report(
             bad_status="warn",
         ))
 
-    # --- Balance pots are numeric ---
+    # --- Balance pots that do not parse are skipped by the range check below ---
+    # (no longer graded on their own: typed staff tables cannot hold text).
     bad_pots = []
     for pot in BALANCE_POTS:
         raw = employee_fields.get(pot)
@@ -549,23 +549,9 @@ def build_validation_report(
             float(raw or 0)
         except (TypeError, ValueError):
             bad_pots.append(f"{pot}={raw!r}")
-    checks.append(_measured(
-        "balances_numeric", "balances",
-        label="Balance figures that parse as a number",
-        actual=len(BALANCE_POTS) - len(bad_pots), expected=len(BALANCE_POTS),
-        comparison="equals",
-        ok_detail=(
-            "All five balance pots are numeric: "
-            + ", ".join(f"{p}={_as_float(employee_fields.get(p))}" for p in BALANCE_POTS)
-        ),
-        bad_detail=(
-            "These balance values are not numbers: " + ", ".join(bad_pots)
-            + ". Leave calculations cannot run until they are corrected."
-        ),
-    ))
 
     # --- Balance pots sit in a sane range ---
-    # Only meaningful once they parse; a non-numeric pot is already a failure above.
+    # Only meaningful once they parse; a pot that does not parse is skipped.
     if not bad_pots:
         out_of_range = []
         for pot, (low, high) in BALANCE_BOUNDS.items():
@@ -644,22 +630,6 @@ def build_validation_report(
                 + ", which only salaried staff carry."
             ),
         ))
-
-    # --- Carry-over is never negative (#407) ---
-    # Carry-over only pays down to zero; a stored negative is old data from before
-    # that rule. The admin setup screens offer a one-click fix on this problem
-    # that moves the negative onto vacation.
-    carry_over_value = _as_float(employee_fields.get("CarryOver"))
-    checks.append(_measured(
-        "carry_over_negative", "balances",
-        label="Carry-over at or above zero",
-        actual=carry_over_value, expected=0, comparison="at_least",
-        ok_detail=f"Carry-over is {carry_over_value:g}, not negative.",
-        bad_detail=(
-            f"Carry-over is {carry_over_value:g}, below zero. Carry-over should never "
-            "be negative; move it onto vacation to correct it."
-        ),
-    ))
 
     # --- Per-leave-type dry runs (carry-over available) ---
     for code, leave_type, days in LEAVE_TYPE_CASES:
@@ -1137,24 +1107,12 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
             "There is no email address on the record, so a submitted request cannot "
             "be linked back to this person."
         )}
-    if not lookup_id:
-        # A warn, not a fail: an address with no Microsoft 365 account behind it
-        # (a personal mailbox, typically) means this person cannot sign in to
-        # submit a SharePoint request in the first place, so the record is
-        # inert rather than mis-wired. It only needs fixing if they are meant
-        # to submit requests.
-        return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
-            f"The email {email} is not linked to the SharePoint site yet. This "
-            "person can use the request page, which links requests by email, but "
-            "not the Microsoft Form until they have a Microsoft 365 account and "
-            "have opened the site."
-        )}
-    # From here the email resolved, so the account count is 1; what can still go
-    # wrong is which Staff Directory record it lands on.
-    if not resolved:
-        return {"status": "fail", "account_count": 1, "lookup_id": lookup_id, "detail": (
-            "Their account did not match any staff record "
-            "(their name likely differs from the one on their account)."
+    if not lookup_id or not resolved:
+        # No sign-in account behind the email, or one whose name finds no record:
+        # neither matters any more. The request page links a request by email, so
+        # the email on the record is the whole link (ruled 2026-10-22).
+        return {"status": "pass", "account_count": 1 if lookup_id else 0, "lookup_id": lookup_id, "detail": (
+            f"The request page links requests from {email} to this record."
         )}
     if str(resolved.get("id")) != str(employee_id):
         other = resolved.get("fields", {}).get("Title", "")

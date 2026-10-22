@@ -118,11 +118,17 @@ def test_identity_failure_propagates():
     assert report["overall"] == "fail"
 
 
-def test_an_email_with_no_microsoft_365_account_warns_rather_than_fails():
-    # Not in the site's user list (a personal address, or never opened the
-    # site): the request page still links them by email, so this is a warn.
+def test_an_email_with_no_site_account_passes():
+    # The request page links a request by email, so a missing site account is
+    # not a problem at all any more (ruled 2026-10-22).
     verdict = ev._identity_verdict("1", "someone@gmail.com", None, None)
-    assert verdict["status"] == "warn"
+    assert verdict["status"] == "pass"
+
+
+def test_an_account_whose_name_finds_no_record_passes():
+    # The account's name no longer matters: the email on the record is the link.
+    verdict = ev._identity_verdict("1", "someone@ucsh.com", 501, None)
+    assert verdict["status"] == "pass"
     assert "request page" in verdict["detail"]
 
 
@@ -220,11 +226,12 @@ def test_no_holidays_warns():
 
 # ----- balances -----
 
-def test_non_numeric_balance_fails():
+def test_a_balance_that_is_not_a_number_is_not_graded_and_does_not_raise():
+    # Typed staff tables cannot hold text, so there is no check for it; the
+    # report must still build if an old record carries one.
     bad = {**GOOD_FIELDS, "CurrentVacationBalance": "N/A"}
     report = _report(employee_fields=bad)
-    assert _by_code(report, "balances_numeric")["status"] == "fail"
-    assert report["overall"] == "fail"
+    assert "balances_numeric" not in {c["code"] for c in report["checks"]}
 
 
 # ----- per-type simulations -----
@@ -300,17 +307,11 @@ def test_missing_entitlements_warn():
     assert entitlements["measure"]["actual"] == 0
 
 
-def test_carry_over_below_zero_fails():
-    # A stored negative carry-over is old data; its own check grades it red (#407).
+def test_a_negative_carry_over_is_not_a_setup_problem():
+    # Negative balances are not fixed from Employee setup (ruled 2026-10-22).
     report = _report(employee_fields={**GOOD_FIELDS, "CarryOver": -5})
-    carry = _by_code(report, "carry_over_negative")
-    assert carry["status"] == "fail"
-    assert carry["measure"]["actual"] == -5
-
-
-def test_carry_over_at_zero_passes():
-    # Zero carry-over is healthy, so the dedicated check stays green (#407).
-    assert _by_code(_report(), "carry_over_negative")["status"] == "pass"
+    assert "carry_over_negative" not in {c["code"] for c in report["checks"]}
+    assert all(c["status"] != "fail" for c in report["checks"] if c["category"] == "balances")
 
 
 def test_a_pending_vacation_past_the_booking_limit_warns():

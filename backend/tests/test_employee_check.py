@@ -22,20 +22,13 @@ GOOD = {
 }
 
 
-def _wire(monkeypatch, *, name_clash=False, email_clash=False, email_resolves=True,
-          in_postgres=False, holidays=True):
+def _wire(monkeypatch, *, name_clash=False, email_clash=False, holidays=True):
     """Fake every read check_employee makes, and fail loudly on any write."""
     async def _clashes(name, email):
         return {
             "name": {"id": "9", "fields": {}} if name_clash else None,
             "email": {"id": "8", "fields": {}} if email_clash else None,
         }
-
-    async def _resolve(email):
-        return 501 if email_resolves else None
-
-    async def _in_pg():
-        return in_postgres
 
     async def _holidays(province):
         return [{"Title": "Canada Day"}] if holidays else []
@@ -44,8 +37,6 @@ def _wire(monkeypatch, *, name_clash=False, email_clash=False, email_resolves=Tr
         raise AssertionError("check_employee must not write")
 
     monkeypatch.setattr(ec, "find_directory_clashes", _clashes)
-    monkeypatch.setattr(ec, "_resolve_user_lookup_id", _resolve)
-    monkeypatch.setattr(ec, "staff_in_postgres", _in_pg)
     monkeypatch.setattr(holidays_module, "get_holidays_for_province", _holidays)
     # Any write would be a bug: a check never creates or edits a record.
     monkeypatch.setattr(ec.staff_store, "create_list_item", _no_write)
@@ -86,20 +77,13 @@ def test_no_supervisor_is_a_block(monkeypatch):
     assert "no_supervisor" in _codes(result, "block")
 
 
-def test_the_three_soft_notices_are_warnings(monkeypatch):
-    # Email not on the site, supervisor not linked, and no holidays all warn.
-    _wire(monkeypatch, email_resolves=False, holidays=False)
+def test_the_soft_notices_are_warnings(monkeypatch):
+    # Supervisor not linked and no holidays warn; an email not on the SharePoint
+    # site is no longer a notice at all (ruled 2026-10-22).
+    _wire(monkeypatch, holidays=False)
     result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True, supervisor_unlinked=True))
-    assert _codes(result, "warn") == {"email_not_linked", "supervisor_unlinked", "no_holidays"}
+    assert _codes(result, "warn") == {"supervisor_unlinked", "no_holidays"}
     assert _codes(result, "block") == set()
-
-
-def test_the_email_notice_is_skipped_in_postgres_mode(monkeypatch):
-    # Postgres has no site user list, so the "not linked to the site" notice would
-    # be misleading and is not raised.
-    _wire(monkeypatch, email_resolves=False, in_postgres=True)
-    result = asyncio.run(ec.check_employee(GOOD, has_supervisor=True, supervisor_unlinked=False))
-    assert "email_not_linked" not in _codes(result, "warn")
 
 
 def test_the_cleaned_form_and_changes_come_back(monkeypatch):

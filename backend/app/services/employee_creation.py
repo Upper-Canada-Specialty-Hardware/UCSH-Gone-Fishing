@@ -18,14 +18,13 @@ Comments, Extension, Birthday) are deliberately left unset.
 import logging
 
 from app.config import settings
-from app.repositories.staff_store import staff_store, staff_in_postgres
+from app.repositories.staff_store import staff_store
 from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     map_location_to_province,
 )
 from app.services.balance import recalculate_request_allow_date
 from app.services.employment import HOURLY, HOURLY_BC, HOURLY_TYPES, SALARY
-from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.manager_assignments import update_employee_managers
 from app.services.staff_cleanup import clean_email, clean_employee_form, collapse_whitespace
 
@@ -216,17 +215,8 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
             f"An employee with the email {fields['EmailAddress']} already exists in the directory."
         )
 
-    # Not finding them in the site's user list is a notice, not a refusal: the
-    # request page links requests by email, and someone only joins that list
-    # once they visit the site or are added to it. Once staff live in Postgres
-    # there is no such list and the notice would be misleading, so it is skipped.
+    # No notice is raised today; the key stays so the response keeps its shape.
     notices: list[str] = []
-    if not await staff_in_postgres() and not await _resolve_user_lookup_id(fields["EmailAddress"]):
-        notices.append(
-            f"{fields['EmailAddress']} is not linked to the SharePoint site yet. "
-            "They can use the request page now; the Microsoft Form works once "
-            "they have a Microsoft 365 account and have opened the site."
-        )
 
     if not manager_sp_user_ids:
         raise EmployeeValidationError("At least one supervisor must be assigned.")
@@ -278,9 +268,9 @@ async def check_employee(
     Produces the cleaned form, the list of fields cleaning changed, and every
     problem the create would hit. Blocks are the four things the create route
     refuses outright (an invalid form, a duplicate name, a duplicate email, no
-    supervisor); warns are the softer notices the create only reports (an email
-    not yet on the SharePoint site, a supervisor not linked to Microsoft 365, no
-    holidays for the person's province). Nothing here writes: it reads the
+    supervisor); warns are the softer notices the create only reports (a
+    supervisor not linked to Microsoft 365, no holidays for the person's
+    province). Nothing here writes: it reads the
     directory, the Microsoft 365 user list and the holiday list only.
 
     Args:
@@ -333,17 +323,6 @@ async def check_employee(
         ))
 
     # --- warnings: the create still goes through, but these are worth knowing ---
-
-    # Not being on the SharePoint site's user list is only meaningful while staff
-    # live in SharePoint; once in Postgres there is no such list (mirrors the
-    # notice create_employee attaches).
-    if not await staff_in_postgres() and not await _resolve_user_lookup_id(fields["EmailAddress"]):
-        problems.append(_problem(
-            "email_not_linked", "warn", "Email not linked to the SharePoint site yet",
-            f"{fields['EmailAddress']} is not on the site's user list. They can "
-            "use the request page now; the Microsoft Form works once they have a "
-            "Microsoft 365 account and have opened the site.",
-        ))
 
     # A supervisor who does not resolve to a Microsoft 365 account cannot be
     # recorded against a request, so nobody would be asked to approve it.

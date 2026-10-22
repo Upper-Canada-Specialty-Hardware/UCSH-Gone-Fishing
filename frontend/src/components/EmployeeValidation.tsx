@@ -3,13 +3,13 @@ import {
   Box, Autocomplete, TextField, Button, CircularProgress, Alert,
   Typography, Paper, Divider, Collapse, Stack, Chip,
   Table, TableHead, TableBody, TableRow, TableCell,
-  Dialog, DialogTitle, DialogContent, DialogActions,
+  Dialog, DialogTitle, DialogContent, DialogActions, Snackbar, Tooltip,
 } from '@mui/material';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import { validateEmployee, fixNegativeCarryover } from '../api/client';
+import { validateEmployee } from '../api/client';
 import EmployeeSetupList, { EmployeeSetupSummary } from './EmployeeSetupList';
 import { PROBLEM_INFO } from './employeeSetupProblems';
 import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
@@ -188,6 +188,7 @@ export default function EmployeeValidation({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [techOpen, setTechOpen] = useState(false);
   const [settleOpen, setSettleOpen] = useState(false);          // the settle dialog for this report's person
+  const [toast, setToast] = useState('');                       // the short message after a fix; empty when hidden
 
   // Set when a check is started from a name in the list below. The report
   // renders above the list, often off screen by then, so without this the click
@@ -223,41 +224,6 @@ export default function EmployeeValidation({
     setSelectedId(employeeId);
     setScrollToResult(true);
     run(employeeId);
-  };
-
-  // The one-click carry-over fix (#407): a required reason, like any HR balance
-  // edit, then move the shortfall onto vacation and re-run the check.
-  const [fixOpen, setFixOpen] = useState(false);       // the reason dialog is showing
-  const [fixReason, setFixReason] = useState('');      // the typed reason for the move
-  const [fixBusy, setFixBusy] = useState(false);       // the fix request is in flight
-  const [fixError, setFixError] = useState('');        // why the fix was refused, if it was
-
-  /**
-   * Post the carry-over fix for the selected person, then re-check their setup.
-   *
-   * Moves the stored negative carry-over onto vacation with the typed reason; on
-   * success the dialog closes, the report re-runs so the problem clears, and the
-   * whole-directory list above is refreshed. On failure the backend's message is
-   * shown and the dialog stays open.
-   *
-   * @returns A promise that resolves once the request and re-check settle.
-   */
-  const submitFix = async () => {
-    if (!selectedId || !fixReason.trim()) return;      // guarded; the button is also disabled
-    setFixBusy(true);
-    setFixError('');
-    try {
-      await fixNegativeCarryover(selectedId, fixReason.trim());   // C -> 0, V += C, history recorded
-      setFixOpen(false);
-      setFixReason('');
-      await run(selectedId);                           // re-check so the problem clears from the report
-      onRefreshSetup?.();                              // and refresh the everyone-with-a-problem list below
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;       // the backend's 400/404/503 message
-      setFixError(typeof detail === 'string' ? detail : 'The carry-over could not be corrected. Please try again.');
-    } finally {
-      setFixBusy(false);
-    }
   };
 
   // The picker is controlled so a record chosen from the list below shows up in
@@ -389,9 +355,19 @@ export default function EmployeeValidation({
                       const isFail = c.status === 'fail';
                       return (
                         <Box key={c.code} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
-                          <Box sx={{ color: isFail ? 'error.main' : 'warning.main', mt: '2px', display: 'flex' }}>
-                            {isFail ? <ErrorOutlineIcon fontSize="small" /> : <WarningAmberIcon fontSize="small" />}
-                          </Box>
+                          {/* The icon says on hover, and to a screen reader, whether this blocks or only warns. */}
+                          <Tooltip
+                            title={isFail ? 'Needs fixing: this can block or confuse a request.' : 'Worth a look: requests still work.'}
+                            arrow
+                          >
+                            <Box
+                              role="img"
+                              aria-label={isFail ? 'Needs fixing' : 'Worth a look'}
+                              sx={{ color: isFail ? 'error.main' : 'warning.main', mt: '2px', display: 'flex' }}
+                            >
+                              {isFail ? <ErrorOutlineIcon fontSize="small" /> : <WarningAmberIcon fontSize="small" />}
+                            </Box>
+                          </Tooltip>
                           <Box>
                             <Typography variant="body2" sx={{ fontWeight: 600 }}>{info.title}</Typography>
                             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
@@ -400,15 +376,6 @@ export default function EmployeeValidation({
                             <Typography variant="body2" sx={{ mt: 0.5 }}>
                               <Box component="span" sx={{ fontWeight: 600 }}>Fix:</Box> {info.fix}
                             </Typography>
-                            {/* Carry-over below zero is the one problem with a one-click correction (#407). */}
-                            {c.code === 'carry_over_negative' && (
-                              <Button
-                                size="small" variant="outlined" sx={{ mt: 1 }}
-                                onClick={() => { setFixError(''); setFixReason(''); setFixOpen(true); }}
-                              >
-                                Move carry-over onto vacation
-                              </Button>
-                            )}
                             {/* The same Settle requests the list offers (#400). */}
                             {c.code === 'approved_balance_unmoved' && (report.unmoved_requests || []).length > 0 && (
                               <Button size="small" variant="contained" sx={{ mt: 1 }} onClick={() => setSettleOpen(true)}>
@@ -422,28 +389,6 @@ export default function EmployeeValidation({
                   </Stack>
                 </Paper>
               )}
-
-              {/* The carry-over fix dialog: a required reason, then the move is written (#407). */}
-              <Dialog open={fixOpen} onClose={() => !fixBusy && setFixOpen(false)} fullWidth maxWidth="xs">
-                <DialogTitle>Move carry-over onto vacation</DialogTitle>
-                <DialogContent>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    This sets carry-over to zero and folds the shortfall into vacation. The reason is
-                    recorded in this person's change history, like any other balance edit.
-                  </Typography>
-                  {fixError && <Alert severity="error" sx={{ mb: 2 }}>{fixError}</Alert>}
-                  <TextField
-                    label="Reason" value={fixReason} onChange={(e) => setFixReason(e.target.value)}
-                    fullWidth multiline minRows={2} autoFocus disabled={fixBusy}
-                  />
-                </DialogContent>
-                <DialogActions>
-                  <Button onClick={() => setFixOpen(false)} disabled={fixBusy}>Cancel</Button>
-                  <Button variant="contained" onClick={submitFix} disabled={fixBusy || !fixReason.trim()}>
-                    {fixBusy ? <CircularProgress size={20} /> : 'Move onto vacation'}
-                  </Button>
-                </DialogActions>
-              </Dialog>
 
               <Divider sx={{ mb: 0.5 }} />
 
@@ -533,13 +478,30 @@ export default function EmployeeValidation({
         loading={setupLoading}
         onRefresh={onRefreshSetup}
         onSelect={checkFromList}
+        onNotify={setToast}
       />
 
       <SettleRequestsDialog
         personName={name}
         requests={settleOpen && report ? report.unmoved_requests || [] : null}
         // Re-check this person and refresh the list, so settled flags drop off both.
-        onClose={(settled) => { setSettleOpen(false); if (settled) { run(); onRefreshSetup(); } }}
+        onClose={(settled) => {
+          setSettleOpen(false);
+          if (settled.length === 0) return;                         // cancelled: nothing changed
+          const all = report?.unmoved_requests?.length ?? settled.length;
+          setToast(settled.length === all ? `${name} is settled.` : 'Saved. Skipped requests stay flagged.');
+          run();
+          onRefreshSetup();
+        }}
+      />
+
+      {/* The short message after a fix, at the bottom of the screen like the design's toast. */}
+      <Snackbar
+        open={toast !== ''}
+        autoHideDuration={4000}
+        onClose={() => setToast('')}
+        message={toast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       />
     </Box>
   );
