@@ -18,10 +18,11 @@ import { STATUS_COLOR } from '../dataGridDefaults';
 import { ManagerOption } from '../AddEmployee';
 import { requestAmount, requestKind, requestWhat, requestWhen } from '../../utils/requestText';
 import { EASE, Enter, KF } from '../Motion';
-import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord, archiveStaff } from '../../api/staff';
-// Manager-mode writes (#372): the same team endpoints the Team tab already uses,
-// so a manager's balance save and self-removal run through the guarded routes.
-import { getTeamMemberManagers, removeTeamMember, updateTeamEntitlements } from '../../api/client';
+import { StaffChange, StaffRecord, SaveStaffPayload, saveStaffRecord, saveTeamRecord, archiveStaff } from '../../api/staff';
+// Manager-mode writes (#372, #432): the full profile save runs through the
+// guarded team route (saveTeamRecord), and "remove from my team" through the
+// team membership routes the Team tab already uses.
+import { getTeamMemberManagers, removeTeamMember } from '../../api/client';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 import { isHourly } from '../../utils/employment';
 
@@ -164,14 +165,16 @@ interface Props {
   onNotify: (message: string, severity: 'success' | 'error') => void;
   /** Which screen this is (#372). 'admin' (default) is the staff screen, every
    *  detail click-to-edit with an Archive button. 'manager' is the manager
-   *  dashboard's team person view: balances and entitlements stay editable (saved
-   *  through the team route under the manager's name), the details are read-only,
-   *  there is no Archive or rename, and the managers module only lets the calling
-   *  manager remove themselves. */
+   *  dashboard's team person view: balances, entitlements and the editable details
+   *  (the name included, #432) are saved through the team route under the manager's
+   *  name; only the Microsoft 365 person links stay read-only, there is no Archive,
+   *  and the managers module only lets the calling manager remove themselves. A
+   *  manager viewing their OWN record is read-only throughout (see managerName). */
   mode?: 'admin' | 'manager';
-  /** Manager mode only: the signed-in manager's own display name, so their own
-   *  chip in the managers module is the one that can be removed and so a view of
-   *  their own record opens read-only (the team API refuses self edits). */
+  /** Manager mode only: the signed-in manager's own display name, matched against
+   *  the SAVED record name so their own chip in the managers module is the one that
+   *  can be removed and a view of their own record opens read-only throughout (the
+   *  team API refuses self edits). */
   managerName?: string;
   /** Manager mode only: called after the manager removes themselves from this
    *  person, so the Team tab returns to the grid. */
@@ -207,6 +210,10 @@ export default function PersonProfile({
   const [arrowEl, setArrowEl] = useState<HTMLElement | null>(null);   // the save card's pointer, for Popper
   const anchors = useRef<Record<string, HTMLElement | null>>({});    // wire key -> element its save card hangs under
   const reasonRef = useRef<HTMLInputElement>(null);              // the save card's reason box
+  // "Remove from my team" (#431): a manager takes themselves off this person.
+  const [removeOpen, setRemoveOpen] = useState(false);          // the confirmation dialog
+  const [removeOther, setRemoveOther] = useState<boolean | null>(null);  // would another manager remain
+  const [removing, setRemoving] = useState(false);              // the remove call is in flight
 
   // The "Saved" mark fades after a few seconds; a newer save restarts the clock.
   useEffect(() => {
@@ -330,31 +337,9 @@ export default function PersonProfile({
    */
   const save = async () => {
     if (!changedKeys.length || !reason.trim() || saving) return;
-    if (manager) {
-      // Manager mode (#372): only the balance pots are editable here (the details
-      // are read-only and the managers module saves itself), so send just the pot
-      // changes to the team entitlements route, which validates them exactly as
-      // the admin save does and records them under the manager's name.
-      const changes: Record<string, number> = {};                 // pot wire key -> new number
-      for (const key of changedKeys) if (POT_BY_KEY[key]) changes[key] = Number(edits[key]);  // pots only
-      setSaving(true);
-      try {
-        const res = await updateTeamEntitlements(record.employee_id, { changes, reason: reason.trim() });
-        if (!res.data.notice) setSavedKey(pendingKey);            // mark the item "Saved" (not on a soft refusal)
-        setEdits({});                                              // clear the staged edits
-        setReason('');                                            // and the reason box
-        setEditingKey(null);
-        setNudge(0);                                              // the card is gone, so is its note
-        onNotify(res.data.notice || 'Saved.', res.data.notice ? 'error' : 'success');  // notice => a soft refusal
-        onSaved();                                                // parent re-reads the record + team
-      } catch (err: any) {
-        const detail = err.response?.data?.detail;                // the route's plain message
-        onNotify(typeof detail === 'string' ? detail : 'The change could not be saved.', 'error');
-      } finally {
-        setSaving(false);
-      }
-      return;                                                     // the admin path below never runs in manager mode
-    }
+    // One payload for both modes (#432): the pots go in ``changes``; the directory
+    // fields go in ``fields``, person links and managers resolved to SharePoint
+    // user ids. A manager sends the same shape as an admin.
     const payload: SaveStaffPayload = { reason: reason.trim(), changes: {}, fields: {} };
     for (const key of changedKeys) {
       if (POT_BY_KEY[key]) {
@@ -372,13 +357,21 @@ export default function PersonProfile({
     }
     setSaving(true);
     try {
-      const res = await saveStaffRecord(record.employee_id, payload);
+      // Manager mode saves through the guarded team route (#432): same payload and
+      // result, gated by the manager's token and team membership and recorded
+      // under the manager's name. Admin saves straight to the staff route.
+      const res = manager
+        ? await saveTeamRecord(record.employee_id, payload)
+        : await saveStaffRecord(record.employee_id, payload);
       if (!res.data.notice) setSavedKey(pendingKey);              // mark the item "Saved" (not on a soft refusal)
       setEdits({});
       setReason('');
       setEditingKey(null);
       setNudge(0);                                                // the card is gone, so is its note
-      onNotify(res.data.notice || 'Saved to the Staff Directory.', res.data.notice ? 'error' : 'success');
+      onNotify(
+        res.data.notice || (manager ? 'Saved.' : 'Saved to the Staff Directory.'),
+        res.data.notice ? 'error' : 'success',                   // notice => a soft refusal
+      );
       onSaved();                                                 // parent refetches record + row
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -422,6 +415,34 @@ export default function PersonProfile({
     }
   };
 
+  /** Open the "remove from my team" dialog, first reading whether anyone else
+   *  manages them so it can warn about leaving the person with no manager (#431). */
+  const openRemoveFromTeam = async () => {
+    setRemoveOpen(true);                                       // show the dialog at once
+    setRemoveOther(null);                                      // "checking..." until the read lands
+    try {
+      const res = await getTeamMemberManagers(record.employee_id);  // the warning needs has_other_manager
+      setRemoveOther(Boolean(res.data.has_other_manager));     // true => someone else stays
+    } catch {
+      setRemoveOther(null);                                    // unknown: the copy stays cautious
+    }
+  };
+
+  /** Remove the calling manager from this person, then hand back to the grid (#431). */
+  const doRemoveFromTeam = async () => {
+    setRemoving(true);
+    try {
+      await removeTeamMember(record.employee_id);              // DELETE /team/members/{id}
+      onNotify('Removed from your team.', 'success');
+      setRemoveOpen(false);
+      onRemovedSelf?.();                                       // the Team tab refreshes and goes back
+    } catch (err: any) {
+      onNotify(err.response?.data?.detail || 'Could not remove them from your team.', 'error');
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   // hourly (current or edited type): Sick is the only balance, vacation is a
   // counter, and Make-up/Carry-over/Payout do not apply (#300).
   const hourlyStaff = isHourly(String(fieldValue('salary_hourly')));
@@ -448,8 +469,9 @@ export default function PersonProfile({
   const currentMgrs = fieldValue('managers') as string[];
   // Manager mode: a manager viewing their own record edits nothing (the team API
   // refuses self edits), so the balance tiles and the self-removal are off (#372).
-  // The name is read-only in manager mode, so currentName matches the record.
-  const selfView = manager && currentName === managerName;
+  // Derived from the SAVED name, not the live edit: #432 made the name editable in
+  // manager mode, so keying off currentName would flip selfView mid-rename (finding 16).
+  const selfView = manager && String(fieldOriginal('name')) === managerName;
 
   return (
     <>
@@ -463,8 +485,9 @@ export default function PersonProfile({
             {initials}
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            {manager ? (
-              // Manager mode: the name is read-only, no rename (#372).
+            {selfView ? (
+              // A manager viewing their own record edits nothing (the team API
+              // refuses self edits), so the name is read-only (#372).
               <Typography variant="h5" sx={{ overflowWrap: 'anywhere' }}>{currentName}</Typography>
             ) : editingKey === 'name' ? (
               <TextField
@@ -520,13 +543,33 @@ export default function PersonProfile({
                 </span>
               </Tooltip>
             )}
+            {/* "Remove from my team" (#431): a clear button in the panel, in place
+                of the old inline chip question. A manager viewing their own record
+                cannot remove themselves (selfView), so it is hidden there. */}
+            {manager && !selfView && (
+              <Tooltip title={processingEnabled ? '' : 'Removing is off while the system is in reporting-only mode.'}>
+                <span>
+                  <Button
+                    size="small" color="error" variant="outlined"
+                    disabled={!processingEnabled}
+                    onClick={openRemoveFromTeam}
+                  >
+                    Remove from my team
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           </Stack>
         </Box>
 
         {/* Body: balances + every detail on the left, the one Activity list on the right (#306). */}
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'minmax(0, 1.25fr) minmax(0, 1fr)' } }}>
           <Box sx={{ p: 2.5, display: 'grid', gap: 2.5, alignContent: 'start', minWidth: 0 }}>
-            <SectionHead title="Entitlements and balances" hint="Click a tile to change it" />
+            <SectionHead
+              title="Entitlements and balances"
+              hint={selfView ? 'Your own record is read-only' : 'Click a tile to change it'}
+              action={!selfView}
+            />
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 1.25 }}>
               {potsToShow.flatMap((p) => {
                 // hourly may set a 0 vacation entitlement, so drop the 0.5 floor and relabel its caption (#300).
@@ -558,7 +601,11 @@ export default function PersonProfile({
             </Box>
 
             {/* Details: moved under the tiles in the left column (#306 mockup). */}
-            <SectionHead title="Details" hint="Click any field to change it" />
+            <SectionHead
+              title="Details"
+              hint={selfView ? undefined : 'Click any field to change it'}
+              action={!selfView}
+            />
             <FieldGroup title="Contact">
               {['email', 'cell', 'extension', 'birthday'].map((k) => renderField(k))}
             </FieldGroup>
@@ -568,15 +615,10 @@ export default function PersonProfile({
             <Box ref={(el: HTMLElement | null) => { anchors.current.managers = el; }}>
               <GroupTitle>Managers{savedKey === 'managers' && <SavedMark sx={{ ml: 1 }} />}</GroupTitle>
               {manager ? (
-                // Manager mode (#372): every manager is shown; only the calling
-                // manager's own chip can be removed (that is "remove from my team").
-                <ManagerChips
-                  names={savedManagerNames} managerName={managerName}
-                  employeeId={record.employee_id}
-                  canRemove={!selfView && processingEnabled}
-                  onNotify={onNotify}
-                  onRemoved={() => onRemovedSelf?.()}
-                />
+                // Manager mode: the managers are shown read-only here; a manager
+                // takes themselves off a person with the "Remove from my team"
+                // button in the header, which opens a dialog (#431).
+                <ManagerChips names={savedManagerNames} managerName={managerName} />
               ) : (
                 <ManagersEditor
                   names={currentMgrs} savedNames={fieldOriginal('managers') as string[]}
@@ -754,6 +796,37 @@ export default function PersonProfile({
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* "Remove from my team" (#431): a full dialog naming the person, in place
+          of the old inline chip question. One sentence on what removal does (the
+          backend drops only this manager, leaving any others), and a warning when
+          they are the person's only manager. maxWidth xs + fullWidth fits a phone. */}
+      <Dialog open={removeOpen} onClose={() => !removing && setRemoveOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Remove {currentName || 'this person'} from your team?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            You come off their managers, so you will no longer see their requests or edit their record.
+            Anyone else managing them stays.
+          </Typography>
+          {removeOther === null && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+              Checking whether anyone else manages them...
+            </Typography>
+          )}
+          {removeOther === false && (
+            <Typography variant="body2" color="error.main" sx={{ mt: 1.5, fontWeight: 600 }}>
+              You are their only manager. Until an admin or another manager adds them, their requests will
+              have nobody to go to.
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRemoveOpen(false)} disabled={removing}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={doRemoveFromTeam} disabled={removing}>
+            {removing ? 'Removing...' : 'Remove from my team'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 
@@ -769,9 +842,13 @@ export default function PersonProfile({
         ? formatDay(String(value))                                // read as "Nov 2, 2026"; the editor still uses the bare day
         : String(value);
 
-    if (manager) {
-      // Manager mode (#372): details are read-only, so show the value with no
-      // click-to-edit affordance and no inline editor.
+    // In manager mode the Microsoft 365 person links stay read-only (the team
+    // view has no people picker to resolve them), and a manager viewing their own
+    // record is read-only throughout (the team API refuses self edits); every
+    // other field a manager edits exactly as an admin does (#432).
+    const readOnlyField = selfView || (manager && f.type === 'person');
+    if (readOnlyField) {
+      // Read-only: show the value with no click-to-edit affordance or inline editor.
       return (
         <Box key={key} sx={{ gridColumn: f.wide ? '1 / -1' : undefined, p: 0.75, mx: -0.75 }}>
           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, display: 'block' }}>{f.label}</Typography>
@@ -820,12 +897,33 @@ export default function PersonProfile({
   }
 }
 
-/** A section heading with an optional hint, matching the mockup. */
-function SectionHead({ title, hint }: { title: string; hint?: string }) {
+/**
+ * A section heading with an optional hint. When ``action`` is set the hint reads
+ * as a call to edit: it takes the theme accent colour, an edit icon and extra
+ * weight so the click-to-change affordance is noticed, and stays readable in both
+ * light and dark (the accent is the design's own highlight colour) (#430).
+ *
+ * @param props.title - The heading text.
+ * @param props.hint - The small line beside it, if any.
+ * @param props.action - Style the hint as an edit affordance (accent + icon + weight).
+ * @returns The heading row.
+ */
+function SectionHead({ title, hint, action = false }: { title: string; hint?: string; action?: boolean }) {
+  const theme = useTheme();
   return (
-    <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.25 }}>
+    <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.25, flexWrap: 'wrap' }}>
       <Typography variant="h6" sx={{ flex: 1 }}>{title}</Typography>
-      {hint && <Typography variant="caption" color="text.secondary">{hint}</Typography>}
+      {hint && (action ? (
+        <Typography
+          variant="caption"
+          sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, color: theme.tokens.accent, fontWeight: 700 }}
+        >
+          <EditOutlinedIcon sx={{ fontSize: 15 }} aria-hidden />          {/* an edit cue beside the words */}
+          {hint}
+        </Typography>
+      ) : (
+        <Typography variant="caption" color="text.secondary">{hint}</Typography>
+      ))}
     </Box>
   );
 }
@@ -981,92 +1079,24 @@ function ManagersEditor({ names, savedNames, options, onChange }: {
 }
 
 /**
- * The managers module in manager mode (#372): every manager shown as a chip. The
- * calling manager's own chip is the only removable one (that is "remove from my
- * team"); deleting it opens an inline confirmation that warns when they are the
- * person's only manager, then calls the guarded team remove route. Other
- * managers' chips are read-only.
+ * The managers module in manager mode: every manager shown as a read-only chip,
+ * the calling manager's own marked "(you)". Removing oneself is a deliberate
+ * action with its own confirmation dialog in the panel header ("Remove from my
+ * team"), not an inline chip delete, so the chips here never delete (#372, #431).
  *
  * @param props.names - The person's manager names (saved, read-only here).
- * @param props.managerName - The calling manager's own name, so their chip is found.
- * @param props.employeeId - Staff Directory id of the person being viewed.
- * @param props.canRemove - Whether self-removal is offered (off for a self view
- *   and while processing is disabled).
- * @param props.onNotify - Surface a message.
- * @param props.onRemoved - Called after a successful removal (the Team tab goes back).
- * @returns The managers chips and the inline remove confirmation.
+ * @param props.managerName - The calling manager's own name, so their chip is marked.
+ * @returns The managers chips.
  */
-function ManagerChips({ names, managerName, employeeId, canRemove, onNotify, onRemoved }: {
-  names: string[]; managerName: string; employeeId: string; canRemove: boolean;
-  onNotify: (m: string, s: 'success' | 'error') => void; onRemoved: () => void;
-}) {
-  const theme = useTheme();
-  const [confirming, setConfirming] = useState(false);       // the inline confirm box is open
-  const [otherManager, setOtherManager] = useState<boolean | null>(null);  // would another manager remain
-  const [busy, setBusy] = useState(false);                   // the remove call is in flight
-
-  /** Open the confirmation, first reading whether anyone else manages them. */
-  const openConfirm = async () => {
-    setConfirming(true);                                     // show the box at once
-    setOtherManager(null);                                   // "checking..." until the read lands
-    try {
-      const res = await getTeamMemberManagers(employeeId);   // the warning needs has_other_manager
-      setOtherManager(Boolean(res.data.has_other_manager));  // true => someone else stays
-    } catch {
-      setOtherManager(null);                                 // unknown: the copy stays cautious
-    }
-  };
-
-  /** Remove the calling manager from this person, then hand back to the grid. */
-  const doRemove = async () => {
-    setBusy(true);
-    try {
-      await removeTeamMember(employeeId);                    // DELETE /team/members/{id}
-      onNotify('Removed from your team.', 'success');
-      onRemoved();                                           // refresh the team and go back
-    } catch (err: any) {
-      onNotify(err.response?.data?.detail || 'Could not remove them from your team.', 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-
+function ManagerChips({ names, managerName }: { names: string[]; managerName: string }) {
   return (
-    <Box sx={{ display: 'grid', gap: 1 }}>
-      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" alignItems="center">
-        {!names.length && <Chip size="small" color="error" variant="outlined" label="No manager" />}
-        {names.map((n) => {
-          const mine = n === managerName;                    // the calling manager's own chip
-          return (
-            <Chip
-              key={n} label={mine ? `${n} (you)` : n} size="small" variant="outlined"
-              // Only my own chip deletes, and only when removal is allowed; the
-              // rest are plain read-only chips (#372).
-              onDelete={mine && canRemove ? openConfirm : undefined}
-              deleteIcon={<CloseIcon />}
-            />
-          );
-        })}
-      </Stack>
-      {confirming && (
-        <Box sx={{ display: 'grid', gap: 1, p: 1.5, borderRadius: 2, border: 1, borderColor: 'error.main', bgcolor: alpha(theme.palette.error.main, 0.08) }}>
-          <Typography sx={{ fontWeight: 700 }}>Remove yourself from this person's team?</Typography>
-          <Typography variant="body2" color="text.secondary">
-            {otherManager === null
-              ? 'Checking whether anyone else manages them...'
-              : otherManager
-                ? 'Another manager stays on them, so their requests still have somewhere to go.'
-                : 'You are their only manager. Their requests will have nobody to go to until an admin or another manager adds them.'}
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
-            <Button size="small" onClick={() => setConfirming(false)} disabled={busy}>Keep</Button>
-            <Button size="small" color="error" variant="contained" onClick={doRemove} disabled={busy}>
-              {busy ? 'Removing...' : 'Remove'}
-            </Button>
-          </Box>
-        </Box>
-      )}
-    </Box>
+    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" alignItems="center">
+      {!names.length && <Chip size="small" color="error" variant="outlined" label="No manager" />}
+      {names.map((n) => (
+        // The calling manager's own chip is marked "(you)"; all are read-only.
+        <Chip key={n} label={n === managerName ? `${n} (you)` : n} size="small" variant="outlined" />
+      ))}
+    </Stack>
   );
 }
 

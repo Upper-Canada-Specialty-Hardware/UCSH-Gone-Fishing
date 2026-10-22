@@ -280,10 +280,10 @@ export default function AdminDashboard() {
     }
   }, [removeDecided]);
 
-  const handleReject = useCallback(async (type: string, id: string) => {
+  const handleReject = useCallback(async (type: string, id: string, reason: string) => {
     setActionLoading(`${type}-${id}`);
     try {
-      await adminRejectRequest(type, id);
+      await adminRejectRequest(type, id, reason);                   // the reason the child dialog collected (#433)
       removeDecided(type, id);                                      // fades the row, then drops it
       // Also drop it from the managers-on-vacation section at once (#370).
       setVacationRows((prev) => prev.filter((v) => !(v.request_type === type && String(v.id) === String(id))));

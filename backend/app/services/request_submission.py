@@ -210,15 +210,17 @@ async def _record_reroute(session, record: RequestRecord, chosen: dict | None,
 
 
 async def _enqueue_notifications(session, record, employee, managers, *, event, suffix=None,
-                                 include_receipt=True) -> None:
+                                 include_receipt=True, reask_suffix=None) -> None:
     """Queue the manager approval email and text and (optionally) the employee receipt.
 
     One manager email (and a text when they have a cell) per manager, then one
     receipt to the employee. With a ``suffix`` (a date) and the reminder step the
-    same rows become a once-a-day reminder instead, email only. An admin edit asks
-    the manager again with fresh links but sends no receipt (``include_receipt``
-    False). Each row carries a step_key that is unique in the outbox, so a repeat
-    queues nothing again.
+    same rows become a once-a-day reminder instead, email only, its subject
+    prefixed "Reminder: " (#422). An admin edit asks the manager again with fresh
+    links but sends no receipt (``include_receipt`` False). A ``reask_suffix``
+    makes a fresh manager ask (a reprocess) key-unique so every press sends and
+    both channels go out (#421). Each row carries a step_key that is unique in the
+    outbox, so a repeat queues nothing again.
 
     Args:
         session: The open session; not committed here.
@@ -229,17 +231,20 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         suffix: A date string for a reminder (its key is per-day); None for a
             first submission, which also sends the receipt.
         include_receipt: False skips the employee receipt (an edit re-ask only).
+        reask_suffix: A tag that makes a non-reminder manager ask key-unique, so
+            an admin reprocess sends every press; None for the once-per-version ask.
     """
     emp_fields = employee.get("fields", {})
     fields = TypedRequestList(record.kind)._item_shape(record)["fields"]   # SharePoint shape the templates read
     version = record.approval_version
     is_reminder = suffix is not None
     message_type = "reminder" if is_reminder else "manager_approval"
-    # The step the key is built on: a dated reminder step, or the sent-to-manager step.
+    # The step the key is built on: a dated reminder step, or the sent-to-manager
+    # step (with an optional reprocess suffix so every reprocess press is unique).
     manager_step = (
         step_key(record.kind, record.item_id, "reminder_sent", version, suffix=suffix)
         if is_reminder else
-        step_key(record.kind, record.item_id, "sent_to_manager", version)
+        step_key(record.kind, record.item_id, "sent_to_manager", version, suffix=reask_suffix)
     )
     built = _build_manager_content(record, emp_fields, fields)      # per-kind subject + bodies
 
@@ -248,6 +253,8 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         manager_id = manager["id"]
         mgr_email = (mgr_fields.get("EmailAddress") or "").strip()
         subject, html, sms_body = built(manager_id)                # links are per manager
+        if is_reminder:
+            subject = f"Reminder: {subject}"                       # match the SharePoint path's reminder subject (#422)
         if mgr_email:
             await enqueue_message(
                 session, record, event, message_type, "email", mgr_email, subject, html,
@@ -617,6 +624,44 @@ async def _auto_reject(session, record: RequestRecord, rejection) -> None:
     log_step(record, "rejected", channel=record.submitted_channel, auto=True)
 
 
+async def _queue_bereavement_alert(session, record: RequestRecord, employee: dict | None,
+                                   fields: dict, event) -> None:
+    """Queue the HR alert for a bereavement or jury-duty leave, once per request (#427).
+
+    Mirrors the SharePoint path's ``send_bereavement_alert``: the same recipients,
+    subject and template, but through the outbox so it is retried, rehearsal-gated
+    and idempotent like every other Postgres message. One row per HR recipient,
+    each keyed once per request, so a rerun of the submission queues nothing again.
+    Does nothing for any other leave type or request kind. The submitter name is
+    taken from the staff record when one resolved, else from the row, so an
+    admin-created leave with no resolved employee still alerts HR (finding 4).
+
+    Args:
+        session: The open session the caller commits.
+        record: The request row (identity already stamped).
+        employee: The submitter's staff record, or None when none resolved.
+        fields: The request in the SharePoint list-item shape, for the template.
+        event: The submitted event, for the outbox link, or None.
+    """
+    from app.services.leave_requests import (
+        BEREAVEMENT_ALERT_LEAVE_TYPES,
+        BEREAVEMENT_ALERT_RECIPIENTS,
+        BEREAVEMENT_ALERT_SUBJECT,
+    )
+    if record.kind != "leave" or (record.leave_type or "") not in BEREAVEMENT_ALERT_LEAVE_TYPES:
+        return                                                    # only bereavement / jury duty alert HR
+    # Name from the staff record first, then the row: an alert may fire before an
+    # employee is resolved, and the template reads the name from here.
+    submitter_name = (employee or {}).get("fields", {}).get("Title", "") or (record.employee_name or "")
+    html = tr.render_bereavement_alert(fields, submitter_name)    # same template the SharePoint path uses
+    alert_step = step_key(record.kind, record.item_id, "bereavement_alert", record.approval_version)
+    for recipient in BEREAVEMENT_ALERT_RECIPIENTS:                # one outbox row per HR recipient
+        await enqueue_message(
+            session, record, event, "bereavement_alert", "email", recipient,
+            BEREAVEMENT_ALERT_SUBJECT, html, f"{alert_step}:email:{recipient}",
+        )
+
+
 async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     """Record one request's submission in the given session (no commit).
 
@@ -655,6 +700,15 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
         actor or record.employee_name, {}, submitted_key,
     )
     log_step(record, "submitted", channel=record.submitted_channel, notify=notify)
+
+    # A bereavement or jury-duty leave tells HR as soon as the request is recorded,
+    # BEFORE the notify / non-pending returns below. An admin-created Approved
+    # bereavement leave arrives with notify False and status "approved", and the
+    # SharePoint-path send now no-ops in Postgres mode, so queuing it only on the
+    # notify path left HR never told (finding 4). It is keyed once per request and
+    # works with or without a resolved employee; it no-ops for any other type.
+    alert_fields = TypedRequestList(kind)._item_shape(record)["fields"]   # name now stamped on the row
+    await _queue_bereavement_alert(session, record, employee, alert_fields, event)
 
     if not notify:
         return True                                               # a sick day approved on the spot: event only
@@ -746,6 +800,95 @@ async def queue_reminder(kind, item_id, *, today=None, session=None) -> bool:
     if queued:
         _wake_sender()
     return queued
+
+
+async def reprocess_request(kind, item_id, reason, *, actor="admin",
+                            channel="admin_dashboard", session=None) -> bool:
+    """Re-ask the available manager for a pending request, email AND text (#421).
+
+    An admin reprocess is not a reminder: it must send on every press, over both
+    channels, with fresh links, and it must not advance the reminder cadence. It
+    routes to the first available manager exactly as a reminder does
+    (``choose_available_manager``), records its own ``sent_to_manager`` timeline
+    step carrying the admin's reason, and keys every row with a per-press suffix
+    so a second press sends again. ``reminder_count`` and ``last_reminder_at`` are
+    left untouched.
+
+    Args:
+        kind: The request kind ("leave", "overtime", "carryover_payout").
+        item_id: The item_id people and links use.
+        reason: Why the admin reprocessed, recorded on the timeline step.
+        actor: Who reprocessed, for the event.
+        channel: Where the reprocess came from (a request_vocab channel).
+        session: An open session to write into, or None to open one and commit.
+
+    Returns:
+        True when a manager was asked; False when the request is gone, not
+        pending, or every manager is off (nobody to ask).
+    """
+    if session is not None:
+        return await _reprocess_request(session, kind, item_id, reason, actor, channel)
+    async with async_session() as own:
+        asked = await _reprocess_request(own, kind, item_id, reason, actor, channel)
+        await own.commit()
+    if asked:
+        _wake_sender()
+    return asked
+
+
+async def _reprocess_request(session, kind, item_id, reason, actor, channel) -> bool:
+    """Re-ask the available manager for a pending request in the given session (no commit).
+
+    The body of ``reprocess_request`` (see it for the full behaviour): it routes to
+    the first available manager, records one ``sent_to_manager`` timeline step
+    carrying the admin's reason, and queues a fresh email AND text with a per-press
+    key so every press sends, without advancing the reminder cadence. The caller
+    opens the session, commits, and wakes the sender.
+
+    Args:
+        session: The open session the caller commits.
+        kind: The request kind ("leave", "overtime", "carryover_payout").
+        item_id: The item_id people and links use.
+        reason: Why the admin reprocessed, recorded on the timeline step.
+        actor: Who reprocessed, for the event.
+        channel: Where the reprocess came from (a request_vocab channel).
+
+    Returns:
+        True when a manager was asked; False when the request is gone, no longer
+        pending, its submitter/managers cannot be resolved, or every manager is
+        off today (nobody to ask), in which case nothing is queued.
+    """
+    from app.models.mixins import utcnow
+    record = await _load(session, kind, item_id)
+    if record is None or record.status != "pending":
+        return False                                              # gone or already decided: nothing to re-ask
+    employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
+    managers = await get_all_managers_for_employee(employee) if employee else []
+    if not employee or not managers:
+        return False                                              # cannot resolve: nobody to ask
+    # Route to the first available manager, the same rule reminders use (#369).
+    chosen, skipped = await choose_available_manager(session, managers, today_toronto())
+    if chosen is None:
+        return False                                              # everyone off: nothing to send this press
+    _assign_manager(record, chosen)                               # the request follows whoever is asked
+    # A per-press tag makes every reprocess key-unique, so a second press the same
+    # day still sends (a reminder's per-day key would swallow it); utcnow carries
+    # microseconds, so two presses never collide.
+    press = f"reprocess:{_naive_utc(utcnow()).isoformat()}"
+    reprocess_key = step_key(kind, record.item_id, "sent_to_manager", record.approval_version, suffix=press)
+    # One timeline step per press, carrying the admin's reason (and who was skipped).
+    event = await append_event(
+        session, record, "sent_to_manager", channel, actor,
+        {"manager": record.manager_name, "reason": reason, "reprocess": True, "skipped": skipped},
+        reprocess_key,
+    )
+    # Both channels, fresh links, no receipt, no "Reminder:" prefix; the unique
+    # suffix keeps each press's outbox rows distinct.
+    await _enqueue_notifications(
+        session, record, employee, [chosen], event=event, include_receipt=False, reask_suffix=press,
+    )
+    log_step(record, "sent_to_manager", reprocess=True, actor=actor)
+    return True                                                   # reminder_count / last_reminder_at untouched
 
 
 async def _queue_reminder(session, kind, item_id, today) -> bool:

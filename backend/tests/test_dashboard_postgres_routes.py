@@ -72,10 +72,10 @@ def test_team_create_uses_the_manager_staff_id_on_postgres(app_client, monkeypat
     app.dependency_overrides.clear()
 
 
-# ----- /admin/reprocess/leave: re-ask through the outbox on Postgres (finding 4) -----
+# ----- /admin/reprocess/leave: re-ask through the outbox on Postgres (finding 4, #421) -----
 
 
-def test_admin_reprocess_leave_queues_through_the_outbox_on_postgres(app_client, monkeypatch):
+def test_admin_reprocess_leave_reprocesses_through_the_outbox_on_postgres(app_client, monkeypatch):
     _app, client = app_client
     calls = []
 
@@ -85,8 +85,10 @@ def test_admin_reprocess_leave_queues_through_the_outbox_on_postgres(app_client,
     async def in_pg():
         return True
 
-    async def fake_queue(kind, request_id):
-        calls.append((kind, str(request_id)))
+    # Reprocess goes through reprocess_request (not queue_reminder): email AND
+    # text, fresh links, no reminder-cadence bump, carrying the admin's reason (#421).
+    async def fake_reprocess(kind, request_id, reason):
+        calls.append((kind, str(request_id), reason))
         return True
 
     async def never_send(*_a, **_k):
@@ -95,19 +97,19 @@ def test_admin_reprocess_leave_queues_through_the_outbox_on_postgres(app_client,
     async def fake_lookups():
         return {}, {}, _PersonNames(), {}
 
-    async def fake_emailed(_entries):
+    async def fake_asked(_entries):
         return None
 
     monkeypatch.setattr(dashboard.request_store, "get_list_item", get_item)
     monkeypatch.setattr(dashboard, "requests_in_postgres", in_pg)
-    monkeypatch.setattr(rsub, "queue_reminder", fake_queue)
+    monkeypatch.setattr(rsub, "reprocess_request", fake_reprocess)
     monkeypatch.setattr(lr, "send_approval_email", never_send)
     monkeypatch.setattr(dispatcher, "dispatch_change", never_send)
     monkeypatch.setattr(dashboard, "_build_staff_lookups", fake_lookups)
-    monkeypatch.setattr(dashboard, "fetch_approval_email_records", fake_emailed)
+    monkeypatch.setattr(dashboard, "fetch_manager_asked_records", fake_asked)
     monkeypatch.setattr(dashboard, "_diagnose_stuck_leave", lambda *a, **k: ([], "ok"))
 
     resp = client.post("/admin/reprocess/leave/123", json={"reason": "please resend"})
 
     assert resp.status_code == 200, resp.text
-    assert calls == [("leave", "123")]                          # queued, not sent directly
+    assert calls == [("leave", "123", "please resend")]         # reprocessed, not sent directly

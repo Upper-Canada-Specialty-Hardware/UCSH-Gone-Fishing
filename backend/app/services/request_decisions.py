@@ -59,6 +59,32 @@ from app.templates_render import render_request_result
 
 logger = logging.getLogger(__name__)
 
+# A rejection reason is capped at this many characters at every entry point (the
+# dashboard routes, the email approval page and an SMS reply), so an unbounded
+# reason cannot be typed (finding 14). The decision path stores and emails it,
+# and a result text carries it, so the cap keeps the SMS within Twilio's limit.
+MAX_REJECT_REASON_LEN = 500
+
+# Twilio refuses a message body over 1600 characters, and that refusal is now a
+# permanent failure (finding 7), so the rejection RESULT text is capped here. The
+# email keeps the full reason; only the text is shortened (finding 14).
+_SMS_BODY_MAX = 1600
+
+
+def _truncate_sms(text: str) -> str:
+    """Cap a result text at Twilio's 1600-character limit, marking any cut.
+
+    Args:
+        text: The full SMS body.
+
+    Returns:
+        The text unchanged when within the limit, else trimmed to fit with a
+        trailing "..." so the recipient sees it was shortened.
+    """
+    if len(text) <= _SMS_BODY_MAX:
+        return text                                                # already within the limit
+    return text[: _SMS_BODY_MAX - 3].rstrip() + "..."              # trim and mark the cut
+
 # Pot -> balance column the other way, to read a simulate_* result back as pots.
 SP_FIELD_TO_POT = {column: pot for pot, column in POT_COLUMNS.items()}
 # A carry-over/payout request's stored option -> the word the simulation wants.
@@ -438,15 +464,41 @@ async def _decider_name(session, request: RequestRecord) -> str | None:
     return name.strip() or None
 
 
+def _decider_label(request: RequestRecord, decider_name: str | None = None) -> tuple[str | None, str | None]:
+    """Who decided, as a bare (role, name) pair the headings and phrases share.
+
+    One place to read the decision's actor and channel, so ``_decider_phrase``
+    and the rejection headings (#434) can never disagree on who acted. An admin
+    decision or refund (actor ``"admin"``, or the ``admin_dashboard`` channel) is
+    HR; a deciding manager (a stand-in named by ``decider_name``, or the assigned
+    ``manager_name``) is that manager; otherwise neither is known.
+
+    Args:
+        request: The decided request, with ``decided_by`` / ``decided_channel`` set.
+        decider_name: The deciding manager's name when they are not the assigned
+            manager (from ``_decider_name``), else None.
+
+    Returns:
+        ``("admin", "HR")``, ``("manager", <name>)``, or ``(None, None)``.
+    """
+    actor = (request.decided_by or "").strip()                     # the recorded actor id/name
+    channel = request.decided_channel or ""                        # where the decision came from
+    if actor.lower() == "admin" or channel == "admin_dashboard":   # an admin acted, not the manager
+        return "admin", "HR"
+    if decider_name:                                               # another manager on the list decided
+        return "manager", decider_name
+    if request.manager_name:                                       # the assigned manager decided
+        return "manager", request.manager_name
+    return None, None                                              # no decider is known
+
+
 def _decider_phrase(request: RequestRecord, decider_name: str | None = None) -> str:
     """The " by <who>" clause for a result message, naming who actually decided.
 
-    The decision records the actor and the channel it came from. An admin
-    decision or refund (actor ``"admin"``, or the ``admin_dashboard`` channel) is
-    named as an administrator rather than the request's assigned manager, which
-    is who the message named before even when an admin decided or refunded
-    (finding 10). A manager deciding through their own channel keeps naming the
-    manager. This changes only the wording, never who the result is sent to.
+    An admin decision or refund is named as an administrator rather than the
+    request's assigned manager (finding 10); a manager deciding through their own
+    channel keeps naming the manager. This changes only the wording, never who
+    the result is sent to.
 
     Args:
         request: The decided request, with ``decided_by`` / ``decided_channel`` set.
@@ -456,21 +508,26 @@ def _decider_phrase(request: RequestRecord, decider_name: str | None = None) -> 
     Returns:
         ``" by <name>"`` when a decider is known, or ``""`` when none is.
     """
-    actor = (request.decided_by or "").strip()
-    channel = request.decided_channel or ""
-    if actor.lower() == "admin" or channel == "admin_dashboard":   # an admin acted, not the manager
+    role, who = _decider_label(request, decider_name)              # the shared who-decided read
+    if role == "admin":                                            # an admin acted, not the manager
         return " by an administrator"
-    if decider_name:                                               # another manager on the list decided
-        return f" by {decider_name}"
-    if request.manager_name:                                       # a manager decided on their own channel
-        return f" by {request.manager_name}"
+    if role == "manager":                                          # a manager (stand-in or assigned) decided
+        return f" by {who}"
     return ""
 
 
 def _result_context(
-    request: RequestRecord, outcome_word: str, rows: list[dict], note: str, decider_name: str | None = None,
+    request: RequestRecord, outcome_word: str, rows: list[dict], note: str,
+    decider_name: str | None = None, reason: str | None = None,
 ) -> tuple[str, str, str]:
     """Build the result email subject, HTML body and SMS text from the step.
+
+    A rejection carrying a reason (#434) takes one of two forms, each with the
+    reason: the supervisor form ("<Manager> did not approve your <kind>
+    request") or the admin form ("HR did not approve your <kind> request", plus
+    "If you have questions, contact HR."). A rejection with no reason (an SMS
+    reject with no words) falls through to the plain "was not approved" sentence,
+    unchanged. Approved and Refunded are unchanged.
 
     Args:
         request: The decided request (for the name, kind and number).
@@ -478,16 +535,20 @@ def _result_context(
         rows: Balance lines ``[{"label", "value"}]`` for the email table.
         note: A closing sentence, or "".
         decider_name: The deciding manager's name when not the assigned one.
+        reason: The rejection reason, or None/blank for the plain fallback.
 
     Returns:
         ``(subject, html, sms_text)``.
     """
     name = request.employee_name or "there"
     label = KIND_LABEL.get(request.kind, "Request")
+    kind_word = label.lower()                                      # "leave", "overtime", "carry over / payout"
+    if outcome_word == "Rejected" and (reason or "").strip():      # the two reason-carrying forms (#434)
+        return _rejected_context(request, name, label, kind_word, reason.strip(), decider_name)
     heading = f"{label} Request: {outcome_word}"
     decided_by = _decider_phrase(request, decider_name)
     verb = {"Approved": "has been approved", "Rejected": "was not approved", "Refunded": "has been refunded"}[outcome_word]
-    intro = f"Hi {name}, your {label.lower()} request #{request.item_id} {verb}{decided_by}."
+    intro = f"Hi {name}, your {kind_word} request #{request.item_id} {verb}{decided_by}."
     subject = f"{request.employee_name or 'Staff'} - {label} Request: {outcome_word}"
     html = render_request_result(heading, intro, rows, note)
     # The text says the same in one plain line, with each balance line appended.
@@ -496,6 +557,51 @@ def _result_context(
     if note:
         text_lines.append(note)
     return subject, html, " ".join(text_lines)
+
+
+def _rejected_context(
+    request: RequestRecord, name: str, label: str, kind_word: str, reason: str, decider_name: str | None,
+) -> tuple[str, str, str]:
+    """Build a rejection email/text that names who refused and gives the reason (#434).
+
+    Two forms from one shell: HR (an admin decision) adds a "contact HR" line; a
+    manager is named by name. The reason always shows on its own line. When
+    neither decider is known the plain "was not approved" heading is used, still
+    with the reason.
+
+    Args:
+        request: The rejected request (for its number).
+        name: The employee's first name or "there", for the greeting.
+        label: The kind in title case, for the subject.
+        kind_word: The kind in lower case, for the sentence.
+        reason: The non-blank reason the request was turned down.
+        decider_name: The deciding manager's name when not the assigned one.
+
+    Returns:
+        ``(subject, html, sms_text)``.
+    """
+    role, who = _decider_label(request, decider_name)              # HR, a manager, or neither
+    footer = None                                                  # only the admin form carries the HR line
+    if role == "admin":                                            # HR did not approve it
+        heading = f"HR did not approve your {kind_word} request"
+        line = f"HR did not approve your {kind_word} request #{request.item_id}."
+        footer = "If you have questions, contact HR."
+    elif role == "manager":                                        # a named manager did not approve it
+        heading = f"{who} did not approve your {kind_word} request"
+        line = f"{who} did not approve your {kind_word} request #{request.item_id}."
+    else:                                                          # decider unknown: plain wording, still with reason
+        heading = f"{label} Request: Rejected"
+        line = f"Your {kind_word} request #{request.item_id} was not approved."
+    intro = f"Hi {name}, {line}"                                   # the email greets, the text does not
+    subject = f"{request.employee_name or 'Staff'} - {label} Request: Rejected"
+    html = render_request_result(heading, intro, [], note="", reason=reason, footer=footer)
+    # The text says the same in one line: the sentence, the reason, then the HR
+    # line. Capped to Twilio's limit so an over-long reason cannot make the result
+    # text permanently unsendable; the email above keeps the full reason (finding 14).
+    text_lines = [line, f"Reason: {reason}"]
+    if footer:
+        text_lines.append(footer)
+    return subject, html, _truncate_sms(" ".join(text_lines))
 
 
 async def _enqueue_result(session, request, event, version, subject, html, sms_text) -> None:
@@ -793,9 +899,11 @@ async def reject(kind, item_id, actor, channel, link_version=None, reason=None) 
             _mark_decided(request, "rejected", actor, channel)
             rejected_key = step_key(kind, request.item_id, "rejected", version)
             event = await append_event(session, request, "rejected", channel, actor, {"reason": reason}, rejected_key)
-            note = reason or "The request was not approved."
+            note = reason or "The request was not approved."       # the no-reason fallback sentence
             decider_name = await _decider_name(session, request)    # who really decided (#371)
-            subject, html, sms_text = _result_context(request, "Rejected", [], note, decider_name)
+            # Pass the raw reason too: with one, _result_context builds the
+            # supervisor/HR form (#434); with none, it uses the note above.
+            subject, html, sms_text = _result_context(request, "Rejected", [], note, decider_name, reason=reason)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "rejected", channel=channel, actor=actor)
             await session.commit()

@@ -416,9 +416,9 @@ def test_indexed_admin_read_matches_the_sharepoint_shape(dashboard_client, monke
     assert len(pg_rows) == 1
     pg_row = pg_rows[0]
 
-    # Same shape, plus the new stage column.
+    # Same shape, plus the derived stage and the admin table's failed-send flag (#423, #424).
     assert set(sp_row).issubset(set(pg_row))
-    assert set(pg_row) - set(sp_row) == {"stage"}
+    assert set(pg_row) - set(sp_row) == {"stage", "failed_send"}
     for key in ("id", "request_type", "Status", "StartDate", "Days", "LeaveType", "employee_name", "managers"):
         assert pg_row[key] == sp_row[key], key
     assert pg_row["employee_name"] == "Pat Staff"

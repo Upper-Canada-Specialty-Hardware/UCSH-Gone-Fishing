@@ -20,6 +20,7 @@ import RequestsCalendar from './RequestsCalendar';
 import { useFitColumns } from './useFitColumns';
 import DeleteRequestDialog, { movedBalance } from './DeleteRequestDialog';
 import NewRequestDialog from './NewRequestDialog';
+import RejectDialog from '../RejectDialog';
 import { StaffOption, deleteAdminRequest, exportAdminRequests, flushDeleteBeacon, getNewRequestOptions } from '../../api/requestsAdmin';
 import { getAdminHolidays } from '../../api/client';
 
@@ -85,7 +86,7 @@ interface Props {
   processingEnabled: boolean;
   actionLoading: string | null;
   onApprove: (type: string, id: string) => Promise<void>;
-  onReject: (type: string, id: string) => Promise<void>;
+  onReject: (type: string, id: string, reason: string) => Promise<void>;   // reason required (#433)
   onRemind: (type: string, id: string) => Promise<void>;
   onRefund: (type: string, id: string) => Promise<void>;
   onEdit: (item: any) => void;
@@ -151,6 +152,7 @@ export default function RequestsScreen(props: Props) {
   const [deleteRows, setDeleteRows] = useState<Row[] | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [refundRows, setRefundRows] = useState<Row[] | null>(null);
+  const [rejectRows, setRejectRows] = useState<Row[] | null>(null);   // the row(s) awaiting one reject reason (#433)
   const [reprocessRow, setReprocessRow] = useState<Row | null>(null);
   const [reprocessReason, setReprocessReason] = useState('');
   const [auditLog, setAuditLog] = useState<string | null>(null);
@@ -293,7 +295,7 @@ export default function RequestsScreen(props: Props) {
   // ---- Actions wired to the dashboard's existing handlers. ----
   const actions: TableActions = useMemo(() => ({
     approve: (r) => props.onApprove(r.request_type, r.id),
-    reject: (r) => props.onReject(r.request_type, r.id),
+    reject: (r) => setRejectRows([r]),                   // ask for a reason first (#433)
     refund: (r) => setRefundRows([r]),
     edit: (r) => props.onEdit(r.raw),
     remind: (r) => props.onRemind(r.request_type, r.id),
@@ -314,7 +316,7 @@ export default function RequestsScreen(props: Props) {
   const picked = useMemo(() => allRows.filter((r) => selected.has(r.key) && !deletedKeys.has(delKey(r))), [allRows, selected, deletedKeys]);
 
   // Del deletes the ticked rows, Esc clears them (not while typing or in a dialog).
-  const anyDialogOpen = deleteRows !== null || newOpen || refundRows !== null || reprocessRow !== null || auditLog !== null;
+  const anyDialogOpen = deleteRows !== null || newOpen || refundRows !== null || rejectRows !== null || reprocessRow !== null || auditLog !== null;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!selected.size || anyDialogOpen) return;
@@ -456,7 +458,7 @@ export default function RequestsScreen(props: Props) {
               onClear={() => setSelected(new Set())}
               onOpen={() => openInTable(picked[0])}
               onApprove={() => { Promise.all(picked.map((r) => props.onApprove(r.request_type, r.id))); setSelected(new Set()); }}
-              onReject={() => { Promise.all(picked.map((r) => props.onReject(r.request_type, r.id))); setSelected(new Set()); }}
+              onReject={() => setRejectRows(picked)}       // one reason for the whole selection (#433)
               onRefund={() => setRefundRows(picked)}
               onExport={() => doExport(picked.map((r) => r.raw))}
               onDelete={() => setDeleteRows(picked)}
@@ -598,6 +600,21 @@ export default function RequestsScreen(props: Props) {
           setSnack({ open: true, message });
         }}
         onError={(message) => setSnack({ open: true, message })}
+      />
+
+      {/* Reject needs a reason (#433): one reason applies to the whole selection. */}
+      <RejectDialog
+        open={rejectRows !== null}
+        personName={rejectRows && rejectRows.length === 1 ? rejectRows[0].person : undefined}
+        requestLabel={rejectRows && rejectRows.length === 1 ? rejectRows[0].kindLabel : undefined}
+        count={rejectRows?.length || 1}
+        onCancel={() => setRejectRows(null)}
+        onConfirm={(reason) => {
+          const rows = rejectRows || [];
+          setRejectRows(null);
+          setSelected(new Set());                          // clear the ticks, like approve/refund do
+          Promise.all(rows.map((r) => props.onReject(r.request_type, r.id, reason)));
+        }}
       />
 
       {/* Refund confirm (one or several approved requests). */}

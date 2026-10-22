@@ -114,6 +114,15 @@ def test_an_unchanged_role_keeps_the_token(client):
     assert _refresh(client, "manager").json() == {"changed": False}
 
 
+def test_a_manager_with_nobody_under_them_is_never_demoted(client):
+    # #395: the refresh only ever promotes. A supervisor opening the add-new-hire
+    # link before anyone is under them, or an admin's open-as-manager link, keeps
+    # the manager role (and Add Employee) even though nobody lists them yet.
+    client.records["596"] = {"id": "596", "fields": {"Title": "Glenn Clarke"}}
+    # client.managers stays empty: nobody lists Glenn as their manager.
+    assert _refresh(client, "manager").json() == {"changed": False}
+
+
 def test_a_failed_check_never_takes_the_role_away(client):
     client.records["596"] = {"id": "596", "fields": {"Title": "Glenn Clarke"}}
     client.fail = True

@@ -9,6 +9,10 @@
 {% import "_macros.html" as ui %}
 <h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 12px;">{{ heading }}</h2>
 <p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ intro }}</p>
+{# A rejection's reason (#434), its own line so it stands apart from the intro. #}
+{% if reason %}
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;"><strong>Reason:</strong> {{ reason }}</p>
+{% endif %}
 {% if rows %}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:16px 0;">
   {% for row in rows %}
@@ -18,4 +22,8 @@
 {% endif %}
 {% if note %}
 <p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ note }}</p>
+{% endif %}
+{# The closing line, e.g. an admin rejection's "contact HR" (#434). #}
+{% if footer %}
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 12px;">{{ footer }}</p>
 {% endif %}
