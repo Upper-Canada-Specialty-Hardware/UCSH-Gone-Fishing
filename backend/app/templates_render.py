@@ -105,22 +105,23 @@ def render_leave_rejected(fields: dict, manager_name: str) -> str:
 
 
 def render_leave_balance_update(
-    employee_name: str, balances: dict, is_next_year: bool, hourly: bool = False,
+    employee_name: str, balances: dict, hourly: bool = False,
 ) -> str:
     """The updated-balance email sent after a leave approval.
+
+    One template for every date (#407): the old next-year variant said deductions
+    went only to Overtime and Carry Over, which is no longer true now that
+    next-year dates use the normal cascade, so it is gone.
 
     Args:
         employee_name: The employee's name.
         balances: Balances after approval.
-        is_next_year: Whether the request was dated next year (own wording).
         hourly: hourly (#300): show sick only, the one balance they have.
 
     Returns:
         The email body HTML.
     """
-    # hourly never use the next-year cascade, so their note would be wrong.
-    template = "leave_balance_update_next_year.html" if is_next_year and not hourly else "leave_balance_update.html"
-    return _render(template, employee_name=employee_name, balances=balances, hourly=hourly)
+    return _render("leave_balance_update.html", employee_name=employee_name, balances=balances, hourly=hourly)
 
 
 def render_leave_hourly_approved(fields: dict, manager_name: str) -> str:

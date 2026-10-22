@@ -15,7 +15,12 @@ from datetime import date, timedelta
 
 from pydantic import BaseModel
 
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
+    LEAVE_BOOKING_TYPES,
+    booking_limit,
+    booking_limit_message,
+    carryover_available_for,
     is_next_year_request,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
@@ -76,7 +81,10 @@ def _holidays_in(start: date, end: date, holidays: list[dict]) -> list[str]:
     return names
 
 
-def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays: list[dict]) -> dict:
+def build_preview(
+    request_type: str, form: BaseModel, emp_fields: dict, holidays: list[dict],
+    today: date | None = None,
+) -> dict:
     """Work out what approving this form would do, without any I/O.
 
     Args:
@@ -84,6 +92,7 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
         form: The checked form from request_intake.parse_request_form.
         emp_fields: The employee's Staff Directory fields (balances, SalaryHourly).
         holidays: The employee's province's holiday rows ([] when unknown).
+        today: Today in Toronto (the booking policy's "this year"); defaults to it.
 
     Returns:
         {"days": float, "projected": SharePoint-style balances or None,
@@ -91,13 +100,17 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
         "notes": [sentences worth knowing], "warning": a sentence when the
         request would be rejected automatically, else "", "next_year": bool,
         "below_zero": ``employment.floor_warning`` when approving would take the
-        floor below zero (shown in red; the manager may still approve), else None}.
+        floor below zero (shown in red; the manager may still approve), else None,
+        "booking_limit": {"date", "refused", "message"} for a salaried
+        Vacation/part-day request, else None (#407)}.
     """
+    today = today or toronto_today()                       # the booking policy's calendar day
     season = get_half_friday_season(holidays)              # (start, end) or (None, None)
     notes: list[str] = []
     warning = ""
     projected = None
     next_year = False
+    booking_limit_info = None                              # set for salaried vacation / part days (#407)
 
     if request_type == "leave":
         leave_type = form.leave_type
@@ -116,10 +129,29 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
             if days <= 0:
                 warning = "These dates have no working days."
         next_year = is_next_year_request(form.start_date, form.end_date)
-        projected = simulate_leave_impact(emp_fields, leave_type, days, next_year)
         bc = is_hourly(emp_fields)                      # hourly: sick only, no cascade
-        if next_year and projected is not None and not bc:
-            notes.append("Next year's time off uses Make-Up, then Carry Over. Next year's vacation is not touched.")
+        last_day = form.end_date                        # set for both a part day and a range
+        carryover_avail = carryover_available_for(last_day, today)   # carry-over expired for these dates? (#407)
+        projected = simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
+        # Only salaried vacation and part days are held to the booking limit;
+        # carry the limit and whether these dates are past it to the page (#407).
+        if not bc and leave_type in LEAVE_BOOKING_TYPES:
+            limit = booking_limit(
+                float(emp_fields.get("CurrentVacationBalance", 0) or 0),
+                float(emp_fields.get("CarryOver", 0) or 0),
+                today,
+            )
+            refused = last_day is not None and last_day > limit
+            booking_limit_info = {
+                "date": limit.isoformat(),
+                "refused": refused,
+                "message": booking_limit_message(limit) if refused else "",
+            }
+        # Carry-over that cannot be used for these dates is worth saying when the
+        # person actually has some (#407).
+        if (not bc and not carryover_avail
+                and float(emp_fields.get("CarryOver", 0) or 0) > 0):
+            notes.append("Carry-over cannot be used for these dates, so Make-Up then Vacation are used.")
         if bc and leave_type == PART_DAY_LEAVE:
             notes.append("A part day uses one whole sick day.")
     elif request_type == "overtime":
@@ -163,6 +195,7 @@ def build_preview(request_type: str, form: BaseModel, emp_fields: dict, holidays
         "warning": warning,
         "next_year": next_year,
         "below_zero": floor_warning(emp_fields, projected),   # red, never a block
+        "booking_limit": booking_limit_info,                  # the vacation booking limit (#407)
     }
 
 

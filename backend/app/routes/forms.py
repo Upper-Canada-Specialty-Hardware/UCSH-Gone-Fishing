@@ -1,10 +1,14 @@
 import logging
+from datetime import date
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from app.config import settings
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
+from app.services.balance import booking_refusal  # the vacation booking limit (#407)
+from app.services.employee import get_employee_by_email
 from app.services.leave_requests import process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
 from app.services.carryover_payout import process_new_carryover_payout
@@ -73,12 +77,41 @@ async def _check_paused():
     return None
 
 
+async def _leave_booking_refusal(data: "LeaveFormData") -> str | None:
+    """The booking-limit refusal for a Microsoft Form leave, or None (#407).
+
+    The /api/forms path creates leave directly (it does not go through
+    request_intake.submit_request), so the same policy is enforced here. An
+    unknown submitter or an unparseable date is left for the create path to
+    handle; only a known salaried person booking a Vacation/part-day past the
+    limit is refused.
+
+    Args:
+        data: The posted Microsoft Form leave payload.
+
+    Returns:
+        The refusal sentence, or None when the request is allowed or not limited.
+    """
+    employee = await get_employee_by_email(data.submitter_email)
+    if not employee:
+        return None                                              # unknown: process_new refuses it later
+    last_str = data.end_date or data.start_date                  # the last day: end for a range, start for a part day
+    try:
+        last_day = date.fromisoformat((last_str or "")[:10])
+    except (ValueError, TypeError):
+        return None                                              # bad date: let the create path report it
+    return booking_refusal(employee["fields"], data.leave_type, last_day, toronto_today())
+
+
 @router.post("/leave")
 async def receive_leave_form(data: LeaveFormData):
     if (resp := _check_processing()):
         return resp
     if (resp := await _check_paused()):                          # refuse new requests mid-switch
         return resp
+    refusal = await _leave_booking_refusal(data)                 # same booking limit as the request page (#407)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
     try:
         item = await process_new_leave_request(data.model_dump(), data.submitter_email, SOURCE_API)
         return {"status": "ok", "item_id": item.get("id")}

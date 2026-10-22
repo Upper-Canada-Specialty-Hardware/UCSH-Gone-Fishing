@@ -1,13 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Box, Alert, Chip, Stack, Button, Typography, CircularProgress,
+  Dialog, DialogTitle, DialogContent, DialogActions, TextField,
 } from '@mui/material';
 import { DataGrid, GridColDef, GridActionsCellItem, GridActionsCellItemProps } from '@mui/x-data-grid';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
-import BalanceIcon from '@mui/icons-material/Balance';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { SHARED_DATA_GRID_PROPS } from './dataGridDefaults';
 import { PROBLEM_INFO } from './employeeSetupProblems';
+import { fixNegativeCarryover } from '../api/client';
+import BalanceIcon from '@mui/icons-material/Balance';
 import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
 
 // One failing check, as the sweep reports it.
@@ -64,6 +67,55 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
     [setupList],
   );
 
+  // The one-click carry-over correction, straight from the triage list (#407). A
+  // reason is required, as for any balance edit, so the action opens a dialog.
+  const [fixId, setFixId] = useState<string | null>(null);   // whose carry-over is being fixed
+  const [fixName, setFixName] = useState('');                // their name, for the dialog wording
+  const [fixReason, setFixReason] = useState('');            // the typed reason for the move
+  const [fixBusy, setFixBusy] = useState(false);             // the fix request is in flight
+  const [fixError, setFixError] = useState('');              // why the fix was refused, if it was
+
+  /**
+   * Open the carry-over fix dialog for one person, seeding its state.
+   *
+   * Identity is passed in so the grid action does not have to read row state.
+   *
+   * @param id - Staff Directory id whose negative carry-over is being fixed.
+   * @param name - Their display name, for the dialog wording.
+   * @returns Nothing; it only sets dialog state.
+   */
+  const openFix = useCallback((id: string, name: string) => {
+    setFixId(id);
+    setFixName(name);
+    setFixReason('');
+    setFixError('');
+  }, []);
+
+  /**
+   * Post the carry-over fix for the open person, then refresh the sweep.
+   *
+   * Moves the stored negative carry-over onto vacation with the typed reason; on
+   * success the dialog closes and the list re-runs so the row clears, and on
+   * failure the backend's message is shown and the dialog stays open.
+   *
+   * @returns A promise that resolves once the request and refresh settle.
+   */
+  const submitFix = async () => {
+    if (!fixId || !fixReason.trim()) return;                 // guarded; the button is also disabled
+    setFixBusy(true);
+    setFixError('');
+    try {
+      await fixNegativeCarryover(fixId, fixReason.trim());   // C -> 0, V += C, history recorded
+      setFixId(null);
+      await onRefresh();                                     // re-run the sweep so the row clears
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;             // the backend's 400/404/503 message
+      setFixError(typeof detail === 'string' ? detail : 'The carry-over could not be corrected. Please try again.');
+    } finally {
+      setFixBusy(false);
+    }
+  };
+
   // Problems sit right after the name: the reason a record is listed is the
   // first thing to read, and on a narrow viewport, where the grid scrolls
   // sideways, it is the column that must still be on screen.
@@ -99,7 +151,7 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
       field: 'actions',
       headerName: 'Actions',
       type: 'actions',
-      width: 110,
+      width: 160,
       getActions: (params) => {
         const actions: React.ReactElement<GridActionsCellItemProps>[] = [
           <GridActionsCellItem
@@ -109,6 +161,21 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
             onClick={() => onSelect(String(params.id))}
           />,
         ];
+        // A negative carry-over has a one-click fix, offered right on the row (#407).
+        const hasNegativeCarryover = (params.row.fails as Problem[]).some(
+          (f) => f.code === 'carry_over_negative',
+        );
+        if (hasNegativeCarryover) {
+          actions.push(
+            <GridActionsCellItem
+              key="fix-carryover"
+              icon={<AutoFixHighIcon color="warning" />}
+              label="Fix carry-over"
+              onClick={() => openFix(String(params.id), String(params.row.employee_name))}
+              showInMenu={false}
+            />,
+          );
+        }
         // Approved requests that never moved a balance: settle them one by one (#400).
         const unmoved = params.row.unmoved as UnmovedRequest[];
         if (unmoved.length > 0) {
@@ -124,7 +191,7 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
         return actions;
       },
     },
-  ], [onSelect]);
+  ], [onSelect, openFix]);
 
   return (
     <Box sx={{ mb: 3 }}>
@@ -168,6 +235,28 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
           sx={{ '& .MuiDataGrid-cell': { minHeight: 52, py: 0.5, display: 'flex', alignItems: 'center' } }}
         />
       )}
+
+      {/* The carry-over fix dialog: a required reason, then C -> 0 and V += C (#407). */}
+      <Dialog open={fixId !== null} onClose={() => !fixBusy && setFixId(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Move {fixName || 'this person'}'s carry-over onto vacation</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            This sets carry-over to zero and folds the shortfall into vacation. The reason is recorded
+            in their change history, like any other balance edit.
+          </Typography>
+          {fixError && <Alert severity="error" sx={{ mb: 2 }}>{fixError}</Alert>}
+          <TextField
+            label="Reason" value={fixReason} onChange={(e) => setFixReason(e.target.value)}
+            fullWidth multiline minRows={2} autoFocus disabled={fixBusy}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFixId(null)} disabled={fixBusy}>Cancel</Button>
+          <Button variant="contained" onClick={submitFix} disabled={fixBusy || !fixReason.trim()}>
+            {fixBusy ? <CircularProgress size={20} /> : 'Move onto vacation'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <SettleRequestsDialog
         personName={settling?.name || ''}

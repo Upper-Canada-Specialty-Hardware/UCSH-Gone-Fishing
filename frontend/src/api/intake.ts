@@ -496,6 +496,18 @@ export interface RequestPreview {
   next_year: boolean;
   /** Set when approving would take the person's floor below zero (#300); never a block. */
   below_zero: BelowZero | null;
+  /** The vacation booking limit for salaried vacation/part days; null otherwise (#407). */
+  booking_limit: BookingLimit | null;
+}
+
+/** How far ahead a salaried person may book vacation, and whether these dates exceed it (#407). */
+export interface BookingLimit {
+  /** The last bookable day, as an ISO date (YYYY-MM-DD). */
+  date: string;
+  /** True when the request's last day runs past that limit, so it would be refused. */
+  refused: boolean;
+  /** The sentence to show when refused, e.g. "You can book vacation until March 31, 2027."; empty otherwise. */
+  message: string;
 }
 
 /**

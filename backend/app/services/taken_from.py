@@ -29,8 +29,9 @@ from app.services.employment import (
     leave_costs_balance,
     overtime_costs_balance,
 )
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
-    is_next_year_request,
+    carryover_available_for,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -179,7 +180,7 @@ def _simulate(item_fields: dict, request_type: str, employee_fields: dict) -> di
     if request_type == "leave":
         leave_type = item_fields.get("LeaveType", "")
         days = _num(item_fields.get("Days"))
-        return simulate_leave_impact(employee_fields, leave_type, days, _is_next_year(item_fields))
+        return simulate_leave_impact(employee_fields, leave_type, days, _carryover_available(item_fields))
     if request_type == "overtime":
         return simulate_overtime_impact(employee_fields, _num(item_fields.get("Hours")))
     # carry-over / payout
@@ -188,21 +189,21 @@ def _simulate(item_fields: dict, request_type: str, employee_fields: dict) -> di
     )
 
 
-def _is_next_year(item_fields: dict) -> bool:
-    """Whether a leave request's dates fall in next year (changes the cascade).
+def _carryover_available(item_fields: dict) -> bool:
+    """Whether carry-over may pay this pending leave, from its last day (#407).
+
+    Carry-over pays none of a request whose last day is past the carry-over
+    expiry; the cascade then skips it. Replaces the old next-year test.
 
     Args:
         item_fields: The request's SharePoint field values.
 
     Returns:
-        True when the start or end date is next year; False otherwise or when the
+        True when the last day is on or before the carry-over expiry, or when the
         dates are missing.
     """
-    start = _parse_day(item_fields.get("StartDate"))
-    end = _parse_day(item_fields.get("EndDate"))
-    if start and end:
-        return is_next_year_request(start, end)
-    return False
+    end = _parse_day(item_fields.get("EndDate")) or _parse_day(item_fields.get("StartDate"))
+    return carryover_available_for(end, toronto_today())
 
 
 def _projected_deltas(

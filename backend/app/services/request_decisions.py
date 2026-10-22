@@ -33,10 +33,11 @@ from app.models.balance_ledger import BalanceLedger
 from app.models.request_record import RequestRecord
 from app.repositories.request_store import requests_in_postgres
 from app.repositories.staff_balances import POT_COLUMNS, get_staff_balances, staff_in_postgres
+from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
+    booking_refusal,
+    carryover_available_for,
     cascade_current_year_pure,
-    cascade_next_year_pure,
-    is_next_year_request,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -241,7 +242,7 @@ def _plan_balance(request: RequestRecord, before_pots: dict[str, float]) -> tupl
             return "no_balance_used", {}, f"{leave_type} does not use a balance."
         if not leave_costs_balance(sp, leave_type):                # hourly vacation: counted, not spent
             return "counted", {}, ""
-        after = simulate_leave_impact(sp, leave_type, days, is_next_year=_is_next_year(request))
+        after = simulate_leave_impact(sp, leave_type, days, carryover_available=_carryover_available(request))
         if after is None:                                          # defensive: a no-impact type slipped through
             return "no_balance_used", {}, f"{leave_type} does not use a balance."
         return "balance_applied", _moved_pots(before_pots, after), ""
@@ -258,20 +259,45 @@ def _plan_balance(request: RequestRecord, before_pots: dict[str, float]) -> tupl
     return "balance_applied", _moved_pots(before_pots, after), ""
 
 
-def _is_next_year(request: RequestRecord) -> bool:
-    """Whether a leave falls in next year (its cascade differs).
+def _carryover_available(request: RequestRecord) -> bool:
+    """Whether carry-over may pay this request, from its last day (#407).
+
+    Carry-over pays none of a request whose last day is after the carry-over
+    expiry; the cascade then skips carry-over and the shortfall lands on
+    Vacation instead. Replaces the old next-year test, which picked a different
+    cascade and let carry-over go negative.
 
     Args:
         request: The leave request.
 
     Returns:
-        True when the start or end date is next year.
+        True when the request's last day is on or before the carry-over expiry,
+        or when it has no dates.
     """
-    start = request.start_date
-    end = request.end_date or start
-    if start is None:
-        return False
-    return is_next_year_request(start, end)
+    last_day = request.end_date or request.start_date      # the latest day decides
+    return carryover_available_for(last_day, toronto_today())
+
+
+def _booking_refusal(request: RequestRecord, before_pots: dict[str, float]) -> str | None:
+    """The booking-limit refusal for a salaried Vacation/part-day approval (#407).
+
+    Computed from the pots read under the balance lock, so the dates are checked
+    against the same balances the deduction would use. Returns None for every
+    other kind, leave type, or hourly person, and when the dates are within the
+    limit.
+
+    Args:
+        request: The request being approved.
+        before_pots: The employee's pots before the decision.
+
+    Returns:
+        The refusal sentence, or None when the request is allowed.
+    """
+    if request.kind != "leave":                            # only leave is booked against the limit
+        return None
+    sp = _sp_fields(before_pots, request)                  # balances the refusal reads V and C from
+    last_day = request.end_date or request.start_date      # the day the limit is checked against
+    return booking_refusal(sp, request.leave_type or "", last_day, toronto_today())
 
 
 async def _vacation_taken_for_year(session, employee_id: str, year: int) -> float:
@@ -755,6 +781,15 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
                 await _refuse(session, request, channel, actor, version, "conflict", clash)
                 await session.commit()
                 return {"error": clash, "refused": "conflict"}
+            # Booking-limit refusal (#407): a salaried Vacation/part-day whose last
+            # day is past what the person may book is refused against the balances
+            # at this moment. Nothing is written; the request stays Pending and the
+            # approver sees the message, exactly like the clash refusal above.
+            booking = _booking_refusal(request, before_pots)
+            if booking:
+                await _refuse(session, request, channel, actor, version, "booking_limit", booking)
+                await session.commit()
+                return {"error": booking, "refused": "booking_limit"}
             outcome, moved, note = _plan_balance(request, before_pots)
             if outcome == "refused_negative":                      # carry-over/payout past zero: refuse, write nothing
                 await _refuse(session, request, channel, actor, version, "negative", CARRYOVER_NEGATIVE_MESSAGE)
@@ -933,6 +968,11 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                 return {"error": "Employee not found"}
             rows: list[dict] = []
             pot_writes: dict[str, float] = {}
+            # Carry-over the approval spent below zero does not go back to carry-over
+            # when the shortfall is already clear; it is restored to vacation instead
+            # (see the split below). Captured here, applied once after the loop.
+            carryover_to_vacation = 0.0
+            carryover_before = await _approval_carryover_before(session, request)  # carry-over before the approval
             refund_reason = (
                 f"refund of {kind} #{request.item_id} (amount reconstructed, approved before the ledger)"
                 if reconstructed else
@@ -948,11 +988,40 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                                  "value": f"{before_count:g} -> {before_count - net:g} days"})
                     continue
                 before = before_pots.get(pot, 0.0)
+                if pot == "carry_over" and net < 0:                # the approval spent carry-over: split the refund
+                    # A spend that drove carry-over below zero (the old next-year path)
+                    # must not come back as carry-over the setup fix already moved on
+                    # to vacation. Give back the real carry-over spent, then the part
+                    # that went below zero only up to today's shortfall; the rest to
+                    # vacation (#407 review).
+                    spent = -net                                   # days the approval took from carry-over
+                    real = min(spent, max(carryover_before, 0.0))  # part that was actual positive carry-over
+                    borrowed = spent - real                        # part that drove carry-over below zero
+                    to_carryover = min(borrowed, max(-before, 0.0))  # cover only the shortfall carry-over has now
+                    give_c = real + to_carryover                   # total returned to carry-over
+                    carryover_to_vacation = borrowed - to_carryover  # the remainder is restored to vacation
+                    after = before + give_c
+                    reason = (f"{refund_reason} (carry-over split: {give_c:g} to carry-over, "
+                              f"{carryover_to_vacation:g} to vacation)")
+                    pot_writes[pot] = after
+                    await post_ledger(session, request, request.employee_id, pot,
+                                      before, after, reason, actor, channel, key)
+                    rows.append({"label": POT_LABEL[pot], "value": f"{before:g} -> {after:g} days"})
+                    continue
                 after = before - net                               # undo the approval's signed change
                 pot_writes[pot] = after
                 await post_ledger(session, request, request.employee_id, pot,
                                   before, after, refund_reason, actor, channel, key)
                 rows.append({"label": POT_LABEL[pot], "value": f"{before:g} -> {after:g} days"})
+            if carryover_to_vacation:                              # carry-over that went below zero lands on vacation
+                v_before = pot_writes.get("vacation", before_pots.get("vacation", 0.0))
+                v_after = v_before + carryover_to_vacation
+                key = step_key(kind, request.item_id, "refund:carryover-to-vacation", version)
+                await post_ledger(session, request, request.employee_id, "vacation", v_before, v_after,
+                                  f"{refund_reason} (carry-over that went below zero, restored to vacation)",
+                                  actor, channel, key)
+                pot_writes["vacation"] = v_after                   # fold the restore into the single write
+                rows.append({"label": POT_LABEL["vacation"], "value": f"{v_before:g} -> {v_after:g} days"})
             # Reversing the ledger can leave a pot negative: refunding banked
             # overtime after it was spent takes Make-Up below zero. Cascade the
             # result the way the SharePoint refund does, and write and ledger the
@@ -1016,18 +1085,44 @@ async def _approval_net_by_pot(session, request: RequestRecord) -> dict[str, flo
     return net
 
 
+async def _approval_carryover_before(session, request: RequestRecord) -> float:
+    """The carry-over value just before this request's approval first touched it.
+
+    The refund's carry-over split needs to know how much real (positive)
+    carry-over the approval actually spent versus how much it drove below zero.
+    That is the ``before`` of the earliest carry-over ledger row this request
+    wrote, so the earliest row's before value is read here (#407 review).
+
+    Args:
+        session: An open session.
+        request: The request being refunded.
+
+    Returns:
+        The carry-over the approval started from, or 0.0 when it wrote no
+        carry-over row (a legacy/reconstructed refund never spends carry-over).
+    """
+    before = (await session.execute(
+        select(BalanceLedger.before)
+        .where(BalanceLedger.request_id == request.id, BalanceLedger.pot == "carry_over")
+        .order_by(BalanceLedger.id)                                # earliest first: the pre-approval value
+        .limit(1)
+    )).scalar_one_or_none()
+    return float(before) if before is not None else 0.0
+
+
 def _refund_cascade(request: RequestRecord, pots: dict[str, float]) -> dict[str, float]:
     """The cascaded values of the current-year pots after a refund's raw reversal.
 
     The SharePoint refund cascades the balances after putting the amount back, so
     a reversal that drives Make-Up (or Sick/Carry Over) below zero overflows down
     Sick -> Make-Up -> Carry Over -> Vacation instead of leaving a pot negative
-    (finding 6). A next-year leave uses the next-year cascade (Make-Up -> Carry
-    Over only), matching how its approval was applied. Pure: it only reads the
-    reversed pots and returns the cascaded ones.
+    (finding 6). There is one cascade for every date now (#407); when the leave
+    ran past the carry-over expiry the carry-over step is skipped, matching how
+    its approval was applied. Pure: it only reads the reversed pots and returns
+    the cascaded ones.
 
     Args:
-        request: The request being refunded (its kind and dates pick the cascade).
+        request: The request being refunded (its dates pick carry-over's role).
         pots: The pots right after the raw reversal (``{pot: value}``).
 
     Returns:
@@ -1038,10 +1133,10 @@ def _refund_cascade(request: RequestRecord, pots: dict[str, float]) -> dict[str,
     make_up = pots.get("make_up", 0.0)
     carry_over = pots.get("carry_over", 0.0)
     vacation = pots.get("vacation", 0.0)
-    if request.kind == "leave" and _is_next_year(request):         # next year never touches Vacation
-        result = cascade_next_year_pure(make_up, carry_over)
-    else:
-        result = cascade_current_year_pure(sick, make_up, carry_over, vacation)
+    # Leave past the carry-over expiry skipped carry-over on approval; every other
+    # kind/date uses the normal chain. Non-leave always keeps carry-over available.
+    carryover_available = _carryover_available(request) if request.kind == "leave" else True
+    result = cascade_current_year_pure(sick, make_up, carry_over, vacation, carryover_available)
     out: dict[str, float] = {}
     for sp_field, value in result.items():                         # map SharePoint columns back to pot names
         pot = SP_FIELD_TO_POT.get(sp_field)

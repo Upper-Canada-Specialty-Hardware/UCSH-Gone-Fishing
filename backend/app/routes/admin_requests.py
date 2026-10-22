@@ -67,6 +67,9 @@ from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_ADMIN
 from app.services.requests_export import build_requests_workbook, requests_export_filename
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
+from app.services import staff_changes  # records HR balance edits in the change history (#407)
+from app.services.balance import recalculate_request_allow_date  # recompute the booking limit after the fix (#407)
+from app.services.concurrency import lock_manager  # serialise one person's balance writes (#407)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -309,6 +312,98 @@ async def admin_preview_request(body: PreviewBody):
         "current": _format_balances(fields),
         "projected": _format_balances({**fields, **projected}) if projected else None,
     }
+
+
+class FixNegativeCarryoverBody(BaseModel):
+    """What the carry-over fix dialog posts: the required reason for the change."""
+
+    reason: str                       # recorded on the staff change history; never blank
+
+
+@router.post("/admin/staff/{employee_id}/fix-negative-carryover")
+async def admin_fix_negative_carryover(employee_id: str, body: FixNegativeCarryoverBody):
+    """Move a person's negative carry-over onto vacation (C -> 0, V += C) (#407).
+
+    Carry-over should never be negative; a stored negative is old data. This
+    clears it to zero and folds the shortfall into vacation (which may itself go
+    negative, as it is the balance backstop), records the move in the staff
+    change history with the required reason, like any other HR balance edit, and
+    recomputes the person's booking limit. The write goes through the staff
+    store, so it lands in SharePoint or Postgres per the storage setting.
+
+    Args:
+        employee_id: Staff Directory id of the person to correct.
+        body: The required reason for the change.
+
+    Returns:
+        {"status": "fixed", "employee_id", "name", "before", "after",
+        "history_recorded"}, each side carrying the vacation and carry-over
+        values, plus a "notice" string when a later step (history or the
+        booking-limit recompute) failed after the balance was already saved.
+
+    Raises:
+        HTTPException: 503 while processing is off; 400 for a blank reason or when
+            carry-over is not negative; 404 when the employee is unknown.
+    """
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    reason = (body.reason or "").strip()                       # a blank reason can never record history
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required.")
+
+    async with lock_manager.lock(str(employee_id)):           # one person's balance writes, serialised
+        employee = await get_employee_by_id(employee_id)       # read the current balances under the lock
+        if not employee:
+            raise HTTPException(status_code=404, detail="That employee is not in the Staff Directory.")
+        fields = employee["fields"]
+        name = fields.get("Title", "")
+        carry_over = float(fields.get("CarryOver", 0) or 0)    # the negative to move
+        vacation = float(fields.get("CurrentVacationBalance", 0) or 0)
+        if carry_over >= 0:                                    # nothing to fix: do not write or log
+            raise HTTPException(status_code=400, detail="Carry-over is not negative, so there is nothing to fix.")
+
+        new_vacation = vacation + carry_over                   # C is negative, so this lowers vacation
+        # Include Title so the SharePoint patch does not clear it (store convention).
+        await staff_store.update_list_item_fields(
+            settings.SP_LIST_STAFF_DIRECTORY, employee_id,
+            {"CurrentVacationBalance": new_vacation, "CarryOver": 0.0, "Title": name},
+        )
+        # The balance is saved now; the history and the booking-limit recompute are
+        # best-effort, exactly as the HR entitlements edit treats them. A failure
+        # in either must not 500 the request or undo the save: it is logged and
+        # reported back in the result so the caller knows what degraded (#407 review).
+        history_recorded = True                                # assume success until it throws
+        notice = None                                          # extra message only on a failure
+        try:
+            # One history row per field moved, with the reason (same as HR balance edits).
+            await staff_changes.record_changes(
+                str(employee_id), name,
+                [("CurrentVacationBalance", vacation, new_vacation), ("CarryOver", carry_over, 0.0)],
+                reason,
+            )
+        except Exception:                                      # history must not undo the save
+            logger.exception("Failed to record carry-over fix history for %s", employee_id)
+            history_recorded = False                           # tell the caller it is missing
+            notice = "The change was saved, but its history could not be recorded."
+        try:
+            # Vacation and carry-over both moved, so recompute the booking limit.
+            await recalculate_request_allow_date(employee_id, new_vacation, 0.0)
+        except Exception:                                      # a stale derived date is not fatal
+            logger.exception("Failed to recalculate request-allow date for %s", employee_id)
+            extra = "The can-book-vacation date may be out of date."
+            notice = f"{notice} {extra}" if notice else extra
+
+    result = {
+        "status": "fixed",
+        "employee_id": str(employee_id),
+        "name": name,
+        "before": {"vacation": vacation, "carryover": carry_over},
+        "after": {"vacation": new_vacation, "carryover": 0.0},
+        "history_recorded": history_recorded,
+    }
+    if notice:                                                 # only present when something degraded
+        result["notice"] = notice
+    return result
 
 
 @router.post("/admin/requests/{request_type}/{request_id}/delete")

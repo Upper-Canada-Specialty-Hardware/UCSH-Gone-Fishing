@@ -3,12 +3,13 @@ import {
   Box, Autocomplete, TextField, Button, CircularProgress, Alert,
   Typography, Paper, Divider, Collapse, Stack, Chip,
   Table, TableHead, TableBody, TableRow, TableCell,
+  Dialog, DialogTitle, DialogContent, DialogActions,
 } from '@mui/material';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import { validateEmployee } from '../api/client';
+import { validateEmployee, fixNegativeCarryover } from '../api/client';
 import EmployeeSetupList, { EmployeeSetupSummary } from './EmployeeSetupList';
 import { PROBLEM_INFO } from './employeeSetupProblems';
 import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
@@ -224,6 +225,41 @@ export default function EmployeeValidation({
     run(employeeId);
   };
 
+  // The one-click carry-over fix (#407): a required reason, like any HR balance
+  // edit, then move the shortfall onto vacation and re-run the check.
+  const [fixOpen, setFixOpen] = useState(false);       // the reason dialog is showing
+  const [fixReason, setFixReason] = useState('');      // the typed reason for the move
+  const [fixBusy, setFixBusy] = useState(false);       // the fix request is in flight
+  const [fixError, setFixError] = useState('');        // why the fix was refused, if it was
+
+  /**
+   * Post the carry-over fix for the selected person, then re-check their setup.
+   *
+   * Moves the stored negative carry-over onto vacation with the typed reason; on
+   * success the dialog closes, the report re-runs so the problem clears, and the
+   * whole-directory list above is refreshed. On failure the backend's message is
+   * shown and the dialog stays open.
+   *
+   * @returns A promise that resolves once the request and re-check settle.
+   */
+  const submitFix = async () => {
+    if (!selectedId || !fixReason.trim()) return;      // guarded; the button is also disabled
+    setFixBusy(true);
+    setFixError('');
+    try {
+      await fixNegativeCarryover(selectedId, fixReason.trim());   // C -> 0, V += C, history recorded
+      setFixOpen(false);
+      setFixReason('');
+      await run(selectedId);                           // re-check so the problem clears from the report
+      onRefreshSetup?.();                              // and refresh the whole-directory list above
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;       // the backend's 400/404/503 message
+      setFixError(typeof detail === 'string' ? detail : 'The carry-over could not be corrected. Please try again.');
+    } finally {
+      setFixBusy(false);
+    }
+  };
+
   // The picker is controlled so a record chosen from the list above shows up in
   // it as the employee being reported on.
   const selectedEmployee = useMemo(
@@ -367,6 +403,15 @@ export default function EmployeeValidation({
                           <Typography variant="body2" sx={{ mt: 0.5 }}>
                             <Box component="span" sx={{ fontWeight: 600 }}>Fix:</Box> {info.fix}
                           </Typography>
+                          {/* Carry-over below zero is the one problem with a one-click correction (#407). */}
+                          {c.code === 'carry_over_negative' && (
+                            <Button
+                              size="small" variant="outlined" sx={{ mt: 1 }}
+                              onClick={() => { setFixError(''); setFixReason(''); setFixOpen(true); }}
+                            >
+                              Move carry-over onto vacation
+                            </Button>
+                          )}
                           {/* The same Settle requests the list offers (#400). */}
                           {c.code === 'approved_balance_unmoved' && (report.unmoved_requests || []).length > 0 && (
                             <Button size="small" variant="contained" sx={{ mt: 1 }} onClick={() => setSettleOpen(true)}>
@@ -380,6 +425,28 @@ export default function EmployeeValidation({
                 </Stack>
               </Paper>
             )}
+
+            {/* The carry-over fix dialog: a required reason, then the move is written (#407). */}
+            <Dialog open={fixOpen} onClose={() => !fixBusy && setFixOpen(false)} fullWidth maxWidth="xs">
+              <DialogTitle>Move carry-over onto vacation</DialogTitle>
+              <DialogContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  This sets carry-over to zero and folds the shortfall into vacation. The reason is
+                  recorded in this person's change history, like any other balance edit.
+                </Typography>
+                {fixError && <Alert severity="error" sx={{ mb: 2 }}>{fixError}</Alert>}
+                <TextField
+                  label="Reason" value={fixReason} onChange={(e) => setFixReason(e.target.value)}
+                  fullWidth multiline minRows={2} autoFocus disabled={fixBusy}
+                />
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={() => setFixOpen(false)} disabled={fixBusy}>Cancel</Button>
+                <Button variant="contained" onClick={submitFix} disabled={fixBusy || !fixReason.trim()}>
+                  {fixBusy ? <CircularProgress size={20} /> : 'Move onto vacation'}
+                </Button>
+              </DialogActions>
+            </Dialog>
 
             <Divider sx={{ mb: 0.5 }} />
 

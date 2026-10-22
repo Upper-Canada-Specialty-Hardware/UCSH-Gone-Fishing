@@ -359,7 +359,7 @@ def test_work_from_home_has_no_simulated_impact():
     from app.services.employment import leave_costs_balance
 
     fields = {"SalaryHourly": "Salary", "CarryOver": -10, "CurrentVacationBalance": 6}
-    assert simulate_leave_impact(fields, "Work from Home", 1, is_next_year=False) is None
+    assert simulate_leave_impact(fields, "Work from Home", 1, carryover_available=True) is None
     assert leave_costs_balance(fields, "Work from Home") is False   # the SharePoint approval returns early
 
 
@@ -685,6 +685,117 @@ def test_refunding_spent_overtime_cascades_so_no_pot_sits_negative(monkeypatch):
     _fresh, ledger, _events, _outbox = run(_inspect(overtime))
     cascade_rows = [row for row in ledger if "cascade" in (row.reason or "")]
     assert any(row.pot == "vacation" and row.after == -1.0 for row in cascade_rows)
+
+
+# ----- the vacation booking limit is enforced at approval (#407) -----
+
+
+def test_approving_a_vacation_past_the_booking_limit_is_refused_and_stays_pending(monkeypatch):
+    # A salaried person with vacation left may book until Mar 31 next year; a June
+    # next-year vacation is past that, so approval is refused and nothing is
+    # written. The request stays Pending for the manager to decide.
+    fake = _use(monkeypatch, _all_pots(vacation=10))              # V>0, C==0 -> limit Mar 31 next year
+    next_june = date(date.today().year + 1, 6, 1)
+    record = _leave(leave_type="Vacation", days=1, start_date=next_june, end_date=next_june)
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["refused"] == "booking_limit"
+    assert "book vacation until" in result["error"]
+    fresh, ledger, _events, _outbox = run(_inspect(record))
+    assert fresh.status == "pending"                             # untouched: the manager still decides
+    assert fake.write_calls == [] and ledger == []               # no balance moved
+
+
+def test_refund_of_an_old_next_year_vacation_restores_make_up(monkeypatch):
+    # A vacation approved under the old next-year path has no ledger rows; its
+    # refund reconstructs that the day came off Make-Up and gives it back, then
+    # the normal cascade runs. Make-Up returns to where it started.
+    fake = _use(monkeypatch, _all_pots(make_up=0, vacation=10))
+    next_june = date(date.today().year + 1, 6, 1)
+    record = _leave(leave_type="Vacation", days=1, status="approved",
+                    balance_state="legacy_unknown", start_date=next_june, end_date=next_june)
+
+    result = run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert result["status"] == "refunded"
+    assert fake._pots["make_up"] == 1.0                          # the vacation day returned to Make-Up
+    assert fake._pots["carry_over"] == 0.0                       # carry-over never left zero
+
+
+# ----- refunding a carry-over spend that went below zero splits the restore (#407) -----
+
+
+async def _add_approval_ledger(record, pot, before, after):
+    """Insert one approval ledger row for a request, for the refund-split tests.
+
+    The new cascade never drives carry-over below zero, so a row like carry-over
+    0 -> -5 can only come from an old next-year approval. These tests write that
+    historical row directly rather than reproducing the retired cascade.
+
+    Args:
+        record: The approved request the row belongs to.
+        pot: Which pot moved.
+        before: The pot value before the approval.
+        after: The pot value after the approval.
+    """
+    async with async_session() as session:
+        session.add(BalanceLedger(
+            request_id=record.id, employee_id=record.employee_id, pot=pot,
+            change=after - before, before=before, after=after,
+            reason=f"approved {record.kind} #{record.item_id}", actor="Boss",
+            channel="manager_dashboard", idempotency_key=f"appr:{record.id}:{pot}",
+        ))
+        await session.commit()
+
+
+def test_refund_of_a_fixed_negative_carry_over_restores_vacation_not_carry_over(monkeypatch):
+    # Dexter: an old approval drove carry-over 0 -> -5 (its ledger row), then the
+    # setup fix moved that -5 onto vacation (now C 0, V 9). Refunding must give the
+    # 5 back to VACATION, not recreate carry-over the fix already cleared.
+    emp = str(next(_employee_ids))
+    fake = _use(monkeypatch, _all_pots(carry_over=0.0, vacation=9.0))
+    record = _leave(leave_type="Sick or Personal Day", days=1, status="approved",
+                    balance_state="applied", employee_id=emp)
+    run(_add_approval_ledger(record, "carry_over", 0.0, -5.0))
+
+    result = run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert result["status"] == "refunded"
+    assert fake._pots["carry_over"] == 0.0                       # not recreated
+    assert fake._pots["vacation"] == 14.0                        # the 5 went back to vacation
+
+
+def test_refund_of_an_unfixed_negative_carry_over_clears_the_shortfall(monkeypatch):
+    # The same old approval (carry-over 0 -> -5), but the setup fix was never
+    # applied, so carry-over still sits at -5. Refunding brings it back to 0;
+    # vacation is left where it is (the borrowed 5 just clears the shortfall).
+    emp = str(next(_employee_ids))
+    fake = _use(monkeypatch, _all_pots(carry_over=-5.0, vacation=14.0))
+    record = _leave(leave_type="Sick or Personal Day", days=1, status="approved",
+                    balance_state="applied", employee_id=emp)
+    run(_add_approval_ledger(record, "carry_over", 0.0, -5.0))
+
+    run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert fake._pots["carry_over"] == 0.0                       # shortfall cleared
+    assert fake._pots["vacation"] == 14.0                        # vacation untouched
+
+
+def test_refund_of_a_real_carry_over_spend_restores_carry_over(monkeypatch):
+    # A post-#407 request that spent real carry-over (3 -> 0): the whole 3 goes
+    # straight back to carry-over, since none of it went below zero, and vacation
+    # is untouched.
+    emp = str(next(_employee_ids))
+    fake = _use(monkeypatch, _all_pots(carry_over=0.0, vacation=10.0))
+    record = _leave(leave_type="Sick or Personal Day", days=1, status="approved",
+                    balance_state="applied", employee_id=emp)
+    run(_add_approval_ledger(record, "carry_over", 3.0, 0.0))
+
+    run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
+
+    assert fake._pots["carry_over"] == 3.0                       # real carry-over put back
+    assert fake._pots["vacation"] == 10.0                        # vacation untouched
 
 
 # ----- an unmatched employee is refused cleanly, not a 500 (finding 9) -----

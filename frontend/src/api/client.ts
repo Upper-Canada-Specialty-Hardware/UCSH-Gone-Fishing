@@ -150,6 +150,11 @@ export const validateEmployee = (id: string) =>
 // stall a request is listed before anyone is blocked by it.
 export const getAdminEmployeeSetup = () => api.get('/admin/employee-setup');
 
+// Admin: move a person's negative carry-over onto vacation (C -> 0, V += C),
+// recording the required reason in the staff change history (#407).
+export const fixNegativeCarryover = (id: string, reason: string) =>
+  api.post(`/admin/staff/${id}/fix-negative-carryover`, { reason });
+
 // Manager — create a new employee (Staff Directory record) for their team
 export const createEmployee = (payload: Record<string, unknown>) =>
   api.post('/team/employees', payload);
