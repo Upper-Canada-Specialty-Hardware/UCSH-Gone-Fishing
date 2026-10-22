@@ -9,15 +9,15 @@
 export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
   employee_record: {
     title: 'Employee record not found',
-    fix: 'Confirm this person has a row in the Staff Directory.',
+    fix: 'Confirm this person has a staff record.',
   },
   identity_roundtrip: {
-    title: 'Not linked to Microsoft 365',
-    fix: 'Make sure the email on the Staff Directory record matches their Microsoft 365 account, so the system can tell who submitted a request.',
+    title: 'Email not linked to their record',
+    fix: 'Make sure the email on their staff record is the one they sign in with, so the system can tell who submitted a request.',
   },
   supervisor_set: {
     title: 'No supervisor assigned',
-    fix: 'Set their supervisor in the Staff Directory so their requests have someone to approve them.',
+    fix: 'Set their supervisor in their profile so their requests have someone to approve them.',
   },
   supervisor_resolves: {
     title: 'A supervisor does not match a real employee',
@@ -37,7 +37,7 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
   },
   balances_numeric: {
     title: 'A balance value is not a number',
-    fix: 'Correct the balance value on their Staff Directory record.',
+    fix: 'Correct the balance value in their profile.',
   },
   identity_name_spacing: {
     title: 'Stray spaces in the name or email',
@@ -48,12 +48,12 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     fix: 'Two staff records share this name. Requests are matched back to a person by name, so one of the records needs a distinguishing name before their requests can be routed reliably.',
   },
   manager_m365_match: {
-    title: 'A supervisor’s email does not match a Microsoft 365 account',
-    fix: 'Correct the supervisor’s email so it matches their Microsoft 365 account. Until it does, their requests cannot record a manager - nobody is asked to approve, and the request stays hidden from the dashboards.',
+    title: 'A supervisor’s email is not recognised',
+    fix: 'Correct the supervisor’s email in their profile. Until it does, their requests cannot record a manager - nobody is asked to approve, and the request stays hidden from the dashboards.',
   },
   supervisor_not_self: {
     title: 'They are listed as their own supervisor',
-    fix: 'Change their supervisor in the Staff Directory, otherwise their requests are sent to them to approve.',
+    fix: 'Change their supervisor in their profile, otherwise their requests are sent to them to approve.',
   },
   holidays_current_year: {
     title: 'No holidays for the current year',
@@ -65,7 +65,7 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
   },
   entitlements_set: {
     title: 'A yearly entitlement is missing',
-    fix: 'Set their yearly vacation and sick entitlements in the Staff Directory so their annual grant can be worked out.',
+    fix: 'Set their yearly vacation and sick entitlements in their profile so their annual grant can be worked out.',
   },
   employment_type_fits: {
     title: 'Employment type looks wrong',

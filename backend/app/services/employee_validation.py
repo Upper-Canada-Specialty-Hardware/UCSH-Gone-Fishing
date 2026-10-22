@@ -333,7 +333,7 @@ def build_validation_report(
     checks.append(_check(
         "identity_roundtrip", "identity", identity["status"], identity["detail"],
         measure={
-            "label": "Microsoft 365 accounts matching their email",
+            "label": "Accounts matching their email",
             "actual": identity.get("account_count", 0),
             "expected": 1,
             "comparison": "equals",
@@ -348,7 +348,7 @@ def build_validation_report(
             "identity_unique_name", "identity",
             label="Other staff sharing this display name",
             detail=(
-                "The Staff Directory could not be re-read, so it is unknown "
+                "The staff list could not be re-read, so it is unknown "
                 "whether anyone else shares this name."
             ),
         ))
@@ -357,7 +357,7 @@ def build_validation_report(
             "identity_unique_name", "identity",
             label="Other staff sharing this display name",
             actual=same_name_others, expected=0, comparison="equals",
-            ok_detail="Their name is unique in the Staff Directory.",
+            ok_detail="Their name is unique among staff.",
             bad_detail=(
                 f"{same_name_others} other staff record(s) are also named "
                 f"'{employee_name}'. Requests are matched back to a person by name, "
@@ -396,7 +396,7 @@ def build_validation_report(
         actual=all_managers_count, expected=1, comparison="at_least",
         ok_detail=f"{all_managers_count} supervisor(s) listed.",
         bad_detail=(
-            "No supervisor is set on the Staff Directory record, so a request "
+            "No supervisor is set on their staff record, so a request "
             "would have no one to approve it."
         ),
     ))
@@ -447,9 +447,9 @@ def build_validation_report(
             # accuse a correctly configured record of being broken.
             checks.append(_unmeasured(
                 "manager_m365_match", "supervisor",
-                label="Supervisor emails matching a Microsoft 365 account",
+                label="Supervisor emails the app recognises",
                 detail=(
-                    "The Microsoft 365 directory could not be read, so it is "
+                    "The account list could not be read, so it is "
                     "unknown whether the supervisor emails resolve. Run the "
                     "check again."
                 ),
@@ -457,12 +457,12 @@ def build_validation_report(
         else:
             checks.append(_measured(
                 "manager_m365_match", "supervisor",
-                label="Supervisor emails matching a Microsoft 365 account",
+                label="Supervisor emails the app recognises",
                 actual=manager_m365_matches, expected=len(managers), comparison="equals",
-                ok_detail="Every supervisor's email matches a Microsoft 365 account.",
+                ok_detail="Every supervisor's email is recognised.",
                 bad_detail=(
                     f"Only {manager_m365_matches} of {len(managers)} supervisor "
-                    "email(s) match a Microsoft 365 account. Their requests cannot "
+                    "email(s) are recognised. Their requests cannot "
                     "record a manager, so nobody is notified and the request stays "
                     "hidden from the dashboards."
                 ),
@@ -1153,8 +1153,8 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
     # wrong is which Staff Directory record it lands on.
     if not resolved:
         return {"status": "fail", "account_count": 1, "lookup_id": lookup_id, "detail": (
-            "Their Microsoft 365 account did not match any Staff Directory record "
-            "(their display name likely differs from their name in the directory)."
+            "Their account did not match any staff record "
+            "(their name likely differs from the one on their account)."
         )}
     if str(resolved.get("id")) != str(employee_id):
         other = resolved.get("fields", {}).get("Title", "")
@@ -1171,7 +1171,7 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
             f"({other}, #{resolved.get('id')}), not this record."
         )}
     return {"status": "pass", "account_count": 1, "lookup_id": lookup_id, "detail": (
-        "Their email matches their Microsoft 365 account and their Staff Directory "
+        "Their email matches their staff "
         f"record ({resolved.get('fields', {}).get('Title', '')})."
     )}
 
@@ -1610,7 +1610,7 @@ async def validate_employee_setup(employee_id: str | int) -> dict:
             "current_balances": {},
             "checks": [_check(
                 "employee_record", "identity", "fail",
-                "No Staff Directory record found for this id.",
+                "No staff record found for this id.",
             )],
         }
 
@@ -1763,7 +1763,7 @@ def _identity_unverified() -> dict:
         {"status", "account_count", "detail", "lookup_id"}.
     """
     return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
-        "The Microsoft 365 directory could not be read, so identity could not be "
+        "The account list could not be read, so identity could not be "
         "verified. Run the check again."
     )}
 

@@ -55,7 +55,7 @@ const URL_TYPE: Record<string, string> = { leave: 'leave', overtime: 'overtime',
  * @param option - The carry-over/payout choice from the preview, when known.
  * @returns A short label.
  */
-function kindLabel(r: UnmovedRequest, option?: string | null): string {
+export function kindLabel(r: UnmovedRequest, option?: string | null): string {
   if (r.leave_type) return r.leave_type;                        // leave: its own type
   if (r.kind === 'overtime') return 'Make-up';                  // overtime banks make-up
   return option === 'payout' ? 'Payout' : 'Carry-over';         // carry-over/payout by its option

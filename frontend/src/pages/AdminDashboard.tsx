@@ -644,14 +644,13 @@ export default function AdminDashboard() {
               {tab === 'assignments' && <ManagerAssignments />}
 
               {tab === 'setup' && (
-                <Paper sx={{ p: 3 }}>
-                  <EmployeeValidation
-                    employees={employees}
-                    setupList={employeeSetup}
-                    setupLoading={setupRefreshing}
-                    onRefreshSetup={refreshEmployeeSetup}
-                  />
-                </Paper>
+                // No outer card: the check and the list are their own cards on the page.
+                <EmployeeValidation
+                  employees={employees}
+                  setupList={employeeSetup}
+                  setupLoading={setupRefreshing}
+                  onRefreshSetup={refreshEmployeeSetup}
+                />
               )}
 
               {tab === 'add' && (
