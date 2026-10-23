@@ -1,4 +1,4 @@
-import api from './client';
+import api, { SetupScope } from './client';
 import { adminSessionToken } from './adminSession';
 import { BelowZero } from '../utils/employment';
 
@@ -133,10 +133,11 @@ export type SettleOutcome = 'now' | 'hand' | 'none';
  *
  * @param requestType - 'leave', 'overtime' or 'carryover-payout'.
  * @param requestId - The item id.
+ * @param scope - 'admin', or 'team' for a manager settling a teammate's request (#463).
  * @returns The preview.
  */
-export const getSettlePreview = (requestType: string, requestId: string | number) =>
-  api.get<SettlePreview>(`/admin/requests/${requestType}/${requestId}/settle`);
+export const getSettlePreview = (requestType: string, requestId: string | number, scope: SetupScope = 'admin') =>
+  api.get<SettlePreview>(`/${scope}/requests/${requestType}/${requestId}/settle`);
 
 /**
  * Settle one approved request that never moved a balance, with a reason.
@@ -144,14 +145,16 @@ export const getSettlePreview = (requestType: string, requestId: string | number
  * @param requestType - 'leave', 'overtime' or 'carryover-payout'.
  * @param requestId - The item id.
  * @param body - outcome, the required reason, and for a by-hand leave the days taken per pot.
+ * @param scope - 'admin', or 'team' for a manager settling a teammate's request (#463).
  * @returns The axios response ({status, outcome, balance_state, moves}).
  */
 export const settleRequest = (
   requestType: string,
   requestId: string | number,
   body: { outcome: SettleOutcome; reason: string; pieces?: Record<string, number> },
+  scope: SetupScope = 'admin',
 ) => api.post<{ status: string; outcome: SettleOutcome; balance_state: string; moves: SettleMove[] }>(
-  `/admin/requests/${requestType}/${requestId}/settle`, body,
+  `/${scope}/requests/${requestType}/${requestId}/settle`, body,
 );
 
 /**

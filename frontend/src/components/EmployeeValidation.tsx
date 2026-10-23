@@ -9,7 +9,7 @@ import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import { validateEmployee } from '../api/client';
+import { SetupScope, validateEmployee } from '../api/client';
 import EmployeeSetupList, { EmployeeSetupSummary } from './EmployeeSetupList';
 import { PROBLEM_INFO } from './employeeSetupProblems';
 import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
@@ -184,10 +184,14 @@ interface Props {
   setupList: EmployeeSetupSummary | null;
   setupLoading: boolean;
   onRefreshSetup: () => Promise<void>;
+  /** 'admin' (default), or 'team' on the manager dashboard: only the manager's team is reached (#463). */
+  scope?: SetupScope;
+  /** Open a person's profile from the list; when absent, the admin Staff screen opens it. */
+  onOpenProfile?: (employeeId: string) => void;
 }
 
 export default function EmployeeValidation({
-  employees, setupList, setupLoading, onRefreshSetup,
+  employees, setupList, setupLoading, onRefreshSetup, scope = 'admin', onOpenProfile,
 }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -218,7 +222,7 @@ export default function EmployeeValidation({
     setError('');
     setReport(null);
     try {
-      const res = await validateEmployee(id);
+      const res = await validateEmployee(id, scope);           // the team route refuses anyone not on the team
       setReport(res.data);
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -487,6 +491,8 @@ export default function EmployeeValidation({
         onRefresh={onRefreshSetup}
         onSelect={checkFromList}
         onNotify={setToast}
+        scope={scope}
+        onOpenProfile={onOpenProfile}
       />
 
       <SettleRequestsDialog
@@ -501,6 +507,7 @@ export default function EmployeeValidation({
           run();
           onRefreshSetup();
         }}
+        scope={scope}
       />
 
       {/* The short message after a fix, at the bottom of the screen like the design's toast. */}

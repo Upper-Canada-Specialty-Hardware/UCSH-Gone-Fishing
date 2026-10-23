@@ -40,7 +40,10 @@ import {
   createEmployee,
   checkEmployee,
   logSickDay,
+  getTeamEmployeeSetup,
 } from '../api/client';
+import EmployeeValidation from '../components/EmployeeValidation';
+import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import { greeting } from '../utils/greeting';
 import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
@@ -64,7 +67,9 @@ function takeAddEmployeePrefill(): { title: string; email_address: string; depar
 }
 
 /** The tabs, keyed by url segment (#/team/<key>). "add" is reached by its button. */
-const TABS = ['today', 'calendar', 'team', 'trends', 'history', 'add'] as const;
+const TABS = ['today', 'calendar', 'team', 'trends', 'history', 'setup', 'add'] as const;
+/** The setup tab's name, also its heading: the admin screen's, for the manager's own team (#463). */
+const SETUP_TITLE = 'Potential Employee Setup Issues';
 type TabKey = typeof TABS[number];
 
 /** The monthly chart's legend: label and the kind whose colour it uses. */
@@ -202,17 +207,65 @@ export default function ManagerDashboard() {
       }
     }, 300);
   }, []);
+
+  // Potential Employee Setup Issues for the team (#463): the admin screen's
+  // list, read from the team route. Like the admin screen it is read on its
+  // own: once after launch (so the tab shows its count), when the tab opens,
+  // after a fix there, and on a live change while the tab is showing.
+  const [employeeSetup, setEmployeeSetup] = useState<EmployeeSetupSummary | null>(null);
+  const [setupRefreshing, setSetupRefreshing] = useState(false);
+  const setupSeq = useRef(0);                              // numbers each read; only the newest lands
+  /**
+   * Re-read the team's setup list.
+   *
+   * @param quiet - True for the read after launch: a failure there only leaves
+   *   the tab without a count, so no error message is shown to a manager who
+   *   never opened the tab.
+   */
+  const refreshEmployeeSetup = useCallback(async (quiet = false) => {
+    const seq = ++setupSeq.current;                        // this read is now the newest
+    setSetupRefreshing(true);
+    try {
+      const res = await getTeamEmployeeSetup();
+      if (seq === setupSeq.current) setEmployeeSetup(res.data);   // an older read landing late is dropped
+    } catch (err: any) {
+      if (seq !== setupSeq.current || quiet) return;       // a newer read is on its way, or the launch read
+      const detail = err.response?.data?.detail;
+      setSnack({
+        open: true,
+        message: typeof detail === 'string' ? detail : 'Could not refresh the setup check',
+        severity: 'error',
+      });
+    } finally {
+      if (seq === setupSeq.current) setSetupRefreshing(false);   // the newest read clears the bar
+    }
+  }, []);
+
+  // The open tab, for the live handlers below, which are made once.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+
+  // A live change re-reads the list, debounced so a burst of saves costs one
+  // read. Off the tab nothing is read: opening it reads afresh.
+  const setupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleSetupRefresh = useCallback(() => {
+    if (tabRef.current !== 'setup') return;               // not showing: the next open reads anyway
+    if (setupTimer.current) clearTimeout(setupTimer.current);
+    setupTimer.current = setTimeout(() => { void refreshEmployeeSetup(); }, 1000);
+  }, [refreshEmployeeSetup]);
+
   // A staff record changed (a new hire added, an edit, a balance move): re-read
   // the team cards, debounced so a burst of saves costs one read.
   const staffRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaffChange = useCallback(() => {
+    scheduleSetupRefresh();                                // the setup tab follows staff edits too
     if (staffRefresh.current) clearTimeout(staffRefresh.current);
     staffRefresh.current = setTimeout(() => {
       getTeamMembers()
         .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
         .catch(() => { /* the cards keep their figures until the next change */ });
     }, 300);
-  }, []);
+  }, [scheduleSetupRefresh]);
   useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   useEffect(() => {
@@ -271,6 +324,17 @@ export default function ManagerDashboard() {
     void load();
     return () => { cancelled = true; };
   }, []);
+
+  // The setup list is read once the dashboard is up, so the tab shows its count,
+  // and again whenever the tab is opened, so edits made elsewhere are reflected.
+  useEffect(() => {
+    if (!loading) void refreshEmployeeSetup(true);         // quiet: only the tab's count depends on it
+  }, [loading, refreshEmployeeSetup]);
+  const prevTab = useRef(tab);
+  useEffect(() => {
+    if (tab === 'setup' && prevTab.current !== 'setup' && !loading) void refreshEmployeeSetup();
+    prevTab.current = tab;
+  }, [tab, loading, refreshEmployeeSetup]);
 
   /**
    * Approve or reject, then drop the request from the waiting list: the card
@@ -388,6 +452,16 @@ export default function ManagerDashboard() {
     go('team');
   }, [members, go]);
 
+  /** Open a teammate's profile on the Team tab from the setup list (#463).
+   *  @param id - Their staff id. */
+  const openSetupProfile = useCallback((id: string) => {
+    setTeamPersonReq({ id: String(id), nonce: Date.now() });  // nonce so the same person re-opens
+    go('team');
+  }, [go]);
+  const setupCount = employeeSetup?.flagged.length ?? 0;   // people with a problem, for the tab label
+  // The check's picker: the team without the manager, whose own record is refused by the route.
+  const setupPeople = useMemo(() => members.filter((p) => p.name !== managerName), [members, managerName]);
+
   if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
@@ -425,6 +499,7 @@ export default function ManagerDashboard() {
         <Tab value="team" label="Team" />
         <Tab value="trends" label="Trends" />
         <Tab value="history" label="History" />
+        <Tab value="setup" label={setupCount ? <span>{SETUP_TITLE} (<Swap k={setupCount}>{setupCount}</Swap>)</span> : SETUP_TITLE} />
       </Tabs>
 
       {/* The tab's body slides in from the side of the tab picked. */}
@@ -731,6 +806,23 @@ export default function ManagerDashboard() {
         // status in place after a decision.
         <Box sx={{ minWidth: 0 }}>
           <RequestsHistoryTable requests={requests} mode="team" timelineScope="team" processingEnabled={processingEnabled} focus={historyFocus} />
+        </Box>
+      )}
+
+      {tab === 'setup' && (
+        // The admin setup screen for this manager's team only (#463): the same
+        // check and list, read and settled through the team routes, with Open
+        // profile landing on the person's panel on the Team tab.
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h5" sx={{ mb: 1 }}>{SETUP_TITLE}</Typography>
+          <EmployeeValidation
+            employees={setupPeople}
+            setupList={employeeSetup}
+            setupLoading={setupRefreshing}
+            onRefreshSetup={() => refreshEmployeeSetup()}
+            scope="team"
+            onOpenProfile={openSetupProfile}
+          />
         </Box>
       )}
 

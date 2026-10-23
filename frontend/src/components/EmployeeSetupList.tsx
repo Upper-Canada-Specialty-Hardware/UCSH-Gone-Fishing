@@ -7,6 +7,7 @@ import {
 import { PROBLEM_INFO } from './employeeSetupProblems';
 import SettleRequestsDialog, { UnmovedRequest, kindLabel } from './SettleRequestsDialog';
 import { formatDayRange } from '../utils/dates';
+import { SetupScope } from '../api/client';
 
 // One failing check, as the sweep reports it.
 interface Problem {
@@ -39,6 +40,10 @@ interface Props {
   onSelect: (employeeId: string) => void;
   /** Show a short message at the bottom of the screen, like the design's toast. */
   onNotify: (message: string) => void;
+  /** 'admin' (default), or 'team' on the manager dashboard (#463): settles go to the team routes. */
+  scope?: SetupScope;
+  /** Open a person's profile; when absent, the admin Staff screen opens it. */
+  onOpenProfile?: (employeeId: string) => void;
 }
 
 // One row as the list draws it: the person and what is wrong with their record.
@@ -107,7 +112,9 @@ function problemDetail(problem: Problem, unmoved: UnmovedRequest[]): string {
  * @param props - See {@link Props}.
  * @returns The list section.
  */
-export default function EmployeeSetupList({ setupList, loading, onRefresh, onSelect, onNotify }: Props) {
+export default function EmployeeSetupList({
+  setupList, loading, onRefresh, onSelect, onNotify, scope = 'admin', onOpenProfile,
+}: Props) {
   const navigate = useNavigate();
   // The person whose flagged requests the settle dialog is walking through, or null.
   const [settling, setSettling] = useState<{ name: string; requests: UnmovedRequest[] } | null>(null);
@@ -161,11 +168,14 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
   };
 
   /**
-   * Go to the person's profile on the Staff screen, where the rest is fixed.
+   * Go to the person's profile, where the rest is fixed: the caller's own way
+   * when it has one (the manager's Team tab), else the admin Staff screen.
    *
    * @param id - Their staff id; the Staff screen opens it from ?open=<id>.
    */
-  const openProfile = (id: string) => navigate(`/admin/staff?open=${encodeURIComponent(id)}`);
+  const openProfile = (id: string) => (
+    onOpenProfile ? onOpenProfile(id) : navigate(`/admin/staff?open=${encodeURIComponent(id)}`)
+  );
 
   return (
     <Box>
@@ -213,7 +223,9 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
 
         {setupList && rows.length === 0 && (
           <Typography variant="body2" color="text.secondary" sx={{ px: 2.5, py: 3.5 }}>
-            Nothing to fix. All {setupList.total_checked} staff records are set up.
+            {scope === 'team'
+              ? `Nothing to fix. All ${setupList.total_checked} people on your team are set up.`
+              : `Nothing to fix. All ${setupList.total_checked} staff records are set up.`}
           </Typography>
         )}
 
@@ -300,6 +312,7 @@ export default function EmployeeSetupList({ setupList, loading, onRefresh, onSel
         requests={settling ? settling.requests : null}
         // Saved requests drop off at once, a toast says so, and the list re-reads.
         onClose={(settled) => settling && closeSettle(settling.name, settling.requests, settled)}
+        scope={scope}
       />
     </Box>
   );

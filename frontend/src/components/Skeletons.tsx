@@ -176,7 +176,7 @@ export function TeamSkeleton({ tab }: { tab: string }) {
         </Box>
         <Bar w={140} h={38} />
       </Box>
-      <TabsBar count={5} />
+      <TabsBar count={6} />
       {tab === 'today' ? (
         <>
           <Box sx={TILE_GRID(150)}>{[0, 0, 1, 1].map((sp, i) => <Tile key={i} spark={!!sp} />)}</Box>
