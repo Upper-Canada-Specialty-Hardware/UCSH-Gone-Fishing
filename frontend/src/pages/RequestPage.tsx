@@ -13,6 +13,7 @@ import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import WhoYouAre, { EMPTY_STARTER, NewStarter, starterReady } from '../components/request/WhoYouAre';
+import SupervisorPicker, { EMPTY_SUPERVISOR, SupervisorChoice, supervisorReady } from '../components/request/SupervisorPicker';
 import { buildTheme } from '../theme';
 import { carryoverClosedReason } from '../utils/carryoverWindow';
 import { isHourly } from '../utils/employment';
@@ -20,9 +21,9 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, BookingLimit, EmployeeSession, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
+  Balances, BookingLimit, EmployeeSession, HeldGate, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
   clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, holdRequest, loadNewHire,
-  loadSession, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
+  loadSession, repick, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
   takeSignInNotice, verifyCode,
 } from '../api/intake';
 
@@ -33,9 +34,12 @@ import {
  * - form: signed in as an employee; pick a form and fill it in
  * - newhire: email is on no staff record; say who you are and who your supervisor is
  * - newhire-request: then pick a form and fill it in
+ * - held-status: a request is waiting to be set up; shows where it stands and, when
+ *   a supervisor handed it back, lets the person pick another supervisor (#442, #443)
  * - done: submitted (or held for a new hire)
  */
-type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request' | 'done';
+type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request'
+  | 'held-status' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
 const HELD_POLL_MS = 3000;   // how often a new hire's waiting page asks whether their request went through
@@ -117,7 +121,7 @@ function staffNextSteps(progress: RequestProgress | null): NextItem[] {
 }
 
 /** The steps in the order they come, for which way a change of step slides. */
-const STEP_ORDER: Step[] = ['email', 'code', 'choose', 'form', 'done'];
+const STEP_ORDER: Step[] = ['email', 'code', 'choose', 'form', 'held-status', 'done'];
 
 /** A new step slides in from the side the person moved towards; the old one leaves the other way. */
 const STEP_MOTION = {
@@ -182,6 +186,7 @@ const STEP_LABELS: Record<Step, string> = {
   form: 'Your request',
   newhire: 'About you',
   'newhire-request': 'Your request',
+  'held-status': 'Where it stands',
   done: 'Sent',
 };
 
@@ -250,6 +255,11 @@ export default function RequestPage() {
   const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
   const [heldToken, setHeldToken] = useState('');              // signed token to ask how the held request is going
   const [heldStatus, setHeldStatus] = useState<HeldStatus>('waiting');   // what that request is doing now
+  // The fields the status page needs to let a new hire re-pick a supervisor after
+  // a "not on my team" (#443).
+  const [heldSummary, setHeldSummary] = useState('');          // the request in words, shown while re-picking
+  const [heldDept, setHeldDept] = useState('');                // the department to search a new supervisor in
+  const [repickChoice, setRepickChoice] = useState<SupervisorChoice>(EMPTY_SUPERVISOR);   // the re-pick
   const [myToken, setMyToken] = useState('');                  // signed token to follow a sent request's progress (#364)
   const [progress, setProgress] = useState<RequestProgress | null>(null);   // that request's latest progress
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
@@ -362,6 +372,53 @@ export default function RequestPage() {
     };
   }, [step, heldToken, heldStatus]);
 
+  // The held-status page (#442, #443) follows a waiting request: a new hire who
+  // just made one, or anyone who signed in with one still waiting. It keeps asking
+  // while the request is waiting or handed back ("not_on_team"), and stops once it
+  // is sent or cancelled. A not_on_team answer also carries the department and
+  // summary the re-pick control needs.
+  useEffect(() => {
+    if (step !== 'held-status' || !heldToken) return;
+    if (heldStatus === 'sent' || heldStatus === 'cancelled') return;   // final: nothing to follow
+    let live = true;
+    /** Ask once; a failed ask is simply tried again on the next tick. */
+    const ask = () => {
+      if (document.hidden) return;                     // a background tab waits until it is looked at
+      getHeldStatus(heldToken)
+        .then(({ data }) => {
+          if (!live) return;
+          if (data.status === 'not_on_team') {
+            // Handed back: show who declined it and what the re-pick needs.
+            setHeldStatus('not_on_team');
+            setHeldWith(data.declined_by || data.supervisor_name);
+            setHeldDept(data.department || '');
+            setHeldSummary(data.summary || '');
+            return;
+          }
+          if (data.status === 'waiting') {
+            setHeldWith(data.supervisor_name);          // the supervisor it waits on may have changed
+            setHeldStatus('waiting');
+            return;
+          }
+          // Sent or cancelled: final, so this effect stops after the state settles.
+          setHeldWith(data.supervisor_name);
+          setHeldStatus(data.status);
+          setDoneText(data.status === 'sent'
+            ? `${data.supervisor_name} confirmed it, so your request was sent to them. You will get an email when it is approved or rejected.`
+            : 'This request was cancelled. If you still need it, start again with your email.');
+        })
+        .catch(() => { /* retried on the next tick */ });
+    };
+    ask();                                              // ask straight away, so a re-pick's department fills fast
+    const timer = setInterval(ask, HELD_POLL_MS);
+    document.addEventListener('visibilitychange', ask);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', ask);
+    };
+  }, [step, heldToken, heldStatus]);
+
   // A signed-in employee's sent request follows itself the same way (#364): ask
   // every few seconds while the done page is open, so the steps fill in as the
   // manager approves or rejects by email, text or dashboard. It stops once the
@@ -424,10 +481,17 @@ export default function RequestPage() {
     try {
       const res = await verifyCode(email.trim(), code.trim());
       if (res.data.status === 'employee') {
-        signInAs(res.data);
+        // One request until set up (#442): when this person already has a request
+        // waiting to be set up, show its status instead of signing them in to a
+        // new form; otherwise sign in as usual.
+        if (res.data.held) enterHeldStatus(res.data.held, res.data.verified);
+        else signInAs(res.data);
       } else if (res.data.status === 'choose') {
         setChoices(res.data.people);                    // a shared mailbox: ask which record this is
         setStep('choose');
+      } else if (res.data.held) {
+        // A new hire who already has a request waiting sees its status (#442).
+        enterHeldStatus(res.data.held, res.data.verified);
       } else {
         saveNewHire(res.data.verified);                 // the code is used up; this tab keeps the 24-hour pass
         navigate('/new-hire', { replace: true });
@@ -520,6 +584,52 @@ export default function RequestPage() {
     }
   };
 
+  /**
+   * Show the status of a request already waiting to be set up, instead of a new
+   * form (#442). Reached when /verify says the person has one in flight, so they
+   * cannot stack a second request and can re-pick a handed-back one.
+   *
+   * @param gate - The held summary /verify returned.
+   * @param verifiedToken - The verified-email token /verify returned, for the re-pick.
+   */
+  const enterHeldStatus = (gate: HeldGate, verifiedToken?: VerifiedEmail) => {
+    if (verifiedToken) setVerified(verifiedToken);     // lets the status page re-pick a supervisor
+    setHeldToken(gate.status_token);                   // the page follows the request with this
+    setHeldWith(gate.supervisor_name);
+    // "not_on_team" means a supervisor handed it back, so the page offers a re-pick.
+    setHeldStatus(gate.state === 'not_on_team' ? 'not_on_team' : 'waiting');
+    setRepickChoice({ ...EMPTY_SUPERVISOR });
+    setStep('held-status');
+  };
+
+  /** Pick another supervisor after a "not on my team", then keep following it (#443). */
+  const submitRepick = async () => {
+    if (!verified) return;
+    setError(''); setBusy(true);
+    try {
+      const res = await repick({
+        verified,
+        status_token: heldToken,
+        ...(repickChoice.useEmail
+          ? { supervisor_email: repickChoice.email.trim() }
+          : { supervisor_id: repickChoice.supervisor?.id }),
+      });
+      setHeldWith(res.data.supervisor_name);
+      setHeldToken(res.data.status_token);              // refreshed token for the same request
+      setHeldStatus('waiting');                         // waiting on the new supervisor now
+      setRepickChoice({ ...EMPTY_SUPERVISOR });
+    } catch (err: any) {
+      if (err?.response?.status === 401) {              // the email check expired
+        setSignInNotice(errorText(err, 'Start again with your email.'));
+        navigate('/', { replace: true });
+        return;
+      }
+      setError(errorText(err, 'That did not work. Try another supervisor.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** Start another request, keeping the sign-in; a new hire starts again from the landing page. */
   const another = () => {
     if (!session) {
@@ -545,14 +655,22 @@ export default function RequestPage() {
   const theme = useMemo(() => (mood ? buildTheme(mode, MOODS[mood][mode]) : outer), [mood, mode, outer]);
   const words = mood ? MOODS[mood].words : DEFAULT_WORDS;
 
-  // The steps in the side panel: a new hire's third step is about them, not just the request.
+  // The steps in the side panel: a new hire's third step is about them, not just
+  // the request (#440).
   const held = step === 'newhire' || step === 'newhire-request' || (step === 'done' && !session);
+  // The status page reached by signing in: just email, code, then here.
+  const gateStatus = step === 'held-status';
+  // The status page sits in the panel's last ("done") slot while it follows the request.
+  const panelStep: Step = step === 'held-status' ? 'done' : step;
   const order: Step[] = held
     ? ['email', 'code', 'newhire', 'newhire-request', 'done']
-    : step === 'choose' ? ['email', 'code', 'choose', 'form', 'done'] : ['email', 'code', 'form', 'done'];   // the pick shows only when asked
-  const at = order.indexOf(step);
+    : gateStatus
+      ? ['email', 'code', 'done']
+      : panelStep === 'choose' ? ['email', 'code', 'choose', 'form', 'done'] : ['email', 'code', 'form', 'done'];   // the pick shows only when asked
+  const at = order.indexOf(panelStep);
   const steps: StepItem[] = order.map((k, i) => ({
     label: STEP_LABELS[k],
+    // The real "done" step is complete; the status page is the current step, not done.
     state: i < at || (k === 'done' && step === 'done') ? 'done' : i === at ? 'on' : 'todo',
   }));
 
@@ -722,6 +840,69 @@ export default function RequestPage() {
                   <BusyLabel busy={busy}>Send request</BusyLabel>
                 </Button>
               </>
+            )}
+
+            {/* A request waiting to be set up: its status, and a re-pick when handed back (#442, #443). */}
+            {step === 'held-status' && (
+              heldStatus === 'not_on_team' ? (
+                <>
+                  <Heading>Pick your supervisor again</Heading>
+                  <Lead>
+                    {heldWith || 'Your supervisor'} let us know you are not on their team. Choose the right
+                    supervisor and we will ask them instead. Nothing about your request changes.
+                  </Lead>
+                  {heldSummary && (
+                    <Typography variant="body2" color="text.secondary">Your request: {heldSummary}</Typography>
+                  )}
+                  <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
+                  {verified && heldDept ? (
+                    <SupervisorPicker verified={verified} department={heldDept} value={repickChoice} onChange={setRepickChoice} />
+                  ) : (
+                    <CircularProgress size={20} />        // the department is still loading from the first poll
+                  )}
+                  <Button variant="contained" size="large" sx={big}
+                    disabled={!supervisorReady(repickChoice) || busy || !verified || !heldDept} onClick={submitRepick}>
+                    <BusyLabel busy={busy}>Ask this supervisor</BusyLabel>
+                  </Button>
+                </>
+              ) : heldStatus === 'sent' ? (
+                <>
+                  <Box sx={(t) => ({
+                    width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
+                    bgcolor: t.tokens.okSoft, color: 'success.main',
+                    animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
+                  })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
+                  <Heading>Request sent</Heading>
+                  <Lead>{doneText || `${heldWith || 'Your supervisor'} confirmed it, so your request is on its way.`}</Lead>
+                  <Box>
+                    <Button variant="contained" onClick={() => { clearSession(); navigate('/', { replace: true }); }}>
+                      Sign in
+                    </Button>
+                  </Box>
+                </>
+              ) : heldStatus === 'cancelled' ? (
+                <>
+                  <Heading>Request cancelled</Heading>
+                  <Lead>{doneText || 'This request was cancelled. If you still need it, start again with your email.'}</Lead>
+                  <Box>
+                    <Button variant="outlined" onClick={() => navigate('/', { replace: true })}>Back to start</Button>
+                  </Box>
+                </>
+              ) : (
+                <>
+                  <Heading>Your request is saved</Heading>
+                  <Lead>
+                    We asked {heldWith || 'your supervisor'} to add you to the staff list.
+                    Your request goes to them automatically, and you will get an email when it is approved or rejected. You can close this page.
+                  </Lead>
+                  <NextSteps items={[
+                    { title: 'Request saved', note: 'Just now', done: true },
+                    { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
+                    { title: 'Your request goes to them', note: 'Automatically' },
+                    { title: 'You get an email with the decision' },
+                  ]} />
+                </>
+              )
             )}
 
             {step === 'done' && (

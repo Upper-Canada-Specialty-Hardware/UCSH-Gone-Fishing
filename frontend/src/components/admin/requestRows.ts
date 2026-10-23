@@ -14,7 +14,13 @@ export interface HeldRow {
   supervisor_name: string;
   request_type: string;
   summary: string;
+  /** Whether the person is on staff now, so the admin can see what a retry does (#445). */
+  on_staff: boolean;
+  /** The supervisor a retry routes to (#445). */
+  routes_to: string;
   status: string;
+  /** Why it was cancelled (#445), when it was. */
+  cancel_reason: string | null;
   created_at: string | null;
   supervisor_reminded_at: string | null;
   admins_notified_at: string | null;
@@ -22,14 +28,18 @@ export interface HeldRow {
   last_error: string | null;
 }
 
-/** Held statuses in plain words. waiting_site: on staff, not on the SharePoint site yet; retried every hour. */
+/**
+ * Held statuses in plain words. waiting_site: on staff, not on the SharePoint
+ * site yet; retried every hour. not_on_team: a supervisor said the person is not
+ * on their team, so they are picking another supervisor (#443).
+ */
 export const HELD_STATUS_LABEL: Record<string, string> = {
   held: 'Not on staff', waiting_site: 'Waiting for site access', releasing: 'Sending',
-  failed: 'Failed', released: 'Sent', cancelled: 'Cancelled',
+  failed: 'Failed', not_on_team: 'Picking a new supervisor', released: 'Sent', cancelled: 'Cancelled',
 };
 
-/** Held statuses that still need someone; matches the backend's OPEN_STATUSES. */
-export const OPEN_HELD = ['held', 'waiting_site', 'failed'];
+/** Held statuses that still need someone; matches the backend's ACTIVE_STATUSES. */
+export const OPEN_HELD = ['held', 'waiting_site', 'failed', 'not_on_team'];
 
 /** What each stuck-request diagnostic code means, and how serious it is. */
 export const DIAGNOSTIC_LABELS: Record<string, { label: string; color: 'error' | 'warning' }> = {

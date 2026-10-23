@@ -167,6 +167,77 @@ export const getAdminEmployeeSetup = () => api.get('/admin/employee-setup');
  */
 export const getTeamEmployeeSetup = () => api.get('/team/employee-setup');
 
+/** The record that already has a held request's name, as Add employee shows it (#444). */
+export interface HeldExisting {
+  employee_id: string;
+  name: string;
+  email: string;
+  department: string;
+  salary_hourly: string;
+  location: string;
+  managers: string[];
+  vacation_entitlement: number;
+  sick_entitlement: number;
+  vacation: number;
+  sick: number;
+}
+
+/**
+ * What has happened to a held request, for its Add link (#444, #462). "open"
+ * means it still waits on the viewer; only then is `existing` filled.
+ */
+export interface HeldForAdd {
+  held_id: number;
+  name: string;
+  email: string;
+  department: string;
+  summary: string;
+  supervisor_name: string;
+  state: 'open' | 'declined' | 'released' | 'cancelled' | 'sending';
+  request_number: string;
+  set_up_on: string;
+  note: string;
+  existing: HeldExisting | null;
+  same_name_count: number;
+}
+
+/** The profile edit saved from a held request's Add employee page (#444). */
+export interface HeldProfileSave {
+  changes: Record<string, number>;
+  fields: Record<string, string>;
+  manager_mode: 'replace' | 'alongside';
+  reason: string;
+}
+
+/** What the save answers: what changed and whether the request was released. */
+export interface HeldProfileResult {
+  changed: unknown[];
+  held_status: string;
+  note: string;
+  released: { held_id: number; status: string; detail: string }[];
+}
+
+/**
+ * Where a held request stands, and the record with its name when it still waits on the viewer (#444).
+ *
+ * @param heldId - The held request from the Add link.
+ * @param scope - 'team' for the supervisor, 'admin' from the Held Requests list.
+ * @returns The axios response with a {@link HeldForAdd}.
+ */
+export const getHeldForAdd = (heldId: number, scope: SetupScope) =>
+  api.get<HeldForAdd>(`/${scope}/held/${heldId}`);
+
+/**
+ * Save the profile edit of the record that already has the held request's name (#444).
+ *
+ * @param heldId - The held request the edit comes from.
+ * @param scope - 'team' for the supervisor, 'admin' from the Held Requests list.
+ * @param body - The edit.
+ * @returns The axios response with a {@link HeldProfileResult}.
+ */
+export const updateExistingFromHeld = (heldId: number, scope: SetupScope, body: HeldProfileSave) =>
+  api.post<HeldProfileResult>(`/${scope}/held/${heldId}/update-existing`, body);
+
 // Manager — create a new employee (Staff Directory record) for their team
 export const createEmployee = (payload: Record<string, unknown>) =>
   api.post('/team/employees', payload);
@@ -268,7 +339,10 @@ export const sendAdminTestEmail = (payload: { employee_id?: string; address?: st
 export const getHeldRequests = (includeClosed = false) =>
   api.get('/admin/held-requests', { params: { include_closed: includeClosed } });
 export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
-export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/cancel`);
+// Cancelling now needs a reason, and can be undone (#445).
+export const cancelHeldRequest = (id: number, reason: string) =>
+  api.post(`/admin/held-requests/${id}/cancel`, { reason });
+export const uncancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/uncancel`);
 
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
