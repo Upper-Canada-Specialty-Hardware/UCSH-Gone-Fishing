@@ -27,8 +27,13 @@ interface Props {
   personName: string;
   /** The flagged requests to walk through, or null when the dialog is closed. */
   requests: UnmovedRequest[] | null;
-  /** Close; settled is true when at least one request was saved, so the caller refreshes. */
-  onClose: (settled: boolean) => void;
+  /**
+   * Close the dialog.
+   *
+   * @param settled - The requests saved in this run (empty when none were), so
+   *   the caller can drop them at once, say what happened and refresh.
+   */
+  onClose: (settled: UnmovedRequest[]) => void;
 }
 
 /** One finished step, for the review at the end. */
@@ -55,7 +60,7 @@ const URL_TYPE: Record<string, string> = { leave: 'leave', overtime: 'overtime',
  * @param option - The carry-over/payout choice from the preview, when known.
  * @returns A short label.
  */
-function kindLabel(r: UnmovedRequest, option?: string | null): string {
+export function kindLabel(r: UnmovedRequest, option?: string | null): string {
   if (r.leave_type) return r.leave_type;                        // leave: its own type
   if (r.kind === 'overtime') return 'Make-up';                  // overtime banks make-up
   return option === 'payout' ? 'Payout' : 'Carry-over';         // carry-over/payout by its option
@@ -207,7 +212,7 @@ export default function SettleRequestsDialog({ personName, requests, onClose }: 
   });
 
   return (
-    <Dialog open={open} onClose={() => onClose(done.length > 0)} maxWidth="sm" fullWidth>
+    <Dialog open={open} onClose={() => onClose(done.map((d) => d.req))} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 1 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2, alignItems: 'baseline' }}>
           <span>Settle {personName}'s requests</span>
@@ -372,7 +377,7 @@ export default function SettleRequestsDialog({ personName, requests, onClose }: 
       </DialogContent>
 
       <DialogActions sx={{ px: 3, py: 1.5 }}>
-        <Button onClick={() => onClose(done.length > 0)} sx={{ mr: 'auto' }}>{onReview ? 'Close' : 'Cancel'}</Button>
+        <Button onClick={() => onClose(done.map((d) => d.req))} sx={{ mr: 'auto' }}>{onReview ? 'Close' : 'Cancel'}</Button>
         {!onReview && <Button variant="outlined" onClick={next} disabled={saving}>Skip for now</Button>}
         {!onReview && (
           <Button
@@ -382,7 +387,7 @@ export default function SettleRequestsDialog({ personName, requests, onClose }: 
             {idx === list.length - 1 ? 'Save and review' : 'Save and next'}
           </Button>
         )}
-        {onReview && <Button variant="contained" onClick={() => onClose(done.length > 0)}>Done</Button>}
+        {onReview && <Button variant="contained" onClick={() => onClose(done.map((d) => d.req))}>Done</Button>}
       </DialogActions>
     </Dialog>
   );

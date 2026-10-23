@@ -3,13 +3,13 @@ import {
   Box, Autocomplete, TextField, Button, CircularProgress, Alert,
   Typography, Paper, Divider, Collapse, Stack, Chip,
   Table, TableHead, TableBody, TableRow, TableCell,
-  Dialog, DialogTitle, DialogContent, DialogActions,
+  Dialog, DialogTitle, DialogContent, DialogActions, Snackbar, Tooltip,
 } from '@mui/material';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import { validateEmployee, fixNegativeCarryover } from '../api/client';
+import { validateEmployee } from '../api/client';
 import EmployeeSetupList, { EmployeeSetupSummary } from './EmployeeSetupList';
 import { PROBLEM_INFO } from './employeeSetupProblems';
 import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
@@ -86,12 +86,20 @@ function problemInfo(check: Check): { title: string; fix: string } {
   if (isUnavailable(check)) {
     return {
       title: 'This check could not be run',
-      fix: 'A lookup this check depends on could not be read. Run the check again; if it keeps happening the Microsoft 365 connection is the place to look.',
+      fix: 'A lookup this check depends on could not be read. Run the check again; if it keeps happening, tell whoever looks after the app.',
+    };
+  }
+  if (!PROBLEM_INFO[check.code] && check.category === 'simulation') {
+    // A dry run that moves the wrong number of days is the app's arithmetic,
+    // not the person's record, so it is not sent to their profile.
+    return {
+      title: 'A request would move the wrong number of days',
+      fix: 'This is not a problem with their record. Tell whoever looks after the app, with the line above.',
     };
   }
   return PROBLEM_INFO[check.code] || {
     title: 'Setup issue',
-    fix: 'Review this record in the Staff Directory.',
+    fix: 'Review this person in their profile.',
   };
 }
 
@@ -188,10 +196,11 @@ export default function EmployeeValidation({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [techOpen, setTechOpen] = useState(false);
   const [settleOpen, setSettleOpen] = useState(false);          // the settle dialog for this report's person
+  const [toast, setToast] = useState('');                       // the short message after a fix; empty when hidden
 
-  // Set when a check is started from the list above. The report renders under
-  // the picker, below the fold on a desktop viewport, so without this the click
-  // on a row looks like it did nothing.
+  // Set when a check is started from a name in the list below. The report
+  // renders above the list, often off screen by then, so without this the click
+  // on a name looks like it did nothing.
   const resultRef = useRef<HTMLDivElement>(null);
   const [scrollToResult, setScrollToResult] = useState(false);
   useEffect(() => {
@@ -225,42 +234,7 @@ export default function EmployeeValidation({
     run(employeeId);
   };
 
-  // The one-click carry-over fix (#407): a required reason, like any HR balance
-  // edit, then move the shortfall onto vacation and re-run the check.
-  const [fixOpen, setFixOpen] = useState(false);       // the reason dialog is showing
-  const [fixReason, setFixReason] = useState('');      // the typed reason for the move
-  const [fixBusy, setFixBusy] = useState(false);       // the fix request is in flight
-  const [fixError, setFixError] = useState('');        // why the fix was refused, if it was
-
-  /**
-   * Post the carry-over fix for the selected person, then re-check their setup.
-   *
-   * Moves the stored negative carry-over onto vacation with the typed reason; on
-   * success the dialog closes, the report re-runs so the problem clears, and the
-   * whole-directory list above is refreshed. On failure the backend's message is
-   * shown and the dialog stays open.
-   *
-   * @returns A promise that resolves once the request and re-check settle.
-   */
-  const submitFix = async () => {
-    if (!selectedId || !fixReason.trim()) return;      // guarded; the button is also disabled
-    setFixBusy(true);
-    setFixError('');
-    try {
-      await fixNegativeCarryover(selectedId, fixReason.trim());   // C -> 0, V += C, history recorded
-      setFixOpen(false);
-      setFixReason('');
-      await run(selectedId);                           // re-check so the problem clears from the report
-      onRefreshSetup?.();                              // and refresh the whole-directory list above
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;       // the backend's 400/404/503 message
-      setFixError(typeof detail === 'string' ? detail : 'The carry-over could not be corrected. Please try again.');
-    } finally {
-      setFixBusy(false);
-    }
-  };
-
-  // The picker is controlled so a record chosen from the list above shows up in
+  // The picker is controlled so a record chosen from the list below shows up in
   // it as the employee being reported on.
   const selectedEmployee = useMemo(
     () => employees.find((e: any) => String(e.id) === String(selectedId)) || null,
@@ -326,215 +300,216 @@ export default function EmployeeValidation({
 
   return (
     <Box>
-      <EmployeeSetupList
-        setupList={setupList}
-        loading={setupLoading}
-        onRefresh={onRefreshSetup}
-        onSelect={checkFromList}
-      />
-
-      <Divider sx={{ mb: 2 }} />
-
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Check whether an employee is set up correctly for leave, overtime, and payout requests.
-        This reads their Staff Directory record only. It never creates a request or notifies anyone.
+        Staff records with something that will block or confuse a request.
       </Typography>
 
-      <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
-        <Autocomplete
-          options={employees}
-          disabled={loading}
-          value={selectedEmployee}
-          getOptionLabel={(opt: any) => (opt.department ? `${opt.name} - ${opt.department}` : opt.name)}
-          onChange={(_, val) => {
-            setSelectedId(val?.id || null);
-            setReport(null);
-            setError('');
-          }}
-          renderInput={(params) => <TextField {...params} label="Select Employee" />}
-          sx={{ flex: 1, maxWidth: 420 }}
-        />
-        <Button
-          variant="contained"
-          onClick={() => run()}
-          disabled={!selectedId || loading}
-          startIcon={loading ? <CircularProgress size={16} color="inherit" /> : undefined}
-        >
-          Check setup
-        </Button>
-      </Box>
+      {/* One person's check sits on top; everyone with a problem is listed below it. */}
+      <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 }, mb: 3, borderRadius: 3 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Check whether an employee is set up correctly for leave, overtime, and payout requests.
+          This reads their staff record only. It never creates a request or notifies anyone.
+        </Typography>
 
-      <Box ref={resultRef} sx={{ scrollMarginTop: 16 }}>
-        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+        <Box sx={{ display: 'flex', gap: 2, mb: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Autocomplete
+            options={employees}
+            disabled={loading}
+            value={selectedEmployee}
+            getOptionLabel={(opt: any) => (opt.department ? `${opt.name} - ${opt.department}` : opt.name)}
+            onChange={(_, val) => {
+              setSelectedId(val?.id || null);
+              setReport(null);
+              setError('');
+            }}
+            renderInput={(params) => <TextField {...params} label="Select Employee" />}
+            sx={{ flex: 1, minWidth: 220, maxWidth: 420 }}
+          />
+          <Button
+            variant="contained"
+            onClick={() => run()}
+            disabled={!selectedId || loading}
+            startIcon={loading ? <CircularProgress size={16} color="inherit" /> : undefined}
+          >
+            Check setup
+          </Button>
+        </Box>
 
-        {report && verdict && (
-          <Box>
-            <Alert severity={verdict.severity} sx={{ mb: 2 }}>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.35 }}>
-                {verdict.headline}
+        <Box ref={resultRef} sx={{ scrollMarginTop: 16, mt: 2 }}>
+          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+          {report && verdict && (
+            <Box>
+              <Alert severity={verdict.severity} sx={{ mb: 2 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.35 }}>
+                  {verdict.headline}
+                </Typography>
+                <Typography variant="body2">{verdict.sub}</Typography>
+              </Alert>
+
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+                {report.measurements.within_range} of {report.measurements.total} measurements within
+                the expected range.
               </Typography>
-              <Typography variant="body2">{verdict.sub}</Typography>
-            </Alert>
 
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
-              {report.measurements.within_range} of {report.measurements.total} measurements within
-              the expected range.
-            </Typography>
-
-            {problems.length > 0 && (
-              <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
-                  What to fix
-                </Typography>
-                <Stack spacing={2} divider={<Divider flexItem />}>
-                  {problems.map((c) => {
-                    const info = problemInfo(c);
-                    const isFail = c.status === 'fail';
-                    return (
-                      <Box key={c.code} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
-                        <Box sx={{ color: isFail ? 'error.main' : 'warning.main', mt: '2px', display: 'flex' }}>
-                          {isFail ? <ErrorOutlineIcon fontSize="small" /> : <WarningAmberIcon fontSize="small" />}
-                        </Box>
-                        <Box>
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>{info.title}</Typography>
-                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-                            {c.detail}
-                          </Typography>
-                          <Typography variant="body2" sx={{ mt: 0.5 }}>
-                            <Box component="span" sx={{ fontWeight: 600 }}>Fix:</Box> {info.fix}
-                          </Typography>
-                          {/* Carry-over below zero is the one problem with a one-click correction (#407). */}
-                          {c.code === 'carry_over_negative' && (
-                            <Button
-                              size="small" variant="outlined" sx={{ mt: 1 }}
-                              onClick={() => { setFixError(''); setFixReason(''); setFixOpen(true); }}
-                            >
-                              Move carry-over onto vacation
-                            </Button>
-                          )}
-                          {/* The same Settle requests the list offers (#400). */}
-                          {c.code === 'approved_balance_unmoved' && (report.unmoved_requests || []).length > 0 && (
-                            <Button size="small" variant="contained" sx={{ mt: 1 }} onClick={() => setSettleOpen(true)}>
-                              Settle requests
-                            </Button>
-                          )}
-                        </Box>
-                      </Box>
-                    );
-                  })}
-                </Stack>
-              </Paper>
-            )}
-
-            {/* The carry-over fix dialog: a required reason, then the move is written (#407). */}
-            <Dialog open={fixOpen} onClose={() => !fixBusy && setFixOpen(false)} fullWidth maxWidth="xs">
-              <DialogTitle>Move carry-over onto vacation</DialogTitle>
-              <DialogContent>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  This sets carry-over to zero and folds the shortfall into vacation. The reason is
-                  recorded in this person's change history, like any other balance edit.
-                </Typography>
-                {fixError && <Alert severity="error" sx={{ mb: 2 }}>{fixError}</Alert>}
-                <TextField
-                  label="Reason" value={fixReason} onChange={(e) => setFixReason(e.target.value)}
-                  fullWidth multiline minRows={2} autoFocus disabled={fixBusy}
-                />
-              </DialogContent>
-              <DialogActions>
-                <Button onClick={() => setFixOpen(false)} disabled={fixBusy}>Cancel</Button>
-                <Button variant="contained" onClick={submitFix} disabled={fixBusy || !fixReason.trim()}>
-                  {fixBusy ? <CircularProgress size={20} /> : 'Move onto vacation'}
-                </Button>
-              </DialogActions>
-            </Dialog>
-
-            <Divider sx={{ mb: 0.5 }} />
-
-            <ToggleSection
-              title="What each request would do"
-              open={previewOpen}
-              onToggle={() => setPreviewOpen((o) => !o)}
-            >
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ border: 0, py: 0.5, width: '42%', color: 'text.secondary', fontWeight: 600 }}>
-                      Request
-                    </TableCell>
-                    <TableCell sx={{ border: 0, py: 0.5, color: 'text.secondary', fontWeight: 600 }}>
-                      Effect on balances
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {PREVIEW_ROWS.map((row) => {
-                    const c = byCode(report, row.code);
-                    if (!c) return null;
-                    const outcome = previewOutcome(c, report.current_balances);
-                    const muted = outcome === 'No balance change';
-                    return (
-                      <TableRow key={row.code}>
-                        <TableCell sx={{ border: 0, py: 0.5, width: '42%' }}>{row.label}</TableCell>
-                        <TableCell sx={{ border: 0, py: 0.5, color: muted ? 'text.secondary' : 'text.primary' }}>
-                          {outcome}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </ToggleSection>
-
-            <ToggleSection
-              title="Technical details"
-              open={techOpen}
-              onToggle={() => setTechOpen((o) => !o)}
-            >
-              {orderedCategories.map((cat) => (
-                <Box key={cat} sx={{ mb: 1.5 }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.75 }}>
-                    {CATEGORY_LABELS[cat] || cat}
+              {problems.length > 0 && (
+                <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
+                    What to fix
                   </Typography>
-                  <Stack spacing={0.75}>
-                    {grouped[cat].map((c) => {
-                      const st = STATUS[c.status] || STATUS.warn;
-                      const summary = measureSummary(c.measure);
+                  <Stack spacing={2} divider={<Divider flexItem />}>
+                    {problems.map((c) => {
+                      const info = problemInfo(c);
+                      const isFail = c.status === 'fail';
                       return (
-                        <Box key={c.code} sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                          <Chip
-                            size="small"
-                            color={st.color}
-                            label={st.label}
-                            sx={{ minWidth: 60, height: 20, fontSize: 11, fontWeight: 600 }}
-                          />
+                        <Box key={c.code} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
+                          {/* The icon says on hover, and to a screen reader, whether this blocks or only warns. */}
+                          <Tooltip
+                            title={isFail ? 'Needs fixing: this can block or confuse a request.' : 'Worth a look: requests still work.'}
+                            arrow
+                          >
+                            <Box
+                              role="img"
+                              aria-label={isFail ? 'Needs fixing' : 'Worth a look'}
+                              sx={{ color: isFail ? 'error.main' : 'warning.main', mt: '2px', display: 'flex' }}
+                            >
+                              {isFail ? <ErrorOutlineIcon fontSize="small" /> : <WarningAmberIcon fontSize="small" />}
+                            </Box>
+                          </Tooltip>
                           <Box>
-                            <Typography variant="body2" color="text.secondary">{c.detail}</Typography>
-                            {summary && (
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                                sx={{ display: 'block', fontFamily: 'monospace', opacity: 0.75 }}
-                              >
-                                {c.measure?.label}: {summary}
-                              </Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{info.title}</Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+                              {c.detail}
+                            </Typography>
+                            <Typography variant="body2" sx={{ mt: 0.5 }}>
+                              <Box component="span" sx={{ fontWeight: 600 }}>Fix:</Box> {info.fix}
+                            </Typography>
+                            {/* The same Settle requests the list offers (#400). */}
+                            {c.code === 'approved_balance_unmoved' && (report.unmoved_requests || []).length > 0 && (
+                              <Button size="small" variant="contained" sx={{ mt: 1 }} onClick={() => setSettleOpen(true)}>
+                                Settle requests
+                              </Button>
                             )}
                           </Box>
                         </Box>
                       );
                     })}
                   </Stack>
-                </Box>
-              ))}
-            </ToggleSection>
-          </Box>
-        )}
-      </Box>
+                </Paper>
+              )}
+
+              <Divider sx={{ mb: 0.5 }} />
+
+              <ToggleSection
+                title="What each request would do"
+                open={previewOpen}
+                onToggle={() => setPreviewOpen((o) => !o)}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ border: 0, py: 0.5, width: '42%', color: 'text.secondary', fontWeight: 600 }}>
+                        Request
+                      </TableCell>
+                      <TableCell sx={{ border: 0, py: 0.5, color: 'text.secondary', fontWeight: 600 }}>
+                        Effect on balances
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {PREVIEW_ROWS.map((row) => {
+                      const c = byCode(report, row.code);
+                      if (!c) return null;
+                      const outcome = previewOutcome(c, report.current_balances);
+                      const muted = outcome === 'No balance change';
+                      return (
+                        <TableRow key={row.code}>
+                          <TableCell sx={{ border: 0, py: 0.5, width: '42%' }}>{row.label}</TableCell>
+                          <TableCell sx={{ border: 0, py: 0.5, color: muted ? 'text.secondary' : 'text.primary' }}>
+                            {outcome}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </ToggleSection>
+
+              <ToggleSection
+                title="Technical details"
+                open={techOpen}
+                onToggle={() => setTechOpen((o) => !o)}
+              >
+                {orderedCategories.map((cat) => (
+                  <Box key={cat} sx={{ mb: 1.5 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.75 }}>
+                      {CATEGORY_LABELS[cat] || cat}
+                    </Typography>
+                    <Stack spacing={0.75}>
+                      {grouped[cat].map((c) => {
+                        const st = STATUS[c.status] || STATUS.warn;
+                        const summary = measureSummary(c.measure);
+                        return (
+                          <Box key={c.code} sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                            <Chip
+                              size="small"
+                              color={st.color}
+                              label={st.label}
+                              sx={{ minWidth: 60, height: 20, fontSize: 11, fontWeight: 600 }}
+                            />
+                            <Box>
+                              <Typography variant="body2" color="text.secondary">{c.detail}</Typography>
+                              {summary && (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ display: 'block', fontFamily: 'monospace', opacity: 0.75 }}
+                                >
+                                  {c.measure?.label}: {summary}
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        );
+                      })}
+                    </Stack>
+                  </Box>
+                ))}
+              </ToggleSection>
+            </Box>
+          )}
+        </Box>
+      </Paper>
+
+      <EmployeeSetupList
+        setupList={setupList}
+        loading={setupLoading}
+        onRefresh={onRefreshSetup}
+        onSelect={checkFromList}
+        onNotify={setToast}
+      />
 
       <SettleRequestsDialog
         personName={name}
         requests={settleOpen && report ? report.unmoved_requests || [] : null}
         // Re-check this person and refresh the list, so settled flags drop off both.
-        onClose={(settled) => { setSettleOpen(false); if (settled) { run(); onRefreshSetup(); } }}
+        onClose={(settled) => {
+          setSettleOpen(false);
+          if (settled.length === 0) return;                         // cancelled: nothing changed
+          const all = report?.unmoved_requests?.length ?? settled.length;
+          setToast(settled.length === all ? `${name} is settled.` : 'Saved. Skipped requests stay flagged.');
+          run();
+          onRefreshSetup();
+        }}
+      />
+
+      {/* The short message after a fix, at the bottom of the screen like the design's toast. */}
+      <Snackbar
+        open={toast !== ''}
+        autoHideDuration={4000}
+        onClose={() => setToast('')}
+        message={toast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       />
     </Box>
   );

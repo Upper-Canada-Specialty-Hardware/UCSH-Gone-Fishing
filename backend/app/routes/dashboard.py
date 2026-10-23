@@ -1203,9 +1203,7 @@ async def team_check_employee(user: AuthUser, body: dict):
     The Review step behind ``POST /team/employees``: it cleans the typed details,
     says what cleaning changed, and lists every block and warning the create
     would hit, so the manager confirms before anything is saved. Same body and
-    same auth as the create route; the supervisor is the signed-in manager, so a
-    manager whose own record is not linked to Microsoft 365 surfaces as the
-    supervisor warning here rather than as a hard refusal.
+    same auth as the create route; the supervisor is the signed-in manager.
 
     Args:
         user: The signed-in manager or admin, from the dashboard link.
@@ -1217,16 +1215,10 @@ async def team_check_employee(user: AuthUser, body: dict):
     _require_role(user, "manager", "admin")
     manager = await get_employee_by_id(user.user_id)    # the would-be supervisor
     has_supervisor = manager is not None                # no record = nobody to approve
-    supervisor_unlinked = False                         # only meaningful in SharePoint mode
-    if manager and not await staff_in_postgres():
-        # SharePoint records a manager by their Microsoft 365 user id, resolved
-        # from their email; when that fails the request could keep no manager.
-        manager_email = (manager["fields"].get("EmailAddress") or "").strip()
-        supervisor_unlinked = not await _resolve_user_lookup_id(manager_email)
 
     from app.services.employee_creation import check_employee
     return await check_employee(
-        body, has_supervisor=has_supervisor, supervisor_unlinked=supervisor_unlinked,
+        body, has_supervisor=has_supervisor,
     )
 
 
@@ -1438,7 +1430,7 @@ async def admin_check_employee(body: dict):
 
     from app.services.employee_creation import check_employee
     return await check_employee(
-        body, has_supervisor=bool(manager_ids), supervisor_unlinked=False,
+        body, has_supervisor=bool(manager_ids),
     )
 
 

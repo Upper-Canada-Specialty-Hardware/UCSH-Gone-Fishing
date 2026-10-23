@@ -169,7 +169,7 @@ def test_a_loosely_duplicate_name_is_refused_before_anything_is_written(monkeypa
 
 # ----- the async wrapper -----
 
-def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=False):
+def _patch(monkeypatch, *, name_exists=False, email_exists=False):
     """Fake the wrapper's SharePoint touchpoints and capture the writes."""
     calls = {"created": None, "managers": None, "rad": None}
 
@@ -180,9 +180,6 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=
             "name": {"id": "9", "fields": {"Title": name}} if name_exists else None,
             "email": {"id": "8", "fields": {"EmailAddress": email}} if email_exists else None,
         }
-
-    async def _resolve(email):
-        return 501 if email_resolves else None
 
     async def _create(list_id, fields):
         calls["created"] = fields
@@ -198,7 +195,6 @@ def _patch(monkeypatch, *, name_exists=False, email_resolves=True, email_exists=
         return {"id": str(item_id), "fields": calls["created"] or {}}
 
     monkeypatch.setattr(ec, "find_directory_clashes", _clashes)
-    monkeypatch.setattr(ec, "_resolve_user_lookup_id", _resolve)
     # Default storage is SharePoint, so the store delegates to the shared sp_client
     # object; patch it there so the create and re-read are faked in that mode.
     monkeypatch.setattr(sharepoint_module.sp_client, "create_list_item", _create)
@@ -229,18 +225,8 @@ def test_a_duplicate_name_is_refused_before_anything_is_written(monkeypatch):
     assert calls["created"] is None
 
 
-def test_an_email_not_on_the_site_is_created_with_a_notice(monkeypatch):
-    # Someone who has never opened the SharePoint site is not in its user list.
-    # The request page links by email, so they are created, with a notice.
-    calls = _patch(monkeypatch, email_resolves=False)
-
-    record = asyncio.run(create_employee(GOOD, [501]))
-
-    assert calls["created"]["Title"] == "New Hire"
-    assert len(record["notices"]) == 1 and "not linked" in record["notices"][0]
-
-
-def test_a_linked_email_has_no_notice(monkeypatch):
+def test_a_new_employee_carries_no_notice(monkeypatch):
+    # The SharePoint-site notice is gone (ruled 2026-10-22); the key stays empty.
     _patch(monkeypatch)
     assert asyncio.run(create_employee(GOOD, [501]))["notices"] == []
 

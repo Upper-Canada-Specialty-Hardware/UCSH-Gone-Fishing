@@ -228,15 +228,19 @@ export default function AdminDashboard() {
     }
   }, []);
 
-  // Re-runs the directory-wide setup check on its own. It is the one list an
-  // admin refreshes after fixing a record, and it is the expensive read of the
-  // set, so it is not folded into the dashboard's other refreshes.
+  // Re-runs the directory-wide setup check on its own. It is the expensive read
+  // of the set, so it is not folded into the dashboard's other refreshes: it
+  // runs when the setup screen opens, after a fix there, and on a live change
+  // while that screen is showing (see scheduleSetupRefresh).
+  const setupSeq = useRef(0);                              // numbers each read; only the newest lands
   const refreshEmployeeSetup = useCallback(async () => {
+    const seq = ++setupSeq.current;                        // this read is now the newest
     setSetupRefreshing(true);
     try {
       const res = await getAdminEmployeeSetup();
-      setEmployeeSetup(res.data);
+      if (seq === setupSeq.current) setEmployeeSetup(res.data);   // an older read landing late is dropped
     } catch (err: any) {
+      if (seq !== setupSeq.current) return;                // a newer read is on its way
       const detail = err.response?.data?.detail;
       setSnack({
         open: true,
@@ -244,9 +248,31 @@ export default function AdminDashboard() {
         severity: 'error',
       });
     } finally {
-      setSetupRefreshing(false);
+      if (seq === setupSeq.current) setSetupRefreshing(false);   // the newest read clears the bar
     }
   }, []);
+
+  // The screen showing, for the live handlers below, which are made once.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+
+  // A live change re-reads the setup list, debounced so a burst of saves costs
+  // one read. Off the setup screen nothing is read: opening it reads afresh.
+  const setupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleSetupRefresh = useCallback(() => {
+    if (tabRef.current !== 'setup') return;               // not showing: the next open reads anyway
+    if (setupTimer.current) clearTimeout(setupTimer.current);
+    setupTimer.current = setTimeout(() => { void refreshEmployeeSetup(); }, 1000);
+  }, [refreshEmployeeSetup]);
+
+  // Opening the setup screen re-reads the list, so edits made elsewhere (a
+  // profile, say) are already reflected. The first screen of a visit skips it:
+  // the launch load is reading the list already.
+  const prevTab = useRef(tab);
+  useEffect(() => {
+    if (tab === 'setup' && prevTab.current !== 'setup') void refreshEmployeeSetup();
+    prevTab.current = tab;
+  }, [tab, refreshEmployeeSetup]);
 
   /**
    * Take a decided request out of the pending list: its row fades first, then
@@ -475,6 +501,7 @@ export default function AdminDashboard() {
   const onLiveEvent = useCallback((ev: LiveEvent) => {
     const refreshTypes = ['approved', 'rejected', 'cancelled', 'submitted', 'sent_to_manager', 'refunded'];
     if (!refreshTypes.includes(ev.type)) return;
+    scheduleSetupRefresh();                                // a decision can add or clear a setup problem
     // A new request's merged row holds only the event's fields (no location,
     // email or description), so a submission pulls the full list once; they are
     // rare next to decisions, which only refresh the derived views.
@@ -485,18 +512,19 @@ export default function AdminDashboard() {
       needFullList.current = false;
       void (full ? reloadRequests() : reloadDerived());
     }, 500);
-  }, [reloadDerived, reloadRequests]);
+  }, [reloadDerived, reloadRequests, scheduleSetupRefresh]);
   // A staff record changed (added, edited, a balance moved): re-read the staff
   // figures, debounced so a burst of saves costs one read.
   const staffRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaffChange = useCallback(() => {
+    scheduleSetupRefresh();                                // the setup list follows staff edits too
     if (staffRefresh.current) clearTimeout(staffRefresh.current);
     staffRefresh.current = setTimeout(() => {
       getAdminBalances()
         .then((r) => setEmployees(r.data.employees || []))
         .catch(() => { /* the table keeps its figures until the next change */ });
     }, 300);
-  }, []);
+  }, [scheduleSetupRefresh]);
   useLiveRequests({ scope: 'admin', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   const handleReprocess = useCallback(async (id: string, reason: string) => {
@@ -633,7 +661,6 @@ export default function AdminDashboard() {
                 <StaffScreen
                   employees={employees}
                   requests={requests}
-                  setup={employeeSetup}
                   processingEnabled={processingEnabled}
                   onManageAssignments={() => setTab('assignments')}
                   onReload={refreshStaffData}
@@ -644,14 +671,13 @@ export default function AdminDashboard() {
               {tab === 'assignments' && <ManagerAssignments />}
 
               {tab === 'setup' && (
-                <Paper sx={{ p: 3 }}>
-                  <EmployeeValidation
-                    employees={employees}
-                    setupList={employeeSetup}
-                    setupLoading={setupRefreshing}
-                    onRefreshSetup={refreshEmployeeSetup}
-                  />
-                </Paper>
+                // No outer card: the check and the list are their own cards on the page.
+                <EmployeeValidation
+                  employees={employees}
+                  setupList={employeeSetup}
+                  setupLoading={setupRefreshing}
+                  onRefreshSetup={refreshEmployeeSetup}
+                />
               )}
 
               {tab === 'add' && (

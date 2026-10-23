@@ -1,17 +1,12 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  Box, Alert, Chip, Stack, Button, Typography, CircularProgress,
+  Box, Alert, Stack, Button, Typography, CircularProgress, Paper, Link, LinearProgress, Tooltip,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
 } from '@mui/material';
-import { DataGrid, GridColDef, GridActionsCellItem, GridActionsCellItemProps } from '@mui/x-data-grid';
-import RefreshIcon from '@mui/icons-material/Refresh';
-import FactCheckIcon from '@mui/icons-material/FactCheck';
-import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
-import { SHARED_DATA_GRID_PROPS } from './dataGridDefaults';
 import { PROBLEM_INFO } from './employeeSetupProblems';
-import { fixNegativeCarryover } from '../api/client';
-import BalanceIcon from '@mui/icons-material/Balance';
-import SettleRequestsDialog, { UnmovedRequest } from './SettleRequestsDialog';
+import SettleRequestsDialog, { UnmovedRequest, kindLabel } from './SettleRequestsDialog';
+import { formatDayRange } from '../utils/dates';
 
 // One failing check, as the sweep reports it.
 interface Problem {
@@ -37,232 +32,274 @@ export interface EmployeeSetupSummary {
 
 interface Props {
   setupList: EmployeeSetupSummary | null;
+  /** A fresh read of the list is in flight; a thin bar shows it. */
   loading: boolean;
+  /** Re-read the list; called after a fix here, and by Try again on a failed read. */
   onRefresh: () => Promise<void>;
   onSelect: (employeeId: string) => void;
+  /** Show a short message at the bottom of the screen, like the design's toast. */
+  onNotify: (message: string) => void;
+}
+
+// One row as the list draws it: the person and what is wrong with their record.
+interface Row {
+  id: string;
+  name: string;
+  department: string;
+  fails: Problem[];
+  unmoved: UnmovedRequest[];
+}
+
+// Problems with a fix of their own on the row; every other one is fixed on the profile.
+const ROW_FIXED = new Set(['approved_balance_unmoved']);
+
+/**
+ * One request's key, unique across the three request kinds.
+ *
+ * @param r - A flagged request.
+ * @returns e.g. "leave:4107".
+ */
+const requestKey = (r: UnmovedRequest) => `${r.kind}:${r.item_id}`;
+
+// The three columns at desktop width; one stacked column on a phone, so nothing scrolls sideways.
+const GRID = { xs: '1fr', md: '220px minmax(0, 1fr) 210px' };
+
+/**
+ * The heading of one problem, counted where a count says more than the title.
+ *
+ * @param problem - The failing check.
+ * @param unmoved - The person's flagged requests, for the unmoved-balance count.
+ * @returns e.g. "2 approved requests never moved a balance".
+ */
+function problemTitle(problem: Problem, unmoved: UnmovedRequest[]): string {
+  if (problem.code === 'approved_balance_unmoved' && unmoved.length > 1) {
+    return `${unmoved.length} approved requests never moved a balance`;   // the count leads
+  }
+  return PROBLEM_INFO[problem.code]?.title || problem.code;               // unknown codes still show
 }
 
 /**
- * Every Staff Directory record whose setup would stall a request, listed up
- * front rather than found one at a time.
+ * The line under a problem saying exactly what is wrong.
  *
- * The per-employee check answers the same question on demand, which means a
- * broken record is only ever looked at once someone has already been blocked by
- * it. This is the same set of checks run across everyone.
+ * @param problem - The failing check.
+ * @param unmoved - The person's flagged requests.
+ * @returns Each flagged request as "#4107 Vacation, Aug 17 to Aug 18, 2026" for an
+ *   unmoved balance; the check's own detail for everything else.
  */
-export default function EmployeeSetupList({ setupList, loading, onRefresh, onSelect }: Props) {
+function problemDetail(problem: Problem, unmoved: UnmovedRequest[]): string {
+  if (problem.code === 'approved_balance_unmoved' && unmoved.length > 0) {
+    return unmoved
+      .map((r) => `#${r.item_id} ${kindLabel(r)}${r.start_date ? `, ${formatDayRange(r.start_date, r.end_date)}` : ''}`)
+      .join('; ') + '.';                                                 // one sentence listing them
+  }
+  return problem.detail;                                                 // the check already says what it found
+}
+
+/**
+ * Everyone whose staff record will block or confuse a request, listed up front
+ * rather than found one at a time.
+ *
+ * Each row shows the person, every problem with a line saying exactly what is
+ * wrong, and a labelled action: Settle requests fixes its
+ * problem right here; anything else is fixed on the person's profile. Clicking
+ * the name runs the single-employee check above for them.
+ *
+ * @param props - See {@link Props}.
+ * @returns The list section.
+ */
+export default function EmployeeSetupList({ setupList, loading, onRefresh, onSelect, onNotify }: Props) {
+  const navigate = useNavigate();
   // The person whose flagged requests the settle dialog is walking through, or null.
   const [settling, setSettling] = useState<{ name: string; requests: UnmovedRequest[] } | null>(null);
 
-  const rows = useMemo(
-    () =>
-      (setupList?.flagged || []).map((r) => ({
+  // Fixes made here, hidden at once so a row drops the moment it is fixed
+  // rather than when the re-read lands. Cleared by every fresh read, which by
+  // then reflects the fix itself.
+  const [settledKeys, setSettledKeys] = useState<Set<string>>(new Set());   // requests settled here
+  useEffect(() => {
+    setSettledKeys(new Set());                                // the fresh read is the truth now
+  }, [setupList]);
+
+  const rows = useMemo<Row[]>(() => {
+    const out: Row[] = [];
+    for (const r of setupList?.flagged || []) {
+      const unmoved = (r.unmoved_requests || []).filter((q) => !settledKeys.has(requestKey(q)));
+      const allFails = r.fails || [];
+      const fails = allFails.filter((f) =>
+        !(f.code === 'approved_balance_unmoved' && unmoved.length === 0));             // every request settled
+      if (allFails.length > 0 && fails.length === 0) continue;  // everything fixed here: drop the row
+      out.push({
         id: r.employee_id,
-        employee_name: r.employee_name || `#${r.employee_id}`,
+        name: r.employee_name || `#${r.employee_id}`,
         department: r.department || '',
-        location: r.location || '',
-        fails: r.fails || [],
-        unmoved: r.unmoved_requests || [],
-      })),
-    [setupList],
-  );
-
-  // The one-click carry-over correction, straight from the triage list (#407). A
-  // reason is required, as for any balance edit, so the action opens a dialog.
-  const [fixId, setFixId] = useState<string | null>(null);   // whose carry-over is being fixed
-  const [fixName, setFixName] = useState('');                // their name, for the dialog wording
-  const [fixReason, setFixReason] = useState('');            // the typed reason for the move
-  const [fixBusy, setFixBusy] = useState(false);             // the fix request is in flight
-  const [fixError, setFixError] = useState('');              // why the fix was refused, if it was
-
-  /**
-   * Open the carry-over fix dialog for one person, seeding its state.
-   *
-   * Identity is passed in so the grid action does not have to read row state.
-   *
-   * @param id - Staff Directory id whose negative carry-over is being fixed.
-   * @param name - Their display name, for the dialog wording.
-   * @returns Nothing; it only sets dialog state.
-   */
-  const openFix = useCallback((id: string, name: string) => {
-    setFixId(id);
-    setFixName(name);
-    setFixReason('');
-    setFixError('');
-  }, []);
-
-  /**
-   * Post the carry-over fix for the open person, then refresh the sweep.
-   *
-   * Moves the stored negative carry-over onto vacation with the typed reason; on
-   * success the dialog closes and the list re-runs so the row clears, and on
-   * failure the backend's message is shown and the dialog stays open.
-   *
-   * @returns A promise that resolves once the request and refresh settle.
-   */
-  const submitFix = async () => {
-    if (!fixId || !fixReason.trim()) return;                 // guarded; the button is also disabled
-    setFixBusy(true);
-    setFixError('');
-    try {
-      await fixNegativeCarryover(fixId, fixReason.trim());   // C -> 0, V += C, history recorded
-      setFixId(null);
-      await onRefresh();                                     // re-run the sweep so the row clears
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;             // the backend's 400/404/503 message
-      setFixError(typeof detail === 'string' ? detail : 'The carry-over could not be corrected. Please try again.');
-    } finally {
-      setFixBusy(false);
+        fails,
+        unmoved,
+      });
     }
+    return out;
+  }, [setupList, settledKeys]);
+
+  /**
+   * Close the settle dialog: drop what was saved, say so, and re-read the list.
+   *
+   * @param name - The person whose requests were walked through.
+   * @param all - Every request the dialog was opened with.
+   * @param settled - The ones saved; empty when the dialog was cancelled.
+   */
+  const closeSettle = (name: string, all: UnmovedRequest[], settled: UnmovedRequest[]) => {
+    setSettling(null);
+    if (settled.length === 0) return;                         // nothing saved, nothing changes
+    setSettledKeys((prev) => {
+      const next = new Set(prev);
+      settled.forEach((q) => next.add(requestKey(q)));        // hide them now
+      return next;
+    });
+    onNotify(settled.length === all.length
+      ? `${name} is settled and off the list.`                // the design's wording
+      : 'Saved. Skipped requests stay on the list.');
+    void onRefresh();                                         // re-read, so the other checks are current too
   };
 
-  // Problems sit right after the name: the reason a record is listed is the
-  // first thing to read, and on a narrow viewport, where the grid scrolls
-  // sideways, it is the column that must still be on screen.
-  const columns = useMemo<GridColDef[]>(() => [
-    { field: 'employee_name', headerName: 'Employee', width: 190 },
-    {
-      field: 'fails',
-      headerName: 'Problems',
-      flex: 1,
-      minWidth: 260,
-      sortable: false,
-      filterable: false,
-      renderCell: (params) => (
-        <Stack direction="row" spacing={0.5} flexWrap="wrap" alignItems="center" sx={{ py: 0.5 }}>
-          {(params.value as Problem[]).map((problem) => (
-            <Chip
-              key={problem.code}
-              label={PROBLEM_INFO[problem.code]?.title || problem.code}
-              color="error"
-              size="small"
-              // Titles run long ("A supervisor's email does not match a
-              // Microsoft 365 account"); on a narrow viewport the label wraps
-              // inside the column instead of being cut off at its edge.
-              sx={{ height: 'auto', py: 0.25, '& .MuiChip-label': { whiteSpace: 'normal' } }}
-            />
-          ))}
-        </Stack>
-      ),
-    },
-    { field: 'location', headerName: 'Location', width: 150 },
-    { field: 'department', headerName: 'Department', width: 150 },
-    {
-      field: 'actions',
-      headerName: 'Actions',
-      type: 'actions',
-      width: 160,
-      getActions: (params) => {
-        const actions: React.ReactElement<GridActionsCellItemProps>[] = [
-          <GridActionsCellItem
-            key="check"
-            icon={<FactCheckIcon color="primary" />}
-            label="Check setup"
-            onClick={() => onSelect(String(params.id))}
-          />,
-        ];
-        // A negative carry-over has a one-click fix, offered right on the row (#407).
-        const hasNegativeCarryover = (params.row.fails as Problem[]).some(
-          (f) => f.code === 'carry_over_negative',
-        );
-        if (hasNegativeCarryover) {
-          actions.push(
-            <GridActionsCellItem
-              key="fix-carryover"
-              icon={<AutoFixHighIcon color="warning" />}
-              label="Fix carry-over"
-              onClick={() => openFix(String(params.id), String(params.row.employee_name))}
-              showInMenu={false}
-            />,
-          );
-        }
-        // Approved requests that never moved a balance: settle them one by one (#400).
-        const unmoved = params.row.unmoved as UnmovedRequest[];
-        if (unmoved.length > 0) {
-          actions.push(
-            <GridActionsCellItem
-              key="settle"
-              icon={<BalanceIcon color="primary" />}
-              label="Settle requests"
-              onClick={() => setSettling({ name: params.row.employee_name, requests: unmoved })}
-            />,
-          );
-        }
-        return actions;
-      },
-    },
-  ], [onSelect, openFix]);
+  /**
+   * Go to the person's profile on the Staff screen, where the rest is fixed.
+   *
+   * @param id - Their staff id; the Staff screen opens it from ?open=<id>.
+   */
+  const openProfile = (id: string) => navigate(`/admin/staff?open=${encodeURIComponent(id)}`);
 
   return (
-    <Box sx={{ mb: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 2, mb: 1.5 }}>
-        <Typography variant="body2" color="text.secondary">
-          A request from anyone listed here would stall. Fix their Staff Directory record, then
-          Refresh to confirm it clears.
-        </Typography>
-        <Button
-          size="small"
-          variant="outlined"
-          onClick={onRefresh}
-          disabled={loading}
-          startIcon={loading ? <CircularProgress size={14} color="inherit" /> : <RefreshIcon />}
-          sx={{ flexShrink: 0 }}
-        >
-          Refresh
-        </Button>
-      </Box>
+    <Box>
+      {/* No Refresh button: the list re-reads itself after a fix and whenever a staff record changes. */}
+      <Typography
+        component="h2"
+        sx={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'text.secondary', mb: 1 }}
+      >
+        Everyone with a problem
+      </Typography>
 
       {setupList?.directory_unreadable && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          The Microsoft 365 directory could not be read, so the identity checks were skipped. Refresh
-          to run them again.
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          // A failed read is the one case with a manual retry.
+          action={<Button color="inherit" size="small" onClick={() => void onRefresh()} disabled={loading}>Try again</Button>}
+        >
+          The account list could not be read, so the identity checks were skipped.
         </Alert>
       )}
 
-      {setupList && rows.length === 0 ? (
-        <Alert severity="success">
-          All {setupList.total_checked} Staff Directory records pass the setup checks.
-        </Alert>
-      ) : (
-        <DataGrid
-          rows={rows}
-          columns={columns}
-          loading={loading}
-          {...SHARED_DATA_GRID_PROPS}
-          // A record can carry several problems. The row grows to show every
-          // chip rather than clipping the second line at the fixed height.
-          getRowHeight={() => 'auto'}
-          sx={{ '& .MuiDataGrid-cell': { minHeight: 52, py: 0.5, display: 'flex', alignItems: 'center' } }}
-        />
-      )}
-
-      {/* The carry-over fix dialog: a required reason, then C -> 0 and V += C (#407). */}
-      <Dialog open={fixId !== null} onClose={() => !fixBusy && setFixId(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Move {fixName || 'this person'}'s carry-over onto vacation</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            This sets carry-over to zero and folds the shortfall into vacation. The reason is recorded
-            in their change history, like any other balance edit.
-          </Typography>
-          {fixError && <Alert severity="error" sx={{ mb: 2 }}>{fixError}</Alert>}
-          <TextField
-            label="Reason" value={fixReason} onChange={(e) => setFixReason(e.target.value)}
-            fullWidth multiline minRows={2} autoFocus disabled={fixBusy}
+      <Paper variant="outlined" sx={{ borderRadius: 3, overflow: 'hidden', position: 'relative' }}>
+        {/* A thin bar while the list is re-read; the rows stay readable underneath. */}
+        {loading && setupList && (
+          <LinearProgress
+            aria-label="Updating the list"
+            sx={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2 }}
           />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setFixId(null)} disabled={fixBusy}>Cancel</Button>
-          <Button variant="contained" onClick={submitFix} disabled={fixBusy || !fixReason.trim()}>
-            {fixBusy ? <CircularProgress size={20} /> : 'Move onto vacation'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        )}
+        {/* Column headings, desktop only: on a phone each row stacks and labels itself. */}
+        <Box
+          sx={{
+            display: { xs: 'none', md: 'grid' }, gridTemplateColumns: GRID.md, gap: 2, px: 2.5, py: 1.5,
+            fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase',
+            color: 'text.secondary', borderBottom: 1, borderColor: 'divider',
+          }}
+        >
+          <span>Person</span><span>Problem</span><span>Actions</span>
+        </Box>
+
+        {!setupList && loading && (
+          <Box sx={{ p: 3, display: 'flex', justifyContent: 'center' }}><CircularProgress size={24} /></Box>
+        )}
+
+        {setupList && rows.length === 0 && (
+          <Typography variant="body2" color="text.secondary" sx={{ px: 2.5, py: 3.5 }}>
+            Nothing to fix. All {setupList.total_checked} staff records are set up.
+          </Typography>
+        )}
+
+        {rows.map((row) => {
+          // The profile button shows only when some problem has no fix of its own on the row.
+          const needsProfile = row.fails.some((f) => !ROW_FIXED.has(f.code)) || row.fails.length === 0;
+          return (
+            <Box
+              key={row.id}
+              sx={{
+                display: 'grid', gridTemplateColumns: GRID, gap: { xs: 1.25, md: 2 }, alignItems: 'center',
+                px: 2.5, py: 2, borderBottom: 1, borderColor: 'divider', '&:last-of-type': { borderBottom: 0 },
+              }}
+            >
+              {/* Person: the name runs the single-employee check for them. */}
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, minWidth: 0 }}>
+                <Link
+                  component="button"
+                  type="button"
+                  underline="hover"
+                  color="inherit"
+                  onClick={() => onSelect(row.id)}
+                  aria-label={`Check ${row.name}'s setup`}
+                  sx={{ fontWeight: 700, fontSize: 15, textAlign: 'left', alignSelf: 'flex-start' }}
+                >
+                  {row.name}
+                </Link>
+                {row.department && (
+                  <Typography variant="body2" color="text.secondary">{row.department}</Typography>
+                )}
+              </Box>
+
+              {/* Problem: each one with the line saying exactly what is wrong. */}
+              <Stack spacing={1} sx={{ minWidth: 0 }}>
+                {row.fails.map((problem) => (
+                  <Box key={problem.code} sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {/* The red dot explains itself on hover, and to a screen reader. */}
+                      <Tooltip title="Needs fixing: this can block or confuse a request." arrow>
+                        <Box
+                          component="span"
+                          role="img"
+                          aria-label="Needs fixing"
+                          sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: 'error.main', flex: 'none' }}
+                        />
+                      </Tooltip>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {problemTitle(problem, row.unmoved)}
+                      </Typography>
+                    </Box>
+                    {problemDetail(problem, row.unmoved) && (
+                      <Typography variant="body2" color="text.secondary" sx={{ pl: 2, overflowWrap: 'anywhere' }}>
+                        {problemDetail(problem, row.unmoved)}
+                      </Typography>
+                    )}
+                  </Box>
+                ))}
+              </Stack>
+
+              {/* Actions: labelled, the row's own fixes first, then the profile. */}
+              <Stack direction={{ xs: 'row', md: 'column' }} spacing={1} useFlexGap flexWrap="wrap" alignItems="flex-start">
+                {row.unmoved.length > 0 && (
+                  <Button
+                    variant="contained"
+                    size="small"
+                    onClick={() => setSettling({ name: row.name, requests: row.unmoved })}
+                  >
+                    Settle requests
+                  </Button>
+                )}
+                {needsProfile && (
+                  <Button variant="outlined" size="small" color="inherit" onClick={() => openProfile(row.id)}>
+                    Open profile
+                  </Button>
+                )}
+              </Stack>
+            </Box>
+          );
+        })}
+      </Paper>
 
       <SettleRequestsDialog
         personName={settling?.name || ''}
         requests={settling ? settling.requests : null}
-        // Anything saved clears flags, so re-run the sweep to drop settled people.
-        onClose={(settled) => { setSettling(null); if (settled) onRefresh(); }}
+        // Saved requests drop off at once, a toast says so, and the list re-reads.
+        onClose={(settled) => settling && closeSettle(settling.name, settling.requests, settled)}
       />
     </Box>
   );

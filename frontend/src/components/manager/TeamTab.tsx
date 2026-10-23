@@ -293,7 +293,6 @@ export default function TeamTab({
         record={record}
         requests={theirRequests}
         users={[]}
-        setupProblems={[]}
         processingEnabled={processingEnabled}
         onBack={() => { setSelectedId(null); setRecord(null); }}
         onSaved={reloadRecord}

@@ -57,7 +57,7 @@ from app.services.employee import (
     resolve_person_field,
 )
 from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
-from app.services.employment import is_hourly
+from app.services.employment import is_hourly, whole_sick_days
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.overlap_detection import _extract_lookup_id
 from app.services.holidays import get_holidays_for_province, get_half_friday_season
@@ -100,18 +100,6 @@ LEAVE_TYPE_CASES = [
     ("sim_bereavement", "Bereavement", SAMPLE_LEAVE_DAYS),
     ("sim_jury_duty", "Jury Duty", SAMPLE_LEAVE_DAYS),
 ]
-
-# Sane ranges for the balance pots, taken from the rules the approval path
-# already enforces. Vacation is deliberately absent: it is the pot the cascade
-# overflows into and is allowed to go negative, so it is reported, not graded.
-BALANCE_BOUNDS = {
-    "CurrentSickDayBalance": (0, None),
-    "CurrentOvertimeBalance": (None, None),
-    "Payout": (0, 5),  # approval refuses a payout that would push the total past 5
-}
-# Carry-over is graded by its own dedicated check (carry_over_negative, #407),
-# which also carries the HR fix action, so it is left out of BALANCE_BOUNDS to
-# avoid flagging the same value twice.
 
 # The four pots leave spending moves between. The cascade passes a deficit down
 # the chain rather than clamping it, so their total falls by exactly the days
@@ -333,7 +321,7 @@ def build_validation_report(
     checks.append(_check(
         "identity_roundtrip", "identity", identity["status"], identity["detail"],
         measure={
-            "label": "Microsoft 365 accounts matching their email",
+            "label": "Accounts matching their email",
             "actual": identity.get("account_count", 0),
             "expected": 1,
             "comparison": "equals",
@@ -348,7 +336,7 @@ def build_validation_report(
             "identity_unique_name", "identity",
             label="Other staff sharing this display name",
             detail=(
-                "The Staff Directory could not be re-read, so it is unknown "
+                "The staff list could not be re-read, so it is unknown "
                 "whether anyone else shares this name."
             ),
         ))
@@ -357,7 +345,7 @@ def build_validation_report(
             "identity_unique_name", "identity",
             label="Other staff sharing this display name",
             actual=same_name_others, expected=0, comparison="equals",
-            ok_detail="Their name is unique in the Staff Directory.",
+            ok_detail="Their name is unique among staff.",
             bad_detail=(
                 f"{same_name_others} other staff record(s) are also named "
                 f"'{employee_name}'. Requests are matched back to a person by name, "
@@ -396,7 +384,7 @@ def build_validation_report(
         actual=all_managers_count, expected=1, comparison="at_least",
         ok_detail=f"{all_managers_count} supervisor(s) listed.",
         bad_detail=(
-            "No supervisor is set on the Staff Directory record, so a request "
+            "No supervisor is set on their staff record, so a request "
             "would have no one to approve it."
         ),
     ))
@@ -418,25 +406,6 @@ def build_validation_report(
             ),
         ))
 
-        # Each resolved supervisor needs an email to receive the approval at all.
-        unreachable = [
-            m.get("fields", {}).get("Title", "?")
-            for m in managers
-            if not (m.get("fields", {}).get("EmailAddress") or "").strip()
-        ]
-        checks.append(_measured(
-            "manager_reachable", "supervisor",
-            label="Supervisors with an email address",
-            actual=len(managers) - len(unreachable), expected=len(managers),
-            comparison="equals",
-            ok_detail="All supervisors have an email address.",
-            bad_detail=(
-                "Supervisor(s) with no email address, so approval emails can't "
-                "reach them: " + ", ".join(unreachable)
-            ),
-            bad_status="warn",
-        ))
-
         # Having an address is not the same as that address resolving. Recording
         # a manager against a request needs the email to match a Microsoft 365
         # account; when it doesn't, the request keeps no manager, notifies
@@ -447,9 +416,9 @@ def build_validation_report(
             # accuse a correctly configured record of being broken.
             checks.append(_unmeasured(
                 "manager_m365_match", "supervisor",
-                label="Supervisor emails matching a Microsoft 365 account",
+                label="Supervisor emails the app recognises",
                 detail=(
-                    "The Microsoft 365 directory could not be read, so it is "
+                    "The account list could not be read, so it is "
                     "unknown whether the supervisor emails resolve. Run the "
                     "check again."
                 ),
@@ -457,39 +426,16 @@ def build_validation_report(
         else:
             checks.append(_measured(
                 "manager_m365_match", "supervisor",
-                label="Supervisor emails matching a Microsoft 365 account",
+                label="Supervisor emails the app recognises",
                 actual=manager_m365_matches, expected=len(managers), comparison="equals",
-                ok_detail="Every supervisor's email matches a Microsoft 365 account.",
+                ok_detail="Every supervisor's email is recognised.",
                 bad_detail=(
                     f"Only {manager_m365_matches} of {len(managers)} supervisor "
-                    "email(s) match a Microsoft 365 account. Their requests cannot "
+                    "email(s) are recognised. Their requests cannot "
                     "record a manager, so nobody is notified and the request stays "
                     "hidden from the dashboards."
                 ),
             ))
-
-        # A record listing itself as its own supervisor routes approvals back to
-        # the person who submitted them.
-        self_supervising = sum(
-            1 for entry in (employee_fields.get("AllManagers") or [])
-            if isinstance(entry, dict) and entry.get("LookupValue") == employee_name
-        )
-        # A warn, not a fail: management groups list the whole group as each
-        # member's supervisors, themselves included, and requests still route
-        # to the rest of the group. What it permits is self-approval, which is
-        # worth knowing about rather than a stalled request.
-        checks.append(_measured(
-            "supervisor_not_self", "supervisor",
-            label="Supervisor entries naming the employee themselves",
-            actual=self_supervising, expected=0, comparison="equals",
-            ok_detail="No supervisor entry points back at this employee.",
-            bad_detail=(
-                "This employee is listed among their own supervisors. Their "
-                "requests still reach the others listed, but they could approve "
-                "their own."
-            ),
-            bad_status="warn",
-        ))
 
     # --- Location -> province ---
     checks.append(_measured(
@@ -501,123 +447,6 @@ def build_validation_report(
             f"{province_error}. Leave days cannot be calculated until a valid "
             "location is set, so the request would get stuck."
         ),
-    ))
-
-    # --- Holiday calendar for the province ---
-    if province and not province_error:
-        season = get_half_friday_season(holidays)
-        season_note = (
-            " Half-Friday season detected." if season[0] and season[1]
-            else " (No half-Friday season rows found for this province.)"
-        )
-        checks.append(_measured(
-            "holidays_load", "location",
-            label=f"Holiday rows loaded for {province}",
-            actual=len(holidays), expected=1, comparison="at_least",
-            ok_detail=f"{len(holidays)} holiday row(s) loaded for {province}.{season_note}",
-            bad_detail=(
-                f"No holidays are set for province {province}, so every weekday "
-                "will count as a workday when leave is calculated."
-            ),
-            bad_status="warn",
-        ))
-
-        # A calendar holding only past years still loads, and still silently
-        # miscounts every leave request taken this year.
-        this_year = date.today().year
-        current_year_rows = sum(
-            1 for h in holidays
-            if str(h.get("Date", ""))[:4] == str(this_year)
-        )
-        checks.append(_measured(
-            "holidays_current_year", "location",
-            label=f"Holiday rows dated {this_year}",
-            actual=current_year_rows, expected=1, comparison="at_least",
-            ok_detail=f"{current_year_rows} holiday row(s) cover {this_year}.",
-            bad_detail=(
-                f"The {province} calendar has no holidays dated {this_year}, so "
-                "this year's holidays will be counted as ordinary workdays."
-            ),
-            bad_status="warn",
-        ))
-
-    # --- Balance pots are numeric ---
-    bad_pots = []
-    for pot in BALANCE_POTS:
-        raw = employee_fields.get(pot)
-        try:
-            float(raw or 0)
-        except (TypeError, ValueError):
-            bad_pots.append(f"{pot}={raw!r}")
-    checks.append(_measured(
-        "balances_numeric", "balances",
-        label="Balance figures that parse as a number",
-        actual=len(BALANCE_POTS) - len(bad_pots), expected=len(BALANCE_POTS),
-        comparison="equals",
-        ok_detail=(
-            "All five balance pots are numeric: "
-            + ", ".join(f"{p}={_as_float(employee_fields.get(p))}" for p in BALANCE_POTS)
-        ),
-        bad_detail=(
-            "These balance values are not numbers: " + ", ".join(bad_pots)
-            + ". Leave calculations cannot run until they are corrected."
-        ),
-    ))
-
-    # --- Balance pots sit in a sane range ---
-    # Only meaningful once they parse; a non-numeric pot is already a failure above.
-    if not bad_pots:
-        out_of_range = []
-        for pot, (low, high) in BALANCE_BOUNDS.items():
-            value = _as_float(employee_fields.get(pot))
-            if low is not None and value < low:
-                out_of_range.append(f"{pot}={value} (below {low})")
-            elif high is not None and value > high:
-                out_of_range.append(f"{pot}={value} (above {high})")
-        checks.append(_measured(
-            "balances_in_range", "balances",
-            label="Balance figures outside their expected range",
-            actual=len(out_of_range), expected=0, comparison="equals",
-            ok_detail=(
-                "Every graded balance sits in range. Vacation is not graded — it "
-                "is the pot the cascade overflows into and may run negative."
-            ),
-            bad_detail=(
-                "Balance value(s) outside the expected range: "
-                + ", ".join(out_of_range)
-                + ". These are usually a sign an approval only half-applied."
-            ),
-            bad_status="warn",
-        ))
-
-    # --- Yearly entitlements are set ---
-    # These drive what an employee is granted; a zero here is almost always an
-    # unfinished record rather than a deliberate value.
-    # hourly (#300) have no vacation, so a zero vacation grant is right for
-    # them and only their sick grant is checked.
-    entitlement_fields = (("sick", "SickDayEntitlement"),) if is_hourly(employee_fields) else (
-        ("yearly vacation", "DefaultYearlyVacationDays"),
-        ("sick", "SickDayEntitlement"),
-    )
-    missing_entitlements = [
-        label for label, field in entitlement_fields
-        if not _as_float(employee_fields.get(field)) > 0
-    ]
-    checks.append(_measured(
-        "entitlements_set", "balances",
-        label="Yearly entitlements with a value above zero",
-        actual=len(entitlement_fields) - len(missing_entitlements),
-        expected=len(entitlement_fields), comparison="equals",
-        ok_detail=(
-            "The sick entitlement is set (hourly staff have no vacation entitlement)."
-            if len(entitlement_fields) == 1 else
-            "Both the yearly vacation and sick entitlements are set."
-        ),
-        bad_detail=(
-            "No entitlement recorded for: " + ", ".join(missing_entitlements)
-            + ". Their yearly grant cannot be worked out from this record."
-        ),
-        bad_status="warn",
     ))
 
     # --- Employment type fits the record ---
@@ -644,22 +473,6 @@ def build_validation_report(
                 + ", which only salaried staff carry."
             ),
         ))
-
-    # --- Carry-over is never negative (#407) ---
-    # Carry-over only pays down to zero; a stored negative is old data from before
-    # that rule. The admin setup screens offer a one-click fix on this problem
-    # that moves the negative onto vacation.
-    carry_over_value = _as_float(employee_fields.get("CarryOver"))
-    checks.append(_measured(
-        "carry_over_negative", "balances",
-        label="Carry-over at or above zero",
-        actual=carry_over_value, expected=0, comparison="at_least",
-        ok_detail=f"Carry-over is {carry_over_value:g}, not negative.",
-        bad_detail=(
-            f"Carry-over is {carry_over_value:g}, below zero. Carry-over should never "
-            "be negative; move it onto vacation to correct it."
-        ),
-    ))
 
     # --- Per-leave-type dry runs (carry-over available) ---
     for code, leave_type, days in LEAVE_TYPE_CASES:
@@ -1015,7 +828,9 @@ def _simulate_leave_case(code, leave_type, fields, days, carryover_available=Tru
     cascades between them. What must always hold is that the four pots together
     fall by exactly the days taken — the cascade passes a shortfall down the
     chain rather than dropping it. Asserting the total keeps this check honest
-    without restating the cascade rules here.
+    without restating the cascade rules here. Hourly staff are the exception:
+    their sick and part days come out of sick in whole days (a half day uses a
+    full sick day), so the expected total is rounded up the same way.
 
     Args:
         code: Stable check identifier.
@@ -1046,14 +861,16 @@ def _simulate_leave_case(code, leave_type, fields, days, carryover_available=Tru
         )
 
     deducted = _round(_pot_total(fields, LEAVE_POTS) - _pot_total(projected, LEAVE_POTS))
+    # Hourly: whole sick days, so a half day is expected to take 1, not 0.5.
+    expected = whole_sick_days(days) if is_hourly(fields) else days
     return _measured(
         code, "simulation",
         label=f"Days deducted by {label}",
-        actual=deducted, expected=days, comparison="equals",
-        ok_detail=f"{label}: {days} day(s) deducts exactly {days} across the balance pots.",
+        actual=deducted, expected=expected, comparison="equals",
+        ok_detail=f"{label}: {days} day(s) deducts exactly {expected} across the balance pots.",
         bad_detail=(
-            f"{label}: {days} day(s) deducted {deducted} across the balance pots. "
-            "The cascade is losing or inventing days."
+            f"{label}: {days} day(s) deducted {deducted} across the balance pots "
+            f"where {expected} was expected."
         ),
         projected=projected,
     )
@@ -1137,24 +954,12 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
             "There is no email address on the record, so a submitted request cannot "
             "be linked back to this person."
         )}
-    if not lookup_id:
-        # A warn, not a fail: an address with no Microsoft 365 account behind it
-        # (a personal mailbox, typically) means this person cannot sign in to
-        # submit a SharePoint request in the first place, so the record is
-        # inert rather than mis-wired. It only needs fixing if they are meant
-        # to submit requests.
-        return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
-            f"The email {email} is not linked to the SharePoint site yet. This "
-            "person can use the request page, which links requests by email, but "
-            "not the Microsoft Form until they have a Microsoft 365 account and "
-            "have opened the site."
-        )}
-    # From here the email resolved, so the account count is 1; what can still go
-    # wrong is which Staff Directory record it lands on.
-    if not resolved:
-        return {"status": "fail", "account_count": 1, "lookup_id": lookup_id, "detail": (
-            "Their Microsoft 365 account did not match any Staff Directory record "
-            "(their display name likely differs from their name in the directory)."
+    if not lookup_id or not resolved:
+        # No sign-in account behind the email, or one whose name finds no record:
+        # neither matters any more. The request page links a request by email, so
+        # the email on the record is the whole link (ruled 2026-10-22).
+        return {"status": "pass", "account_count": 1 if lookup_id else 0, "lookup_id": lookup_id, "detail": (
+            f"The request page links requests from {email} to this record."
         )}
     if str(resolved.get("id")) != str(employee_id):
         other = resolved.get("fields", {}).get("Title", "")
@@ -1171,7 +976,7 @@ def _identity_verdict(employee_id, email: str, lookup_id, resolved: dict | None)
             f"({other}, #{resolved.get('id')}), not this record."
         )}
     return {"status": "pass", "account_count": 1, "lookup_id": lookup_id, "detail": (
-        "Their email matches their Microsoft 365 account and their Staff Directory "
+        "Their email matches their staff "
         f"record ({resolved.get('fields', {}).get('Title', '')})."
     )}
 
@@ -1610,7 +1415,7 @@ async def validate_employee_setup(employee_id: str | int) -> dict:
             "current_balances": {},
             "checks": [_check(
                 "employee_record", "identity", "fail",
-                "No Staff Directory record found for this id.",
+                "No staff record found for this id.",
             )],
         }
 
@@ -1763,7 +1568,7 @@ def _identity_unverified() -> dict:
         {"status", "account_count", "detail", "lookup_id"}.
     """
     return {"status": "warn", "account_count": 0, "lookup_id": None, "detail": (
-        "The Microsoft 365 directory could not be read, so identity could not be "
+        "The account list could not be read, so identity could not be "
         "verified. Run the check again."
     )}
 

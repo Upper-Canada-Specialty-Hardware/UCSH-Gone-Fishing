@@ -118,11 +118,17 @@ def test_identity_failure_propagates():
     assert report["overall"] == "fail"
 
 
-def test_an_email_with_no_microsoft_365_account_warns_rather_than_fails():
-    # Not in the site's user list (a personal address, or never opened the
-    # site): the request page still links them by email, so this is a warn.
+def test_an_email_with_no_site_account_passes():
+    # The request page links a request by email, so a missing site account is
+    # not a problem at all any more (ruled 2026-10-22).
     verdict = ev._identity_verdict("1", "someone@gmail.com", None, None)
-    assert verdict["status"] == "warn"
+    assert verdict["status"] == "pass"
+
+
+def test_an_account_whose_name_finds_no_record_passes():
+    # The account's name no longer matters: the email on the record is the link.
+    verdict = ev._identity_verdict("1", "someone@ucsh.com", 501, None)
+    assert verdict["status"] == "pass"
     assert "request page" in verdict["detail"]
 
 
@@ -170,13 +176,13 @@ def test_unresolved_manager_fails():
     assert _by_code(report, "supervisor_resolves")["status"] == "fail"
 
 
-def test_manager_without_email_warns():
-    # No address means no Microsoft 365 match either, so both rows react.
+def test_manager_without_email_fails_on_the_email_match():
+    # No address means no match either; that row alone reacts now that the
+    # "supervisor has no email" warning is gone (ruled 2026-10-22).
     report = _report(
         managers=[{"id": "5", "fields": {"Title": "Boss", "EmailAddress": ""}}],
         manager_m365_matches=0,
     )
-    assert _by_code(report, "manager_reachable")["status"] == "warn"
     assert _by_code(report, "manager_m365_match")["status"] == "fail"
 
 
@@ -185,22 +191,11 @@ def test_supervisor_email_that_does_not_resolve_fails():
     # matches no Microsoft 365 account, so no manager can be recorded against
     # their requests and nobody is ever notified.
     report = _report(manager_m365_matches=0)
-    assert _by_code(report, "manager_reachable")["status"] == "pass"
     m365 = _by_code(report, "manager_m365_match")
     assert m365["status"] == "fail"
     assert m365["measure"]["actual"] == 0
     assert m365["measure"]["expected"] == 1
     assert report["overall"] == "fail"
-
-
-def test_employee_listed_as_their_own_supervisor_warns():
-    # Management groups list the whole group as each member's supervisors,
-    # themselves included. Requests still route to the others, so this is worth
-    # a look rather than a stalled request.
-    fields = {**GOOD_FIELDS, "AllManagers": [{"LookupId": 1, "LookupValue": "Test Employee"}]}
-    report = _report(employee_fields=fields)
-    assert _by_code(report, "supervisor_not_self")["status"] == "warn"
-    assert report["overall"] != "fail"
 
 
 # ----- location / province -----
@@ -213,18 +208,14 @@ def test_bad_location_fails():
     assert report["overall"] == "fail"
 
 
-def test_no_holidays_warns():
-    report = _report(holidays=[])
-    assert _by_code(report, "holidays_load")["status"] == "warn"
-
-
 # ----- balances -----
 
-def test_non_numeric_balance_fails():
+def test_a_balance_that_is_not_a_number_is_not_graded_and_does_not_raise():
+    # Typed staff tables cannot hold text, so there is no check for it; the
+    # report must still build if an old record carries one.
     bad = {**GOOD_FIELDS, "CurrentVacationBalance": "N/A"}
     report = _report(employee_fields=bad)
-    assert _by_code(report, "balances_numeric")["status"] == "fail"
-    assert report["overall"] == "fail"
+    assert "balances_numeric" not in {c["code"] for c in report["checks"]}
 
 
 # ----- per-type simulations -----
@@ -267,50 +258,25 @@ def test_shared_display_name_fails():
 
 # ----- calendar -----
 
-def test_calendar_with_no_current_year_rows_warns():
-    stale = [{"Title": "Canada Day", "Date": "2019-07-01", "Province": "ON"}]
-    report = _report(holidays=stale)
-    assert _by_code(report, "holidays_load")["status"] == "pass"       # rows did load
-    assert _by_code(report, "holidays_current_year")["status"] == "warn"
-
-
 # ----- balances -----
 
-def test_payout_above_the_cap_warns():
-    # Approval refuses a payout that would push the total past five days, so a
-    # stored value above it means something only half-applied.
-    fields = {**GOOD_FIELDS, "Payout": 7}
-    report = _report(employee_fields=fields)
-    assert _by_code(report, "balances_in_range")["status"] == "warn"
+def test_the_dropped_warnings_are_never_raised():
+    # Ruled 2026-10-22: these no longer apply, so a record that once tripped
+    # every one of them reports none of them.
+    fields = {**GOOD_FIELDS, "Payout": 7, "DefaultYearlyVacationDays": 0, "SickDayEntitlement": 0,
+              "AllManagers": [{"LookupId": 1, "LookupValue": "Test Employee"}]}
+    report = _report(employee_fields=fields, holidays=[],
+                     managers=[{"id": "5", "fields": {"Title": "Boss", "EmailAddress": ""}}])
+    codes = {c["code"] for c in report["checks"]}
+    assert not codes & {"manager_reachable", "supervisor_not_self", "holidays_load",
+                        "holidays_current_year", "balances_in_range", "entitlements_set"}
 
 
-def test_negative_vacation_is_not_graded():
-    # Vacation is the pot the cascade overflows into and is allowed to go
-    # negative — it is reported, never graded.
-    fields = {**GOOD_FIELDS, "CurrentVacationBalance": -3}
-    report = _report(employee_fields=fields)
-    assert _by_code(report, "balances_in_range")["status"] == "pass"
-
-
-def test_missing_entitlements_warn():
-    fields = {**GOOD_FIELDS, "DefaultYearlyVacationDays": 0, "SickDayEntitlement": 0}
-    report = _report(employee_fields=fields)
-    entitlements = _by_code(report, "entitlements_set")
-    assert entitlements["status"] == "warn"
-    assert entitlements["measure"]["actual"] == 0
-
-
-def test_carry_over_below_zero_fails():
-    # A stored negative carry-over is old data; its own check grades it red (#407).
+def test_a_negative_carry_over_is_not_a_setup_problem():
+    # Negative balances are not fixed from Employee setup (ruled 2026-10-22).
     report = _report(employee_fields={**GOOD_FIELDS, "CarryOver": -5})
-    carry = _by_code(report, "carry_over_negative")
-    assert carry["status"] == "fail"
-    assert carry["measure"]["actual"] == -5
-
-
-def test_carry_over_at_zero_passes():
-    # Zero carry-over is healthy, so the dedicated check stays green (#407).
-    assert _by_code(_report(), "carry_over_negative")["status"] == "pass"
+    assert "carry_over_negative" not in {c["code"] for c in report["checks"]}
+    assert all(c["status"] != "fail" for c in report["checks"] if c["category"] == "balances")
 
 
 def test_a_pending_vacation_past_the_booking_limit_warns():
@@ -804,18 +770,6 @@ def test_a_warn_only_gap_does_not_flag_the_record(monkeypatch):
     assert _row(result, 1) is None
 
 
-def test_warns_ride_along_on_a_record_flagged_for_something_else(monkeypatch):
-    # A supervisor with no email address cannot be sent an approval (a warn) and
-    # matches no Microsoft 365 account (a fail). The fail is what lists the
-    # record; the warn is shown beside it as context.
-    silent_boss = _staff_record(2, "Boss Person", "", "Alice Worker")
-    result, _ = _sweep(monkeypatch, [ALICE, silent_boss], uil=_uil((101, "Alice Worker", "alice@ucsh.ca")))
-
-    row = _row(result, 1)
-    assert "manager_m365_match" in _codes(row)
-    assert "manager_reachable" in _codes(row, "warns")
-
-
 def test_requests_and_simulations_are_never_reported(monkeypatch):
     # Those two sections grade requests, not the record, and belong to the
     # stuck-request view. A sweep row must only ever carry record-level checks.
@@ -966,6 +920,22 @@ def test_an_hourly_record_carrying_only_an_old_negative_vacation_balance_passes(
 def test_a_salaried_record_gets_no_employment_type_check():
     report = _report(employee_fields={**GOOD_FIELDS, "SalaryHourly": "Salary"})
     assert all(c["code"] != "employment_type_fits" for c in report["checks"])
+
+
+def test_an_hourly_half_day_is_expected_to_take_a_whole_sick_day():
+    # Hourly staff spend sick in whole days, so a half day taking 1 is right,
+    # not a cascade fault (it flagged every hourly person before).
+    fields = {**GOOD_FIELDS, "SalaryHourly": "Hourly", "DefaultYearlyVacationDays": 0,
+              "CurrentVacationBalance": 0, "CurrentSickDayBalance": 3}
+    report = _report(employee_fields=fields)
+    half = _by_code(report, "sim_half_day")
+    assert half["status"] == "pass" and half["measure"]["expected"] == 1
+    assert all(c["status"] == "pass" for c in report["checks"] if c["category"] == "simulation")
+
+
+def test_a_salaried_half_day_still_takes_half_a_day():
+    half = _by_code(_report(employee_fields={**GOOD_FIELDS, "SalaryHourly": "Salary"}), "sim_half_day")
+    assert half["status"] == "pass" and half["measure"]["expected"] == 0.5
 
 
 # ----- approved requests that never moved a balance -----
