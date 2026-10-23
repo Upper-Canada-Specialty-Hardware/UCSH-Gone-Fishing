@@ -43,17 +43,21 @@ def _anthony(email="anthony.old@ucsh.com"):
     }}
 
 
-def _held(name="Anthony Talic", status="held", supervisor_id="3") -> int:
-    """Store one held request from a fresh address and return its id."""
+def _held(name="Anthony Talic", status="held", supervisor_id="3", earlier=()) -> int:
+    """Store one held request from a fresh address and return its id.
+
+    ``earlier`` lists supervisor ids it was sent to (and handed back by) first.
+    """
     email = f"anthony{time.time_ns()}@ucsh.com"
+    involved = [{"id": e, "name": "Earlier", "email": f"{e}@ucsh.com", "outcome": "not_on_team"} for e in earlier]
 
     async def add():
         async with async_session() as session:
             row = HeldRequest(
                 email=email, name=name, department="Project Management",
                 supervisor_id=supervisor_id, supervisor_name="Steve Faith", supervisor_email="stevef@ucsh.com",
-                supervisors_involved=[{"id": supervisor_id, "name": "Steve Faith",
-                                       "email": "stevef@ucsh.com", "outcome": None}],
+                supervisors_involved=involved + [{"id": supervisor_id, "name": "Steve Faith",
+                                                  "email": "stevef@ucsh.com", "outcome": None}],
                 request_type="leave",
                 form_data={"leave_type": "Vacation", "start_date": "2026-11-02", "end_date": "2026-11-03"},
                 status=status, created_at=utcnow(),
@@ -98,7 +102,10 @@ def staff(monkeypatch):
     async def on_postgres():
         return True
 
-    async def save(employee_id, changes, reason, fields, source):
+    async def save(employee_id, changes, reason, fields, source, managers_from=None):
+        record = next(r for r in world["records"] if r["id"] == employee_id)
+        if managers_from is not None:                          # worked out from the record as it is now
+            fields = {**fields, "managers": managers_from(record["fields"])}
         world["saved"].append({"id": employee_id, "changes": changes, "reason": reason,
                                "fields": fields, "source": source})
         if "email" in fields:                                   # the record now carries the new address
@@ -141,10 +148,16 @@ def test_the_holder_sees_the_record_with_that_name(staff):
     assert found["existing"]["sick"] == 2.0
 
 
-def test_anyone_else_sees_only_that_it_moved_on(staff):
-    held_id = _held()
-    found = run(held_profile.held_for_add(held_id, "4"))          # Eduardo opens Steve's request
+def test_an_earlier_supervisor_learns_only_that_it_moved_on(staff):
+    held_id = _held(earlier=("4",))                                # Eduardo handed it back, Steve holds it
+    found = run(held_profile.held_for_add(held_id, "4"))
     assert found["state"] == "declined" and found["existing"] is None
+    # Nothing about where it went or the person's details.
+    assert found["supervisor_name"] == "" and found["email"] == "" and found["summary"] == ""
+
+
+def test_a_manager_it_was_never_sent_to_reads_not_found(staff):
+    assert run(held_profile.held_for_add(_held(), "99")) is None
 
 
 def test_an_admin_acts_for_the_holder(staff):
@@ -171,9 +184,12 @@ def test_replace_saves_the_form_and_makes_the_supervisor_the_only_manager(staff)
 
 def test_alongside_keeps_the_managers_on_record(staff):
     held_id = _held()
+    # A manager added after the page opened is kept: the list is built from the record at save time.
+    anthony = next(r for r in staff["records"] if r["id"] == "412")
+    anthony["fields"]["AllManagers"].append({"LookupId": 9, "LookupValue": "Dana Quinn"})
     _update(held_id, manager_mode="alongside")
     [saved] = staff["saved"]
-    assert saved["fields"]["managers"] == {"ids": [7, 3], "names": ["Fareez Vellani", "Steve Faith"]}
+    assert saved["fields"]["managers"] == {"ids": [7, 9, 3], "names": ["Fareez Vellani", "Dana Quinn", "Steve Faith"]}
     assert not any("moved off" in m["subject"] for m in staff["sent"])           # nobody was taken off
 
 
@@ -191,6 +207,13 @@ def test_only_the_holder_may_save(staff):
     with pytest.raises(held_profile.HeldProfileError) as err:
         _update(held_id, supervisor_id="4")
     assert err.value.status_code == 409 and staff["saved"] == []
+
+
+def test_the_supervisors_own_record_is_refused_even_for_an_admin(staff):
+    held_id = _held(name="Steve Faith")                            # someone typed the supervisor's own name
+    with pytest.raises(held_profile.HeldProfileError, match="own record"):
+        _update(held_id, supervisor_id=None, actor_name="An admin")
+    assert staff["saved"] == []
 
 
 def test_a_closed_request_cannot_be_saved(staff):

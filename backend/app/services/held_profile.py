@@ -36,7 +36,7 @@ from app.services.employee import get_employee_by_email, get_employee_by_id, get
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.manager_assignments import _extract_all_managers
 from app.services.staff_cleanup import clean_email, collapse_whitespace
-from app.services.staff_entitlements import MANAGERS_KEY, apply_entitlement_changes
+from app.services.staff_entitlements import apply_entitlement_changes
 
 logger = logging.getLogger(__name__)
 
@@ -132,27 +132,38 @@ async def held_for_add(held_id: int, supervisor_id: str | None) -> dict | None:
             admin (who acts for whoever holds it now).
 
     Returns:
-        None when there is no such request. Otherwise ``{"held_id", "name",
+        None when there is no such request, or a manager it was never sent to
+        asks. Otherwise ``{"held_id", "name",
         "email", "department", "summary", "supervisor_name", "state",
         "request_number", "set_up_on", "existing", "same_name_count"}``. State
         is "open" only while this manager (or, for an admin, anyone) still holds
-        it; then ``existing`` is the record with the same name, when exactly one
-        exists. Nothing about the record is shown in any other state.
+        it; then the details are filled and ``existing`` is the record with the
+        same name, when exactly one exists. In any other state only the name and
+        what happened are returned.
     """
     row = await _load(held_id)
     if row is None:
         return None
+    if supervisor_id is not None:                             # a manager: only one it was ever sent to
+        involved = {str(e.get("id")) for e in (row.supervisors_involved or [])} | {str(row.supervisor_id)}
+        if str(supervisor_id) not in involved:
+            return None                                       # reads as "not found", like a missing id
     holder = supervisor_id if supervisor_id is not None else row.supervisor_id   # an admin acts for the holder
     state = await held_requests.not_on_team_link_state(held_id, str(holder)) or {"state": "declined"}
+    # Once it no longer waits on them, they learn what happened and nothing else:
+    # not who holds it now, not the person's email, not the request (#462).
     result = {
-        "held_id": row.id, "name": row.name, "email": row.email, "department": row.department or "",
-        "summary": held_requests.describe_form(row.request_type, row.form_data),
-        "supervisor_name": row.supervisor_name, "state": state["state"],
+        "held_id": row.id, "name": row.name, "email": "", "department": "", "summary": "",
+        "supervisor_name": "", "state": state["state"],
         "request_number": state.get("request_number", ""), "set_up_on": state.get("set_up_on", ""),
-        "note": row.last_error or "",
-        "existing": None, "same_name_count": 0,
+        "note": "", "existing": None, "same_name_count": 0,
     }
-    if state["state"] == "open":                              # only the one who holds it sees the record
+    if state["state"] == "open":                              # only the one who holds it sees the details
+        result.update({
+            "email": row.email, "department": row.department or "",
+            "summary": held_requests.describe_form(row.request_type, row.form_data),
+            "supervisor_name": row.supervisor_name, "note": row.last_error or "",
+        })
         matches = await same_name_records(row.name)
         result["same_name_count"] = len(matches)
         if len(matches) == 1:
@@ -263,8 +274,8 @@ async def update_existing_from_held(
         )
     record = matches[0]
     employee_id = str(record["id"])
-    if supervisor_id is not None and employee_id == str(supervisor_id):
-        raise HeldProfileError("You cannot edit your own record.")
+    if employee_id == str(row.supervisor_id):                 # never the holder's own record, admin or not
+        raise HeldProfileError("That is the supervisor's own record; it cannot be changed from here.")
     before = record_summary(record)
 
     # A new email must not already belong to someone else: that would give two
@@ -281,20 +292,34 @@ async def update_existing_from_held(
     sup_fields = (supervisor or {}).get("fields", {})
     sup_name = collapse_whitespace(sup_fields.get("Title")) or row.supervisor_name
     sup_link = await _link_id(row.supervisor_id, sup_fields.get("EmailAddress") or row.supervisor_email)
-    current = _extract_all_managers(record.get("fields", {}))
-    if manager_mode == "replace" or not current:
-        managers = [{"sp_user_id": sup_link, "name": sup_name}]
-    else:                                                     # alongside: keep everyone, add the supervisor once
-        managers = current + ([] if any(m["sp_user_id"] == sup_link for m in current)
-                              else [{"sp_user_id": sup_link, "name": sup_name}])
-    directory = {**fields, MANAGERS_KEY: {
-        "ids": [m["sp_user_id"] for m in managers], "names": [m["name"] for m in managers],
-    }}
+    supervisor_entry = {"sp_user_id": sup_link, "name": sup_name}
+    # The managers on record as the save reads them under its lock, kept for the
+    # "moved off your team" notices.
+    seen: dict = {"current": []}
+
+    def managers_from(current_fields: dict) -> dict:
+        """The new managers, worked out from the record as read under the lock.
+
+        Args:
+            current_fields: The record's fields, freshly re-read by the save.
+
+        Returns:
+            ``{"ids", "names"}`` for the managers key.
+        """
+        current = _extract_all_managers(current_fields)      # nobody added meanwhile is lost
+        seen["current"] = current
+        if manager_mode == "replace" or not current:
+            managers = [supervisor_entry]
+        else:                                                 # alongside: keep everyone, add the supervisor once
+            managers = current + ([] if any(m["sp_user_id"] == sup_link for m in current) else [supervisor_entry])
+        return {"ids": [m["sp_user_id"] for m in managers], "names": [m["name"] for m in managers]}
 
     saved = await apply_entitlement_changes(
         employee_id, changes, f"Changed by {actor_name} from {row.name}'s held request: {reason}",
-        directory, source=source,
+        fields, source=source, managers_from=managers_from,
     )
+    # Replace takes off everyone but the supervisor; alongside takes off nobody.
+    removed = [m for m in seen["current"] if m["sp_user_id"] != sup_link] if manager_mode == "replace" else []
 
     # The notices: the replaced address, and every manager taken off.
     person = before["name"]
@@ -303,8 +328,7 @@ async def update_existing_from_held(
             await _tell_old_email(before["email"], new_email, person, actor_name)
         except Exception:  # noqa: BLE001 - the save stands; logged for a follow-up
             logger.exception("Could not tell the old address about the email change on %s", employee_id)
-    kept = {m["sp_user_id"] for m in managers}
-    for gone in (m for m in current if m["sp_user_id"] not in kept):
+    for gone in removed:
         try:
             await _tell_removed_manager(gone["name"], person, actor_name)
         except Exception:  # noqa: BLE001 - informational only

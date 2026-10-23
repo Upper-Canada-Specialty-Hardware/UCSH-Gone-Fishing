@@ -63,6 +63,13 @@ OPEN_STATUSES = ("held", "waiting_site", "failed")   # waiting to become a real 
 # page shows its status instead of a new form and the submit endpoints refuse a
 # new one (#442). "not_on_team" is in flight: the person has still to re-pick.
 ACTIVE_STATUSES = ("held", "waiting_site", "failed", "releasing", "not_on_team")
+# For someone already on staff only these still wait on a supervisor. A row that
+# is failed, waiting_site or releasing is the system's to finish (an admin
+# retries it), so it must not stop them making new requests.
+SUPERVISOR_STATUSES = ("held", "not_on_team")
+# What an admin may cancel: anything not being submitted right now. A row in
+# "releasing" is mid-submit; cancelling it would be overwritten by the release.
+CANCELLABLE_STATUSES = ("held", "waiting_site", "failed", "not_on_team")
 
 REQUEST_LABELS = {
     "leave": "leave request",
@@ -439,7 +446,7 @@ async def hold_request(
     return row
 
 
-async def open_held_request_for(*, email: str) -> HeldRequest | None:
+async def open_held_request_for(*, email: str, statuses: tuple = ACTIVE_STATUSES) -> HeldRequest | None:
     """The person's one in-flight held request, if they have one (#442).
 
     Used by the gate: while a person has a request waiting to be set up, the
@@ -448,9 +455,11 @@ async def open_held_request_for(*, email: str) -> HeldRequest | None:
 
     Args:
         email: The person's address to match on ``email``.
+        statuses: Which statuses count; ``SUPERVISOR_STATUSES`` for someone
+            already on staff, whose failed or stuck release is an admin's to fix.
 
     Returns:
-        The newest active held request for them, or None when they have none.
+        The newest matching held request for them, or None when they have none.
     """
     normalised = (email or "").strip().lower()
     if not normalised:                                         # nothing to match on
@@ -458,7 +467,7 @@ async def open_held_request_for(*, email: str) -> HeldRequest | None:
     async with async_session() as session:
         return await session.scalar(
             select(HeldRequest)
-            .where(HeldRequest.email == normalised, HeldRequest.status.in_(ACTIVE_STATUSES))
+            .where(HeldRequest.email == normalised, HeldRequest.status.in_(statuses))
             .order_by(HeldRequest.id.desc()).limit(1)          # the newest one, if several ever existed
         )
 
@@ -556,35 +565,28 @@ def _mark_outcome(involved: list | None, supervisor_id: str, outcome: str) -> li
     return result
 
 
-async def _tell_earlier_supervisors(row: HeldRequest) -> None:
-    """Tell supervisors who previously held this request that it moved on (#443, #462).
+async def _tell_decliner(row: HeldRequest, address: str) -> None:
+    """Tell the supervisor who just handed the request back that it moved on (#443, #462).
 
-    Each distinct earlier address (every involved supervisor other than the one
-    who holds it now) gets one threaded note, so a supervisor who passed it on
-    knows it is off their plate. The note does not name the new supervisor:
-    nothing about a request is shared between managers (Robert's ruling), and an
-    earlier supervisor hears nothing more once it has left them.
+    One threaded note, sent once, when the person picks someone else. It does not
+    name the new supervisor: nothing about a request is shared between managers
+    (Robert's ruling), and a supervisor hears nothing more once it has left them.
 
     Args:
-        row: The held request, after the current supervisor is set.
+        row: The held request, after the new supervisor is set.
+        address: The email of the supervisor who declined it.
     """
-    current = (row.supervisor_email or "").strip().lower()
-    seen: set[str] = set()
-    for entry in (row.supervisors_involved or []):
-        addr = (entry.get("email") or "").strip().lower()
-        if not addr or addr == current or addr in seen:      # skip the current holder and duplicates
-            continue
-        seen.add(addr)
-        line = (f"{html.escape(row.name)}'s request has moved to another supervisor. "
-                "Nothing is needed from you.")               # no name: no history between managers
-        try:
-            await send_email(
-                to=[entry["email"]], subject=_supervisor_subject(row),
-                html_body=f"<p>{line}</p>",
-                headers=thread_headers(row.id, entry["email"]),   # their own thread about this request
-            )
-        except Exception:  # noqa: BLE001 - one bad send must not stop the others
-            logger.exception("Could not tell an earlier supervisor about held request #%s", row.id)
+    if not address or address.strip().lower() == (row.supervisor_email or "").strip().lower():
+        return                                               # nobody to tell, or it came back to them
+    line = (f"{html.escape(row.name)}'s request has moved to another supervisor. "
+            "Nothing is needed from you.")                   # no name: no history between managers
+    try:
+        await send_email(
+            to=[address], subject=_supervisor_subject(row), html_body=f"<p>{line}</p>",
+            headers=thread_headers(row.id, address),         # their own thread about this request
+        )
+    except Exception:  # noqa: BLE001 - informational only
+        logger.exception("Could not tell the decliner about held request #%s", row.id)
 
 
 async def decline_held_request(held_id: int, supervisor_id: str) -> str:
@@ -703,6 +705,7 @@ async def repick_supervisor(
         if row.status != "not_on_team":                      # nothing to re-pick
             raise HoldError("This request is not waiting for another supervisor.")
         declined_id = str(row.supervisor_id)                 # the one who said not their team
+        declined_email = row.supervisor_email                # told once, below, that it moved on
         department = row.department or ""
         # Resolve the new supervisor within the same department (as the first pick was).
         supervisor = await find_supervisor(department, supervisor_id, supervisor_email)
@@ -732,7 +735,7 @@ async def repick_supervisor(
         ])
     except Exception:  # noqa: BLE001
         logger.exception("Could not tell the person their request was re-routed (#%s)", held_id)
-    await _tell_earlier_supervisors(row)                     # the decliner and any before are told
+    await _tell_decliner(row, declined_email)                # only the one who just handed it back
     return row
 
 
@@ -1094,7 +1097,7 @@ async def cancel_held_request(held_id: int, reason: str) -> bool:
         raise HoldError("A reason is required to cancel a held request.")
     async with async_session() as session:
         row = await session.get(HeldRequest, held_id)
-        if row is None or row.status not in ACTIVE_STATUSES:  # already closed, or no such row
+        if row is None or row.status not in CANCELLABLE_STATUSES:  # closed, mid-submit, or no such row
             return False
         row.status_before_cancel = row.status               # remember it, so the undo can restore it
         row.status = "cancelled"
@@ -1126,14 +1129,28 @@ async def uncancel_held_request(held_id: int) -> bool:
     Returns:
         True when a cancelled row was restored; False when it was not cancelled
         or there is no such row.
+
+    Raises:
+        HoldError: When the person has made another request since, so restoring
+            this one would give them two at once (#442).
     """
     async with async_session() as session:
         row = await session.get(HeldRequest, held_id)
         if row is None or row.status != "cancelled":         # nothing to undo
             return False
+        other = await session.scalar(
+            select(HeldRequest.id).where(
+                HeldRequest.email == row.email, HeldRequest.id != row.id,
+                HeldRequest.status.in_(ACTIVE_STATUSES),
+            ).limit(1)
+        )
+        if other is not None:                                # one request until set up
+            raise HoldError(f"They have made another request since (#{other}). Cancel that one first.")
         # Restore the status it held before (defaulting to "held" for rows cancelled
-        # before this was tracked), and clear the cancel reason.
-        row.status = row.status_before_cancel or "held"
+        # before this was tracked; a row cancelled mid-submit by older code comes
+        # back as "failed" so an admin can retry it), and clear the cancel reason.
+        before = row.status_before_cancel or "held"
+        row.status = "failed" if before == "releasing" else before
         row.status_before_cancel = None
         row.cancel_reason = None
         await session.commit()

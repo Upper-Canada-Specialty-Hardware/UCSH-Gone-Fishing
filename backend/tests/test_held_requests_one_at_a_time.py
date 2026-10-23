@@ -446,6 +446,55 @@ def test_outbox_emails_about_the_released_request_join_its_threads(world, monkey
     assert asyncio.run(thread(other_kind, email)) is None                        # same number, other kind
 
 
+def test_a_request_being_submitted_cannot_be_cancelled(world):
+    row = _hold(_email())
+
+    async def mark_releasing():
+        from app.database import async_session
+        async with async_session() as session:
+            stored = await session.get(held_requests.HeldRequest, row.id)
+            stored.status = "releasing"
+            await session.commit()
+    asyncio.run(mark_releasing())
+    assert asyncio.run(held_requests.cancel_held_request(row.id, "duplicate")) is False
+
+
+def test_undo_is_refused_when_the_person_made_another_request_since(world):
+    email = _email()
+    first = _hold(email)
+    asyncio.run(held_requests.cancel_held_request(first.id, "wrong dates"))
+    _hold(email)                                                  # a new one after the cancel
+    with pytest.raises(held_requests.HoldError, match="another request since"):
+        asyncio.run(held_requests.uncancel_held_request(first.id))
+
+
+def test_a_failed_release_does_not_block_someone_on_staff(world):
+    email = _email()
+    row = _hold(email)
+
+    async def mark_failed():
+        from app.database import async_session
+        async with async_session() as session:
+            stored = await session.get(held_requests.HeldRequest, row.id)
+            stored.status = "failed"
+            await session.commit()
+    asyncio.run(mark_failed())
+    # A new hire still sees it; someone on staff is not stopped by it.
+    assert asyncio.run(held_requests.open_held_request_for(email=email)) is not None
+    assert asyncio.run(held_requests.open_held_request_for(
+        email=email, statuses=held_requests.SUPERVISOR_STATUSES)) is None
+
+
+def test_not_on_team_does_nothing_while_processing_is_off(intake_client, world, monkeypatch):
+    email = _email()
+    row = _hold(email)
+    monkeypatch.setattr(settings, "PROCESSING_ENABLED", False)
+    posted = intake_client.post("/api/intake/held/not-on-team",
+                                params={"token": held_requests.not_on_team_token(row.id, "3")})
+    assert posted.status_code == 503
+    assert asyncio.run(held_requests.open_held_request_for(email=email)).status == "held"
+
+
 def test_cancel_closes_the_supervisors_thread_only_while_they_hold_it(world):
     email = _email()
     row = _hold(email)

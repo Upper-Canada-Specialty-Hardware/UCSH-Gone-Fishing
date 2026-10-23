@@ -80,9 +80,11 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
     # One request until set up (#442): someone who still has a request waiting to
     # be set up (a new hire not added yet) cannot send a new one until that one is
     # handled. Matched by their email.
-    from app.services.held_requests import open_held_request_for
+    from app.services.held_requests import SUPERVISOR_STATUSES, open_held_request_for
     held_email = employee["fields"].get("EmailAddress", "")
-    if await open_held_request_for(email=held_email):
+    # Only a request still waiting on a supervisor counts: a failed or stuck
+    # release is an admin's to finish and must not block an on-staff person.
+    if await open_held_request_for(email=held_email, statuses=SUPERVISOR_STATUSES):
         raise HTTPException(
             status_code=409,
             detail="You already have a request waiting to be set up. You can make "

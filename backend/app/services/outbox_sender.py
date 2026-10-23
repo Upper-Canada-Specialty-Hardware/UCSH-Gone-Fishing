@@ -246,7 +246,10 @@ async def send_outbox_row(session, row: Outbox) -> None:
             thread = None
             if request is not None:
                 try:
-                    thread = await held_thread_for(session, request, row.recipient)
+                    # A savepoint, so a failed lookup rolls back only itself and the
+                    # row's sent status and timeline event still commit.
+                    async with session.begin_nested():
+                        thread = await held_thread_for(session, request, row.recipient)
                 except Exception:                                  # noqa: BLE001 - threading is a nicety, never blocks a send
                     logger.exception("Outbox %s: could not look up a held-request thread", row.id)
             if thread is not None:

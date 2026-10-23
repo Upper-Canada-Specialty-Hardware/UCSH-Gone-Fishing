@@ -2329,6 +2329,8 @@ async def admin_cancel_held_request(held_id: int, body: dict | None = None):
             held request with that id.
     """
     from app.services.held_requests import HoldError, cancel_held_request
+    if not settings.PROCESSING_ENABLED:                        # read-only: no state change, no email
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
     reason = ((body or {}).get("reason") or "").strip()
     try:
         cancelled = await cancel_held_request(held_id, reason)
@@ -2352,10 +2354,18 @@ async def admin_uncancel_held_request(held_id: int):
         {"restored": true}.
 
     Raises:
-        HTTPException: 404 when the request is not cancelled or does not exist.
+        HTTPException: 503 while processing is off; 409 when the person has made
+            another request since; 404 when the request is not cancelled or does
+            not exist.
     """
-    from app.services.held_requests import uncancel_held_request
-    if not await uncancel_held_request(held_id):
+    from app.services.held_requests import HoldError, uncancel_held_request
+    if not settings.PROCESSING_ENABLED:
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    try:
+        restored = await uncancel_held_request(held_id)
+    except HoldError as e:                                     # restoring would give them two at once
+        raise HTTPException(status_code=409, detail=str(e))
+    if not restored:
         raise HTTPException(status_code=404, detail="No cancelled held request with that id")
     return {"restored": True}
 
