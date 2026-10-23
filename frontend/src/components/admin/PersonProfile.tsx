@@ -153,8 +153,6 @@ interface Props {
    *  Unused in manager mode (the managers module is read-only there), so the
    *  Team tab passes an empty list. */
   users: ManagerOption[];
-  /** Setup-check problems for this person, shown as badges. */
-  setupProblems: string[];
   /** Whether writes are enabled; Save is off when processing is disabled. */
   processingEnabled: boolean;
   /** Go back to the staff table. */
@@ -191,7 +189,7 @@ interface Props {
  * @returns The profile body.
  */
 export default function PersonProfile({
-  record, requests, users, setupProblems, processingEnabled, onBack, onSaved, onNotify,
+  record, requests, users, processingEnabled, onBack, onSaved, onNotify,
   mode = 'admin', managerName = '', onRemovedSelf,
 }: Props) {
   const theme = useTheme();
@@ -489,27 +487,34 @@ export default function PersonProfile({
               // A manager viewing their own record edits nothing (the team API
               // refuses self edits), so the name is read-only (#372).
               <Typography variant="h5" sx={{ overflowWrap: 'anywhere' }}>{currentName}</Typography>
-            ) : editingKey === 'name' ? (
-              <TextField
-                autoFocus size="small" defaultValue={currentName} inputProps={{ 'aria-label': 'Name' }}
-                onBlur={(e) => { setEdit('name', e.target.value.trim() || currentName); setEditingKey(null); }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { (e.target as HTMLElement).blur(); focusReason(); }   // done typing: on to the reason
-                  if (e.key === 'Escape') setEditingKey(null);
-                }}
-                sx={{ maxWidth: 360 }}
-              />
             ) : (
+              // The save card's anchor stays mounted while the name is being typed:
+              // the card's open test reads this ref during render, so an anchor that
+              // only mounted after the edit left the card closed until the next render.
               <Box ref={(el: HTMLElement | null) => { anchors.current.name = el; }} sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, maxWidth: '100%' }}>
-                <Typography
-                  variant="h5" tabIndex={0} role="button" title="Click to rename"
-                  onClick={() => openField('name')}
-                  onKeyDown={(e) => { if (e.key === 'Enter') openField('name'); }}
-                  sx={{ cursor: 'pointer', borderRadius: 1, px: 0.5, mx: -0.5, minWidth: 0, overflowWrap: 'anywhere', bgcolor: edits.name !== undefined ? alpha(t.accent, 0.18) : 'transparent', '&:hover': { bgcolor: t.hover } }}
-                >
-                  {currentName}
-                </Typography>
-                {savedKey === 'name' && <SavedMark />}
+                {editingKey === 'name' ? (
+                  <TextField
+                    autoFocus size="small" defaultValue={currentName} inputProps={{ 'aria-label': 'Name' }}
+                    onBlur={(e) => { setEdit('name', e.target.value.trim() || currentName); setEditingKey(null); }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { (e.target as HTMLElement).blur(); focusReason(); }   // done typing: on to the reason
+                      if (e.key === 'Escape') setEditingKey(null);
+                    }}
+                    sx={{ width: 360, maxWidth: '100%' }}
+                  />
+                ) : (
+                  <>
+                    <Typography
+                      variant="h5" tabIndex={0} role="button" title="Click to rename"
+                      onClick={() => openField('name')}
+                      onKeyDown={(e) => { if (e.key === 'Enter') openField('name'); }}
+                      sx={{ cursor: 'pointer', borderRadius: 1, px: 0.5, mx: -0.5, minWidth: 0, overflowWrap: 'anywhere', bgcolor: edits.name !== undefined ? alpha(t.accent, 0.18) : 'transparent', '&:hover': { bgcolor: t.hover } }}
+                    >
+                      {currentName}
+                    </Typography>
+                    {savedKey === 'name' && <SavedMark />}
+                  </>
+                )}
               </Box>
             )}
             <Stack direction="row" spacing={1.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.25, color: 'text.secondary', fontSize: 13.5 }}>
@@ -527,7 +532,6 @@ export default function PersonProfile({
             {fieldValue('salary_hourly') && <Chip size="small" label={String(fieldValue('salary_hourly'))} />}
             {!currentMgrs.length && <Chip size="small" color="error" variant="outlined" label="No manager" />}
             {fieldValue('system_check') === 'Editing' && <Chip size="small" color="warning" variant="outlined" label="System check: Editing" />}
-            {setupProblems.map((p) => <Chip key={p} size="small" color="error" variant="outlined" label={p} />)}
             {/* Archive a departed person (#119): admin only. A manager has no
                 archive power over their team, so the button is hidden there (#372). */}
             {!manager && (

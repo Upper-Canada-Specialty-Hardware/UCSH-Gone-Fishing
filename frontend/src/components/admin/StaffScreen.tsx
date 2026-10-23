@@ -172,7 +172,7 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
       .catch(() => { /* the pickers are just empty */ });
   }, []);
 
-  // Setup problems by employee id, for the flag on each row and the profile.
+  // Setup problems by employee id, for the flag on each row and the filter.
   const problemsById = useMemo(() => Object.fromEntries(
     (setup?.flagged || []).map((f) => [String(f.employee_id), f.fails.map((p) => p.detail || p.code)]),
   ) as Record<string, string[]>, [setup]);
@@ -265,7 +265,6 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
           record={record}
           requests={theirRequests}
           users={spUsers}
-          setupProblems={problemsById[openId] || []}
           processingEnabled={processingEnabled}
           onBack={() => { setOpenId(null); setRecord(null); }}
           onSaved={reloadRecord}
