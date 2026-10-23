@@ -244,7 +244,7 @@ async def verify_code(body: VerifyRequest):
         # One request until set up (#442): while this person has a held request in
         # flight, hand the page its status and a verified-email token, so it shows
         # the status instead of a new form and can re-pick a supervisor.
-        held = await _held_gate(email=email)
+        held = await _held_gate(email=email, statuses=held_requests.SUPERVISOR_STATUSES)   # on staff: only these block
         if held:
             answer["held"] = held
             answer["verified"] = email_codes.sign_verified_email(email)
@@ -269,11 +269,12 @@ async def verify_code(body: VerifyRequest):
     return answer
 
 
-async def _held_gate(*, email: str) -> dict | None:
+async def _held_gate(*, email: str, statuses: tuple = held_requests.ACTIVE_STATUSES) -> dict | None:
     """The status of a person's in-flight held request, for the sign-in gate (#442).
 
     Args:
         email: Match a held request on the person's address.
+        statuses: Which held statuses count (fewer for someone already on staff).
 
     Returns:
         ``{"status_token", "supervisor_name", "state"}`` when they have a request
@@ -281,7 +282,7 @@ async def _held_gate(*, email: str) -> dict | None:
         when a supervisor handed it back (so the page offers a re-pick), else
         "waiting".
     """
-    row = await held_requests.open_held_request_for(email=email)
+    row = await held_requests.open_held_request_for(email=email, statuses=statuses)
     if row is None:
         return None
     return {
@@ -446,6 +447,8 @@ async def held_repick(body: RepickBody):
             new supervisor cannot be used.
     """
     email = _require_verified(body.verified.email, body.verified.exp, body.verified.token)
+    if not settings.PROCESSING_ENABLED:                         # read-only: nothing moves, nobody is emailed
+        raise HTTPException(status_code=503, detail="Requests cannot be changed right now. Try again later.")
     held_id = held_requests.held_id_from_status_token(body.status_token)
     if held_id is None:
         raise HTTPException(status_code=404, detail="Request not found.")
@@ -558,6 +561,11 @@ async def held_not_on_team_submit(token: str = Query(...)):
     Returns:
         A small HTML page confirming it was handed back.
     """
+    if not settings.PROCESSING_ENABLED:                         # read-only: hand nothing back, email nobody
+        return HTMLResponse(_page(
+            "Not right now",
+            "<p>This cannot be done right now. Open the link again later.</p>",
+        ), status_code=503)
     decoded = held_requests.decode_not_on_team_token(token)
     if decoded is not None:
         held_id, supervisor_id = decoded

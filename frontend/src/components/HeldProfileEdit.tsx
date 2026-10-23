@@ -77,26 +77,30 @@ export default function HeldProfileEdit({ held, scope, processingEnabled, locati
   const places = locations.includes(record.location) || !record.location
     ? locations : [...locations, record.location];
 
-  /** Save the edit, sending only what the form shows, and report what happened. */
+  /**
+   * Save the edit, sending only what the supervisor changed, and report what happened.
+   * An untouched balance is never sent, so an approval that moved it after the
+   * page opened is not undone; a cleared number box counts as untouched.
+   */
   const save = async () => {
     setError('');
     setSaving(true);
+    const changes: Record<string, number> = {};
+    for (const key of ['vacation_entitlement', 'sick_entitlement', 'vacation', 'sick'] as const) {
+      const typed = form[key].trim();
+      if (typed !== '' && Number(typed) !== record[key]) changes[key] = Number(typed);   // changed numbers only
+    }
+    const fields: Record<string, string> = {};
+    const typedFields = {
+      email: form.email.trim(), department: form.department.trim(),
+      salary_hourly: form.salary_hourly, location: form.location,
+    };
+    for (const [key, value] of Object.entries(typedFields)) {
+      if (value !== record[key as keyof typeof typedFields]) fields[key] = value;          // changed text only
+    }
     try {
       const res = await updateExistingFromHeld(held.held_id, scope, {
-        changes: {
-          vacation_entitlement: Number(form.vacation_entitlement),
-          sick_entitlement: Number(form.sick_entitlement),
-          vacation: Number(form.vacation),
-          sick: Number(form.sick),
-        },
-        fields: {
-          email: form.email.trim(),
-          department: form.department.trim(),
-          salary_hourly: form.salary_hourly,
-          location: form.location,
-        },
-        manager_mode: mode,
-        reason: form.reason.trim(),
+        changes, fields, manager_mode: mode, reason: form.reason.trim(),
       });
       setResult(res.data);                                // the outcome replaces the form
     } catch (err: any) {
