@@ -57,7 +57,7 @@ from app.services.employee import (
     resolve_person_field,
 )
 from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
-from app.services.employment import is_hourly
+from app.services.employment import is_hourly, whole_sick_days
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.overlap_detection import _extract_lookup_id
 from app.services.holidays import get_holidays_for_province, get_half_friday_season
@@ -828,7 +828,9 @@ def _simulate_leave_case(code, leave_type, fields, days, carryover_available=Tru
     cascades between them. What must always hold is that the four pots together
     fall by exactly the days taken — the cascade passes a shortfall down the
     chain rather than dropping it. Asserting the total keeps this check honest
-    without restating the cascade rules here.
+    without restating the cascade rules here. Hourly staff are the exception:
+    their sick and part days come out of sick in whole days (a half day uses a
+    full sick day), so the expected total is rounded up the same way.
 
     Args:
         code: Stable check identifier.
@@ -859,14 +861,16 @@ def _simulate_leave_case(code, leave_type, fields, days, carryover_available=Tru
         )
 
     deducted = _round(_pot_total(fields, LEAVE_POTS) - _pot_total(projected, LEAVE_POTS))
+    # Hourly: whole sick days, so a half day is expected to take 1, not 0.5.
+    expected = whole_sick_days(days) if is_hourly(fields) else days
     return _measured(
         code, "simulation",
         label=f"Days deducted by {label}",
-        actual=deducted, expected=days, comparison="equals",
-        ok_detail=f"{label}: {days} day(s) deducts exactly {days} across the balance pots.",
+        actual=deducted, expected=expected, comparison="equals",
+        ok_detail=f"{label}: {days} day(s) deducts exactly {expected} across the balance pots.",
         bad_detail=(
-            f"{label}: {days} day(s) deducted {deducted} across the balance pots. "
-            "The cascade is losing or inventing days."
+            f"{label}: {days} day(s) deducted {deducted} across the balance pots "
+            f"where {expected} was expected."
         ),
         projected=projected,
     )

@@ -922,6 +922,22 @@ def test_a_salaried_record_gets_no_employment_type_check():
     assert all(c["code"] != "employment_type_fits" for c in report["checks"])
 
 
+def test_an_hourly_half_day_is_expected_to_take_a_whole_sick_day():
+    # Hourly staff spend sick in whole days, so a half day taking 1 is right,
+    # not a cascade fault (it flagged every hourly person before).
+    fields = {**GOOD_FIELDS, "SalaryHourly": "Hourly", "DefaultYearlyVacationDays": 0,
+              "CurrentVacationBalance": 0, "CurrentSickDayBalance": 3}
+    report = _report(employee_fields=fields)
+    half = _by_code(report, "sim_half_day")
+    assert half["status"] == "pass" and half["measure"]["expected"] == 1
+    assert all(c["status"] == "pass" for c in report["checks"] if c["category"] == "simulation")
+
+
+def test_a_salaried_half_day_still_takes_half_a_day():
+    half = _by_code(_report(employee_fields={**GOOD_FIELDS, "SalaryHourly": "Salary"}), "sim_half_day")
+    assert half["status"] == "pass" and half["measure"]["expected"] == 0.5
+
+
 # ----- approved requests that never moved a balance -----
 
 def test_the_unmoved_check_names_the_first_requests_and_counts_the_rest():

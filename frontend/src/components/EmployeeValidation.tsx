@@ -89,6 +89,14 @@ function problemInfo(check: Check): { title: string; fix: string } {
       fix: 'A lookup this check depends on could not be read. Run the check again; if it keeps happening, tell whoever looks after the app.',
     };
   }
+  if (!PROBLEM_INFO[check.code] && check.category === 'simulation') {
+    // A dry run that moves the wrong number of days is the app's arithmetic,
+    // not the person's record, so it is not sent to their profile.
+    return {
+      title: 'A request would move the wrong number of days',
+      fix: 'This is not a problem with their record. Tell whoever looks after the app, with the line above.',
+    };
+  }
   return PROBLEM_INFO[check.code] || {
     title: 'Setup issue',
     fix: 'Review this person in their profile.',
