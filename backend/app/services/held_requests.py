@@ -1013,6 +1013,16 @@ async def held_thread_for(session, request, recipient: str) -> tuple[str, list[d
             HeldRequest.status == "released",
         ).limit(1)
     )
+    if held is None and getattr(request, "employee_email", None):
+        # The release creates the request (which wakes the outbox) before it saves
+        # the request number on the held row, so the first ask can arrive while the
+        # row is still "releasing". Match that row by the person and the type.
+        held = await session.scalar(
+            select(HeldRequest).where(
+                HeldRequest.email == request.employee_email.strip().lower(),
+                HeldRequest.request_type == kind, HeldRequest.status == "releasing",
+            ).order_by(HeldRequest.id.desc()).limit(1)
+        )
     if held is None:                                           # an ordinary request
         return None
     address = (recipient or "").strip().lower()
