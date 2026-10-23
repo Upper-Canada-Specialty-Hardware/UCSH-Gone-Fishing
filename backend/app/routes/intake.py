@@ -23,9 +23,11 @@ whichever email service that routes to (SMTP2GO today; the UCSH mailer for
 UCSH addresses once it is switched on) needs no change here.
 """
 
+import html
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -238,7 +240,15 @@ async def verify_code(body: VerifyRequest):
             "people": [await _signed_in_as(employee) for employee in people],
         }
     if people:
-        return {"status": "employee", **await _signed_in_as(people[0])}
+        answer = {"status": "employee", **await _signed_in_as(people[0])}
+        # One request until set up (#442): while this person has a held request in
+        # flight, hand the page its status and a verified-email token, so it shows
+        # the status instead of a new form and can re-pick a supervisor.
+        held = await _held_gate(email=email)
+        if held:
+            answer["held"] = held
+            answer["verified"] = email_codes.sign_verified_email(email)
+        return answer
 
     # No active record. If an archived one carries this address, the person has
     # left: refuse with a plain message rather than send them down the new-hire
@@ -250,7 +260,35 @@ async def verify_code(body: VerifyRequest):
         )
 
     # Not on staff yet: prove the address was verified for the new-hire path.
-    return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
+    answer = {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
+    # One request until set up (#442): a new hire who already has a request
+    # waiting sees its status instead of the new-hire form.
+    held = await _held_gate(email=email)
+    if held:
+        answer["held"] = held
+    return answer
+
+
+async def _held_gate(*, email: str) -> dict | None:
+    """The status of a person's in-flight held request, for the sign-in gate (#442).
+
+    Args:
+        email: Match a held request on the person's address.
+
+    Returns:
+        ``{"status_token", "supervisor_name", "state"}`` when they have a request
+        waiting to be set up, or None when they do not. ``state`` is "not_on_team"
+        when a supervisor handed it back (so the page offers a re-pick), else
+        "waiting".
+    """
+    row = await held_requests.open_held_request_for(email=email)
+    if row is None:
+        return None
+    return {
+        "status_token": held_requests.held_status_token(row.id),
+        "supervisor_name": row.supervisor_name,
+        "state": "not_on_team" if row.status == "not_on_team" else "waiting",
+    }
 
 
 async def _signed_in_as(employee: dict) -> dict:
@@ -374,6 +412,164 @@ async def hold(body: HeldRequestBody):
         "status": "held", "supervisor_name": row.supervisor_name,
         "status_token": held_requests.held_status_token(row.id),   # the waiting page polls with it
     }
+
+
+class RepickBody(BaseModel):
+    """Body of POST /held/repick: pick another supervisor after a "not on my team".
+
+    Bound to the verified-email token (so only the person who proved the address
+    may re-route it) and the held request's status token (which names the row).
+    """
+    verified: VerifiedEmail
+    status_token: str
+    supervisor_id: str | None = None
+    supervisor_email: str | None = None
+
+
+@router.post("/held/repick")
+async def held_repick(body: RepickBody):
+    """Pick another supervisor for a held request handed back as "not on my team" (#443).
+
+    Only the person who owns the request (their verified email) may re-pick, only
+    while it is waiting for a new supervisor, and never the one who declined it.
+    The request's dates and form do not change.
+
+    Args:
+        body: The verified-email token, the status token, and the new supervisor.
+
+    Returns:
+        ``{"status": "held", "supervisor_name", "status_token"}``.
+
+    Raises:
+        HTTPException: 401 for a bad verified-email token; 404 for a bad status
+            token; 400 when it is not theirs, not waiting for a re-pick, or the
+            new supervisor cannot be used.
+    """
+    email = _require_verified(body.verified.email, body.verified.exp, body.verified.token)
+    held_id = held_requests.held_id_from_status_token(body.status_token)
+    if held_id is None:
+        raise HTTPException(status_code=404, detail="Request not found.")
+    try:
+        row = await held_requests.repick_supervisor(
+            held_id, email, body.supervisor_id, body.supervisor_email,
+        )
+    except held_requests.HoldError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "status": "held", "supervisor_name": row.supervisor_name,
+        "status_token": held_requests.held_status_token(row.id),
+    }
+
+
+def _page(title: str, body_html: str) -> str:
+    """One small standalone HTML page for a "Not on my team" link.
+
+    Args:
+        title: The page title and heading.
+        body_html: The body markup under the heading (already safe).
+
+    Returns:
+        A full HTML document string.
+    """
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>{title}</title></head>"
+        "<body style='font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem'>"
+        f"<h1 style='font-size:1.4rem'>{title}</h1>"
+        f"{body_html}"
+        "</body></html>"
+    )
+
+
+def _state_page(state: dict) -> str:
+    """The page a valid "Not on my team" link shows once its request has moved on (#462).
+
+    Args:
+        state: From ``held_requests.not_on_team_link_state``; not "open".
+
+    Returns:
+        A full HTML document saying what really happened; every value is escaped.
+    """
+    name = html.escape(state.get("name") or "This person")
+    if state["state"] == "released":
+        number = html.escape(state.get("request_number") or "")
+        on = f" on {html.escape(state['set_up_on'])}" if state.get("set_up_on") else ""
+        return _page("Already handled", f"<p>{name} was set up{on}. Their request is #{number}.</p>")
+    if state["state"] == "cancelled":
+        return _page("No longer needed", f"<p>{name}'s request was cancelled. Nothing is needed from you.</p>")
+    if state["state"] == "sending":
+        return _page("Already handled", f"<p>{name} is on staff now and their request is being sent.</p>")
+    # "declined": they said not on their team earlier, or it moved off them.
+    return _page("Already done", f"<p>You already let us know {name} is not on your team. "
+                                 "Nothing is needed from you.</p>")
+
+
+@router.get("/held/not-on-team", response_class=HTMLResponse)
+async def held_not_on_team_page(token: str = Query(...)):
+    """Show the "Not on my team" confirmation page from a supervisor's email (#443).
+
+    Public and signed, and read-only: this GET changes nothing. Mail link scanners
+    (Microsoft 365 Safe Links) fetch every link before a person clicks, so acting
+    on the GET would hand back every request automatically. Instead it shows a page
+    with one button that POSTs the same token to do the decline. A forged link gets
+    that same page and learns nothing; a valid link whose request has moved on
+    (declined, set up, cancelled, being sent) says what happened instead (#462).
+
+    Args:
+        token: The signed not-on-team token from the email.
+
+    Returns:
+        A small HTML page with a confirm button that re-POSTs this same URL.
+    """
+    # A valid link whose request has moved on says what happened instead (#462).
+    decoded = held_requests.decode_not_on_team_token(token)
+    if decoded is not None:
+        state = await held_requests.not_on_team_link_state(*decoded)
+        if state is not None and state["state"] != "open":
+            return HTMLResponse(_state_page(state))
+    # The form has no action, so it re-posts this exact URL (token and all); the
+    # token is never written into the HTML, so it cannot be injected.
+    return HTMLResponse(_page(
+        "Not on your team?",
+        "<p>Let us know this person is not on your team and we will ask them to pick "
+        "their supervisor again. You do not need to do anything else.</p>"
+        "<form method='post'>"
+        "<button type='submit' style='font:inherit;padding:.6rem 1rem;border:0;"
+        "border-radius:.4rem;background:#1565c0;color:#fff;cursor:pointer'>"
+        "They are not on my team</button>"
+        "</form>",
+    ))
+
+
+@router.post("/held/not-on-team", response_class=HTMLResponse)
+async def held_not_on_team_submit(token: str = Query(...)):
+    """Hand a held request back to be re-picked, from the confirm page's button (#443).
+
+    Public and signed: the token names one held request and the supervisor it was
+    issued to, so a stale link cannot act once the request has moved on. Hands the
+    request back so the person can pick another supervisor (guarded and
+    idempotent), and shows a short page. A forged link gets the ordinary thanks; a
+    valid link whose request had already moved on says what happened (#462).
+
+    Args:
+        token: The signed not-on-team token, submitted by the confirm page.
+
+    Returns:
+        A small HTML page confirming it was handed back.
+    """
+    decoded = held_requests.decode_not_on_team_token(token)
+    if decoded is not None:
+        held_id, supervisor_id = decoded
+        outcome = await held_requests.decline_held_request(held_id, supervisor_id)   # guarded + idempotent
+        if outcome == "already":                                # it had moved on: say what happened (#462)
+            state = await held_requests.not_on_team_link_state(held_id, supervisor_id)
+            if state is not None:
+                return HTMLResponse(_state_page(state))
+    return HTMLResponse(_page(
+        "Thanks for letting us know",
+        "<p>We have asked them to pick their supervisor again. You do not need to do anything else.</p>",
+    ))
 
 
 @router.get("/held/status")

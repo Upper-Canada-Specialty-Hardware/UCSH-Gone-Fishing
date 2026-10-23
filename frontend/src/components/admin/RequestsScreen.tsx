@@ -1,6 +1,6 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Box, Button, Collapse, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel,
+  Box, Button, Chip, Collapse, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel,
   MenuItem, Paper, Snackbar, Switch, TextField, Typography,
 } from '@mui/material';
 import { Theme, useTheme } from '@mui/material/styles';
@@ -93,7 +93,9 @@ interface Props {
   onReprocess: (id: string, reason: string) => Promise<void>;
   onAddHeld: (row: HeldRow) => void;
   onRetryHeld: (id: number) => Promise<void>;
-  onCancelHeld: (id: number) => Promise<void>;
+  // Cancelling now opens a reason prompt (handled by the parent), so it takes the row (#445).
+  onCancelHeld: (row: HeldRow) => void;
+  onUncancelHeld: (id: number) => Promise<void>;
   /** Refetch the requests, pending, stuck and stats after a new request or a delete. */
   onReload: () => void | Promise<void>;
   leaving?: Set<string>;
@@ -413,7 +415,7 @@ export default function RequestsScreen(props: Props) {
             <Typography color="text.secondary" sx={{ fontSize: 13, flex: 1 }}>Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on.</Typography>
             <FormControlLabel control={<Switch size="small" checked={props.heldIncludeClosed} onChange={(e) => props.onHeldIncludeClosed(e.target.checked)} />} label="Show sent and cancelled" />
           </Box>
-          <HeldTable held={props.held} actionLoading={actionLoading} onAdd={props.onAddHeld} onRetry={props.onRetryHeld} onCancel={props.onCancelHeld} />
+          <HeldTable held={props.held} actionLoading={actionLoading} onAdd={props.onAddHeld} onRetry={props.onRetryHeld} onCancel={props.onCancelHeld} onUncancel={props.onUncancelHeld} />
         </Paper>
       </>
     );
@@ -810,11 +812,13 @@ const HELD_WIDTHS: Record<string, number> = Object.fromEntries(HELD_COLUMNS.map(
  * @param props.actionLoading - The key of the row an action is running on, or null.
  * @param props.onAdd - Add the new hire to the Staff Directory, releasing their requests.
  * @param props.onRetry - Retry a failed send.
- * @param props.onCancel - Cancel a held request.
+ * @param props.onCancel - Open the cancel-with-reason prompt for a held request (#445).
+ * @param props.onUncancel - Undo a cancel, restoring the request (#445).
  * @returns The held table.
  */
-function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel }: {
-  held: HeldRow[]; actionLoading: string | null; onAdd: (h: HeldRow) => void; onRetry: (id: number) => Promise<void>; onCancel: (id: number) => Promise<void>;
+function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel, onUncancel }: {
+  held: HeldRow[]; actionLoading: string | null; onAdd: (h: HeldRow) => void; onRetry: (id: number) => Promise<void>;
+  onCancel: (h: HeldRow) => void; onUncancel: (id: number) => Promise<void>;
 }) {
   const theme = useTheme();
   const fit = useFitColumns(HELD_PRIORITY, HELD_WIDTHS);
@@ -826,16 +830,35 @@ function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel }: {
   const cell = (h: HeldRow, key: string): ReactNode => {
     const busy = actionLoading === `held-${h.id}`;
     switch (key) {
-      case 'person': return <><Box sx={{ fontWeight: 700 }}>{h.name}</Box><Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.email}</Box></>;
+      case 'person': return (
+        <>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+            <Box sx={{ fontWeight: 700 }}>{h.name}</Box>
+            {/* Whether the person is on staff now, so the admin can see what a retry will do (#445). */}
+            {h.on_staff && <Chip size="small" label="On staff" color="success" variant="outlined" />}
+          </Box>
+          <Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.email}</Box>
+        </>
+      );
       case 'department': return h.department || '-';
-      case 'supervisor': return h.supervisor_name || '-';
+      // routes_to is the supervisor a retry goes to; it equals supervisor_name (#445).
+      case 'supervisor': return h.routes_to || h.supervisor_name || '-';
       case 'request': return h.summary;
-      case 'status': return <>{HELD_STATUS_LABEL[h.status] ?? h.status}{h.last_error ? <Box sx={{ fontSize: 12, color: 'error.main' }}>{h.last_error}</Box> : null}</>;
+      case 'status': return (
+        <>
+          {HELD_STATUS_LABEL[h.status] ?? h.status}
+          {h.last_error ? <Box sx={{ fontSize: 12, color: 'error.main' }}>{h.last_error}</Box> : null}
+          {/* Why it was cancelled, so the reason is visible and the undo has context (#445). */}
+          {h.status === 'cancelled' && h.cancel_reason ? <Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.cancel_reason}</Box> : null}
+        </>
+      );
       case 'actions': return (
         <Box sx={{ display: 'inline-flex', gap: 0.5, flexWrap: 'wrap' }}>
           {h.status === 'held' && <Button size="small" variant="contained" disabled={busy} onClick={() => onAdd(h)}>Add employee</Button>}
           {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="inherit" disabled={busy} onClick={() => onRetry(h.id)}>Retry</Button>}
-          {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => onCancel(h.id)}>Cancel</Button>}
+          {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => onCancel(h)}>Cancel</Button>}
+          {/* A cancelled request can be put back the way it was (#445). */}
+          {h.status === 'cancelled' && <Button size="small" variant="outlined" color="inherit" disabled={busy} onClick={() => onUncancel(h.id)}>Undo cancel</Button>}
         </Box>
       );
       default: return null;

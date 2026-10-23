@@ -11,7 +11,7 @@ import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
 import RequestsHistoryTable, { HistoryFocus } from '../components/RequestsHistoryTable';
 import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
-import AddEmployee from '../components/AddEmployee';
+import AddEmployee, { type AddPrefill } from '../components/AddEmployee';
 import DecisionCard from '../components/manager/DecisionCard';
 import RejectDialog from '../components/RejectDialog';
 import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
@@ -55,7 +55,7 @@ import { LiveEvent } from '../api/events';
  *
  * @returns The prefill, or null.
  */
-function takeAddEmployeePrefill(): { title: string; email_address: string; department?: string; location?: string } | null {
+function takeAddEmployeePrefill(): AddPrefill | null {
   const raw = sessionStorage.getItem('add_employee_prefill');
   if (!raw) return null;
   sessionStorage.removeItem('add_employee_prefill');
@@ -832,6 +832,7 @@ export default function ManagerDashboard() {
           submitEmployee={createEmployee}
           checkEmployee={checkEmployee}
           prefill={prefill}
+          heldScope="team"
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
           }

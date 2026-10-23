@@ -77,6 +77,18 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
             detail="This account has been archived and can no longer submit requests. Contact HR.",
         )
 
+    # One request until set up (#442): someone who still has a request waiting to
+    # be set up (a new hire not added yet) cannot send a new one until that one is
+    # handled. Matched by their email.
+    from app.services.held_requests import open_held_request_for
+    held_email = employee["fields"].get("EmailAddress", "")
+    if await open_held_request_for(email=held_email):
+        raise HTTPException(
+            status_code=409,
+            detail="You already have a request waiting to be set up. You can make "
+                   "more once your supervisor has set up your profile.",
+        )
+
     # Without SubmitterEmail (requests still in SharePoint, columns not there),
     # the only link from a request back to its person is the person column,
     # which needs them in the site's user list. Refuse up front rather than
