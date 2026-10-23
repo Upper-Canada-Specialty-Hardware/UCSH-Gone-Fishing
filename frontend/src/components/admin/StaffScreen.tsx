@@ -8,7 +8,6 @@ import { useSearchParams } from 'react-router-dom';
 import CloseIcon from '@mui/icons-material/Close';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import DownloadIcon from '@mui/icons-material/Download';
-import { EmployeeSetupSummary } from '../EmployeeSetupList';
 import { ManagerOption } from '../AddEmployee';
 import { getManagerAssignments, getSpUsers } from '../../api/client';
 import { getStaffRecord, StaffRecord, getArchivedStaff, restoreStaff, ArchivedPerson } from '../../api/staff';
@@ -56,7 +55,7 @@ interface FilterGroup {
   key: string;
   label: string;
   opts: (people: Person[]) => string[];
-  test: (p: Person, value: string, problems: Record<string, string[]>) => boolean;
+  test: (p: Person, value: string) => boolean;
   /** "Needs attention" must match every chosen value, not any. */
   all?: boolean;
 }
@@ -74,17 +73,17 @@ const FILTERS: FilterGroup[] = [
   { key: 'system_check', label: 'System check', opts: (ps) => uniq(ps.map((p) => p.system_check)), test: (p, v) => p.system_check === v },
   {
     key: 'flag', label: 'Needs attention', all: true,
-    opts: () => ['Below zero', 'No manager', 'Setup problem'],
-    test: (p, v, problems) =>
+    // Setup problems are resolved on the Employee setup screen, not filtered here.
+    opts: () => ['Below zero', 'No manager'],
+    test: (p, v) =>
       v === 'Below zero' ? isBelowZero(p)
-        : v === 'No manager' ? p.managers !== null && p.managers.length === 0
-          : !!problems[p.id],
+        : p.managers !== null && p.managers.length === 0,
   },
 ];
 
 /** The quick chips above the table: each toggles one "Needs attention" value. */
 const QUICK: [string, string | null][] = [
-  ['All', null], ['Below zero', 'Below zero'], ['No manager', 'No manager'], ['Setup problem', 'Setup problem'],
+  ['All', null], ['Below zero', 'Below zero'], ['No manager', 'No manager'],
 ];
 
 interface Props {
@@ -92,8 +91,6 @@ interface Props {
   employees: any[];
   /** Every request, from /admin/requests, for the person panel's list. */
   requests: any[];
-  /** The setup check, so a person with a problem is flagged. */
-  setup: EmployeeSetupSummary | null;
   /** Whether writes are enabled (the profile's Save is off when they are not). */
   processingEnabled: boolean;
   /** Open the manager assignments screen. */
@@ -114,7 +111,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The staff screen body.
  */
-export default function StaffScreen({ employees, requests, setup, processingEnabled, onManageAssignments, onReload, onNotify }: Props) {
+export default function StaffScreen({ employees, requests, processingEnabled, onManageAssignments, onReload, onNotify }: Props) {
   const theme = useTheme();
   const [searchParams] = useSearchParams();                             // ?open=<id> from a deep link
   const [query, setQuery] = useState('');
@@ -172,10 +169,6 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
       .catch(() => { /* the pickers are just empty */ });
   }, []);
 
-  // Setup problems by employee id, for the flag on each row and the filter.
-  const problemsById = useMemo(() => Object.fromEntries(
-    (setup?.flagged || []).map((f) => [String(f.employee_id), f.fails.map((p) => p.detail || p.code)]),
-  ) as Record<string, string[]>, [setup]);
 
   const people = useMemo<Person[]>(() => employees.map((e) => ({
     ...e,
@@ -192,10 +185,10 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
     return FILTERS.every((f) => {
       const vals = picked[f.key] || [];
       if (!vals.length) return true;                       // no values chosen -> no constraint
-      return f.all ? vals.every((v) => f.test(p, v, problemsById)) : vals.some((v) => f.test(p, v, problemsById));
+      return f.all ? vals.every((v) => f.test(p, v)) : vals.some((v) => f.test(p, v));
     });
   };
-  const rows = useMemo(() => people.filter(passes), [people, query, picked, problemsById]);  // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => people.filter(passes), [people, query, picked]);  // eslint-disable-line react-hooks/exhaustive-deps
   // Salaried and hourly shown in two tables with columns that fit each (#338).
   const salariedRows = useMemo(() => rows.filter((p) => !isHourly(p.employment_type)), [rows]);
   const hourlyRows = useMemo(() => rows.filter((p) => isHourly(p.employment_type)), [rows]);
@@ -298,7 +291,7 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
             const flags = picked.flag || [];
             const none = !Object.values(picked).some((v) => v.length);
             const on = value ? flags.includes(value) : none;
-            const count = value ? people.filter((p) => FILTERS[5].test(p, value, problemsById)).length : people.length;
+            const count = value ? people.filter((p) => FILTERS[5].test(p, value)).length : people.length;
             return (
               <Chip
                 key={label} label={`${label} ${count}`} aria-pressed={on}
@@ -350,13 +343,13 @@ export default function StaffScreen({ employees, requests, setup, processingEnab
             {/* Salaried: every pot, as before. */}
             <StaffGroup title="Salaried" count={salariedRows.length}>
               {salariedRows.length
-                ? <StaffTable variant="salaried" people={people} rows={salariedRows} problemsById={problemsById} onOpen={openPerson} theme={theme} />
+                ? <StaffTable variant="salaried" people={people} rows={salariedRows} onOpen={openPerson} theme={theme} />
                 : <Typography color="text.secondary" sx={{ p: 2 }}>No salaried staff match.</Typography>}
             </StaffGroup>
             {/* Hourly: Sick plus the vacation-taken counter; no Make-up, Carry-over or Payout (#300). */}
             <StaffGroup title="Hourly" count={hourlyRows.length}>
               {hourlyRows.length
-                ? <StaffTable variant="hourly" people={people} rows={hourlyRows} problemsById={problemsById} onOpen={openPerson} theme={theme} />
+                ? <StaffTable variant="hourly" people={people} rows={hourlyRows} onOpen={openPerson} theme={theme} />
                 : <Typography color="text.secondary" sx={{ p: 2 }}>No hourly staff match.</Typography>}
             </StaffGroup>
           </>
@@ -478,14 +471,13 @@ function BalanceCell({ value }: { value: number | undefined }) {
  *
  * @param props.people - Everyone (for the empty-state copy).
  * @param props.rows - The filtered rows of this group to show.
- * @param props.problemsById - Setup problems per id, for the row flag.
  * @param props.onOpen - Open a person's profile.
  * @param props.theme - The MUI theme (for tokens).
  * @param props.variant - "salaried" (every pot) or "hourly" (sick plus counter).
  * @returns The table or cards.
  */
-function StaffTable({ people, rows, problemsById, onOpen, variant }: {
-  people: Person[]; rows: Person[]; problemsById: Record<string, string[]>; onOpen: (id: string) => void; theme: ReturnType<typeof useTheme>; variant: 'salaried' | 'hourly';
+function StaffTable({ people, rows, onOpen, variant }: {
+  people: Person[]; rows: Person[]; onOpen: (id: string) => void; theme: ReturnType<typeof useTheme>; variant: 'salaried' | 'hourly';
 }) {
   const wide = useMediaQuery('(min-width:900px)');          // Managers column fits
   const mid = useMediaQuery('(min-width:720px)');           // Make-up and Carry-over fit
@@ -516,7 +508,7 @@ function StaffTable({ people, rows, problemsById, onOpen, variant }: {
           <Box key={p.id} role="button" tabIndex={0} onClick={() => onOpen(p.id)} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(p.id); }} sx={{ p: 2, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}>
             <Typography sx={{ fontWeight: 700 }}>
               {p.name}
-              {problemsById[p.id] && <Chip size="small" color="error" variant="outlined" label="Setup problem" sx={{ ml: 1 }} />}
+              
             </Typography>
             <Typography variant="caption" color="text.secondary">{p.department || 'No department'} · {p.location || 'No location'}</Typography>
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5, mt: 1 }}>
@@ -584,7 +576,7 @@ function StaffTable({ people, rows, problemsById, onOpen, variant }: {
               <TableCell>
                 <Typography sx={{ fontWeight: 600 }}>
                   {p.name}
-                  {problemsById[p.id] && <Chip size="small" color="error" variant="outlined" label="Setup problem" sx={{ ml: 1 }} />}
+                  
                 </Typography>
                 <Typography variant="caption" color="text.secondary">{p.department || 'No department'} · {p.location || 'No location'}</Typography>
               </TableCell>

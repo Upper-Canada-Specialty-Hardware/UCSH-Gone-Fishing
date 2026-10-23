@@ -661,7 +661,6 @@ export default function AdminDashboard() {
                 <StaffScreen
                   employees={employees}
                   requests={requests}
-                  setup={employeeSetup}
                   processingEnabled={processingEnabled}
                   onManageAssignments={() => setTab('assignments')}
                   onReload={refreshStaffData}
