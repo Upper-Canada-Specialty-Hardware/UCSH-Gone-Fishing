@@ -510,3 +510,24 @@ def test_cancel_closes_the_supervisors_thread_only_while_they_hold_it(world):
     world.sent.clear()
     asyncio.run(held_requests.cancel_held_request(other.id, "duplicate"))
     assert world.sent == []
+
+
+def test_an_email_sent_while_the_release_is_still_saving_joins_the_thread(world):
+    # The outbox can send the first ask before the release saves the request
+    # number on the held row; it still finds the row, by the person and the type.
+    from app.database import async_session
+
+    email = _email()
+    row = _hold(email)
+
+    async def check():
+        async with async_session() as session:
+            stored = await session.get(held_requests.HeldRequest, row.id)
+            stored.status = "releasing"                         # created, number not saved yet
+            await session.commit()
+            request = types.SimpleNamespace(kind="leave", item_id=1, employee_email=email.upper())
+            return await held_requests.held_thread_for(session, request, "stevef@ucsh.com")
+
+    subject, headers = asyncio.run(check())
+    assert subject == "Add Lee New to the Staff Directory"
+    assert _root(headers) == held_requests.thread_root_id(row.id, "stevef@ucsh.com")
