@@ -215,14 +215,21 @@ export default function ManagerDashboard() {
   const [employeeSetup, setEmployeeSetup] = useState<EmployeeSetupSummary | null>(null);
   const [setupRefreshing, setSetupRefreshing] = useState(false);
   const setupSeq = useRef(0);                              // numbers each read; only the newest lands
-  const refreshEmployeeSetup = useCallback(async () => {
+  /**
+   * Re-read the team's setup list.
+   *
+   * @param quiet - True for the read after launch: a failure there only leaves
+   *   the tab without a count, so no error message is shown to a manager who
+   *   never opened the tab.
+   */
+  const refreshEmployeeSetup = useCallback(async (quiet = false) => {
     const seq = ++setupSeq.current;                        // this read is now the newest
     setSetupRefreshing(true);
     try {
       const res = await getTeamEmployeeSetup();
       if (seq === setupSeq.current) setEmployeeSetup(res.data);   // an older read landing late is dropped
     } catch (err: any) {
-      if (seq !== setupSeq.current) return;                // a newer read is on its way
+      if (seq !== setupSeq.current || quiet) return;       // a newer read is on its way, or the launch read
       const detail = err.response?.data?.detail;
       setSnack({
         open: true,
@@ -321,7 +328,7 @@ export default function ManagerDashboard() {
   // The setup list is read once the dashboard is up, so the tab shows its count,
   // and again whenever the tab is opened, so edits made elsewhere are reflected.
   useEffect(() => {
-    if (!loading) void refreshEmployeeSetup();
+    if (!loading) void refreshEmployeeSetup(true);         // quiet: only the tab's count depends on it
   }, [loading, refreshEmployeeSetup]);
   const prevTab = useRef(tab);
   useEffect(() => {
@@ -452,6 +459,8 @@ export default function ManagerDashboard() {
     go('team');
   }, [go]);
   const setupCount = employeeSetup?.flagged.length ?? 0;   // people with a problem, for the tab label
+  // The check's picker: the team without the manager, whose own record is refused by the route.
+  const setupPeople = useMemo(() => members.filter((p) => p.name !== managerName), [members, managerName]);
 
   if (loading) return <TeamSkeleton tab={tab} />;
   if (error) {
@@ -807,10 +816,10 @@ export default function ManagerDashboard() {
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="h5" sx={{ mb: 1 }}>{SETUP_TITLE}</Typography>
           <EmployeeValidation
-            employees={members}
+            employees={setupPeople}
             setupList={employeeSetup}
             setupLoading={setupRefreshing}
-            onRefreshSetup={refreshEmployeeSetup}
+            onRefreshSetup={() => refreshEmployeeSetup()}
             scope="team"
             onOpenProfile={openSetupProfile}
           />

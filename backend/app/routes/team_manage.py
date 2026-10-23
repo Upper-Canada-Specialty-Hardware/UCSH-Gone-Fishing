@@ -40,11 +40,13 @@ from app.routes.dashboard import (
 )
 from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
 from app.repositories.staff_store import staff_in_postgres, staff_store
+from app.database import async_session
 from app.services import balance_settle  # settle a teammate's unmoved request (#463)
 from app.services.concurrency import lock_manager  # serialise the AllManagers read-modify-write
 from app.services.employee import get_employee_by_id
 from app.services.employee_validation import validate_all_employee_setups, validate_employee_setup
 from app.services.leave_requests import _resolve_user_lookup_id
+from app.services.request_decisions import _load as _load_request  # whose request it is (#463)
 from app.services.manager_assignments import _extract_all_managers, update_employee_managers
 from app.services.staff_entitlements import StaffWriteError, apply_entitlement_changes, get_staff_record
 from app.services.switch_pause import SystemPaused  # the mid-switch write refusal -> 503
@@ -486,27 +488,72 @@ def _settle_kind_for(request_type: str) -> str:
     return _settle_kind(request_type)
 
 
-async def _require_teammate_request(kind: str, request_id: str, manager_name: str) -> dict:
-    """Read a request's settle preview and confirm its person is on the manager's team.
+# One answer for a request that is missing or not on the team, so a manager
+# cannot probe whether someone else's request exists or what state it is in.
+REQUEST_NOT_ON_TEAM = "That request was not found on your team."
+
+
+async def _require_team_member(user: DashboardUser, employee_id: str, manager_name: str) -> dict:
+    """Confirm a person is on the manager's team and is not the manager.
+
+    Args:
+        user: The signed-in manager or admin.
+        employee_id: Staff Directory item id of the person.
+        manager_name: The calling manager's display name.
+
+    Returns:
+        The person's ``{"id", "fields"}`` staff item.
+
+    Raises:
+        HTTPException: 403 for the manager's own record (a manager does not
+            check or settle their own, as with the profile edit) or a
+            non-teammate, 404 when the person is gone.
+    """
+    if str(employee_id) == str(user.user_id):            # never their own record
+        raise HTTPException(status_code=403, detail="You cannot check or settle your own record.")
+    return await _require_teammate(employee_id, manager_name)   # 403 unless on my team
+
+
+async def _request_owner(kind: str, request_id: str) -> str | None:
+    """Whose request this is: the staff id on the stored request, or None.
+
+    A plain row read, done before the settle service runs, so the team check
+    comes first and nothing about another person's request is revealed.
 
     Args:
         kind: The stored request kind.
         request_id: The request's item id.
-        manager_name: The calling manager's display name.
 
     Returns:
-        The settle preview (read-only), so the GET route can return it as is.
+        The owner's staff id, or None when there is no such request.
+    """
+    async with async_session() as session:
+        request = await _load_request(session, kind, request_id)   # None for a bad or unknown id
+        return str(request.employee_id) if request is not None else None
+
+
+async def _require_teammate_request(user: DashboardUser, kind: str, request_id: str, manager_name: str) -> None:
+    """Confirm a request belongs to one of the manager's teammates, before any settle runs.
+
+    Args:
+        user: The signed-in manager or admin.
+        kind: The stored request kind.
+        request_id: The request's item id.
+        manager_name: The calling manager's display name.
 
     Raises:
-        HTTPException: 404 / 409 from the settle service, 403 when the request
-            belongs to someone not on the manager's team.
+        HTTPException: 403 for the manager's own request; 404 with one message
+            for a request that is missing or belongs to someone not on the team.
     """
+    owner = await _request_owner(kind, request_id)
+    if owner is None:                                    # no such request
+        raise HTTPException(status_code=404, detail=REQUEST_NOT_ON_TEAM)
+    if owner == str(user.user_id):                       # their own request: refused like their own record
+        raise HTTPException(status_code=403, detail="You cannot check or settle your own record.")
     try:
-        preview = await balance_settle.settle_preview(kind, request_id)   # a read; also says whose request it is
-    except balance_settle.SettleError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e))
-    await _require_teammate(str(preview["request"]["employee_id"]), manager_name)   # 403 unless on my team
-    return preview
+        await _require_teammate(owner, manager_name)     # 403 / 404 when not on my team
+    except HTTPException:
+        raise HTTPException(status_code=404, detail=REQUEST_NOT_ON_TEAM)   # same answer as a missing one
 
 
 @router.get("/team/employee-setup")
@@ -561,7 +608,7 @@ async def team_validate_employee(user: AuthUser, employee_id: str):
             500 when the check fails.
     """
     _manager, manager_name = await _signed_in_manager(user)
-    await _require_teammate(employee_id, manager_name)   # 403 unless they are on my team
+    await _require_team_member(user, employee_id, manager_name)   # 403 for themselves or a non-teammate
     try:
         return await validate_employee_setup(employee_id)
     except Exception:  # noqa: BLE001 - one message for any failure, details in the log
@@ -582,10 +629,16 @@ async def team_settle_preview(user: AuthUser, request_type: str, request_id: str
         The same preview as the admin route.
 
     Raises:
-        HTTPException: 400 bad type, 403 not on the team, 404 gone, 409 not settleable.
+        HTTPException: 400 bad type, 403 their own request, 404 missing or not
+            on the team, 409 not settleable.
     """
     _manager, manager_name = await _signed_in_manager(user)
-    return await _require_teammate_request(_settle_kind_for(request_type), request_id, manager_name)
+    kind = _settle_kind_for(request_type)
+    await _require_teammate_request(user, kind, request_id, manager_name)   # before the settle service reads anything
+    try:
+        return await balance_settle.settle_preview(kind, request_id)
+    except balance_settle.SettleError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
 
 
 @router.post("/team/requests/{request_type}/{request_id}/settle")
@@ -606,14 +659,15 @@ async def team_settle_request(user: AuthUser, request_type: str, request_id: str
         ``{"status": "settled", "outcome", "balance_state", "moves"}``.
 
     Raises:
-        HTTPException: 400 bad input, 403 not on the team, 404 gone, 409 already
-            settled or not possible, 503 while processing is off.
+        HTTPException: 400 bad input, 403 their own request, 404 missing or not
+            on the team, 409 already settled or not possible, 503 while
+            processing is off.
     """
     _manager, manager_name = await _signed_in_manager(user)
     kind = _settle_kind_for(request_type)
     if not settings.PROCESSING_ENABLED:                   # a balance write, like the admin route
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    await _require_teammate_request(kind, request_id, manager_name)   # 403 before anything is written
+    await _require_teammate_request(user, kind, request_id, manager_name)   # before anything is read or written
     reason = (body.reason or "").strip()
     if not reason:                                        # say it plainly before the service does
         raise HTTPException(status_code=400, detail="A reason is required.")
