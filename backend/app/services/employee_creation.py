@@ -42,6 +42,22 @@ class EmployeeValidationError(ValueError):
     """
 
 
+class EmployeeNameClash(EmployeeValidationError):
+    """The name is already on staff: the person already has a record (#444).
+
+    Carries the existing record's id so the route can answer 409 and the frontend
+    can open that person's profile (if the viewer may see it) instead of just
+    showing the old "already exists" error.
+
+    Attributes:
+        existing_id: The Staff Directory id of the record that already has the name.
+    """
+
+    def __init__(self, message: str, existing_id: str):
+        super().__init__(message)
+        self.existing_id = existing_id
+
+
 def _num(value, field: str) -> float:
     """Read a numeric input, rejecting anything that is not a number.
 
@@ -202,10 +218,12 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     clashes = await find_directory_clashes(fields["Title"], fields["EmailAddress"])
 
     # The name is how a request is routed back to a person, so a second record
-    # with the same name would make routing ambiguous for both.
+    # with the same name would make routing ambiguous for both. The existing id
+    # is carried so the dashboard can open that person instead (#444).
     if clashes["name"]:
-        raise EmployeeValidationError(
-            f"An employee named '{fields['Title']}' already exists in the directory."
+        raise EmployeeNameClash(
+            f"An employee named '{fields['Title']}' already exists in the directory.",
+            existing_id=str(clashes["name"]["id"]),
         )
 
     # The email is now how requests from the request page find this person, so
