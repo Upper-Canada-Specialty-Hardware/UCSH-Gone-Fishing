@@ -41,6 +41,7 @@ reads and feeds the pure core.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import date, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -1863,7 +1864,7 @@ def build_setup_row(
     }
 
 
-async def validate_all_employee_setups() -> dict:
+async def validate_all_employee_setups(keep: Callable[[dict], bool] | None = None) -> dict:
     """Grade every Staff Directory record, in three reads. Zero writes.
 
     The read count is fixed no matter the headcount: the Staff Directory, the
@@ -1871,11 +1872,18 @@ async def validate_all_employee_setups() -> dict:
     once, and every per-record lookup the per-employee check would make with a
     call is answered from those in memory.
 
+    Args:
+        keep: Grade only the records this returns True for (a manager's team).
+            The whole directory is still read, so checks that compare against
+            everyone, such as a name used twice, stay company-wide. None grades
+            every record.
+
     Returns:
         {"total_checked", "flagged", "directory_unreadable"} - flagged holds one
         row per record with at least one failing check, sorted by name.
     """
     staff = await staff_store.get_list_items(settings.SP_LIST_STAFF_DIRECTORY)
+    graded = [r for r in staff if keep is None or keep(r)]       # the records this list is about
     holiday_items = await get_holiday_repository().get_all()
 
     # A directory that could not be read stays None all the way down, so the
@@ -1912,7 +1920,7 @@ async def validate_all_employee_setups() -> dict:
                 today=today,
                 unmoved=unmoved_by_person.get(str(record.get("id", ""))),
             )
-            for record in staff
+            for record in graded
         )
         if row["fails"]
     ]
@@ -1920,10 +1928,10 @@ async def validate_all_employee_setups() -> dict:
 
     logger.info(
         "Employee setup sweep: checked %s record(s), flagged %s",
-        len(staff), len(flagged),
+        len(graded), len(flagged),
     )
     return {
-        "total_checked": len(staff),
+        "total_checked": len(graded),                            # only the records this list covers
         "flagged": flagged,
         "directory_unreadable": directory is None,               # None only when the user list could not be read
     }

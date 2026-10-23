@@ -58,7 +58,7 @@ const SCREEN_TITLES: Record<string, string> = {
   pending: 'Pending approvals',
   vacation: 'Managers on vacation',
   held: 'Held for new hires',
-  setup: 'Employee setup',
+  setup: 'Potential Employee Setup Issues',
   add: 'Add employee',
   staff: 'Staff',
   // Reached from Staff, not the sidebar.
@@ -564,7 +564,7 @@ export default function AdminDashboard() {
     ] },
     { title: 'People', items: [
       { key: 'staff', label: 'Staff' },
-      { key: 'setup', label: 'Employee setup', count: setupCount },
+      { key: 'setup', label: 'Potential Employee Setup Issues', count: setupCount },
       { key: 'add', label: 'Add employee' },
     ] },
     { title: 'Requests', items: [{ key: 'requests', label: 'All requests' }] },

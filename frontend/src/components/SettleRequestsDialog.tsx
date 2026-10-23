@@ -8,6 +8,7 @@ import TakenFrom from './TakenFrom';
 import { formatDay, formatDayRange, formatInstantDay } from '../utils/dates';
 import { Pot, TakenFromValue, fmtDays } from '../utils/takenFrom';
 import { SettleOutcome, SettlePreview, getSettlePreview, settleRequest } from '../api/requestsAdmin';
+import { SetupScope } from '../api/client';
 
 /** One flagged request, as the setup check lists it (approved, never moved a balance). */
 export interface UnmovedRequest {
@@ -34,6 +35,8 @@ interface Props {
    *   the caller can drop them at once, say what happened and refresh.
    */
   onClose: (settled: UnmovedRequest[]) => void;
+  /** 'admin' (default), or 'team' when a manager settles a teammate's requests (#463). */
+  scope?: SetupScope;
 }
 
 /** One finished step, for the review at the end. */
@@ -89,7 +92,7 @@ function amountLabel(r: UnmovedRequest): string {
 }
 
 /**
- * Settle requests (#400): walks an admin through one person's approved requests
+ * Settle requests (#400): walks an admin, or a manager for their team (#463), through one person's approved requests
  * that never moved a balance, one at a time. For each, the admin picks what
  * happened to the days (take them off now, already taken off by hand, or no
  * balance needed), gives a reason, and saves; Skip leaves it flagged. A review
@@ -99,7 +102,7 @@ function amountLabel(r: UnmovedRequest): string {
  * @param props - See {@link Props}.
  * @returns The dialog.
  */
-export default function SettleRequestsDialog({ personName, requests, onClose }: Props) {
+export default function SettleRequestsDialog({ personName, requests, onClose, scope = 'admin' }: Props) {
   const theme = useTheme();
   const list = requests || [];
   const open = requests !== null;
@@ -126,7 +129,7 @@ export default function SettleRequestsDialog({ personName, requests, onClose }: 
     if (!open || !cur) return;
     let live = true;                                            // ignore a late answer after a step change
     setPreview(null); setError(''); setReason(''); setLoading(true);
-    getSettlePreview(URL_TYPE[cur.kind] || cur.kind, cur.item_id)
+    getSettlePreview(URL_TYPE[cur.kind] || cur.kind, cur.item_id, scope)
       .then((res) => {
         if (!live) return;
         const p = res.data;
@@ -188,7 +191,7 @@ export default function SettleRequestsDialog({ personName, requests, onClose }: 
     try {
       const body: { outcome: SettleOutcome; reason: string; pieces?: Record<string, number> } = { outcome: choice, reason: reason.trim() };
       if (choice === 'hand' && preview?.hand_editable) body.pieces = handNums;   // which pots, for a leave
-      const res = await settleRequest(URL_TYPE[cur.kind] || cur.kind, cur.item_id, body);
+      const res = await settleRequest(URL_TYPE[cur.kind] || cur.kind, cur.item_id, body, scope);
       const moves = res.data.moves || [];
       const text = res.data.outcome === 'none'
         ? 'No balance needed. Nothing moved.'

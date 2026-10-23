@@ -1,7 +1,7 @@
 """Manager control over their own team (#362, #363).
 
 A manager gets admin-level control, but only over the people who list them in
-their ``AllManagers`` field. Three things live here, apart from the read-only
+their ``AllManagers`` field. Four things live here, apart from the read-only
 ``/team/*`` endpoints in ``routes/dashboard.py``:
 
 - change a teammate's balances and entitlements, with a required reason, through
@@ -11,13 +11,16 @@ their ``AllManagers`` field. Three things live here, apart from the read-only
   team, through ``manager_assignments.update_employee_managers`` so the write
   goes through ``staff_store`` and open dashboards re-read (#363);
 - tell the UI which staff a manager may still add, and whether removing
-  themselves would leave a person with no manager at all.
+  themselves would leave a person with no manager at all;
+- Potential Employee Setup Issues for the team: the admin setup list, the
+  single-person check and Settle requests, reaching teammates only (#463).
 
 Every change is recorded under the manager's name, channel ``manager_dashboard``,
 exactly as an admin change is recorded under ``admin_dashboard``. All of it is
 token-authenticated through the shared ``AuthUser`` and refused (403) for anyone
 not on the calling manager's team.
 """
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -37,14 +40,17 @@ from app.routes.dashboard import (
 )
 from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
 from app.repositories.staff_store import staff_in_postgres, staff_store
+from app.services import balance_settle  # settle a teammate's unmoved request (#463)
 from app.services.concurrency import lock_manager  # serialise the AllManagers read-modify-write
 from app.services.employee import get_employee_by_id
+from app.services.employee_validation import validate_all_employee_setups, validate_employee_setup
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.manager_assignments import _extract_all_managers, update_employee_managers
 from app.services.staff_entitlements import StaffWriteError, apply_entitlement_changes, get_staff_record
 from app.services.switch_pause import SystemPaused  # the mid-switch write refusal -> 503
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # The channel every manager-dashboard change is recorded under, mirroring the
 # admin dashboard's "admin_dashboard". Inside StaffChange.source's 24-char limit.
@@ -447,3 +453,175 @@ async def team_remove_member(user: AuthUser, employee_id: str):
             return {**result, "removed": True, "has_other_manager": len(kept) > 0}
     except SystemPaused as e:                             # the switch began mid-write: refuse cleanly
         raise HTTPException(status_code=503, detail=e.message)
+
+
+# ============================
+# #463 - Potential Employee Setup Issues, for the manager's own team
+# ============================
+# The admin screen's twin, limited to the people who list the calling manager.
+# The same checks and the same settle service run; only whose records they reach
+# differs, as with the profile edit above.
+
+class TeamSettleBody(BaseModel):
+    """What one step of the settle dialog posts, from the manager dashboard."""
+
+    outcome: str                      # "now", "hand" or "none"
+    reason: str                       # required, never blank
+    pieces: dict[str, float] | None = None   # "hand" leave only: {pot: days taken}
+
+
+def _settle_kind_for(request_type: str) -> str:
+    """The stored request kind for a url request type, or a 400.
+
+    Args:
+        request_type: "leave", "overtime" or "carryover-payout".
+
+    Returns:
+        The stored kind the settle service reads.
+
+    Raises:
+        HTTPException: 400 for an unknown type.
+    """
+    from app.routes.admin_requests import _settle_kind   # one mapping for both screens; late, to keep router imports apart
+    return _settle_kind(request_type)
+
+
+async def _require_teammate_request(kind: str, request_id: str, manager_name: str) -> dict:
+    """Read a request's settle preview and confirm its person is on the manager's team.
+
+    Args:
+        kind: The stored request kind.
+        request_id: The request's item id.
+        manager_name: The calling manager's display name.
+
+    Returns:
+        The settle preview (read-only), so the GET route can return it as is.
+
+    Raises:
+        HTTPException: 404 / 409 from the settle service, 403 when the request
+            belongs to someone not on the manager's team.
+    """
+    try:
+        preview = await balance_settle.settle_preview(kind, request_id)   # a read; also says whose request it is
+    except balance_settle.SettleError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    await _require_teammate(str(preview["request"]["employee_id"]), manager_name)   # 403 unless on my team
+    return preview
+
+
+@router.get("/team/employee-setup")
+async def team_employee_setup(user: AuthUser):
+    """Everyone on the manager's team whose staff record has a setup problem (#463).
+
+    The same sweep as ``/admin/employee-setup``, graded only for the people who
+    list this manager, not archived, and never the manager's own record (a
+    manager does not edit their own record). Read-only, so not gated on
+    processing.
+
+    Args:
+        user: The signed-in manager or admin.
+
+    Returns:
+        ``{"total_checked", "flagged", "directory_unreadable"}`` for the team.
+
+    Raises:
+        HTTPException: 403 for an employee token, 500 when the sweep fails.
+    """
+    _manager, manager_name = await _signed_in_manager(user)
+
+    def on_my_team(record: dict) -> bool:
+        """Whether a staff record is one of this manager's teammates."""
+        fields = record.get("fields", {})
+        return (
+            str(record.get("id", "")) != str(user.user_id)     # never their own record
+            and not is_archived(fields)                      # archived people are off every team
+            and _is_in_all_managers(fields, manager_name)    # lists me as a manager
+        )
+
+    try:
+        return await validate_all_employee_setups(keep=on_my_team)
+    except Exception:  # noqa: BLE001 - one message for any failure, details in the log
+        logger.exception("Team employee setup sweep failed for manager %s", user.user_id)
+        raise HTTPException(status_code=500, detail="Setup check failed - check server logs")
+
+
+@router.get("/team/validate-employee/{employee_id}")
+async def team_validate_employee(user: AuthUser, employee_id: str):
+    """The single-person setup check, for one of the manager's teammates (#463).
+
+    Args:
+        user: The signed-in manager or admin.
+        employee_id: Staff Directory item id of the teammate.
+
+    Returns:
+        The same report as ``/admin/validate-employee``.
+
+    Raises:
+        HTTPException: 403 for a non-teammate, 404 when the person is gone,
+            500 when the check fails.
+    """
+    _manager, manager_name = await _signed_in_manager(user)
+    await _require_teammate(employee_id, manager_name)   # 403 unless they are on my team
+    try:
+        return await validate_employee_setup(employee_id)
+    except Exception:  # noqa: BLE001 - one message for any failure, details in the log
+        logger.exception("Team employee validation failed for #%s", employee_id)
+        raise HTTPException(status_code=500, detail="Validation failed - check server logs")
+
+
+@router.get("/team/requests/{request_type}/{request_id}/settle")
+async def team_settle_preview(user: AuthUser, request_type: str, request_id: str):
+    """What settling a teammate's approved request would do, read only (#463).
+
+    Args:
+        user: The signed-in manager or admin.
+        request_type: "leave", "overtime" or "carryover-payout".
+        request_id: The request's item id.
+
+    Returns:
+        The same preview as the admin route.
+
+    Raises:
+        HTTPException: 400 bad type, 403 not on the team, 404 gone, 409 not settleable.
+    """
+    _manager, manager_name = await _signed_in_manager(user)
+    return await _require_teammate_request(_settle_kind_for(request_type), request_id, manager_name)
+
+
+@router.post("/team/requests/{request_type}/{request_id}/settle")
+async def team_settle_request(user: AuthUser, request_type: str, request_id: str, body: TeamSettleBody):
+    """Settle a teammate's approved request that never moved a balance (#463).
+
+    The admin route's twin: the same service, so the same checks and ledger
+    rows. The reason is stored under the manager's name.
+
+    Args:
+        user: The signed-in manager or admin.
+        request_type: "leave", "overtime" or "carryover-payout".
+        request_id: The request's item id.
+        body: outcome ("now", "hand", "none"), the reason, and for a "hand"
+            leave the days taken per pot.
+
+    Returns:
+        ``{"status": "settled", "outcome", "balance_state", "moves"}``.
+
+    Raises:
+        HTTPException: 400 bad input, 403 not on the team, 404 gone, 409 already
+            settled or not possible, 503 while processing is off.
+    """
+    _manager, manager_name = await _signed_in_manager(user)
+    kind = _settle_kind_for(request_type)
+    if not settings.PROCESSING_ENABLED:                   # a balance write, like the admin route
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _require_teammate_request(kind, request_id, manager_name)   # 403 before anything is written
+    reason = (body.reason or "").strip()
+    if not reason:                                        # say it plainly before the service does
+        raise HTTPException(status_code=400, detail="A reason is required.")
+    try:
+        result = await balance_settle.settle(
+            kind, request_id, body.outcome, f"Settled by {manager_name}: {reason}", body.pieces,
+        )
+    except balance_settle.SettleError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    logger.info("Manager %s settled %s request #%s: %s", user.user_id, request_type, request_id, result["outcome"])
+    return result

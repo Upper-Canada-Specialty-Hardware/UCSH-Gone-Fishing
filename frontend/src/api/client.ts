@@ -143,12 +143,29 @@ export const bulkManagerAssignment = (params: {
 
 // Admin — Validate employee setup (read-only; runs the current Staff Directory
 // values through every workflow/leave type without creating a request)
-export const validateEmployee = (id: string) =>
-  api.get(`/admin/validate-employee/${id}`);
+/** Whose records the setup screen reaches: everyone (admin) or the manager's own team (#463). */
+export type SetupScope = 'admin' | 'team';
+
+/**
+ * Run the setup check for one person.
+ *
+ * @param id - Their staff id.
+ * @param scope - 'admin' for anyone; 'team' for one of the signed-in manager's teammates (#463).
+ * @returns The axios response with the check's report.
+ */
+export const validateEmployee = (id: string, scope: SetupScope = 'admin') =>
+  api.get(`/${scope}/validate-employee/${id}`);
 
 // The same checks across the whole Staff Directory, so a record that would
 // stall a request is listed before anyone is blocked by it.
 export const getAdminEmployeeSetup = () => api.get('/admin/employee-setup');
+
+/**
+ * The setup list for the signed-in manager's own team (#463).
+ *
+ * @returns The axios response ({total_checked, flagged, directory_unreadable}).
+ */
+export const getTeamEmployeeSetup = () => api.get('/team/employee-setup');
 
 // Manager — create a new employee (Staff Directory record) for their team
 export const createEmployee = (payload: Record<string, unknown>) =>
