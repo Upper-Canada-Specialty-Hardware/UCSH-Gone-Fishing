@@ -537,8 +537,14 @@ function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r
       ) : notReady ? (
         // Getting ready / needs attention: the admin may still edit or delete it,
         // but it cannot be approved or rejected until it finishes processing (#455).
+        // "Process again" re-runs the pipeline (assign a manager, re-ask) so a
+        // stuck row can reach waiting_on_approval without an edit; the reprocess
+        // endpoint is leave-only today, so it is offered only for leave rows (#455).
         <>
           <NotReadyNote display={notReady} />
+          {r.request_type === 'leave' && (
+            <Button size="small" variant="outlined" disabled={busy || writeOff} onClick={() => actions.reprocess(r)}>Process again</Button>
+          )}
           <Button size="small" variant="outlined" color="inherit" disabled={busy || writeOff} onClick={() => actions.edit(r)}>Edit</Button>
         </>
       ) : r.status === 'Pending' ? (

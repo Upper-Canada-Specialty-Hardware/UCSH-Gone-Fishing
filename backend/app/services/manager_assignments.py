@@ -246,7 +246,12 @@ async def execute_bulk_operation(operation: str, params: dict) -> dict:
     results = []
     for emp in affected:
         try:
-            await update_employee_managers(int(emp["id"]), emp["new_manager_ids"])
+            # The bulk screen is an admin-dashboard action: record each change as
+            # HR under the admin channel, not the automatic "system" default (#447).
+            await update_employee_managers(
+                int(emp["id"]), emp["new_manager_ids"],
+                history_source="admin_dashboard", history_actor="HR",
+            )
             results.append({"id": emp["id"], "name": emp["name"], "status": "success"})
         except Exception as e:
             logger.exception("Failed to update managers for employee %s", emp["id"])

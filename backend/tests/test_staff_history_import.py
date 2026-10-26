@@ -199,6 +199,49 @@ def test_the_predicate_allows_only_the_staff_versions_read():
     assert co.is_staff_history_read("GET", other) is False                # not another list
 
 
+def test_a_query_string_cannot_smuggle_a_read_past_the_gate():
+    """A versions path hidden in the query string stays refused, the real path decides (#455)."""
+    # A non-versions read of another list, with the staff versions path tucked in
+    # the query string: the query is stripped, so the real path does not match.
+    smuggle = f"/sites/abc/lists/{settings.SP_LIST_LEAVE_REQUESTS}/items/7?p=/lists/{STAFF}/items/7/versions"
+    assert co.is_staff_history_read("GET", smuggle) is False
+    # The site lookup must match exactly, not merely be a prefix of a longer path.
+    assert co.is_staff_history_read("GET", co._SITE_LOOKUP + "/drive/root") is False
+    # An absolute @odata.nextLink to the staff versions still matches on its tail.
+    nextlink = f"https://graph.microsoft.com/v1.0/sites/s/lists/{STAFF}/items/7/versions?$skiptoken=abc"
+    assert co.is_staff_history_read("GET", nextlink) is True
+
+
+# ----- the run isolates one person's failure -----
+
+
+def test_run_import_records_one_persons_failure_and_finishes_the_rest(monkeypatch):
+    """One person's write failure is recorded and the others still import (#448)."""
+    async def _people():
+        return [("1", "Ann"), ("2", "Bob")]
+
+    async def _versions(item_id):
+        return [version(1, 0, CurrentVacationBalance=10)]
+
+    async def _write(employee_id, name, versions):
+        if employee_id == "2":                                 # Bob's write blows up
+            raise RuntimeError("boom")
+        return 1                                                # Ann writes one row
+
+    monkeypatch.setattr(step, "_staff_people", _people)
+    monkeypatch.setattr(step, "_read_versions", _versions)
+    monkeypatch.setattr(step, "_write_person", _write)
+    monkeypatch.setattr(step.sp_client, "site_id", "site-123")  # skip the site resolve
+
+    result = run(step.run_import())
+    assert result["result"] == "done"                          # the run completed despite the failure
+    assert result["people_total"] == 2
+    assert result["people_done"] == 2                          # both counted, pass or fail
+    assert result["rows_written"] == 1                         # only Ann's row landed
+    assert [e["employee_id"] for e in result["errors"]] == ["2"]   # only Bob's failure recorded
+    assert "boom" in result["errors"][0]["error"]
+
+
 def test_the_gate_lets_only_the_allowed_read_through_after_the_switch(monkeypatch):
     from app.graph import auth as graph_auth
     from app.graph import client as graph_client_module

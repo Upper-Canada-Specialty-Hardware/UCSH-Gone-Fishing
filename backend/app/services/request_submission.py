@@ -50,7 +50,7 @@ from app.services.employment import (
 )
 from app.services.request_decisions import _wake_sender, decisions_active
 from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
-from app.services.request_states import move
+from app.services.request_states import can_decide, move
 from app.services.request_submitter import resolve_request_submitter
 from app.services.vacation_cover import choose_available_manager, today_toronto
 from app import templates_render as tr
@@ -877,9 +877,18 @@ async def _reprocess_request(session, kind, item_id, reason, actor, channel) -> 
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to re-ask
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
-    managers = await get_all_managers_for_employee(employee) if employee else []
-    if not employee or not managers:
-        return False                                              # cannot resolve: nobody to ask
+    if employee is None:
+        return False                                              # submitter cannot be resolved: nobody to ask
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
+        # A resolved submitter with no manager at all: mirror _do_submit, which
+        # makes such a request waiting_on_approval (decidable, carried on the admin
+        # cover list) rather than leaving it stuck. No manager exists to email, so
+        # nothing is sent, but the state is finished: needs_attention /
+        # getting_ready -> waiting_on_approval (#455); an already-waiting row is
+        # unchanged. Returning True lets the admin reprocess resolve a stuck row.
+        move(record, "waiting_on_approval", reason="reprocessed, no manager to ask")
+        return True
     # Route to the first available manager, the same rule reminders use (#369).
     chosen, skipped = await choose_available_manager(session, managers, today_toronto())
     if chosen is None:
@@ -913,6 +922,8 @@ async def _queue_reminder(session, kind, item_id, today) -> bool:
     record = await _load(session, kind, item_id)
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to remind
+    if not can_decide(record):
+        return False                                              # getting_ready / needs_attention: never remind (#455)
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
     # An archived submitter (#119) is off every approval route: no manager is
     # reminded, and the request simply stays pending and visible to admins (#368).
@@ -1111,6 +1122,8 @@ async def _first_ask(session, record: RequestRecord, today: date) -> bool:
         leaving the request on the admin cover list.
     """
     from app.models.mixins import utcnow
+    if not can_decide(record):
+        return False                                              # getting_ready / needs_attention: never ask (#455)
     employee = await _resolve_employee(record, TypedRequestList(record.kind)._item_shape(record)["fields"])
     # An archived submitter (#119) is off every approval route: never ask a manager.
     if employee is not None and is_archived(employee.get("fields", {})):
@@ -1162,6 +1175,12 @@ async def queue_due_reminders() -> int:
         )).scalars().all()
         queued = 0
         for record in pending:
+            # Only a request a manager can actually decide is reminded (#455): a
+            # getting_ready or needs_attention row is skipped here, so the manager
+            # is never emailed or texted about something they cannot act on. Those
+            # rows surface on the admin stuck list instead.
+            if not can_decide(record):
+                continue
             # A Postgres request gets an approval-version-state row once it is
             # edited; honour its reminders_closed flag the way reminders.py does.
             state = await session.get(

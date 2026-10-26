@@ -105,9 +105,26 @@ POT_LABEL = {
 # The message a stale link or an already-decided request shows the manager.
 STALE_MESSAGE = "This request has already been updated; your link is out of date. Please use the latest email."
 ALREADY_DECIDED_MESSAGE = "Already processed"
-# Shown when a request is still being prepared (getting_ready / needs_attention):
-# it cannot be decided yet, on any channel (#455).
+# Shown when a request is still being prepared and cannot be decided yet, on any
+# channel (#455). getting_ready will finish by itself, so "try again"; a
+# needs_attention row will not (its preparation failed), so it points at an admin.
 NOT_READY_MESSAGE = "This request is still getting ready. Try again in a moment."
+NEEDS_ATTENTION_MESSAGE = "This request needs an admin to look at it before it can be decided."
+
+
+def _not_ready_message(request) -> str:
+    """The refusal text for a not-yet-decidable request, picked by its state (#455).
+
+    Args:
+        request: The request row (read for its ``state``).
+
+    Returns:
+        ``NEEDS_ATTENTION_MESSAGE`` for a needs_attention row, else
+        ``NOT_READY_MESSAGE`` (a getting_ready row that will finish on its own).
+    """
+    if getattr(request, "state", None) == "needs_attention":       # preparation failed: an admin must step in
+        return NEEDS_ATTENTION_MESSAGE
+    return NOT_READY_MESSAGE                                        # still getting ready, will finish by itself
 NOT_APPROVED_MESSAGE = "Only approved requests can be refunded"
 GONE_MESSAGE = "This request no longer exists."
 CARRYOVER_NEGATIVE_MESSAGE = "This would take vacation below zero, so it was not approved."
@@ -758,9 +775,10 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             await session.commit()
             return {"error": ALREADY_DECIDED_MESSAGE, "refused": "decided"}
         if not can_decide(request):                                # pending but still getting ready / needs attention
-            await _refuse(session, request, channel, actor, version, "not_ready", NOT_READY_MESSAGE)
+            not_ready = _not_ready_message(request)                # getting_ready vs needs_attention wording (#455)
+            await _refuse(session, request, channel, actor, version, "not_ready", not_ready)
             await session.commit()
-            return {"error": NOT_READY_MESSAGE, "refused": "not_ready"}
+            return {"error": not_ready, "refused": "not_ready"}
 
         async with lock_manager.lock(request.employee_id):         # one employee's decisions, one at a time
             # Lock the request row (Postgres FOR UPDATE; a no-op on SQLite) and re-read it:
@@ -771,9 +789,10 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
                 await session.commit()
                 return {"error": ALREADY_DECIDED_MESSAGE, "refused": "decided"}
             if not can_decide(request):                            # still getting ready, re-checked under the lock
-                await _refuse(session, request, channel, actor, version, "not_ready", NOT_READY_MESSAGE)
+                not_ready = _not_ready_message(request)            # getting_ready vs needs_attention wording (#455)
+                await _refuse(session, request, channel, actor, version, "not_ready", not_ready)
                 await session.commit()
-                return {"error": NOT_READY_MESSAGE, "refused": "not_ready"}
+                return {"error": not_ready, "refused": "not_ready"}
 
             balances = await get_staff_balances()                  # SharePoint or Postgres, per the setting
             try:
@@ -901,9 +920,10 @@ async def reject(kind, item_id, actor, channel, link_version=None, reason=None) 
             await session.commit()
             return {"error": ALREADY_DECIDED_MESSAGE, "refused": "decided"}
         if not can_decide(request):                                # pending but still getting ready / needs attention
-            await _refuse(session, request, channel, actor, version, "not_ready", NOT_READY_MESSAGE)
+            not_ready = _not_ready_message(request)                # getting_ready vs needs_attention wording (#455)
+            await _refuse(session, request, channel, actor, version, "not_ready", not_ready)
             await session.commit()
-            return {"error": NOT_READY_MESSAGE, "refused": "not_ready"}
+            return {"error": not_ready, "refused": "not_ready"}
 
         async with lock_manager.lock(request.employee_id):
             await session.refresh(request, with_for_update=True)  # lock the row, see a decision just committed
@@ -912,9 +932,10 @@ async def reject(kind, item_id, actor, channel, link_version=None, reason=None) 
                 await session.commit()
                 return {"error": ALREADY_DECIDED_MESSAGE, "refused": "decided"}
             if not can_decide(request):                            # still getting ready, re-checked under the lock
-                await _refuse(session, request, channel, actor, version, "not_ready", NOT_READY_MESSAGE)
+                not_ready = _not_ready_message(request)            # getting_ready vs needs_attention wording (#455)
+                await _refuse(session, request, channel, actor, version, "not_ready", not_ready)
                 await session.commit()
-                return {"error": NOT_READY_MESSAGE, "refused": "not_ready"}
+                return {"error": not_ready, "refused": "not_ready"}
 
             _mark_decided(request, "rejected", actor, channel)
             rejected_key = step_key(kind, request.item_id, "rejected", version)

@@ -22,6 +22,8 @@ export interface StaffChange {
   actor?: string | null;
   /** The SharePoint version label an imported row came from (e.g. "1.0"); null for an app edit. */
   version?: string | null;
+  /** True on a starting-value row: the oldest imported SharePoint version seeded it (#448). */
+  is_start?: boolean;
   /** When it happened, an ISO 8601 UTC string. */
   changed_at: string;
 }

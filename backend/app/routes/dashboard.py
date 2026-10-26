@@ -1240,7 +1240,13 @@ async def team_create_employee(user: AuthUser, body: dict):
 
     from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
-        record = await create_employee(body, supervisor_ids)
+        # A manager added this hire from the manager dashboard: record the first
+        # supervisor assignment under the manager's own name, not HR/system (#447).
+        record = await create_employee(
+            body, supervisor_ids,
+            history_source="manager_dashboard",
+            history_actor=manager["fields"].get("Title") or None,
+        )
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
@@ -1810,14 +1816,18 @@ async def admin_stuck_requests():
         # What counts as stuck depends on the backend. On Postgres the request's
         # own state says it (#455): needs_attention (getting ready failed), or
         # getting_ready for too long (the backend never finished preparing it), or
-        # blocked at approval by an already-approved absence. The "manager asked but
-        # not notified" condition is dropped there, since the state covers it.
-        # On SharePoint the three legacy conditions still apply.
+        # waiting_on_approval but still missing its computed Days or a manager (so
+        # the manager cannot actually act), or blocked at approval by an
+        # already-approved absence. A getting_ready row younger than the window is
+        # not flagged, so the 3-second gap while the submit sends is not "stuck".
+        # The "manager asked but not notified" condition is dropped here, since the
+        # state covers it. On SharePoint the three legacy conditions still apply.
         if pg:
             state = f.get("state")
             is_stuck = (
                 state == "needs_attention"
                 or (state == "getting_ready" and _getting_ready_stuck(f.get("Created")))
+                or (state == "waiting_on_approval" and not _is_fully_processed(f, "leave"))
                 or blocked_by is not None
             )
         else:
@@ -2524,7 +2534,12 @@ async def admin_update_manager_assignment(employee_id: str, body: dict):
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     from app.services.manager_assignments import update_employee_managers
     manager_ids = body.get("manager_ids", [])
-    result = await update_employee_managers(int(employee_id), manager_ids)
+    # An admin made this change on the shared admin dashboard: record it as HR
+    # under the admin channel, not the automatic "system" default (#447).
+    result = await update_employee_managers(
+        int(employee_id), manager_ids,
+        history_source="admin_dashboard", history_actor="HR",
+    )
     return result
 
 

@@ -1456,9 +1456,11 @@ function changeWho(e: StaffChange): string {
 function ChangeRow({ e }: { e: StaffChange }) {
   const theme = useTheme();
   const t = theme.tokens;
-  // A starting row (an imported baseline) has no "before" and carries a version;
-  // "1.0" is the first saved version, anything later is the earliest one kept.
-  const isStarting = e.old_value == null && !!e.version;
+  // A starting row (an imported baseline) is flagged by the backend from the
+  // person's oldest imported version, so a later blank -> value change is not
+  // mistaken for one (#448). "1.0" is the first saved version, anything later is
+  // the earliest one kept.
+  const isStarting = !!e.is_start;
   const startLabel = e.version === '1.0' ? 'First value' : 'Earliest saved value';
   return (
     <Box sx={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', columnGap: 1.25, rowGap: 0.25, py: 1, px: 1.25, borderBottom: 1, borderColor: 'divider', borderLeft: `2px dashed ${t.line2}`, bgcolor: t.hover, minWidth: 0 }}>

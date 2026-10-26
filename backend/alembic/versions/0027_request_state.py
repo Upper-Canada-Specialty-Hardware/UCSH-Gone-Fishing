@@ -13,8 +13,9 @@ values with a CHECK, so every existing row gets the right state and every new ro
 starts as getting_ready.
 
 This is a schema change, not the SharePoint-to-Postgres data move. down_revision
-is "0024" for now; it is re-pointed to "0026" when this branch is combined with
-the branches that add 0025 and 0026.
+is "0026" (the staff_changes actor column), so this file now follows it. Another
+open branch adds 0025 after 0024, so whichever of the two merges to master second
+must re-point its own down_revision to sit after the other, keeping one line.
 
 Postgres only: SQLite (tests) builds its schema from the models with
 ``create_all``, which already carries this column and its CHECK.
@@ -25,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0027"
-down_revision: Union[str, None] = "0024"
+down_revision: Union[str, None] = "0026"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -38,10 +39,12 @@ def upgrade() -> None:
     # Add it nullable first, so the backfill can fill every existing row.
     op.add_column("requests", sa.Column("state", sa.String(), nullable=True))
     # Backfill: a decided status maps straight across; a pending row is
-    # waiting_on_approval when it is ready to be decided (a manager and a real
-    # submitted/imported/sent-to-manager event, or a legacy row), else
-    # needs_attention (a pending row the old pipeline never finished). Mirrors
-    # services/request_states.backfill_state exactly.
+    # waiting_on_approval when it was really put into the approval flow (a
+    # submitted/imported/sent-to-manager event, or a legacy row) regardless of
+    # whether a manager is set, because submit makes a request decidable the
+    # moment the employee resolves even with no manager (the admin cover list then
+    # carries it); else needs_attention (a pending row the old pipeline never
+    # finished). Mirrors services/request_states.backfill_state exactly.
     op.execute(
         """
         UPDATE requests SET state = CASE
@@ -51,11 +54,11 @@ def upgrade() -> None:
             WHEN status = 'cancelled' THEN 'cancelled'
             WHEN status = 'pending' AND (
                 legacy = TRUE
-                OR (manager_id IS NOT NULL AND EXISTS (
+                OR EXISTS (
                     SELECT 1 FROM request_events e
                     WHERE e.request_id = requests.id
                       AND e.type IN ('submitted', 'imported', 'sent_to_manager')
-                ))
+                )
             ) THEN 'waiting_on_approval'
             WHEN status = 'pending' THEN 'needs_attention'
             ELSE 'getting_ready'

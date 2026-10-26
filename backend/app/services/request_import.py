@@ -772,11 +772,10 @@ async def _import_item(
 
     # The state-machine position (#455), derived from the same signals the
     # migration backfill uses. An import always records an imported/submitted event
-    # (appended below), so a pending row with a manager (or a legacy row) is
-    # waiting_on_approval and an unfinished one needs_attention.
+    # (appended below), so a pending row is waiting_on_approval (decidable, manager
+    # or not, matching submit) and only a decided status maps straight across.
     record.state = backfill_state(
-        record.status, has_manager=bool(record.manager_id),
-        has_submit_event=True, legacy=bool(record.legacy),
+        record.status, has_submit_event=True, legacy=bool(record.legacy),
     )
 
     session.add(record)

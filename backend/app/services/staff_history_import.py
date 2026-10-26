@@ -277,22 +277,34 @@ async def _read_versions(item_id: str) -> list[dict] | None:
     return None
 
 
-async def _read_all(item_ids: list[str]) -> dict[str, list[dict] | None]:
-    """Read many staff records' versions at once, a few in flight at a time.
+async def _process_person(gate: asyncio.Semaphore, employee_id: str, name: str) -> None:
+    """Read, write and drop one person's history inside the concurrency gate.
+
+    The whole of one person's work (the versions read, then the transaction that
+    replaces their imported rows) happens under ``gate`` and is freed before the
+    next, so at most ``READ_CONCURRENCY`` people's versions are ever held at once,
+    never the whole directory, and the Graph reads stay within throttle. A broad
+    ``except`` records that one person's failure and returns, so one bad record,
+    a non-transient Graph refusal included, never stops the rest of the run.
+    Progress is updated whatever the outcome.
 
     Args:
-        item_ids: The Staff Directory item ids to read.
-
-    Returns:
-        ``{item id: versions}``; None for an id that could not be read.
+        gate: The semaphore bounding concurrent reads and writes.
+        employee_id: The Staff Directory item id.
+        name: The person's name now, stored on each row.
     """
-    gate = asyncio.Semaphore(READ_CONCURRENCY)             # cap concurrent Graph reads
-
-    async def one(item_id: str):
-        async with gate:
-            return item_id, await _read_versions(item_id)
-
-    return dict(await asyncio.gather(*(one(i) for i in item_ids)))
+    async with gate:                                       # one person's read + write, then release
+        try:
+            versions = await _read_versions(employee_id)   # retried on a timeout / busy Graph
+            if versions is None:                           # every try failed: leave it for a re-run
+                _progress["errors"].append({"employee_id": employee_id, "error": "versions not read"})
+            else:
+                _progress["rows_written"] += await _write_person(employee_id, name, versions)
+        except Exception as e:                             # one person's failure must not stop the rest
+            logger.exception("Staff history: failed to import history for %s", employee_id)
+            _progress["errors"].append({"employee_id": employee_id, "error": str(e)})
+        finally:
+            _progress["people_done"] += 1                  # counted done either way, so the total reconciles
 
 
 async def _staff_people() -> list[tuple[str, str]]:
@@ -381,9 +393,10 @@ async def run_import() -> dict:
     """Read every staff record's versions and rewrite their imported history.
 
     Resolves the site id first (the versions URL needs it, and the app does not
-    resolve it after the switch), reads all versions with limited concurrency,
-    then writes each person in their own transaction, updating the progress as it
-    goes.
+    resolve it after the switch), then reads, writes and drops each person inside
+    one shared concurrency gate, so only a few people's versions are ever in
+    memory and one person's failure is recorded without stopping the rest. The
+    progress (people done, rows written, per-person errors) is updated as it goes.
 
     Returns:
         The final progress record.
@@ -396,18 +409,14 @@ async def run_import() -> dict:
             await sp_client.resolve_site_id(allow_after_switch=True)
         people = await _staff_people()
         _progress["people_total"] = len(people)
-        versions_by_id = await _read_all([pid for pid, _ in people])   # concurrent reads
-        for pid, name in people:
-            versions = versions_by_id.get(pid)
-            if versions is None:                           # could not be read this run
-                _progress["errors"].append({"employee_id": pid, "error": "versions not read"})
-            else:
-                try:
-                    _progress["rows_written"] += await _write_person(pid, name, versions)
-                except Exception as e:                     # one person's failure must not stop the rest
-                    logger.exception("Staff history: failed to write history for %s", pid)
-                    _progress["errors"].append({"employee_id": pid, "error": str(e)})
-            _progress["people_done"] += 1
+        gate = asyncio.Semaphore(READ_CONCURRENCY)         # one gate shared across all people
+        # Each person reads, writes and frees inside the gate. return_exceptions
+        # keeps a stray error from orphaning the other tasks; each _process_person
+        # already catches its own failure, so nothing should surface here.
+        await asyncio.gather(
+            *(_process_person(gate, pid, name) for pid, name in people),
+            return_exceptions=True,
+        )
         _progress["result"] = "done"
     except Exception as e:                                 # a run-wide failure (e.g. the site could not resolve)
         logger.exception("Staff history import failed")

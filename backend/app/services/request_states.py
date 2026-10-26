@@ -12,7 +12,11 @@ yet a thing a manager may approve or reject. Every Postgres write path moves the
 state through :func:`move`, which refuses an illegal move loudly, so a bad
 transition is a bug caught at once rather than a silently wrong request.
 """
+import logging
+
 from app.models.request_vocab import STATES
+
+logger = logging.getLogger(__name__)
 
 # The only state a request may be approved or rejected from.
 DECIDABLE_STATE = "waiting_on_approval"
@@ -97,19 +101,21 @@ def move(record, to_state: str, *, reason: str | None = None) -> str:
     return to_state
 
 
-def backfill_state(status: str, *, has_manager: bool, has_submit_event: bool, legacy: bool) -> str:
+def backfill_state(status: str, *, has_submit_event: bool, legacy: bool) -> str:
     """The state a row should hold, derived from its status and a few signals.
 
     The single rule the migration backfill and the importer share, so a row gets
     the same state whether it is backfilled once or re-imported. A decided status
-    maps straight across. A pending row is ``waiting_on_approval`` when it is
-    ready to be decided (it has a manager and was actually submitted/imported, or
-    it is a legacy row from before this app), and ``needs_attention`` otherwise (a
-    pending row the old pipeline never finished).
+    maps straight across. A pending row is ``waiting_on_approval`` when it was
+    really put into the approval flow (it was submitted/imported, or is a legacy
+    row from before this app), regardless of whether a manager is set: submit
+    makes a request decidable the moment the employee resolves, even with no
+    manager, matching ``request_submission._do_submit`` (the admin cover list then
+    carries a no-manager request). It is ``needs_attention`` otherwise (a pending
+    row the old pipeline never finished).
 
     Args:
         status: The row's lifecycle status (lower case).
-        has_manager: Whether the row has a manager assigned.
         has_submit_event: Whether a submitted / imported / sent_to_manager event
             exists for the row (it was really put into the approval flow).
         legacy: Whether the row predates this app (decided the old way).
@@ -120,6 +126,105 @@ def backfill_state(status: str, *, has_manager: bool, has_submit_event: bool, le
     mapped = STATUS_TO_STATE.get(status)                           # approved/rejected/refunded/cancelled
     if mapped is not None:
         return mapped
-    if status == "pending" and (legacy or (has_manager and has_submit_event)):
-        return "waiting_on_approval"                               # ready to be decided
+    if status == "pending" and (legacy or has_submit_event):
+        return "waiting_on_approval"                               # ready to be decided, manager or not
     return "needs_attention" if status == "pending" else INITIAL_STATE   # unfinished pending, else fresh
+
+
+# How long a getting_ready row may sit before the startup reconcile assumes its
+# submit crashed and finishes the move submit should have made (#455). Matches the
+# admin stuck list's getting_ready window.
+GETTING_READY_RECONCILE_MINUTES = 10
+
+# The request-event types that mean a request was really put into the approval
+# flow, so a getting_ready row carrying one should have reached waiting_on_approval.
+SUBMIT_EVENT_TYPES = ("submitted", "imported", "sent_to_manager")
+
+
+def reconcile_decided_state(status: str, state: str) -> str | None:
+    """The corrected state for a decided row whose state disagrees with its status.
+
+    Pure so it tests without a database. A decided status (approved / rejected /
+    refunded / cancelled) implies exactly one state; when the stored state is not
+    that, this returns the state the status implies, else None (leave it alone). A
+    pending row is never touched here (its drift is the getting_ready rule below).
+
+    Args:
+        status: The row's lifecycle status (lower case).
+        state: The row's current state-machine position.
+
+    Returns:
+        The state the status implies when it disagrees, else None.
+    """
+    mapped = STATUS_TO_STATE.get(status)                           # a decided status -> its one state
+    if mapped is not None and state != mapped:
+        return mapped                                              # status wins: state was left behind
+    return None                                                    # agree, or a pending row: no change
+
+
+async def reconcile_request_states() -> dict:
+    """Fix request-state drift left by a deploy overlapping an in-flight decision.
+
+    Idempotent and Postgres-only; it never raises, so a failure cannot stall
+    startup. Two corrections, both derived from data already on the row:
+
+    - a decided row (approved / rejected / refunded / cancelled) whose ``state``
+      was left behind is set to the state the status implies;
+    - a ``getting_ready`` row older than ``GETTING_READY_RECONCILE_MINUTES`` that
+      carries a submit/import/sent_to_manager event is moved to
+      ``waiting_on_approval`` (its submit committed the row but a restart cut in
+      before the state move).
+
+    Returns:
+        ``{"decided_fixed", "getting_ready_fixed"}`` counts (0/0 when off Postgres
+        or when nothing drifted); the same counts are logged.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    try:
+        from app.database import async_session
+        from app.models.mixins import utcnow
+        from app.models.request_event import RequestEvent
+        from app.models.request_record import RequestRecord
+        from app.repositories.request_store import requests_in_postgres
+
+        if not await requests_in_postgres():
+            return {"decided_fixed": 0, "getting_ready_fixed": 0}   # SharePoint path has no state to reconcile
+
+        decided_fixed = 0
+        getting_ready_fixed = 0
+        cutoff = utcnow() - timedelta(minutes=GETTING_READY_RECONCILE_MINUTES)
+        async with async_session() as session:
+            rows = (await session.execute(select(RequestRecord))).scalars().all()
+            for record in rows:
+                corrected = reconcile_decided_state(record.status, record.state)
+                if corrected is not None:
+                    record.state = corrected                        # status wins; write the implied state
+                    decided_fixed += 1
+                    continue
+                if record.state == "getting_ready" and record.created_at is not None:
+                    created = record.created_at
+                    if created.tzinfo is None:                      # SQLite hands back naive UTC
+                        from datetime import timezone
+                        created = created.replace(tzinfo=timezone.utc)
+                    if created <= cutoff:                           # old enough that submit should have finished
+                        asked = (await session.execute(
+                            select(RequestEvent.id).where(
+                                RequestEvent.request_id == record.id,
+                                RequestEvent.type.in_(SUBMIT_EVENT_TYPES),
+                            ).limit(1)
+                        )).first()
+                        if asked is not None:                       # it was submitted: finish the move
+                            move(record, "waiting_on_approval", reason="startup reconcile")
+                            getting_ready_fixed += 1
+            await session.commit()
+        logger.info(
+            "Request-state reconcile: %d decided rows realigned, %d getting_ready rows advanced",
+            decided_fixed, getting_ready_fixed,
+        )
+        return {"decided_fixed": decided_fixed, "getting_ready_fixed": getting_ready_fixed}
+    except Exception:                                               # never let a reconcile break startup
+        logger.exception("Request-state reconcile failed")
+        return {"decided_fixed": 0, "getting_ready_fixed": 0}

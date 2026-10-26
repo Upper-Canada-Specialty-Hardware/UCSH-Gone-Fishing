@@ -120,23 +120,26 @@ def test_move_refuses_an_unknown_target():
 def test_backfill_maps_decided_statuses_straight_across():
     """A decided status always maps to the matching state."""
     for status in ("approved", "rejected", "refunded", "cancelled"):
-        assert st.backfill_state(status, has_manager=False, has_submit_event=False, legacy=False) == status
+        assert st.backfill_state(status, has_submit_event=False, legacy=False) == status
 
 
-def test_backfill_pending_with_a_manager_and_an_event_is_waiting():
-    """A pending row ready to be decided backfills to waiting_on_approval."""
-    assert st.backfill_state("pending", has_manager=True, has_submit_event=True, legacy=False) == "waiting_on_approval"
+def test_backfill_a_submitted_pending_row_is_waiting_even_without_a_manager():
+    """A pending row that was really submitted is decidable, manager or not (#455).
+
+    Mirrors _do_submit, which makes a request waiting_on_approval the moment the
+    employee resolves, even with no manager (the admin cover list carries it).
+    """
+    assert st.backfill_state("pending", has_submit_event=True, legacy=False) == "waiting_on_approval"
 
 
-def test_backfill_a_legacy_pending_row_is_waiting_even_without_a_manager():
-    """A legacy pending row is treated as ready, no manager needed."""
-    assert st.backfill_state("pending", has_manager=False, has_submit_event=False, legacy=True) == "waiting_on_approval"
+def test_backfill_a_legacy_pending_row_is_waiting():
+    """A legacy pending row is treated as ready to be decided."""
+    assert st.backfill_state("pending", has_submit_event=False, legacy=True) == "waiting_on_approval"
 
 
 def test_backfill_an_unfinished_pending_row_needs_attention():
-    """A pending row the old pipeline never finished backfills to needs_attention."""
-    assert st.backfill_state("pending", has_manager=False, has_submit_event=True, legacy=False) == "needs_attention"
-    assert st.backfill_state("pending", has_manager=True, has_submit_event=False, legacy=False) == "needs_attention"
+    """A pending row never submitted and not legacy never finished: needs_attention."""
+    assert st.backfill_state("pending", has_submit_event=False, legacy=False) == "needs_attention"
 
 
 # ----- create and the decision write paths -----
@@ -210,9 +213,21 @@ def test_a_getting_ready_request_cannot_be_rejected_on_any_channel(channel):
 
 
 def test_a_needs_attention_request_cannot_be_decided():
-    """A needs_attention request is refused as not ready too."""
+    """A needs_attention request is refused as not ready, with its own message (#455)."""
     item_id = run(_seed(state="needs_attention"))
-    assert run(rd.approve("leave", item_id, "9", "manager_dashboard")).get("refused") == "not_ready"
+    result = run(rd.approve("leave", item_id, "9", "manager_dashboard"))
+    assert result.get("refused") == "not_ready"
+    # A needs_attention row points at an admin, unlike a getting_ready row which
+    # only needs a moment; the message differs so the manager is told the right thing.
+    assert result["error"] == rd.NEEDS_ATTENTION_MESSAGE
+    assert result["error"] != rd.NOT_READY_MESSAGE
+
+
+def test_a_getting_ready_request_uses_the_try_again_message(monkeypatch):
+    """A getting_ready refusal keeps the "try again in a moment" wording (#455)."""
+    item_id = run(_seed(state="getting_ready"))
+    result = run(rd.approve("leave", item_id, "9", "manager_dashboard"))
+    assert result["error"] == rd.NOT_READY_MESSAGE
 
 
 def test_a_getting_ready_refusal_records_a_refused_event():
@@ -345,6 +360,107 @@ def test_reprocessing_a_needs_attention_request_makes_it_waiting(monkeypatch):
             )).scalars().first()
 
     assert run(read()).state == "waiting_on_approval"
+
+
+def test_reprocessing_a_no_manager_request_still_makes_it_waiting(monkeypatch):
+    """A resolved submitter with no manager at all is still made decidable (#455).
+
+    Mirrors _do_submit: a request whose employee resolves is waiting_on_approval
+    even with no manager (the admin cover list carries it), so reprocessing a
+    stuck needs_attention row with no manager finishes the move instead of leaving
+    it stuck, and reports success rather than "nothing was sent".
+    """
+    item_id = run(_seed(state="needs_attention"))
+    employee = {"id": "1", "fields": {"Title": "Pat Staff", "EmailAddress": "pat@ucsh.com"}}
+
+    async def _emp(record, fields):
+        return employee
+
+    async def _no_mgrs(emp):
+        return []                                                  # resolved employee, but no manager at all
+
+    monkeypatch.setattr(rs, "_resolve_employee", _emp)
+    monkeypatch.setattr(rs, "get_all_managers_for_employee", _no_mgrs)
+    monkeypatch.setattr(rs, "_wake_sender", lambda: None)
+
+    assert run(rs.reprocess_request("leave", item_id, "please look again")) is True
+
+    async def read():
+        async with async_session() as session:
+            return (await session.execute(
+                select(RequestRecord).where(RequestRecord.kind == "leave", RequestRecord.item_id == item_id)
+            )).scalars().first()
+
+    assert run(read()).state == "waiting_on_approval"
+
+
+# ----- the deploy-overlap state reconcile (#455) -----
+
+def test_reconcile_decided_state_realigns_a_disagreeing_decided_row():
+    """A decided status whose state was left behind is corrected; agreement is left alone."""
+    assert st.reconcile_decided_state("approved", "waiting_on_approval") == "approved"
+    assert st.reconcile_decided_state("rejected", "getting_ready") == "rejected"
+    assert st.reconcile_decided_state("refunded", "approved") == "refunded"
+    assert st.reconcile_decided_state("cancelled", "waiting_on_approval") == "cancelled"
+    assert st.reconcile_decided_state("approved", "approved") is None      # already agree
+    assert st.reconcile_decided_state("pending", "getting_ready") is None  # a pending row is never touched here
+
+
+def test_reconcile_fixes_a_decided_row_and_a_submitted_getting_ready_row(monkeypatch):
+    """The startup reconcile realigns a decided row and finishes a stale getting_ready one."""
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")          # Postgres path only
+    from datetime import timezone
+    from app.models.mixins import utcnow
+
+    old = utcnow().replace(tzinfo=timezone.utc) - timedelta(minutes=30)    # older than the 10-minute window
+    fresh = utcnow().replace(tzinfo=timezone.utc)
+
+    leave = dict(kind="leave", employee_id="1", approval_version=1,
+                 leave_type="Vacation", start_date=date(2026, 11, 2), days=1.0)
+    async def seed():
+        async with async_session() as session:
+            # 1) approved status, but the state was left at waiting_on_approval.
+            drifted = RequestRecord(item_id=next(_item_ids), status="approved",
+                                    state="waiting_on_approval", balance_state="applied",
+                                    created_at=old, **leave)
+            # 2) getting_ready, old enough, with a submitted event: submit never finished.
+            stale = RequestRecord(item_id=next(_item_ids), status="pending",
+                                  state="getting_ready", balance_state="not_applied",
+                                  created_at=old, **leave)
+            # 3) getting_ready, old, but never submitted: left alone (genuinely preparing/failed).
+            never = RequestRecord(item_id=next(_item_ids), status="pending",
+                                  state="getting_ready", balance_state="not_applied",
+                                  created_at=old, **leave)
+            # 4) getting_ready, submitted, but younger than the window: left alone.
+            young = RequestRecord(item_id=next(_item_ids), status="pending",
+                                  state="getting_ready", balance_state="not_applied",
+                                  created_at=fresh, **leave)
+            session.add_all([drifted, stale, never, young])
+            await session.flush()
+            for rec in (stale, young):
+                session.add(RequestEvent(
+                    request_id=rec.id, kind="leave", item_id=rec.item_id, employee_id="1",
+                    type="submitted", channel="system", detail={},
+                    idempotency_key=f"submitted:{rec.item_id}",
+                ))
+            await session.commit()
+            return drifted.item_id, stale.item_id, never.item_id, young.item_id
+
+    drifted_id, stale_id, never_id, young_id = run(seed())
+    counts = run(st.reconcile_request_states())
+    assert counts == {"decided_fixed": 1, "getting_ready_fixed": 1}
+
+    async def state_of(item_id):
+        async with async_session() as session:
+            rec = (await session.execute(
+                select(RequestRecord).where(RequestRecord.item_id == item_id)
+            )).scalars().first()
+            return rec.state
+
+    assert run(state_of(drifted_id)) == "approved"               # status wins
+    assert run(state_of(stale_id)) == "waiting_on_approval"      # submit finished
+    assert run(state_of(never_id)) == "getting_ready"            # never submitted: untouched
+    assert run(state_of(young_id)) == "getting_ready"            # still inside the window: untouched
 
 
 # ----- the stuck rule -----

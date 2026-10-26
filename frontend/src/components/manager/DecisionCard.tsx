@@ -77,10 +77,13 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, b
   const dated = item.request_type !== 'carryover-payout' && item.StartDate;     // carry-over has no dates
   const sameDay = !item.EndDate || item.EndDate.slice(0, 10) === item.StartDate?.slice(0, 10);
   const decidable = canDecide(item.state);                                      // false while getting ready / needs attention (#455)
-  // Only surface the state chip when a card is NOT yet decidable: that is the
-  // whole reason its buttons are off, so the manager sees why (#455). A plain
-  // waiting_on_approval row needs no chip, and the SharePoint path has no state.
-  const stateChip = decidable ? null : stateDisplay(item.state);
+  // Surface the state chip only while a card is still being prepared
+  // (getting_ready / needs_attention): that is the whole reason its buttons are
+  // off, so the manager sees why (#455). A waiting_on_approval row needs no chip,
+  // a decided row must not show a second "Approved"-style chip on top of its
+  // outcome, and the SharePoint path has no state.
+  const notYetReady = item.state === 'getting_ready' || item.state === 'needs_attention';
+  const stateChip = notYetReady ? stateDisplay(item.state) : null;
   // The tooltip on the disabled buttons when the block is the state, not processing.
   const notReadyHint = stateChip ? `${stateChip.label}: this request cannot be decided yet` : undefined;
 

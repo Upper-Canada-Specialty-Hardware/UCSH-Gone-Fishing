@@ -83,6 +83,17 @@ async def lifespan(app: FastAPI):
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
+
+        # Deferred so the server is already answering /health: a deploy that
+        # overlapped an in-flight decision can leave a request's state behind its
+        # status (#455). This idempotent pass realigns decided rows and finishes
+        # the submit move for getting_ready rows that were really submitted. It
+        # never raises into startup.
+        async def _deferred_state_reconcile():
+            from app.services.request_states import reconcile_request_states
+            await reconcile_request_states()
+
+        asyncio.create_task(_deferred_state_reconcile())
     else:                                                      # still on SharePoint: connect as before
         try:
             await token_manager.get_token()

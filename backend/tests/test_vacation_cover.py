@@ -139,6 +139,7 @@ async def _leave_record(**fields) -> RequestRecord:
     """Insert one pending leave request for Alice, and return it."""
     base = dict(
         kind="leave", item_id=next(_item_ids), status="pending",
+        state="waiting_on_approval",                               # a pending request the manager can decide (#455)
         employee_id="10", employee_email="alice@ucsh.com",
         leave_type="Sick or Personal Day", start_date=date(2026, 12, 1), end_date=date(2026, 12, 1),
         days=2.0, approval_version=1, balance_state="not_applied",

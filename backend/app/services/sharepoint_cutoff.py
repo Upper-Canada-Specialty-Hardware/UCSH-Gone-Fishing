@@ -15,6 +15,7 @@ steps.
 """
 import logging
 import re
+from urllib.parse import urlsplit
 
 from app.config import settings
 
@@ -25,10 +26,12 @@ logger = logging.getLogger(__name__)
 # versions it backfills, and the site-id lookup that versions URL is built from
 # (the app never resolves the site after the switch, so the id is otherwise
 # unknown). These two patterns gate that exception; nothing else, and never a
-# write, so the cut-off still refuses every other call.
+# write, so the cut-off still refuses every other call. Both are matched against
+# the URL path alone, with any query string stripped first, so a query string
+# cannot smuggle a path the gate would never allow on its own.
 _SITE_LOOKUP = f"/sites/{settings.SP_SITE_HOST}:{settings.SP_SITE_PATH}"   # the site-id resolve GET
 _STAFF_VERSIONS = re.compile(                                             # /lists/<staff>/items/<id>/versions
-    rf"/lists/{re.escape(settings.SP_LIST_STAFF_DIRECTORY)}/items/[^/]+/versions(?:\?|$)"
+    rf"/lists/{re.escape(settings.SP_LIST_STAFF_DIRECTORY)}/items/[^/]+/versions$"
 )
 
 
@@ -42,13 +45,17 @@ def is_staff_history_read(method: str, path: str) -> bool:
     Returns:
         True only for a GET of the Staff Directory item versions, or the site-id
         lookup that read depends on. Every write, and every read of another list,
-        returns False so the cut-off still refuses it.
+        returns False so the cut-off still refuses it. The path is compared with
+        any query string dropped, so a smuggled ``?.../versions`` cannot slip past.
     """
     if method.upper() != "GET":                            # a write is never allowed, flag or not
         return False
-    if path.startswith(_SITE_LOOKUP):                      # the site-id resolve the versions URL needs
+    only_path = urlsplit(path).path                        # the path alone; a query string is dropped
+    if only_path == _SITE_LOOKUP:                          # the site-id resolve the versions URL needs
         return True
-    return bool(_STAFF_VERSIONS.search(path))              # the Staff Directory versions read itself
+    # End-anchored, so an absolute @odata.nextLink (host + /v1.0/...) still matches
+    # on its tail, but the path must genuinely end at .../versions.
+    return bool(_STAFF_VERSIONS.search(only_path))         # the Staff Directory versions read itself
 
 
 class SharePointCutOff(RuntimeError):
