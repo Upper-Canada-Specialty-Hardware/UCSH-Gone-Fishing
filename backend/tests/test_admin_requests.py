@@ -350,6 +350,23 @@ def test_the_export_writes_the_dialogs_sheets_with_numbers_and_totals():
     assert leave["D2"].alignment.wrap_text                     # long text wraps
 
 
+def test_the_export_total_adds_only_the_rows_it_is_told_to():
+    # Rejected copies of an approved leave stay in the file when ticked, but the
+    # totals row adds approved requests only (#516): 12 + 6, not 12 + 6 + 6.
+    from openpyxl import load_workbook
+    from io import BytesIO
+    sheets = _sheets({
+        "title": "Requests",
+        "columns": [{"header": "Status"}, {"header": "Days", "number": True, "total": True}],
+        "rows": [["Approved", 12], ["Approved", 6], ["Rejected", 6]],
+        "counted": [True, True, False],
+        "total_label": "Total approved",
+    })
+    sheet = load_workbook(BytesIO(build_requests_workbook(sheets)))["Requests"]
+    assert sheet["A5"].value == "Total approved"
+    assert sheet["B5"].value == 18                             # the rejected 6 is not added
+
+
 def test_the_export_keeps_sheet_names_excel_accepts():
     from openpyxl import load_workbook
     from io import BytesIO

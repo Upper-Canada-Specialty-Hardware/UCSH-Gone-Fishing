@@ -43,6 +43,10 @@ class ExportSheet(BaseModel):
     title: str = Field(max_length=80)
     columns: list[ExportColumn] = Field(min_length=1, max_length=60)
     rows: list[list[str | float | int | None]] = Field(max_length=50000)
+    # Which rows the totals row adds, one flag per row (#516: approved only);
+    # None adds every row, as the summary sheet's counts need.
+    counted: list[bool] | None = Field(default=None, max_length=50000)
+    total_label: str = Field(default="Total", max_length=40)   # the totals row's first cell
 
 
 class RequestsExportBody(BaseModel):
@@ -158,10 +162,13 @@ def build_requests_workbook(sheets: list[ExportSheet]) -> bytes:
         totalled = [i for i, c in enumerate(cols) if c.number and c.total]
         if totalled and data_rows:
             total_row: list = [None] * width
-            total_row[0] = "Total"
+            total_row[0] = _sanitize_cell_text(spec.total_label)
+            # The data rows the total adds: the flagged ones, or all when none are flagged.
+            counted = spec.counted or []
+            adds = [r + 2 for r in range(data_rows) if spec.counted is None or (r < len(counted) and counted[r])]
             for i in totalled:
                 total_row[i] = sum(
-                    v for v in (sheet.cell(row=r, column=i + 1).value for r in range(2, data_rows + 2))
+                    v for v in (sheet.cell(row=r, column=i + 1).value for r in adds)
                     if isinstance(v, (int, float))
                 )
             sheet.append(total_row)
