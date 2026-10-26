@@ -1,7 +1,8 @@
 import { Fragment, ReactNode, useEffect, useMemo, useState } from 'react';
-import { Box, Button, Checkbox, Collapse } from '@mui/material';
+import { Box, Button, Checkbox, CircularProgress, Collapse, Tooltip } from '@mui/material';
 import { Theme, alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
+import { Swap } from '../Motion';
 import TakenFrom from '../TakenFrom';
 import RequestTimelineDialog from '../RequestTimelineDialog';
 import { hasAuditLog } from '../dataGridDefaults';
@@ -40,6 +41,10 @@ interface Props {
   onSelectAll: (keys: string[], on: boolean) => void;
   processingEnabled: boolean;
   busyKey: string | null;
+  /** The in-flight decision's direction (#485): true approving, false rejecting, null idle; applies to the row named by busyKey. */
+  busyYes?: boolean | null;
+  /** Rows just decided and still fading, key `${type}-${id}` to the outcome, so the pressed icon button shows a filled tick / cross (#485). */
+  decided?: Map<string, boolean>;
   leaving: Set<string>;
   actions: TableActions;
   /** The word shown when nothing matches. */
@@ -194,7 +199,7 @@ export default function RequestsTable(props: Props) {
       case 'hdays': return <Box component="span" sx={{ color: 'text.secondary' }}>{num((r.hours || 0) / 8, 3)}</Box>;
       case 'newbal': return r.newBalance || <Box component="span" sx={{ color: 'text.secondary' }}>-</Box>;
       case 'sysstate': return <Box component="span" sx={{ color: r.sysState === 'Processed' ? 'text.secondary' : 'warning.main' }}>{r.sysState}</Box>;
-      case 'quick': return <QuickActions r={r} mode={mode} processingEnabled={processingEnabled} busy={isBusy(r)} actions={actions} />;
+      case 'quick': return <QuickActions r={r} mode={mode} processingEnabled={processingEnabled} busy={isBusy(r)} busyYes={isBusy(r) ? (props.busyYes ?? null) : null} outcome={props.decided?.get(`${r.request_type}-${r.id}`)} actions={actions} />;
       default: return '';
     }
   };
@@ -397,8 +402,23 @@ function StatusCell({ r, theme }: { r: Row; theme: Theme }) {
   );
 }
 
-/** The row-level quick actions: approve/reject a pending one, refund an approved one (admin only). */
-function QuickActions({ r, mode, processingEnabled, busy, actions }: { r: Row; mode: TableMode; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
+/**
+ * The row-level quick actions: approve/reject a pending one, refund an approved
+ * one (admin only). The approve/reject icon buttons show their progress in place
+ * (#485): the pressed one swaps its tick / cross for a spinner while the decision
+ * runs (the other button disabled), then a filled tick (approved) or filled cross
+ * (rejected) for the length of the row's fade before it leaves.
+ *
+ * @param props.r - The row.
+ * @param props.mode - Which dashboard this is on; 'mine' has no actions.
+ * @param props.processingEnabled - Whether writes are allowed.
+ * @param props.busy - Whether an action is already running on this row.
+ * @param props.busyYes - The in-flight direction for this row: true approving, false rejecting, null idle (#485).
+ * @param props.outcome - The decided outcome while the row fades: true approved, false rejected, undefined undecided (#485).
+ * @param props.actions - The handlers.
+ * @returns The quick-action buttons, or null when the row offers none.
+ */
+function QuickActions({ r, mode, processingEnabled, busy, busyYes = null, outcome, actions }: { r: Row; mode: TableMode; processingEnabled: boolean; busy: boolean; busyYes?: boolean | null; outcome?: boolean; actions: TableActions }) {
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   if (mode === 'mine') return null;                 // the employee table is read-only: no actions
   // Refund in the row is an admin-only action; the manager team table never shows it.
@@ -408,10 +428,51 @@ function QuickActions({ r, mode, processingEnabled, busy, actions }: { r: Row; m
   // A pending row that is still getting ready (or needs attention) cannot be
   // decided yet, so it offers no quick approve/reject; the status cell says why (#455).
   if (r.status !== 'Pending' || r.source === 'stuck' || !canDecide(r.state)) return null;
+  const approving = busy && busyYes === true;       // this row's approve is running
+  const rejecting = busy && busyYes === false;      // this row's reject is running
+  const approved = outcome === true;                // decided approved, shown while it fades
+  const rejected = outcome === false;               // decided rejected, shown while it fades
+  const settled = outcome !== undefined;            // decided: freeze both buttons through the fade
+  // While working or decided, neither button is pressable; the tooltip and label
+  // name the live state so the control is clear to a screen reader too.
   return (
     <Box sx={{ display: 'inline-flex', gap: 0.5 }} onClick={stop}>
-      <Button size="small" variant="outlined" color="success" disabled={busy || !processingEnabled} onClick={() => actions.approve(r)} aria-label={`Approve ${r.id}`} sx={{ minWidth: 32, px: 0 }}>✓</Button>
-      <Button size="small" variant="outlined" color="error" disabled={busy || !processingEnabled} onClick={() => actions.reject(r)} aria-label={`Reject ${r.id}`} sx={{ minWidth: 32, px: 0 }}>✕</Button>
+      <Tooltip title={approving ? 'Approving' : approved ? 'Approved' : 'Approve'}>
+        {/* A span wrapper so the tooltip still shows while the button is disabled. */}
+        <span>
+          <Button
+            size="small"
+            variant={approved ? 'contained' : 'outlined'}   // filled green once approved (#485)
+            color="success"
+            disabled={busy || settled || !processingEnabled}
+            onClick={() => actions.approve(r)}
+            aria-label={approving ? `Approving ${r.id}` : approved ? `Approved ${r.id}` : `Approve ${r.id}`}
+            sx={{ minWidth: 32, px: 0 }}
+          >
+            {/* The glyph swaps to a spinner while approving, with the manager-card feel. */}
+            <Swap k={approving ? 'busy' : approved ? 'done' : 'idle'}>
+              {approving ? <CircularProgress size={15} color="inherit" /> : '✓'}
+            </Swap>
+          </Button>
+        </span>
+      </Tooltip>
+      <Tooltip title={rejecting ? 'Rejecting' : rejected ? 'Rejected' : 'Reject'}>
+        <span>
+          <Button
+            size="small"
+            variant={rejected ? 'contained' : 'outlined'}   // filled red once rejected (#485)
+            color="error"
+            disabled={busy || settled || !processingEnabled}
+            onClick={() => actions.reject(r)}
+            aria-label={rejecting ? `Rejecting ${r.id}` : rejected ? `Rejected ${r.id}` : `Reject ${r.id}`}
+            sx={{ minWidth: 32, px: 0 }}
+          >
+            <Swap k={rejecting ? 'busy' : rejected ? 'done' : 'idle'}>
+              {rejecting ? <CircularProgress size={15} color="inherit" /> : '✕'}
+            </Swap>
+          </Button>
+        </span>
+      </Tooltip>
     </Box>
   );
 }

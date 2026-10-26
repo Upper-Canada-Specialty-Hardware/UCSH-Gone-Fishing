@@ -99,6 +99,10 @@ interface Props {
   /** Refetch the requests, pending, stuck and stats after a new request or a delete. */
   onReload: () => void | Promise<void>;
   leaving?: Set<string>;
+  /** The in-flight decision's direction (#485): true approving, false rejecting, null idle. */
+  busyYes?: boolean | null;
+  /** Rows just decided and still fading, key `${type}-${id}` to true approved / false rejected (#485). */
+  decided?: Map<string, boolean>;
 }
 
 /** The stat tiles across the strip; each reads the shown rows and can act on a click. */
@@ -559,6 +563,8 @@ export default function RequestsScreen(props: Props) {
             onSelectAll={selectAll}
             processingEnabled={processingEnabled}
             busyKey={actionLoading}
+            busyYes={props.busyYes ?? null}
+            decided={props.decided}
             leaving={props.leaving || new Set()}
             actions={actions}
             empty={view === 'pending' ? 'No pending requests. Nothing is waiting on a manager.' : view === 'stuck' ? 'No stuck requests.' : 'No requests match.'}
