@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Accordion, AccordionDetails, AccordionSummary, Box, Button, Checkbox, Dialog, DialogActions,
-  DialogContent, DialogTitle, Divider, FormControlLabel, Stack, ToggleButton, ToggleButtonGroup, Typography,
+  DialogContent, DialogTitle, Divider, FormControlLabel, MenuItem, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExportPeoplePicker from './ExportPeoplePicker';
@@ -11,9 +11,10 @@ import { takenFromText } from '../../utils/takenFrom';
 
 /*
  * The requests export (#488), laid out like the staff export: which requests
- * (the shown or the ticked ones), which of their people (each with a tick,
- * #489), a column set or single columns, one sheet or a sheet per type, an
- * optional summary by person, and a live preview. Every cell is worked out
+ * (the shown or the ticked ones), which dates (a year, a month or a range,
+ * #504), which of their people (each with a tick, #489), a column set or
+ * single columns, one sheet or a sheet per type, an optional summary by
+ * person, and a live preview. Every cell is worked out
  * here with the table's own words and Toronto dates (#490), so the preview is
  * exactly the file; the backend only writes the sheets it is sent.
  */
@@ -101,6 +102,64 @@ function today(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** The date filter (#504): a year first, narrowed to a month or a custom range, or every date. */
+type RangeKind = 'year' | 'month' | 'custom' | 'all';
+
+/** Month names for the month picker, January first. */
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * The first and last day (YYYY-MM-DD) a date filter covers; '' is open-ended.
+ *
+ * @param kind - Year, month, custom or all.
+ * @param year - The picked year (year and month filters).
+ * @param month - The picked month, 1 to 12 (month filter).
+ * @param from - The custom first day, or ''.
+ * @param to - The custom last day, or ''.
+ * @returns [first, last]; both '' for all dates.
+ */
+function rangeBounds(kind: RangeKind, year: number, month: number, from: string, to: string): [string, string] {
+  if (kind === 'year') return [`${year}-01-01`, `${year}-12-31`];
+  if (kind === 'month') {
+    const mm = String(month).padStart(2, '0');
+    const lastDay = new Date(year, month, 0).getDate();      // day 0 of the next month = this month's last day
+    return [`${year}-${mm}-01`, `${year}-${mm}-${String(lastDay).padStart(2, '0')}`];
+  }
+  if (kind === 'custom') return [from, to];                 // either may be blank: open on that side
+  return ['', ''];                                          // all dates
+}
+
+/**
+ * The days a request covers, as [first, last] YYYY-MM-DD.
+ *
+ * Leave runs start to end, make-up is its one day, and carry-over or payout
+ * has no days of its own, so it is placed on the day it was made.
+ *
+ * @param r - The request row.
+ * @returns [first, last]; '' when the row has no date at all.
+ */
+function rowSpan(r: Row): [string, string] {
+  if (r.src === 'mu') return [r.date, r.date];               // make-up: one worked day
+  if (r.src === 'co') return [r.created, r.created];         // carry-over/payout: the day it was made
+  const first = r.start || r.created;                        // leave not dated yet: its created day
+  return [first, r.end || first];                            // one-day leave has no end
+}
+
+/**
+ * Whether a request has any day inside the range (dates compare as text).
+ *
+ * @param r - The request row.
+ * @param first - The range's first day, or '' for no lower bound.
+ * @param last - The range's last day, or '' for no upper bound.
+ * @returns True when it overlaps; an undated row only passes an open range.
+ */
+function inRange(r: Row, first: string, last: string): boolean {
+  if (!first && !last) return true;                          // all dates
+  const [start, end] = rowSpan(r);
+  if (!start) return false;                                  // no date to place it by
+  return (!last || start <= last) && (!first || end >= first);   // overlap test
+}
+
 /** The key a person is ticked by: their staff id when the row has one, else their name. */
 function personKey(r: Row): string {
   return String(r.raw?.EmployeeID || r.person);
@@ -162,6 +221,12 @@ interface Props {
 export default function RequestsExportDialog({ open, shownRows, tickedRows, build, filePrefix = 'requests', onClose, onNotify }: Props) {
   const hasTicked = !!tickedRows && tickedRows.length > 0;
   const [which, setWhich] = useState<'shown' | 'ticked'>('shown');
+  const thisYear = Number(today().slice(0, 4));                  // this calendar year, on this device
+  const [rangeKind, setRangeKind] = useState<RangeKind>('year');  // date filter (#504): a year first
+  const [year, setYear] = useState(thisYear);                    // the picked year
+  const [month, setMonth] = useState(new Date().getMonth() + 1);  // the picked month, 1 to 12
+  const [from, setFrom] = useState('');                          // custom first day
+  const [to, setTo] = useState('');                              // custom last day
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [columns, setColumns] = useState<string[]>(PRESETS[0][1].slice());   // start on "Summary"
   const [layout, setLayout] = useState<'one' | 'type'>('one');
@@ -174,9 +239,28 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
     if (!open) return;
     setWhich(hasTicked ? 'ticked' : 'shown');
     setExcluded(new Set());
+    setRangeKind('year');                                   // back to this year
+    setYear(thisYear);
   }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const base = which === 'ticked' && hasTicked ? tickedRows! : shownRows;   // the requests in scope
+  const picked = which === 'ticked' && hasTicked ? tickedRows! : shownRows;   // the requests chosen
+  // The years those requests touch, newest first, always offering this year.
+  const years = useMemo(() => {
+    const set = new Set<number>([thisYear]);
+    picked.forEach((r) => {
+      const [start, end] = rowSpan(r);
+      if (!start) return;                                       // undated: no year to offer
+      for (let y = Number(start.slice(0, 4)); y <= Number(end.slice(0, 4)); y += 1) set.add(y);   // a leave over New Year adds both
+    });
+    return Array.from(set).sort((a, b) => b - a);
+  }, [picked, thisYear]);
+  const [first, last] = rangeBounds(rangeKind, year, month, from, to);
+  const badRange = !!first && !!last && first > last;          // custom from after to
+  // Then only those with a day in the range, so the people list follows the dates too.
+  const base = useMemo(
+    () => (badRange ? [] : picked.filter((r) => inRange(r, first, last))),
+    [picked, first, last, badRange],
+  );
   // Their people, once each, in the order they first appear.
   const pickList = useMemo(() => {
     const seen = new Map<string, { key: string; name: string; detail: string }>();
@@ -199,6 +283,11 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
     if (key === LOCKED) return;
     setColumns((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   };
+
+  // Switching to a range starts it on the picked year, so it narrows from there.
+  useEffect(() => {
+    if (rangeKind === 'custom' && !from && !to) { setFrom(`${year}-01-01`); setTo(`${year}-12-31`); }
+  }, [rangeKind]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // The sheets exactly as they will be written; the preview reads these too.
   const sheets = useMemo<ExportSheet[]>(() => {
@@ -263,6 +352,36 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
                 </ToggleButtonGroup>
               </>
             )}
+
+            <Typography variant="overline" color="text.secondary">Dates</Typography>
+            <ToggleButtonGroup exclusive size="small" value={rangeKind} onChange={(_, v) => v && setRangeKind(v)} fullWidth>
+              <ToggleButton value="year">Year</ToggleButton>
+              <ToggleButton value="month">Month</ToggleButton>
+              <ToggleButton value="custom">Range</ToggleButton>
+              <ToggleButton value="all">All</ToggleButton>
+            </ToggleButtonGroup>
+            {(rangeKind === 'year' || rangeKind === 'month') && (
+              <Stack direction="row" spacing={1}>
+                <TextField select label="Year" size="small" value={year} onChange={(e) => setYear(Number(e.target.value))} fullWidth>
+                  {years.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
+                </TextField>
+                {rangeKind === 'month' && (
+                  <TextField select label="Month" size="small" value={month} onChange={(e) => setMonth(Number(e.target.value))} fullWidth>
+                    {MONTHS.map((m, i) => <MenuItem key={m} value={i + 1}>{m}</MenuItem>)}
+                  </TextField>
+                )}
+              </Stack>
+            )}
+            {rangeKind === 'custom' && (
+              <Stack direction="row" spacing={1}>
+                <TextField label="From" type="date" size="small" value={from} onChange={(e) => setFrom(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth />
+                <TextField label="To" type="date" size="small" value={to} onChange={(e) => setTo(e.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ min: from || undefined }} error={badRange} fullWidth />
+              </Stack>
+            )}
+            <Typography variant="caption" color={badRange ? 'error' : 'text.secondary'}>
+              {badRange ? 'The first day is after the last day.'
+                : 'A request is in when any of its days fall in the range; carry-over and payout by the day they were made.'}
+            </Typography>
 
             <Typography variant="overline" color="text.secondary">People</Typography>
             <ExportPeoplePicker people={pickList} excluded={excluded} onChange={setExcluded} />
@@ -335,7 +454,9 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
                   ))}
                   {current.rows.length === 0 && (
                     <Box component="tr"><Box component="td" colSpan={previewCols.length}>
-                      <Typography variant="body2" color="text.secondary">No requests are ticked for export.</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {base.length === 0 && picked.length > 0 ? 'No requests fall in these dates.' : 'No requests are ticked for export.'}
+                      </Typography>
                     </Box></Box>
                   )}
                 </Box>
