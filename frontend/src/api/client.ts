@@ -297,13 +297,13 @@ export const exportCarryoverPayout = () =>
 // interceptor above) authorises it; it is scoped to the manager's team by the
 // data the client sends, which only ever comes from /team/requests.
 /**
- * Download the team requests the manager is viewing as an .xlsx (one sheet per list).
+ * Write the sheets the export dialog built as an .xlsx (#488).
  *
- * @param requests - The request items as /team/requests returns them.
+ * @param sheets - Each sheet's title, columns and rows, as previewed.
  * @returns The axios response, with a Blob body.
  */
-export const exportTeamRequests = (requests: any[]) =>
-  api.post<Blob>('/team/requests/export', { requests }, { responseType: 'blob' });
+export const exportTeamRequests = (sheets: unknown[]) =>
+  api.post<Blob>('/team/requests/export', { sheets }, { responseType: 'blob' });
 // Admin - #370: pending requests whose managers are all on vacation, so nobody
 // can approve them until a manager is back. The admin approves/rejects them here
 // with the usual admin approve/reject calls above.
