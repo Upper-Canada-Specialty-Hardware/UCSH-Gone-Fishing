@@ -1,7 +1,7 @@
 """Manager control over their own team (#362, #363).
 
 A manager gets admin-level control, but only over the people who list them in
-their ``AllManagers`` field. Four things live here, apart from the read-only
+their ``AllManagers`` field. These live here, apart from the read-only
 ``/team/*`` endpoints in ``routes/dashboard.py``:
 
 - change a teammate's balances and entitlements, with a required reason, through
@@ -13,7 +13,9 @@ their ``AllManagers`` field. Four things live here, apart from the read-only
 - tell the UI which staff a manager may still add, and whether removing
   themselves would leave a person with no manager at all;
 - Potential Employee Setup Issues for the team: the admin setup list, the
-  single-person check and Settle requests, reaching teammates only (#463).
+  single-person check and Settle requests, reaching teammates only (#463);
+- Add employee on a held request whose name is already on staff: the supervisor
+  edits that record instead of making a second one (#444).
 
 Every change is recorded under the manager's name, channel ``manager_dashboard``,
 exactly as an admin change is recorded under ``admin_dashboard``. All of it is
@@ -33,10 +35,12 @@ from app.services.manager_match import manager_name_of, normalise_name  # who ma
 from app.routes.dashboard import (
     AuthUser,
     DashboardUser,
+    HeldProfileBody,
     _format_employee,
     _is_in_all_managers,
     _refuse_if_paused,
     _require_role,
+    held_profile_update,
 )
 from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
 from app.repositories.staff_store import staff_in_postgres, staff_store
@@ -682,3 +686,55 @@ async def team_settle_request(user: AuthUser, request_type: str, request_id: str
         raise HTTPException(status_code=e.status_code, detail=str(e))
     logger.info("Manager %s settled %s request #%s: %s", user.user_id, request_type, request_id, result["outcome"])
     return result
+
+
+# ============================
+# #444 - Add employee on a name already on staff, from a held request
+# ============================
+
+@router.get("/team/held/{held_id}")
+async def team_held_for_add(user: AuthUser, held_id: int):
+    """What Add employee shows when a supervisor opens a held request's Add link (#444).
+
+    Says what has happened to the request (still theirs, moved on, set up,
+    cancelled), and, only while it is still theirs, the record that already has
+    the person's name, so the page can offer a profile edit instead of a second
+    record.
+
+    Args:
+        user: The signed-in manager or admin.
+        held_id: The held request the link names.
+
+    Returns:
+        See ``held_profile.held_for_add``.
+
+    Raises:
+        HTTPException: 403 for an employee token, 404 when there is no such request.
+    """
+    from app.services.held_profile import held_for_add
+    await _signed_in_manager(user)                        # managers and admins only
+    found = await held_for_add(held_id, str(user.user_id))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Held request not found")
+    return found
+
+
+@router.post("/team/held/{held_id}/update-existing")
+async def team_held_update_existing(user: AuthUser, held_id: int, body: HeldProfileBody):
+    """Save the profile edit of the record that already has the held request's name (#444).
+
+    Only the supervisor who holds the request may save it; they become (or join)
+    the person's managers. Recorded under their name, channel ``manager_dashboard``.
+
+    Args:
+        user: The signed-in manager.
+        held_id: The held request the edit comes from.
+        body: The edit.
+
+    Returns:
+        See ``held_profile.update_existing_from_held``.
+    """
+    manager, _manager_name = await _signed_in_manager(user)
+    actor = (manager.get("fields", {}).get("Title") or "").strip() or "Your supervisor"
+    return await held_profile_update(held_id, body, actor_name=actor, supervisor_id=str(user.user_id),
+                                     source=MANAGER_CHANNEL)

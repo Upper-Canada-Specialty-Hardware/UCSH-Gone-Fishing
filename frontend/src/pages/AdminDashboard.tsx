@@ -10,7 +10,7 @@ import ManagerAssignments from '../components/ManagerAssignments';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
-import AddEmployee, { ManagerOption } from '../components/AddEmployee';
+import AddEmployee, { type AddPrefill, ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
 import HolidaysManager from '../components/HolidaysManager';
 import RequestsScreen from '../components/admin/RequestsScreen';
@@ -50,8 +50,10 @@ import {
   getHeldRequests,
   releaseHeldRequest,
   cancelHeldRequest,
+  uncancelHeldRequest,
   VacationCoverRequest,
 } from '../api/client';
+import CancelHeldDialog from '../components/admin/CancelHeldDialog';
 
 /** Every admin screen, keyed by its url segment (#/admin/<key>). */
 const SCREEN_TITLES: Record<string, string> = {
@@ -113,6 +115,7 @@ export default function AdminDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);     // small screens: the slide-out menu
   const [heldRows, setHeldRows] = useState<HeldRow[]>([]);         // held requests (open, or all with the switch on)
   const [heldIncludeClosed, setHeldIncludeClosed] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<HeldRow | null>(null);   // the row the cancel prompt is open for (#445)
   // Open held requests, for home and the sidebar, whatever the switch shows.
   const heldCount = heldRows.filter((h) => OPEN_HELD.includes(h.status)).length;
   const [employees, setEmployees] = useState<any[]>([]);
@@ -133,11 +136,12 @@ export default function AdminDashboard() {
   const [editItem, setEditItem] = useState<any | null>(null);
 
   // A held request's person, to prefill Add Employee from the Held Requests tab.
-  const [addPrefill, setAddPrefill] = useState<
-    { title: string; email_address: string; department: string; location: string } | null
-  >(null);
+  const [addPrefill, setAddPrefill] = useState<AddPrefill | null>(null);
   const handleAddFromHeld = useCallback((row: HeldRow) => {
-    setAddPrefill({ title: row.name, email_address: row.email, department: row.department, location: row.location });
+    setAddPrefill({
+      title: row.name, email_address: row.email, department: row.department, location: row.location,
+      held_id: row.id,                                 // so Add employee checks the name on staff first (#444)
+    });
     setTab('add');                                     // the Add Employee screen
   }, [setTab]);
 
@@ -643,7 +647,8 @@ export default function AdminDashboard() {
                   onReprocess={handleReprocess}
                   onAddHeld={handleAddFromHeld}
                   onRetryHeld={(id) => heldAction(id, () => releaseHeldRequest(id), 'Sent on.')}
-                  onCancelHeld={(id) => heldAction(id, () => cancelHeldRequest(id), 'Cancelled.')}
+                  onCancelHeld={(row) => setCancelTarget(row)}
+                  onUncancelHeld={(id) => heldAction(id, () => uncancelHeldRequest(id), 'Restored.')}
                   onReload={reloadRequests}
                 />
               )}
@@ -688,6 +693,7 @@ export default function AdminDashboard() {
                   checkEmployee={checkEmployeeAdmin}
                   managerOptions={spUsers}
                   prefill={addPrefill}
+                  heldScope="admin"
                   onCreated={(name) =>
                     setSnack({ open: true, message: `${name} created.`, severity: 'success' })
                   }
@@ -731,6 +737,18 @@ export default function AdminDashboard() {
         item={editItem}
         onClose={() => setEditItem(null)}
         onSave={handleEditSave}
+      />
+
+      {/* Cancelling a held request asks for a reason and can be undone (#445). */}
+      <CancelHeldDialog
+        row={cancelTarget}
+        busy={!!cancelTarget && actionLoading === `held-${cancelTarget.id}`}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={async (reason) => {
+          if (!cancelTarget) return;
+          await heldAction(cancelTarget.id, () => cancelHeldRequest(cancelTarget.id, reason), 'Cancelled.');
+          setCancelTarget(null);
+        }}
       />
     </>
   );

@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import html
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
@@ -43,8 +44,10 @@ from app.services.dashboard_tokens import generate_dashboard_url
 from app.services.employee import (
     ADMIN_NAMES,
     get_employee_by_email,
+    get_employee_by_id,
     get_employee_by_name,
 )
+from app.services.manager_match import lists_manager
 from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
@@ -54,8 +57,19 @@ logger = logging.getLogger(__name__)
 TORONTO = ZoneInfo("America/Toronto")
 SUPERVISOR_REMINDER_BUSINESS_DAYS = 2   # supervisor gets one more email after this
 ADMIN_ESCALATION_BUSINESS_DAYS = 5      # then the admins are told
-MAX_OPEN_PER_EMAIL = 5                  # held requests one address can have waiting
-OPEN_STATUSES = ("held", "waiting_site", "failed")   # still waiting to become a real request
+MAX_OPEN_PER_EMAIL = 1                  # one request until set up (#442)
+OPEN_STATUSES = ("held", "waiting_site", "failed")   # waiting to become a real request (releasable)
+# Every status in which the person still has a request in flight, so the request
+# page shows its status instead of a new form and the submit endpoints refuse a
+# new one (#442). "not_on_team" is in flight: the person has still to re-pick.
+ACTIVE_STATUSES = ("held", "waiting_site", "failed", "releasing", "not_on_team")
+# For someone already on staff only these still wait on a supervisor. A row that
+# is failed, waiting_site or releasing is the system's to finish (an admin
+# retries it), so it must not stop them making new requests.
+SUPERVISOR_STATUSES = ("held", "not_on_team")
+# What an admin may cancel: anything not being submitted right now. A row in
+# "releasing" is mid-submit; cancelling it would be overwritten by the release.
+CANCELLABLE_STATUSES = ("held", "waiting_site", "failed", "not_on_team")
 
 REQUEST_LABELS = {
     "leave": "leave request",
@@ -105,7 +119,7 @@ def toronto_date(moment: datetime) -> date:
     return moment.astimezone(TORONTO).date()
 
 
-def add_employee_url(supervisor_id: str, name: str, email: str, department: str) -> str:
+def add_employee_url(supervisor_id: str, name: str, email: str, department: str, held_id: int | None = None) -> str:
     """The supervisor's dashboard link that opens Add Employee prefilled.
 
     Args:
@@ -113,11 +127,16 @@ def add_employee_url(supervisor_id: str, name: str, email: str, department: str)
         name: Person's name as they typed it.
         email: Their verified address.
         department: The department they picked.
+        held_id: The held request, so the page can say what happened to it and
+            offer a profile edit when the name is already on staff (#444, #462).
 
     Returns:
         A signed manager dashboard URL with add_* prefill parameters.
     """
-    prefill = urlencode({"add_name": name, "add_email": email, "add_department": department})
+    query = {"add_name": name, "add_email": email, "add_department": department}
+    if held_id is not None:
+        query["add_held"] = str(held_id)                     # which held request the link is for
+    prefill = urlencode(query)
     return f"{generate_dashboard_url('manager', supervisor_id)}&{prefill}"
 
 
@@ -138,6 +157,128 @@ def describe_form(request_type: str, form_data: dict) -> str:
     if request_type == "overtime":
         return f"Overtime, {form_data['hours']} hours on {form_data['date']}: {form_data['description']}"
     return f"{form_data['type_of_request']}, {form_data['days']} days"
+
+
+# ----- the "Not on my team" link (#443) -----
+
+def not_on_team_token(held_id: int, supervisor_id: str) -> str:
+    """A signed token for the "Not on my team" link in one supervisor's email.
+
+    The supervisor id is part of what is signed, so a stale link from a previous
+    supervisor cannot decline the request once it has moved on to someone else.
+
+    Args:
+        held_id: The held request the link is for.
+        supervisor_id: The supervisor the email was sent to.
+
+    Returns:
+        ``"<held_id>.<supervisor_id>.<signature>"``.
+    """
+    message = f"held-not-on-team:{held_id}:{supervisor_id}".encode()   # both ids, kept apart by prefix
+    signature = hmac.new(settings.APPROVAL_LINK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    return f"{held_id}.{supervisor_id}.{signature}"
+
+
+def decode_not_on_team_token(token: str) -> tuple[int, str] | None:
+    """The ``(held_id, supervisor_id)`` a not-on-team token names, when valid.
+
+    Args:
+        token: A token from ``not_on_team_token``.
+
+    Returns:
+        The pair, or None for a malformed or forged token.
+    """
+    parts = (token or "").split(".")                           # "<held>.<supervisor>.<sig>"
+    if len(parts) != 3 or not parts[0].isdigit():
+        return None                                            # not a token at all
+    held_id, supervisor_id, _ = parts
+    expected = not_on_team_token(int(held_id), supervisor_id)   # re-sign and compare in constant time
+    return (int(held_id), supervisor_id) if hmac.compare_digest(token, expected) else None
+
+
+def not_on_team_link(held_id: int, supervisor_id: str) -> str:
+    """The full "Not on my team" URL pointing back at the backend endpoint (#443).
+
+    Args:
+        held_id: The held request the link is for.
+        supervisor_id: The supervisor the email was sent to.
+
+    Returns:
+        A signed GET URL on the backend ``BASE_URL``.
+    """
+    return f"{settings.BASE_URL}/api/intake/held/not-on-team?token={not_on_team_token(held_id, supervisor_id)}"
+
+
+# ----- one email thread per held request per recipient (#443) -----
+
+def _thread_domain() -> str:
+    """The domain used in generated Message-IDs, taken from the sending address.
+
+    Returns:
+        The part after "@" in ``SENDER_EMAIL``, or a safe placeholder when unset.
+    """
+    _, _, domain = (settings.SENDER_EMAIL or "").partition("@")
+    return domain.strip().lower() or "ucshoutofoffice.local"
+
+
+def thread_root_id(held_id: int, recipient: str) -> str:
+    """A stable conversation root id per held request and recipient (#443).
+
+    Every email about one held request to one recipient references this same id,
+    so a mail client groups them as one conversation. It is derived, never a real
+    message's id, so no two sent messages ever share a Message-ID.
+
+    Args:
+        held_id: The held request.
+        recipient: The address the thread belongs to.
+
+    Returns:
+        An angle-bracketed Message-ID string, stable for this pair.
+    """
+    raw = f"held-thread:{held_id}:{(recipient or '').strip().lower()}"   # per request + recipient
+    digest = hmac.new(settings.APPROVAL_LINK_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:24]
+    return f"<held-{held_id}-{digest}@{_thread_domain()}>"
+
+
+def thread_headers(held_id: int, recipient: str) -> list[dict]:
+    """Message-ID / In-Reply-To / References so emails to one recipient thread (#443).
+
+    Each email gets its own unique Message-ID and points In-Reply-To and
+    References at the conversation's stable root, so the mail client files every
+    email about one request under one conversation, however many supervisors it
+    passes through.
+
+    Args:
+        held_id: The held request the email is about.
+        recipient: The address this email is going to.
+
+    Returns:
+        A list of ``{"header", "value"}`` for ``send_email``'s ``headers``.
+    """
+    root = thread_root_id(held_id, recipient)                  # the conversation's stable anchor
+    unique = f"<{uuid.uuid4().hex}@{_thread_domain()}>"        # this one message's own id
+    return [
+        {"header": "Message-ID", "value": unique},
+        {"header": "In-Reply-To", "value": root},
+        {"header": "References", "value": root},
+    ]
+
+
+def _supervisor_subject(row: HeldRequest) -> str:
+    """The stable subject for the supervisor thread about one held request (#443).
+
+    Args:
+        row: The held request.
+
+    Returns:
+        A subject that does not change between the first email and the reminders,
+        so they thread.
+    """
+    return f"Add {row.name} to the Staff Directory"
+
+
+# The person's own thread keeps one stable subject across every update.
+PERSON_SUBJECT = "Your UCSH Out of Office request"
 
 
 # ----- departments and the supervisor search -----
@@ -274,14 +415,22 @@ async def hold_request(
 
     async with async_session() as session:
         waiting = (await session.scalars(
-            select(HeldRequest).where(HeldRequest.email == email, HeldRequest.status.in_(OPEN_STATUSES))
+            select(HeldRequest).where(HeldRequest.email == email, HeldRequest.status.in_(ACTIVE_STATUSES))
         )).all()
-        if len(waiting) >= MAX_OPEN_PER_EMAIL:
-            raise HoldError("You already have several requests waiting. Your supervisor has been told.")
+        if len(waiting) >= MAX_OPEN_PER_EMAIL:                  # one request until set up (#442)
+            raise HoldError(
+                "You already have a request waiting to be set up. "
+                "You can make more once your supervisor has added you."
+            )
         row = HeldRequest(
             email=email, name=name, department=department,
             supervisor_id=supervisor["id"], supervisor_name=supervisor["name"],
             supervisor_email=supervisor["email"],
+            # The supervisor history starts with the one they picked; re-picks append (#443).
+            supervisors_involved=[{
+                "id": supervisor["id"], "name": supervisor["name"],
+                "email": supervisor["email"], "outcome": None,
+            }],
             request_type=request_type, form_data=checked.model_dump(mode="json"),
             status="held", created_at=utcnow(),
         )
@@ -297,14 +446,58 @@ async def hold_request(
     return row
 
 
+async def open_held_request_for(*, email: str, statuses: tuple = ACTIVE_STATUSES) -> HeldRequest | None:
+    """The person's one in-flight held request, if they have one (#442).
+
+    Used by the gate: while a person has a request waiting to be set up, the
+    request page shows its status and the submit endpoints refuse a new one. A new
+    hire is found by their verified email.
+
+    Args:
+        email: The person's address to match on ``email``.
+        statuses: Which statuses count; ``SUPERVISOR_STATUSES`` for someone
+            already on staff, whose failed or stuck release is an admin's to fix.
+
+    Returns:
+        The newest matching held request for them, or None when they have none.
+    """
+    normalised = (email or "").strip().lower()
+    if not normalised:                                         # nothing to match on
+        return None
+    async with async_session() as session:
+        return await session.scalar(
+            select(HeldRequest)
+            .where(HeldRequest.email == normalised, HeldRequest.status.in_(statuses))
+            .order_by(HeldRequest.id.desc()).limit(1)          # the newest one, if several ever existed
+        )
+
+
 def _where(row: HeldRequest) -> str:
     """Department, or the location older rows were held with."""
     return row.department or row.location or ""
 
 
+def _not_on_team_line(row: HeldRequest) -> str:
+    """The "Not on my team" link line for a supervisor email (#443).
+
+    Args:
+        row: The held request; the link names it and the current supervisor.
+
+    Returns:
+        An HTML paragraph with the signed link, so the supervisor who is not the
+        person's manager can hand it back rather than acting on it.
+    """
+    link = not_on_team_link(row.id, row.supervisor_id)
+    return (
+        f'<p>If {html.escape(row.name)} is not on your team, '
+        f'<a href="{html.escape(link)}">let us know</a> and they will be asked to '
+        "pick their supervisor again.</p>"
+    )
+
+
 def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
-    """HTML for the supervisor: who, what, and the Add Employee link."""
-    link = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "")
+    """HTML for the supervisor: who the new hire is, the request, Add Employee, not-mine."""
+    link = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "", row.id)
     lead = "Reminder: " if reminder else ""
     return (
         f"<p>{lead}{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
@@ -314,15 +507,236 @@ def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
         "<p>They are not in the Staff Directory yet, so the request is on hold. "
         "Add them and it is submitted to you automatically.</p>"
         f'<p><a href="{html.escape(link)}">Add {html.escape(row.name)}</a></p>'
-        "<p>If you are not their supervisor, reply to HR so it can be redirected.</p>"
+        + _not_on_team_line(row)
     )
 
 
 async def _email_supervisor(row: HeldRequest, reminder: bool) -> None:
-    """Send (or resend) the supervisor email for one held request."""
-    subject = f"{'Reminder: ' if reminder else ''}Add {row.name} to the Staff Directory"
-    await send_email(to=[row.supervisor_email], subject=subject,
-                     html_body=_render_supervisor_email(row, reminder))
+    """Send (or resend) the supervisor email for one held request, threaded (#443).
+
+    The subject stays the same between the first email and every reminder or
+    re-send, and the threading headers point at this supervisor's conversation
+    root, so a mail client groups them as one thread.
+    """
+    await send_email(
+        to=[row.supervisor_email], subject=_supervisor_subject(row),
+        html_body=_render_supervisor_email(row, reminder),
+        headers=thread_headers(row.id, row.supervisor_email),
+    )
+
+
+# ----- "Not on my team", picking another supervisor, telling earlier ones (#443) -----
+
+async def _email_person(row: HeldRequest, lines: list[str]) -> None:
+    """Send one threaded update to the person about their held request (#443).
+
+    Args:
+        row: The held request; the thread belongs to ``row.email``.
+        lines: Paragraphs of the body, blanks skipped.
+    """
+    body = "".join(f"<p>{line}</p>" for line in lines if line)
+    await send_email(
+        to=[row.email], subject=PERSON_SUBJECT, html_body=body,
+        headers=thread_headers(row.id, row.email),         # same thread as every other update to them
+    )
+
+
+def _mark_outcome(involved: list | None, supervisor_id: str, outcome: str) -> list:
+    """Record a supervisor's outcome in the involved list, returning a new list.
+
+    A new list of new dicts is returned (not an in-place edit) so SQLAlchemy sees
+    the JSON column as changed and persists it.
+
+    Args:
+        involved: The current ``supervisors_involved`` list, or None.
+        supervisor_id: Whose entry to mark.
+        outcome: The outcome to set ("not_on_team" / "handled"), on their first
+            still-open entry only.
+
+    Returns:
+        The updated list.
+    """
+    result = []
+    for entry in (involved or []):
+        copy = dict(entry)                                   # copy so the reassignment is a real change
+        if str(copy.get("id")) == str(supervisor_id) and copy.get("outcome") is None:
+            copy["outcome"] = outcome                        # mark their still-open turn
+        result.append(copy)
+    return result
+
+
+async def _tell_decliner(row: HeldRequest, address: str) -> None:
+    """Tell the supervisor who just handed the request back that it moved on (#443, #462).
+
+    One threaded note, sent once, when the person picks someone else. It does not
+    name the new supervisor: nothing about a request is shared between managers
+    (Robert's ruling), and a supervisor hears nothing more once it has left them.
+
+    Args:
+        row: The held request, after the new supervisor is set.
+        address: The email of the supervisor who declined it.
+    """
+    if not address or address.strip().lower() == (row.supervisor_email or "").strip().lower():
+        return                                               # nobody to tell, or it came back to them
+    line = (f"{html.escape(row.name)}'s request has moved to another supervisor. "
+            "Nothing is needed from you.")                   # no name: no history between managers
+    try:
+        await send_email(
+            to=[address], subject=_supervisor_subject(row), html_body=f"<p>{line}</p>",
+            headers=thread_headers(row.id, address),         # their own thread about this request
+        )
+    except Exception:  # noqa: BLE001 - informational only
+        logger.exception("Could not tell the decliner about held request #%s", row.id)
+
+
+async def decline_held_request(held_id: int, supervisor_id: str) -> str:
+    """A supervisor says the person is not on their team (#443).
+
+    Moves the request to "not_on_team", records that this supervisor declined,
+    and tells the person to pick another supervisor; the request itself does not
+    change. Guarded so a stale link cannot act once the request has moved on.
+
+    Args:
+        held_id: The held request the link names.
+        supervisor_id: The supervisor the link was issued to.
+
+    Returns:
+        "declined" when it was moved; "already" when this supervisor no longer
+        holds it (already declined, moved on, or closed); "unknown" when there is
+        no such row.
+    """
+    async with async_session() as session:
+        row = await session.get(HeldRequest, held_id)
+        if row is None:
+            return "unknown"
+        # Only the current supervisor, while they still hold it, may decline it.
+        if row.status != "held" or str(row.supervisor_id) != str(supervisor_id):
+            return "already"
+        row.status = "not_on_team"                           # waiting on the person to pick again
+        row.supervisors_involved = _mark_outcome(row.supervisors_involved, supervisor_id, "not_on_team")
+        row.supervisor_reminded_at = None                    # no "add them" reminders while it waits
+        await session.commit()
+        await session.refresh(row)
+    decliner = row.supervisor_name
+    try:
+        await _email_person(row, [
+            f"{html.escape(decliner)} let us know you are not on their team.",
+            "Open your request page and pick your supervisor again. Your request stays the same.",
+        ])
+    except Exception:  # noqa: BLE001 - the state change stands even if the email cannot go
+        logger.exception("Could not tell the person their request was handed back (#%s)", held_id)
+    return "declined"
+
+
+def _readable_date(moment: datetime) -> str:
+    """A stored timestamp as a Toronto date people read, e.g. "Nov 2, 2026"."""
+    day = toronto_date(moment)
+    return f"{day:%b} {day.day}, {day.year}"                  # no zero padding, on any platform
+
+
+async def not_on_team_link_state(held_id: int, supervisor_id: str) -> dict | None:
+    """What has happened to a held request, as seen by one supervisor's link (#462).
+
+    The "Not on my team" page uses this so a link opened late says what really
+    happened instead of a generic thanks. A supervisor who no longer holds the
+    request only learns that it left them: nothing about where it went or how it
+    ended is shared between managers.
+
+    Args:
+        held_id: The held request the signed link names.
+        supervisor_id: The supervisor the link was issued to.
+
+    Returns:
+        None when there is no such row, else ``{"state", "name"}`` plus
+        ``"set_up_on"`` and ``"request_number"`` for a released request. State is
+        one of: "open" (they still hold it and may decline), "declined" (they
+        already said not on their team, or it moved off them), "released",
+        "cancelled" or "sending" (on staff now, request on its way).
+    """
+    async with async_session() as session:
+        row = await session.get(HeldRequest, held_id)
+    if row is None:
+        return None
+    result = {"name": row.name}
+    if str(row.supervisor_id) != str(supervisor_id) or row.status == "not_on_team":
+        result["state"] = "declined"                         # it left them; say nothing more
+    elif row.status == "released":
+        result.update({
+            "state": "released", "request_number": row.sp_item_id or "",
+            "set_up_on": _readable_date(row.released_at) if row.released_at else "",
+        })
+    elif row.status == "cancelled":
+        result["state"] = "cancelled"
+    elif row.status == "held":
+        result["state"] = "open"                             # still theirs: the button works
+    else:                                                    # waiting_site, releasing, failed
+        result["state"] = "sending"
+    return result
+
+
+async def repick_supervisor(
+    held_id: int, email: str, supervisor_id: str | None, supervisor_email: str | None,
+) -> HeldRequest:
+    """The person picks another supervisor after a "not on my team" (#443).
+
+    Only the person who owns the request (matched by their verified email) may
+    re-pick, only while it is in "not_on_team", and never the supervisor who just
+    declined it. The request's dates and form do not change; it simply goes to
+    the new supervisor, and the earlier ones are told it moved.
+
+    Args:
+        held_id: The held request to re-route.
+        email: The verified address that owns the request.
+        supervisor_id: Staff Directory id of the new supervisor, from the search.
+        supervisor_email: The new supervisor's work email, typed instead.
+
+    Returns:
+        The updated held request.
+
+    Raises:
+        HoldError: When the request is not theirs, not waiting for a re-pick, the
+            new supervisor is the one who declined, or cannot be found.
+    """
+    normalised = (email or "").strip().lower()
+    async with async_session() as session:
+        row = await session.get(HeldRequest, held_id)
+        if row is None or row.email != normalised:           # not theirs, or gone
+            raise HoldError("This request could not be found. Start again.")
+        if row.status != "not_on_team":                      # nothing to re-pick
+            raise HoldError("This request is not waiting for another supervisor.")
+        declined_id = str(row.supervisor_id)                 # the one who said not their team
+        declined_email = row.supervisor_email                # told once, below, that it moved on
+        department = row.department or ""
+        # Resolve the new supervisor within the same department (as the first pick was).
+        supervisor = await find_supervisor(department, supervisor_id, supervisor_email)
+        if str(supervisor["id"]) == declined_id:             # cannot pick the decliner again
+            raise HoldError(f"{supervisor['name']} already said you are not on their team. Pick another.")
+        row.supervisor_id = supervisor["id"]
+        row.supervisor_name = supervisor["name"]
+        row.supervisor_email = supervisor["email"]
+        row.status = "held"                                  # back to waiting on the new supervisor
+        row.supervisor_reminded_at = None                    # reminders count from this new ask
+        involved = list(row.supervisors_involved or [])
+        involved.append({                                    # a new turn for the new supervisor
+            "id": supervisor["id"], "name": supervisor["name"],
+            "email": supervisor["email"], "outcome": None,
+        })
+        row.supervisors_involved = involved
+        await session.commit()
+        await session.refresh(row)
+
+    try:
+        await _email_supervisor(row, reminder=False)         # first email in the new supervisor's thread
+    except Exception:  # noqa: BLE001 - the re-pick stands; a reminder will retry
+        logger.exception("Could not email the new supervisor for held request #%s", held_id)
+    try:
+        await _email_person(row, [
+            f"Sent to {html.escape(row.supervisor_name)} instead. Nothing else changed."
+        ])
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not tell the person their request was re-routed (#%s)", held_id)
+    await _tell_decliner(row, declined_email)                # only the one who just handed it back
+    return row
 
 
 async def _admin_emails() -> list[str]:
@@ -369,6 +783,10 @@ async def remind_held_requests(today: date | None = None) -> dict:
             select(HeldRequest).where(HeldRequest.status == "held")
         )).all()
         for row in rows:
+            # A new hire already added (by email) needs no "add them" reminder: the
+            # release will submit their request (#445).
+            if await get_employee_by_email(row.email):
+                continue
             waited = business_days_between(toronto_date(row.created_at), today)
             try:
                 if row.supervisor_reminded_at is None and waited >= SUPERVISOR_REMINDER_BUSINESS_DAYS:
@@ -432,6 +850,7 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
     )
 
     results: list[ReleaseResult] = []
+    approver_ids: dict[int, str] = {}                          # held id -> the deciding manager's staff id
     async with async_session() as session:
         query = select(HeldRequest).where(
             HeldRequest.email == email, HeldRequest.status.in_(OPEN_STATUSES)
@@ -460,6 +879,9 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
                 item = await submit_request(row.request_type, form, employee, SOURCE_REQUEST_PAGE)
                 row.status, row.released_at = "released", utcnow()
                 row.sp_item_id, row.last_error = str(item.get("id")), None
+                # The current supervisor's turn is over: the person is set up.
+                row.supervisors_involved = _mark_outcome(row.supervisors_involved, row.supervisor_id, "handled")
+                approver_ids[row.id] = str((item.get("fields") or {}).get("ManagerID") or "")   # who decides it, when known
                 results.append(ReleaseResult(row.id, "released", row.sp_item_id))
             except Exception as e:  # noqa: BLE001 - a bad form or a SharePoint error; kept for an admin retry
                 logger.exception("Could not release held request #%s", row.id)
@@ -470,11 +892,14 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
         # Only rows this run claimed can be "released" here; others were skipped.
         released = [r for r in rows if r.status == "released"]
 
-    if released:
+    # Each released request closes its two conversations (#462): the person hears
+    # it is in, and the supervisor who held it hears whether it now waits on them.
+    # Earlier supervisors were told when it moved off them and hear nothing more.
+    for row in released:
         try:
-            await _email_released(employee, released)
-        except Exception:  # noqa: BLE001 - the requests went through either way
-            logger.exception("Could not tell %s their held requests were submitted", email)
+            await _email_released(employee, row, approver_ids.get(row.id, ""))
+        except Exception:  # noqa: BLE001 - the request went through either way
+            logger.exception("Could not send the release emails for held request #%s", row.id)
     return results
 
 
@@ -501,21 +926,111 @@ async def retry_waiting_site() -> int:
     return released
 
 
-async def _email_released(employee: dict, rows: list[HeldRequest]) -> None:
-    """Tell the person their held requests were submitted."""
-    fields = employee.get("fields", {})
-    items = "".join(
-        f"<li>{html.escape(describe_form(r.request_type, r.form_data))}</li>" for r in rows
+async def _approver(employee: dict, row: HeldRequest, approver_id: str) -> tuple[bool, str]:
+    """Whether the supervisor who held the request now decides it, and who does (#462).
+
+    On Postgres the created request carries the deciding manager's staff id
+    (``ManagerID``), which is exact. On SharePoint it does not, so the fallback is
+    whether the person's record lists the supervisor among their managers.
+
+    Args:
+        employee: The person's new staff record.
+        row: The released held request.
+        approver_id: The created request's ``ManagerID``, or "" when unknown.
+
+    Returns:
+        ``(supervisor_decides, approver_name)``; the name is "" when unknown.
+    """
+    if approver_id:                                            # exact: the request names its manager
+        if approver_id == str(row.supervisor_id):
+            return True, row.supervisor_name
+        try:
+            manager = await get_employee_by_id(approver_id)    # their name for the person's email
+        except Exception:  # noqa: BLE001 - the name is a nicety
+            manager = None
+        return False, _clean((manager or {}).get("fields", {}).get("Title"))
+    # SharePoint: no manager id on the item, so read the record's manager list.
+    decides = lists_manager(employee.get("fields", {}), row.supervisor_name)
+    return decides, row.supervisor_name if decides else ""
+
+
+async def _email_released(employee: dict, row: HeldRequest, approver_id: str) -> None:
+    """Close both conversations about a released held request (#462).
+
+    The person gets one more line in their own thread (set up, request number,
+    who approves it), and the supervisor who held it gets one more line in theirs:
+    it waits for their approval, or it went to the person's manager and nothing is
+    needed from them. The approval and result emails that follow are threaded onto
+    the same conversations by the outbox (see ``held_thread_for``).
+
+    Args:
+        employee: The person's new staff record.
+        row: The released held request (``sp_item_id`` is the request number).
+        approver_id: The created request's ``ManagerID``, or "" when unknown.
+    """
+    decides, approver = await _approver(employee, row, approver_id)
+    who = html.escape(approver) if approver else "your manager"
+    await _email_person(row, [
+        f"You are set up in the Staff Directory. Your request is #{html.escape(row.sp_item_id or '')}, "
+        f"with {who} to approve.",
+        f"<b>{html.escape(describe_form(row.request_type, row.form_data))}</b>",   # which request, at a glance
+        "You will get an email here when it is approved or rejected.",
+    ])
+    if decides:                                                # it now waits on the same person
+        line = (f"{html.escape(row.name)} is set up. Their request #{html.escape(row.sp_item_id or '')} "
+                "waits for your approval.")
+    else:                                                      # routed to someone else: off their plate
+        line = (f"{html.escape(row.name)} is set up. Their request went to their manager. "
+                "Nothing is needed from you.")
+    await send_email(
+        to=[row.supervisor_email], subject=_supervisor_subject(row), html_body=f"<p>{line}</p>",
+        headers=thread_headers(row.id, row.supervisor_email),   # the supervisor's thread about this request
     )
-    body = (
-        f"<p>Hi {html.escape(fields.get('Title', ''))},</p>"
-        "<p>You have been added to the Staff Directory, so the requests you made on the "
-        "UCSH Out of Office request page have been sent to your manager:</p>"
-        f"<ul>{items}</ul>"
-        "<p>You will get an email when each one is approved or rejected.</p>"
+
+
+async def held_thread_for(session, request, recipient: str) -> tuple[str, list[dict]] | None:
+    """The held-request conversation an outbox email belongs to, if any (#462).
+
+    A request released from a held request keeps the two conversations it
+    started: the person's and the supervisor's. When the outbox sends an email
+    about that request (the manager's ask, a reminder, the result) to either of
+    those two addresses, it is sent with that conversation's subject and threading
+    headers so it lands in the same thread. Anyone else gets the ordinary email.
+
+    Args:
+        session: An open session (the outbox worker's).
+        request: The ``RequestRecord`` the email is about.
+        recipient: The address the email goes to.
+
+    Returns:
+        ``(subject, headers)`` for the thread, or None when the request did not
+        come from a held request or the recipient is not one of its two people.
+    """
+    kind = {"carryover_payout": "carryover-payout"}.get(request.kind, request.kind)   # request_type spelling
+    held = await session.scalar(
+        select(HeldRequest).where(
+            HeldRequest.sp_item_id == str(request.item_id), HeldRequest.request_type == kind,
+            HeldRequest.status == "released",
+        ).limit(1)
     )
-    await send_email(to=[fields.get("EmailAddress", "")], subject="Your requests were submitted",
-                     html_body=body)
+    if held is None and getattr(request, "employee_email", None):
+        # The release creates the request (which wakes the outbox) before it saves
+        # the request number on the held row, so the first ask can arrive while the
+        # row is still "releasing". Match that row by the person and the type.
+        held = await session.scalar(
+            select(HeldRequest).where(
+                HeldRequest.email == request.employee_email.strip().lower(),
+                HeldRequest.request_type == kind, HeldRequest.status == "releasing",
+            ).order_by(HeldRequest.id.desc()).limit(1)
+        )
+    if held is None:                                           # an ordinary request
+        return None
+    address = (recipient or "").strip().lower()
+    if address == (held.email or "").strip().lower():          # the person's own thread
+        return PERSON_SUBJECT, thread_headers(held.id, recipient)
+    if address == (held.supervisor_email or "").strip().lower():   # the supervisor who held it
+        return _supervisor_subject(held), thread_headers(held.id, recipient)
+    return None
 
 
 # ----- admin view -----
@@ -523,46 +1038,131 @@ async def _email_released(employee: dict, rows: list[HeldRequest]) -> None:
 async def list_held_requests(include_closed: bool = False) -> list[dict]:
     """Held requests for the admin dashboard, newest first.
 
+    For each row it also reports whether the person is on staff now and which
+    supervisor the request would go to when retried, so the admin can see at a
+    glance what will happen (#445). The open-status set now also includes
+    "not_on_team" (a request waiting for the person to pick another supervisor).
+
     Args:
         include_closed: Also return released and cancelled rows.
 
     Returns:
-        Plain dicts, snake_case, with a readable "summary".
+        Plain dicts, snake_case, with a readable "summary", the on-staff flag and
+        the supervisor it routes to.
     """
     async with async_session() as session:
         query = select(HeldRequest).order_by(HeldRequest.id.desc())
         if not include_closed:
-            query = query.where(HeldRequest.status.in_(OPEN_STATUSES))
+            query = query.where(HeldRequest.status.in_(ACTIVE_STATUSES))   # includes not_on_team now
         rows = (await session.scalars(query)).all()
+
+    # Whether each address is on staff now; one read per distinct address, so the
+    # list shows "on staff" without the admin guessing. A failed read degrades to
+    # "unknown" (None) rather than failing the whole list.
+    on_staff_by_email: dict[str, bool] = {}
+    for address in {r.email for r in rows}:
+        try:
+            on_staff_by_email[address] = bool(await get_employee_by_email(address))
+        except Exception:  # noqa: BLE001 - one bad lookup must not break the list
+            logger.exception("Could not check whether %s is on staff for the held list", address)
+            on_staff_by_email[address] = False
     return [
         {
             "id": r.id, "email": r.email, "name": r.name,
             "department": r.department or "", "location": r.location or "",
             "supervisor_name": r.supervisor_name, "request_type": r.request_type,
             "summary": describe_form(r.request_type, r.form_data), "status": r.status,
+            # Whether they are on staff now, and the supervisor the retry routes to.
+            "on_staff": on_staff_by_email.get(r.email, False),
+            "routes_to": r.supervisor_name,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "supervisor_reminded_at": r.supervisor_reminded_at.isoformat() if r.supervisor_reminded_at else None,
             "admins_notified_at": r.admins_notified_at.isoformat() if r.admins_notified_at else None,
             "sp_item_id": r.sp_item_id, "last_error": r.last_error,
+            "cancel_reason": r.cancel_reason,
         }
         for r in rows
     ]
 
 
-async def cancel_held_request(held_id: int) -> bool:
-    """Mark one open held request cancelled (a mistake, or a duplicate).
+async def cancel_held_request(held_id: int, reason: str) -> bool:
+    """Cancel one open held request, with a reason, so it can be undone (#445).
+
+    The status it had before is remembered so the cancel can be reversed, and the
+    reason is stored. A supervisor still asked to add the person is told it was
+    cancelled, in the same conversation.
+
+    Args:
+        held_id: The held_requests row id.
+        reason: Why it is being cancelled; required and stored.
+
+    Returns:
+        True when an open row was cancelled.
+
+    Raises:
+        HoldError: When no reason is given.
+    """
+    reason = (reason or "").strip()
+    if not reason:                                           # a reason is mandatory now (#445)
+        raise HoldError("A reason is required to cancel a held request.")
+    async with async_session() as session:
+        row = await session.get(HeldRequest, held_id)
+        if row is None or row.status not in CANCELLABLE_STATUSES:  # closed, mid-submit, or no such row
+            return False
+        row.status_before_cancel = row.status               # remember it, so the undo can restore it
+        row.status = "cancelled"
+        row.cancel_reason = reason
+        await session.commit()
+        await session.refresh(row)
+    # Only a supervisor still asked to add the person has anything open; close
+    # their conversation (#462). Earlier supervisors were told when it moved off
+    # them, and one who already added the person or declined has nothing waiting.
+    if row.status_before_cancel == "held":
+        try:
+            await send_email(
+                to=[row.supervisor_email], subject=_supervisor_subject(row),
+                html_body=(f"<p>{html.escape(row.name)}'s request was cancelled. "
+                           "Nothing is needed from you.</p>"),
+                headers=thread_headers(row.id, row.supervisor_email),   # the same conversation
+            )
+        except Exception:  # noqa: BLE001 - informational only
+            logger.exception("Could not tell the supervisor about cancelled request #%s", held_id)
+    return True
+
+
+async def uncancel_held_request(held_id: int) -> bool:
+    """Undo a cancel, restoring the status the request had before (#445).
 
     Args:
         held_id: The held_requests row id.
 
     Returns:
-        True when an open row was cancelled.
+        True when a cancelled row was restored; False when it was not cancelled
+        or there is no such row.
+
+    Raises:
+        HoldError: When the person has made another request since, so restoring
+            this one would give them two at once (#442).
     """
     async with async_session() as session:
         row = await session.get(HeldRequest, held_id)
-        if row is None or row.status not in OPEN_STATUSES:
+        if row is None or row.status != "cancelled":         # nothing to undo
             return False
-        row.status = "cancelled"
+        other = await session.scalar(
+            select(HeldRequest.id).where(
+                HeldRequest.email == row.email, HeldRequest.id != row.id,
+                HeldRequest.status.in_(ACTIVE_STATUSES),
+            ).limit(1)
+        )
+        if other is not None:                                # one request until set up
+            raise HoldError(f"They have made another request since (#{other}). Cancel that one first.")
+        # Restore the status it held before (defaulting to "held" for rows cancelled
+        # before this was tracked; a row cancelled mid-submit by older code comes
+        # back as "failed" so an admin can retry it), and clear the cancel reason.
+        before = row.status_before_cancel or "held"
+        row.status = "failed" if before == "releasing" else before
+        row.status_before_cancel = None
+        row.cancel_reason = None
         await session.commit()
     return True
 
@@ -610,16 +1210,32 @@ async def held_request_status(held_id: int) -> dict | None:
         held_id: The held_requests row id.
 
     Returns:
-        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}, or
-        None when there is no such row. Every open status (held, waiting_site,
-        releasing, failed) reads as waiting: to the person it is still on its way.
+        {"status": "waiting" | "sent" | "cancelled" | "not_on_team",
+        "supervisor_name"}, or None when there is no such row. Every ordinary open
+        status (held, waiting_site, releasing, failed) reads as waiting: to the
+        person it is still on its way. A "not_on_team" row (a supervisor said the
+        person is not on their team) carries the extra fields the page needs to
+        let them pick another supervisor: department, summary and who declined it
+        (#443).
     """
     async with async_session() as session:
         row = await session.get(HeldRequest, held_id)
     if row is None:
         return None
-    status = {"released": "sent", "cancelled": "cancelled"}.get(row.status, "waiting")
-    return {"status": status, "supervisor_name": row.supervisor_name}
+    status = {
+        "released": "sent", "cancelled": "cancelled", "not_on_team": "not_on_team",
+    }.get(row.status, "waiting")
+    result = {"status": status, "supervisor_name": row.supervisor_name}
+    if status == "not_on_team":
+        # The page may re-pick, so hand it the department to search in, the
+        # request summary to show, and who declined it. The ordinary waiting/sent
+        # payloads are left exactly as they were.
+        result.update({
+            "department": row.department or "",
+            "summary": describe_form(row.request_type, row.form_data),
+            "declined_by": row.supervisor_name,
+        })
+    return result
 
 
 async def held_request_email(held_id: int) -> str | None:

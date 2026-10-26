@@ -132,6 +132,9 @@ function LinkSignIn() {
       email_address: addEmail,
       department: params.get('add_department') || '',
       location: params.get('add_location') || '',       // links emailed before #226
+      // Which held request the link is for, so Add employee can say what
+      // happened to it or offer a profile edit (#444, #462).
+      held_id: Number(params.get('add_held')) || undefined,
     }));
   }
   saveLinkSession({ token, role, uid, exp });

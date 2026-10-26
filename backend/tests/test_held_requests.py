@@ -51,6 +51,7 @@ def world(monkeypatch):
         created: list = []
         linked = True
         fail_submit = False
+        manager_id = ""                                        # the ManagerID a created request carries
     w = World()
     w.sent, w.staff_by_email, w.created = [], {}, []
     monkeypatch.setattr(settings, "PROCESSING_ENABLED", True)
@@ -66,13 +67,13 @@ def world(monkeypatch):
         return w.staff_by_email.get(email.strip().lower())
 
     async def fake_send(to, subject, html_body, **kwargs):
-        w.sent.append({"to": to, "subject": subject, "html": html_body})
+        w.sent.append({"to": to, "subject": subject, "html": html_body, "headers": kwargs.get("headers")})
 
     async def fake_submit(request_type, form, employee, source):
         if w.fail_submit:
             raise RuntimeError("Graph 500")
         w.created.append((request_type, form.model_dump(mode="json"), employee["id"], source))
-        return {"id": f"9{len(w.created)}"}
+        return {"id": f"9{len(w.created)}", "fields": {"ManagerID": w.manager_id} if w.manager_id else {}}
 
     async def lookup(email):
         return 12 if w.linked else None
@@ -161,11 +162,12 @@ def test_a_bad_hold_is_refused_with_a_reason(world, overrides, message):
     assert world.sent == []
 
 
-def test_one_address_can_only_have_a_few_waiting(world):
+def test_one_request_until_set_up(world):
+    # One request until set up (#442): a second open held request for the same
+    # address is refused.
     email = _email()
-    for _ in range(held_requests.MAX_OPEN_PER_EMAIL):
-        _hold(email)
-    with pytest.raises(held_requests.HoldError, match="several"):
+    _hold(email)                                               # the one request is allowed
+    with pytest.raises(held_requests.HoldError, match="already have a request waiting"):
         _hold(email)
 
 
@@ -265,20 +267,26 @@ def test_the_supervisor_is_reminded_once_then_the_admins_once(world):
 
 # ----- releasing -----
 
-def test_adding_the_person_submits_their_held_requests_and_tells_them(world):
+def test_adding_the_person_submits_their_held_request_and_tells_them(world):
+    # One request until set up (#442), so a person has at most one held row;
+    # adding them releases it and tells them.
     email = _email()
     _hold(email)
-    _hold(email, request_type="overtime", form={"description": "Setup", "date": "2026-11-05", "hours": 2})
     world.sent.clear()
     world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
 
     results = asyncio.run(held_requests.release_held_requests(email))
 
-    assert [r.status for r in results] == ["released", "released"]
-    assert [c[0] for c in world.created] == ["leave", "overtime"]
+    assert [r.status for r in results] == ["released"]
+    assert [c[0] for c in world.created] == ["leave"]
     assert all(c[2] == "8" and c[3] == "Request page" for c in world.created)
-    [mail] = world.sent
-    assert mail["to"] == [email] and "Setup" in mail["html"]
+    # Two lines, one in each conversation (#462): the person hears it is in, with
+    # its number; the supervisor, not among their managers here, hears it went on.
+    person, supervisor = world.sent
+    assert person["to"] == [email] and person["subject"] == held_requests.PERSON_SUBJECT
+    assert "#91" in person["html"] and "Vacation" in person["html"]
+    assert supervisor["to"] == ["sam@ucsh.com"] and supervisor["subject"] == "Add Lee New to the Staff Directory"
+    assert "Nothing is needed from you" in supervisor["html"]
     assert asyncio.run(held_requests.release_held_requests(email)) == []   # nothing left to release
 
 
@@ -356,7 +364,7 @@ def test_someone_still_not_on_staff_releases_nothing(world):
 def test_a_cancelled_request_is_never_released(world):
     email = _email()
     row = _hold(email)
-    assert asyncio.run(held_requests.cancel_held_request(row.id))
+    assert asyncio.run(held_requests.cancel_held_request(row.id, "duplicate"))
     world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
     assert asyncio.run(held_requests.release_held_requests(email)) == []
 

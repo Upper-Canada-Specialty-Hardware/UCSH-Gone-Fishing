@@ -396,18 +396,62 @@ export const holdRequest = (body: {
   form: Record<string, unknown>;
 }) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held', body);
 
-/** Where a held request stands, as the waiting page shows it. */
-export type HeldStatus = 'waiting' | 'sent' | 'cancelled';
+/**
+ * Where a held request stands, as the waiting page shows it. "not_on_team" is a
+ * supervisor handing it back, so the person picks another supervisor (#443).
+ */
+export type HeldStatus = 'waiting' | 'sent' | 'cancelled' | 'not_on_team';
+
+/** The held-request status, plus the extra fields a "not on my team" row carries (#443). */
+export interface HeldStatusResult {
+  status: HeldStatus;
+  /** The supervisor it waits on, or (for not_on_team) the one who declined it. */
+  supervisor_name: string;
+  /** The department to search another supervisor in; present on a not_on_team row. */
+  department?: string;
+  /** The request in words, to show while re-picking; present on a not_on_team row. */
+  summary?: string;
+  /** Who declined it; present on a not_on_team row. */
+  declined_by?: string;
+}
+
+/**
+ * The in-flight held request /verify hands back when the person already has one
+ * waiting to be set up, so the page shows its status instead of a new form (#442).
+ */
+export interface HeldGate {
+  /** The signed token for getHeldStatus / repick. */
+  status_token: string;
+  /** The supervisor it waits on. */
+  supervisor_name: string;
+  /** "waiting" normally, "not_on_team" when a supervisor handed it back. */
+  state: 'waiting' | 'not_on_team';
+}
 
 /**
  * Ask how a held request is going, so the waiting page can update on its own.
  *
  * @param statusToken - The status_token holdRequest returned.
- * @returns The status and the supervisor it waits on.
+ * @returns The status and the supervisor it waits on (plus re-pick fields on not_on_team).
  * @throws AxiosError 404 when the token is bad or the request is gone.
  */
 export const getHeldStatus = (statusToken: string) =>
-  intake.get<{ status: HeldStatus; supervisor_name: string }>('/held/status', { params: { token: statusToken } });
+  intake.get<HeldStatusResult>('/held/status', { params: { token: statusToken } });
+
+/**
+ * Pick another supervisor for a held request handed back as "not on my team" (#443).
+ *
+ * @param body - the verified token, the held request's status_token, and the new
+ *   supervisor (supervisor_id from the search, or supervisor_email).
+ * @returns The new supervisor and a fresh status_token to keep following it.
+ * @throws AxiosError 401 expired, 404 bad token, 400 when it cannot be re-picked.
+ */
+export const repick = (body: {
+  verified: VerifiedEmail;
+  status_token: string;
+  supervisor_id?: string;
+  supervisor_email?: string;
+}) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held/repick', body);
 
 /**
  * Submit a request as the signed-in employee.

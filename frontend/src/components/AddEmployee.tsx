@@ -5,7 +5,8 @@ import {
   OutlinedInput, Chip,
 } from '@mui/material';
 import { isHourly } from '../utils/employment';
-import type { EmployeeCheckResult } from '../api/client';
+import { getHeldForAdd, type EmployeeCheckResult, type HeldExisting, type HeldForAdd, type SetupScope } from '../api/client';
+import HeldProfileEdit from './HeldProfileEdit';
 
 /**
  * The Location values the backend maps to a province. Anything outside this set
@@ -63,7 +64,54 @@ interface Props {
    * a held request on the request page (the supervisor's email link, or the
    * admin Held Requests list).
    */
-  prefill?: { title?: string; email_address?: string; department?: string; location?: string } | null;
+  prefill?: AddPrefill | null;
+  /**
+   * Where a held request's Add link is read from: 'team' on the manager
+   * dashboard, 'admin' from Held Requests. With a prefill carrying `held_id`,
+   * the page first asks what happened to that request (#444, #462).
+   */
+  heldScope?: SetupScope;
+}
+
+/** A new hire's details from a held request, and which held request it was. */
+export interface AddPrefill {
+  title?: string;
+  email_address?: string;
+  department?: string;
+  location?: string;
+  /** The held request the details came from, when the link named it (#444). */
+  held_id?: number;
+}
+
+/**
+ * The form values in a prefill, without the held request id (which is not a field).
+ *
+ * @param prefill - The prefill, or null.
+ * @returns The details to merge into the form.
+ */
+const detailsOf = (prefill: AddPrefill | null | undefined) => {
+  const { held_id: _held, ...details } = prefill ?? {};
+  return details;
+};
+
+/**
+ * What a held request's Add link says once the request no longer waits on the viewer (#462).
+ *
+ * @param held - The held request's state.
+ * @returns One sentence saying what happened.
+ */
+function heldStateMessage(held: HeldForAdd): string {
+  switch (held.state) {
+    case 'released':
+      return `Already handled: ${held.name} was set up${held.set_up_on ? ` on ${held.set_up_on}` : ''}. `
+        + `Their request is #${held.request_number}.`;
+    case 'cancelled':
+      return `${held.name}'s request was cancelled. Nothing is needed from you.`;
+    case 'sending':
+      return `${held.name} is on staff now and their request is being sent.`;
+    default:                                           // declined, or moved to someone else
+      return `${held.name}'s request is no longer waiting for you. Nothing is needed from you.`;
+  }
 }
 
 /** What the server reports back after a create, beyond the record itself. */
@@ -102,15 +150,33 @@ const EMPTY = {
  * @returns The Add Employee panel.
  */
 export default function AddEmployee({
-  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions, prefill,
+  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions, prefill, heldScope,
 }: Props) {
-  const [form, setForm] = useState({ ...EMPTY, ...(prefill ?? {}) });
+  const [form, setForm] = useState({ ...EMPTY, ...detailsOf(prefill) });
   const [outcome, setOutcome] = useState<CreateOutcome | null>(null);
+  // The held request the link named, once read; null while there is none (#444).
+  const [held, setHeld] = useState<HeldForAdd | null>(null);
+  const [heldLoading, setHeldLoading] = useState(false);
 
-  // A new prefill (another held request picked) replaces the form.
+  // A new prefill (another held request picked) replaces the form, and asks
+  // what happened to its held request before anything is shown (#444, #462).
   useEffect(() => {
-    if (prefill) setForm({ ...EMPTY, ...prefill });
-  }, [prefill]);
+    if (prefill) setForm({ ...EMPTY, ...detailsOf(prefill) });
+    setHeld(null);
+    if (!prefill?.held_id || !heldScope) return;
+    let live = true;                                   // ignore a late answer after another pick
+    setHeldLoading(true);
+    getHeldForAdd(prefill.held_id, heldScope)
+      .then((res) => { if (live) setHeld(res.data); })
+      .catch(() => { /* unreadable: fall back to the plain form */ })
+      .finally(() => { if (live) setHeldLoading(false); });
+    return () => { live = false; };
+  }, [prefill, heldScope]);
+  // A name already on staff turns Add into a profile edit of that record (#444).
+  const editing = held?.state === 'open' && held.existing
+    ? (held as HeldForAdd & { existing: HeldExisting }) : null;
+  // Two records share the name: nothing is guessed (#444).
+  const ambiguous = held?.state === 'open' && held.same_name_count > 1;
   const [managerIds, setManagerIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -161,7 +227,7 @@ export default function AddEmployee({
     }
   };
 
-  /** Submit the form, showing the backend's reason on a 400. */
+  /** Submit the form, showing the backend's reason on a 400, or a name clash on a 409. */
   const submit = async () => {
     setError('');
     setOutcome(null);
@@ -181,7 +247,14 @@ export default function AddEmployee({
       setReview(null);               // back to a blank form once it is saved
     } catch (err: any) {
       const detail = err.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'The employee could not be created. Please try again.');
+      // A name clash comes back as 409 with a structured detail (#444): someone by
+      // that name is already on staff. Show the clear reason rather than the generic
+      // create-failed message, so the person knows to check the existing record.
+      if (err.response?.status === 409 && detail && typeof detail === 'object') {
+        setError(detail.message || 'Someone with that name is already on staff.');
+      } else {
+        setError(typeof detail === 'string' ? detail : 'The employee could not be created. Please try again.');
+      }
     } finally {
       setSaving(false);
     }
@@ -221,9 +294,34 @@ export default function AddEmployee({
           System is in reporting-only mode. Adding an employee is disabled.
         </Alert>
       )}
+      {heldLoading && <CircularProgress size={24} sx={{ mb: 2 }} />}
+      {/* The held request moved on: say what happened, not a stale form (#462). */}
+      {held && held.state !== 'open' && (
+        <Stack spacing={1} sx={{ mb: 2, maxWidth: 560 }}>
+          <Alert severity="info">{heldStateMessage(held)}</Alert>
+          <Box><Button onClick={() => { setHeld(null); setForm({ ...EMPTY }); }}>Add someone else</Button></Box>
+        </Stack>
+      )}
+      {ambiguous && held && (
+        <Stack spacing={1} sx={{ mb: 2, maxWidth: 560 }}>
+          <Alert severity="warning">
+            Two people on staff are named {held.name}. Ask HR which record is theirs.
+          </Alert>
+          <Box><Button onClick={() => { setHeld(null); setForm({ ...EMPTY }); }}>Add someone else</Button></Box>
+        </Stack>
+      )}
+      {held?.state === 'open' && held.note && <Alert severity="warning" sx={{ mb: 2 }}>{held.note}</Alert>}
+      {editing && heldScope && (
+        <HeldProfileEdit
+          held={editing} scope={heldScope} processingEnabled={processingEnabled}
+          locations={LOCATIONS} payTypes={SALARY_HOURLY}
+        />
+      )}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {outcome && <CreatedSummary outcome={outcome} />}
 
+      {/* The plain Add form, unless the held request says otherwise. */}
+      {!heldLoading && !editing && !ambiguous && !(held && held.state !== 'open') && (<>
       {review && (
         <ConfirmPanel
           review={review}
@@ -360,6 +458,7 @@ export default function AddEmployee({
         </Box>
       </Stack>
       )}
+      </>)}
     </Paper>
   );
 }

@@ -239,7 +239,23 @@ async def send_outbox_row(session, row: Outbox) -> None:
         if row.channel == "email":
             # send_email applies the shared layout and writes email_api_log itself.
             from app.graph.email import send_email
-            summary = await send_email([row.recipient], row.subject or "", row.body)
+            from app.services.held_requests import held_thread_for
+            subject, headers = row.subject or "", None
+            # A request released from a held request keeps the new hire's and the
+            # supervisor's conversations: an email to either joins it (#462).
+            thread = None
+            if request is not None:
+                try:
+                    # A savepoint, so a failed lookup rolls back only itself and the
+                    # row's sent status and timeline event still commit.
+                    async with session.begin_nested():
+                        thread = await held_thread_for(session, request, row.recipient)
+                except Exception:                                  # noqa: BLE001 - threading is a nicety, never blocks a send
+                    logger.exception("Outbox %s: could not look up a held-request thread", row.id)
+            if thread is not None:
+                subject, headers = thread                          # that conversation's subject and threading headers
+            extra = {"headers": headers} if headers else {}          # ordinary emails are sent exactly as before
+            summary = await send_email([row.recipient], subject, row.body, **extra)
             row.provider_message_id = getattr(summary, "email_id", None)   # the provider's id, when it gave one
             # The email_api_log row id is not handed back by the send API, so it
             # is left unset here; the log row still exists, found by recipient/time.

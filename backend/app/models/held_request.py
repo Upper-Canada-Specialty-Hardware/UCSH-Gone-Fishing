@@ -42,8 +42,17 @@ class HeldRequest(Base):
     form_data: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     # "held" (waiting), "released" (submitted as a request), "failed" (release
-    # tried and SharePoint refused; retried by an admin), "cancelled".
+    # tried and SharePoint refused; retried by an admin), "not_on_team" (a
+    # supervisor said the person is not on their team; waiting for them to pick
+    # another), "cancelled".
     status: Mapped[str] = mapped_column(String, nullable=False, default="held", index=True)
+
+    # Every supervisor this request has been sent to, in order, each as
+    # {"id", "name", "email", "outcome"}: outcome is null while they hold it,
+    # "not_on_team" once they declined it, "handled" once the person was added.
+    # Drives the "told it moved" emails and the one thread per request per
+    # recipient (#443).
+    supervisors_involved: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
@@ -57,3 +66,8 @@ class HeldRequest(Base):
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sp_item_id: Mapped[str | None] = mapped_column(String, nullable=True)   # the created request
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)     # why a release failed
+
+    # Cancelling needs a reason and can be undone (#445): the reason an admin
+    # gave, and the status to put back if the cancel is reversed.
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_before_cancel: Mapped[str | None] = mapped_column(String, nullable=True)
