@@ -238,3 +238,28 @@ export function takenFromPreview(
   }
   return { state: 'projected', pieces };
 }
+
+/**
+ * A taken_from value as one line of plain text, for the Excel export (#488).
+ * Reads the same words as the chips: "12 vacation", "6 vacation → 2025 carry-over",
+ * "+0.4 added to Make-Up", or the muted message; a projection is marked
+ * "(if approved)" and a refund "(refunded)".
+ *
+ * @param value - The row's taken_from, or null/undefined.
+ * @returns The text.
+ */
+export function takenFromText(value: TakenFromValue | null | undefined): string {
+  const shape = describeTakenFrom(value);
+  if (shape.kind === 'message') return shape.text;                              // nothing moved, or why not known
+  if (shape.kind === 'counted') return `${fmtDays(shape.days)} vacation counted`;   // hourly counter, as its chip (#300)
+  const parts = shape.segments.map((s) => {
+    if (s.type === 'add') {
+      const paid = s.covered > 0 ? `, ${fmtDays(s.covered)} paid off negative vacation` : '';
+      return `+${fmtDays(s.days)} added to ${potLabel(s.pot, null)}${paid}`;
+    }
+    if (s.type === 'move') return `${fmtDays(s.days)} vacation → ${potLabel(s.toPot, s.toYear)}`;
+    return `${fmtDays(s.days)} ${potLabel(s.pot, s.year)}`;
+  });
+  const note = shape.projected ? ' (if approved)' : shape.refunded ? ' (refunded)' : '';
+  return parts.join(', ') + note;
+}

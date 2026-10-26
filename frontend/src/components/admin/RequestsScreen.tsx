@@ -21,6 +21,7 @@ import { useFitColumns } from './useFitColumns';
 import DeleteRequestDialog, { movedBalance } from './DeleteRequestDialog';
 import NewRequestDialog from './NewRequestDialog';
 import RejectDialog from '../RejectDialog';
+import RequestsExportDialog, { ExportSheet } from './RequestsExportDialog';
 import { StaffOption, deleteAdminRequest, exportAdminRequests, flushDeleteBeacon, getNewRequestOptions } from '../../api/requestsAdmin';
 import { getAdminHolidays } from '../../api/client';
 
@@ -316,7 +317,10 @@ export default function RequestsScreen(props: Props) {
   const picked = useMemo(() => allRows.filter((r) => selected.has(r.key) && !deletedKeys.has(delKey(r))), [allRows, selected, deletedKeys]);
 
   // Del deletes the ticked rows, Esc clears them (not while typing or in a dialog).
-  const anyDialogOpen = deleteRows !== null || newOpen || refundRows !== null || rejectRows !== null || reprocessRow !== null || auditLog !== null;
+  // The export dialog (#488): opens on the ticked requests when some are ticked, else the shown ones.
+  const [exportOpen, setExportOpen] = useState(false);
+  // Any open dialog pauses the Delete/Escape shortcuts, so a key pressed inside it never acts on the table.
+  const anyDialogOpen = deleteRows !== null || newOpen || refundRows !== null || rejectRows !== null || reprocessRow !== null || auditLog !== null || exportOpen;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!selected.size || anyDialogOpen) return;
@@ -333,20 +337,8 @@ export default function RequestsScreen(props: Props) {
     return () => document.removeEventListener('keydown', onKey);
   }, [selected, anyDialogOpen, picked, processingEnabled]);
 
-  /** Download an .xlsx of the given request items. */
-  const doExport = useCallback(async (items: any[]) => {
-    try {
-      const res = await exportAdminRequests(items);
-      const url = URL.createObjectURL(res.data as Blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `requests-${startOfToday().toISOString().slice(0, 10)}.xlsx`;
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      setSnack({ open: true, message: 'The export could not be prepared.' });
-    }
-  }, []);
+  /** Write the dialog's sheets as an .xlsx. */
+  const buildExport = useCallback(async (sheets: ExportSheet[]) => (await exportAdminRequests(sheets)).data as Blob, []);
 
   /** Begin a delete: hide the rows, offer Undo, and send it to the server after the window. */
   const startDelete = useCallback((rows: Row[], reason: string, refund: boolean) => {
@@ -460,7 +452,7 @@ export default function RequestsScreen(props: Props) {
               onApprove={() => { Promise.all(picked.map((r) => props.onApprove(r.request_type, r.id))); setSelected(new Set()); }}
               onReject={() => setRejectRows(picked)}       // one reason for the whole selection (#433)
               onRefund={() => setRefundRows(picked)}
-              onExport={() => doExport(picked.map((r) => r.raw))}
+              onExport={() => setExportOpen(true)}
               onDelete={() => setDeleteRows(picked)}
             />
           ) : (
@@ -490,7 +482,7 @@ export default function RequestsScreen(props: Props) {
                 <MenuItem value="status">Group by status</MenuItem>
               </TextField>
               <PillToggle name="req-mode" label="Show as" value={mode} onChange={(v) => setMode(v)} options={[{ key: 'table', label: 'Table' }, { key: 'cal', label: 'Calendar' }]} />
-              <Button size="small" variant="outlined" color="inherit" onClick={() => doExport(shown.map((r) => r.raw))}>Export to Excel</Button>
+              <Button size="small" variant="outlined" color="inherit" onClick={() => setExportOpen(true)}>Export to Excel</Button>
             </Box>
           )}
         </Box>
@@ -657,6 +649,16 @@ export default function RequestsScreen(props: Props) {
       </Dialog>
 
       <AuditTrailDialog open={auditLog !== null} onClose={() => setAuditLog(null)} auditLog={auditLog || ''} />
+
+      {/* Export (#488): the shown or ticked requests, their people, columns and sheets, previewed. */}
+      <RequestsExportDialog
+        open={exportOpen}
+        shownRows={shown}
+        tickedRows={picked}
+        build={buildExport}
+        onClose={() => setExportOpen(false)}
+        onNotify={(message) => setSnack({ open: true, message })}
+      />
 
       <Snackbar
         open={snack.open}
