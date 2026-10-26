@@ -174,7 +174,7 @@ def _stub_sms(monkeypatch, error=None):
     """Stub app.services.sms.send_sms; count calls; optionally raise."""
     calls = []
 
-    async def fake_send(to, body):
+    async def fake_send(to, body, **kwargs):      # **kwargs: send_sms now takes text-log context (#494)
         calls.append(to)
         if error is not None:
             raise error

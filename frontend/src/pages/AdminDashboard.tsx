@@ -13,6 +13,7 @@ import EditRequestDialog from '../components/EditRequestDialog';
 import DecisionRefusedDialog from '../components/DecisionRefusedDialog';
 import AddEmployee, { type AddPrefill, ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
+import TextLog from '../components/TextLog';
 import HolidaysManager from '../components/HolidaysManager';
 import RequestsScreen from '../components/admin/RequestsScreen';
 import ManagersOnVacation from '../components/admin/ManagersOnVacation';
@@ -71,6 +72,7 @@ const SCREEN_TITLES: Record<string, string> = {
   holidays: 'Company holidays',
   stuck: 'Stuck requests',
   emails: 'Email log',
+  texts: 'Text log',
   checks: 'Data checks',
   password: 'Admin password',
 };
@@ -601,6 +603,7 @@ export default function AdminDashboard() {
     { items: [
       { key: 'stuck', label: 'Stuck requests', count: stuckRequests.length },
       { key: 'emails', label: 'Email log' },
+      { key: 'texts', label: 'Text log' },
       { key: 'checks', label: 'Data checks' },
       { key: 'password', label: 'Admin password' },
     ] },
@@ -730,6 +733,12 @@ export default function AdminDashboard() {
               {tab === 'emails' && (
                 <Paper sx={{ p: 3 }}>
                   <EmailLog employees={employees} />
+                </Paper>
+              )}
+
+              {tab === 'texts' && (
+                <Paper sx={{ p: 3 }}>
+                  <TextLog employees={employees} />
                 </Paper>
               )}
 

@@ -2,11 +2,13 @@ import hashlib
 import hmac
 import logging
 import re
+import time
 from base64 import b64encode
 
 import httpx
 
 from app.config import settings
+from app.models.mixins import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -155,36 +157,143 @@ def scrub_error_text(text: str | None) -> str | None:
     return mask_phone_numbers(scrub_twilio_sid(text))              # SID first, then numbers
 
 
-async def send_sms(to: str, body: str):
-    """Send SMS via Twilio REST API."""
-    # Rehearsal mode drops any recipient not on the allow list, so a rehearsal
-    # never texts real staff. Gated here, the lowest SMS send, so every caller
-    # (approvals, reminders) is covered (#339).
+def _ms_since(started_clock: float) -> int:
+    """Milliseconds elapsed since a ``time.monotonic()`` reading.
+
+    Args:
+        started_clock: The ``time.monotonic()`` value captured at the start.
+
+    Returns:
+        Whole milliseconds since then.
+    """
+    return int((time.monotonic() - started_clock) * 1000)          # monotonic: immune to clock changes
+
+
+async def send_sms(
+    to: str,
+    body: str,
+    *,
+    kind: str = "other",
+    request_kind: str | None = None,
+    request_item_id: str | None = None,
+    outbox_id: int | None = None,
+    request_id: object | None = None,
+    inbound_reply_id: int | None = None,
+):
+    """Send one SMS via the Twilio REST API, logging the attempt whatever happens.
+
+    Behaviour is unchanged from before the Text Log: a rehearsal skip returns
+    ``{"skipped": "rehearsal"}``, an unparseable number and a 4xx/5xx still raise,
+    and a success still returns Twilio's JSON. The only addition on the wire is a
+    ``StatusCallback`` field so Twilio posts delivery updates back (#496). Around
+    that, every outcome writes one ``sms_api_log`` row through ``record_send``,
+    which never raises, so a logging problem can never change what the send does.
+
+    Args:
+        to: The recipient number, in any format.
+        body: The message text.
+        kind: What kind of text this is (the outbox message_type, "reply",
+            "test", or "other"); stored on the log row.
+        request_kind: The request domain this text is about, when the caller
+            knows it (leave / overtime / carryover-payout).
+        request_item_id: The request item id, when known.
+        outbox_id: The outbox row this send came from, when there was one.
+        request_id: The request record id this send came from, when there was one.
+        inbound_reply_id: The inbound reply row this send answers, for a reply.
+
+    Returns:
+        Twilio's JSON on success, or ``{"skipped": "rehearsal"}`` when dropped.
+
+    Raises:
+        InvalidPhoneNumber: ``to`` could not be turned into an E.164 number.
+        httpx.HTTPStatusError: Twilio answered 4xx/5xx.
+        httpx.HTTPError: The request to Twilio never completed.
+    """
+    # Local import avoids an import cycle (sms_api_log -> models -> ... ) at module load.
+    from app.services.sms_api_log import (
+        RESPONSE_MAX_CHARS,
+        classify_twilio_response,
+        record_send,
+    )
     from app.services.rehearsal import allow_recipient
 
+    started = utcnow()                                             # stamp for the log row
+    clock = time.monotonic()                                       # for the duration
+    # Context shared by every log row this call might write.
+    ctx = dict(
+        kind=kind, from_number=settings.TWILIO_PHONE_NUMBER, body=body,
+        request_kind=request_kind, request_item_id=request_item_id,
+        outbox_id=outbox_id, request_id=request_id, inbound_reply_id=inbound_reply_id,
+    )
+
+    # Rehearsal mode drops any recipient not on the allow list, so a rehearsal
+    # never texts real staff. Gated here, the lowest SMS send, so every caller
+    # (approvals, reminders) is covered (#339). The drop is logged too.
     if not allow_recipient(to):
         logger.info("Rehearsal: SMS to %s was dropped (not on the allowlist)", mask_phone(to))
+        await record_send(
+            attempted_at=started, duration_ms=_ms_since(clock), to_number=to,
+            no_response_reason="rehearsal mode: recipient not on the allowlist", **ctx,
+        )
         return {"skipped": "rehearsal"}
 
     # Normalize to E.164 on digits, not the last ten characters, so a formatted
     # number reaches Twilio correctly; a number it cannot parse raises (#417).
-    to = normalize_phone(to)
+    try:
+        to = normalize_phone(to)
+    except InvalidPhoneNumber as e:
+        # `to` is still the raw value here (normalize raised): keep it as evidence
+        # of the bad number. The reason text is already masked by normalize (#420).
+        await record_send(
+            attempted_at=started, duration_ms=_ms_since(clock), to_number=to,
+            no_response_reason=scrub_error_text(str(e)),
+            error_message=scrub_error_text(str(e)), **ctx,
+        )
+        raise
 
     url = f"{TWILIO_API_BASE}/Accounts/{settings.TWILIO_ACCOUNT_SID}/Messages.json"
     auth = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    data = {"From": settings.TWILIO_PHONE_NUMBER, "To": to, "Body": body}
+    # Ask Twilio to POST delivery updates to our status webhook; skip it when we
+    # have no public base url to receive them on (#496).
+    if settings.BASE_URL:
+        data["StatusCallback"] = f"{settings.BASE_URL}/api/twilio/status"
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            url,
-            auth=auth,
-            data={
-                "From": settings.TWILIO_PHONE_NUMBER,
-                "To": to,
-                "Body": body,
-            },
-        )
-        resp.raise_for_status()
+        try:
+            resp = await client.post(url, auth=auth, data=data)
+        except Exception as e:                                     # never answered: timeout/DNS/refused
+            await record_send(
+                attempted_at=started, duration_ms=_ms_since(clock), to_number=to,
+                no_response_reason=scrub_error_text(f"{type(e).__name__}: {e}"), **ctx,
+            )
+            raise
+
+        # Store Twilio's body minus the Account SID (which appears in the account
+        # fields and resource URLs); the auth token never rides in the body (#420).
+        stored_body = scrub_twilio_sid((resp.text or "")[:RESPONSE_MAX_CHARS])
+        answer = classify_twilio_response(resp.status_code, resp.text)   # sid/status/error, pure
+
+        try:
+            resp.raise_for_status()                                # unchanged: 4xx/5xx still raise
+        except httpx.HTTPStatusError:
+            await record_send(
+                attempted_at=started, duration_ms=_ms_since(clock), to_number=to,
+                http_status=resp.status_code, response_body=stored_body,
+                twilio_sid=answer.sid, twilio_status=answer.status,
+                error_code=answer.error_code, error_message=scrub_error_text(answer.error_message),
+                **ctx,
+            )
+            raise
+
         logger.info("SMS sent to %s", mask_phone(to))              # never log the full number (#420)
+        await record_send(
+            attempted_at=started, duration_ms=_ms_since(clock), to_number=to,
+            http_status=resp.status_code, response_body=stored_body,
+            twilio_sid=answer.sid, twilio_status=answer.status,
+            error_code=answer.error_code, error_message=scrub_error_text(answer.error_message),
+            **ctx,
+        )
         return resp.json()
 
 
