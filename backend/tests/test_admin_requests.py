@@ -319,34 +319,45 @@ def test_delete_is_a_503_while_processing_is_off(client, monkeypatch):
 
 # ----- export -----
 
-def test_the_export_has_one_sheet_per_list_with_every_column():
+def _sheets(*specs):
+    """ExportSheet models from plain dicts, as the route would parse them."""
+    from app.services.requests_export import ExportSheet
+    return [ExportSheet(**spec) for spec in specs]
+
+
+def test_the_export_writes_the_dialogs_sheets_with_numbers_and_totals():
     from openpyxl import load_workbook
     from io import BytesIO
 
-    requests = [
-        {"request_type": "leave", "id": "1", "employee_name": "Avery", "managers": "Sam",
-         "Status": "Approved", "Created": "2026-10-01", "ApprovedDate": "2026-10-02",
-         "LeaveType": "Vacation", "StartDate": "2026-11-02", "EndDate": "2026-11-06", "Days": 5, "Title": "trip",
-         "OddColumn": "kept"},
-        {"request_type": "overtime", "id": "2", "employee_name": "Jamie", "managers": "Lee",
-         "Status": "Pending", "Created": "2026-10-03", "StartDate": "2026-10-03", "Hours": 4, "Title": "inventory"},
-        {"request_type": "carryover-payout", "id": "3", "employee_name": "Morgan", "managers": "Pat",
-         "Status": "Approved", "Created": "2026-09-01", "TypeofRequest": "Payout", "Days": 5, "NewBalance": "x"},
-    ]
-    book = load_workbook(BytesIO(build_requests_workbook(requests)))
-    assert book.sheetnames == ["Leave Requests", "Overtime Requests Data", "CarryOver_Payout_Data"]
-    leave_headers = [c.value for c in book["Leave Requests"][1]]
-    assert "Employee" in leave_headers and "Leave type" in leave_headers
-    assert "OddColumn" in leave_headers                        # an unexpected field is still a column
-    # The one leave row's employee was written.
-    assert book["Leave Requests"]["B2"].value == "Avery"
+    sheets = _sheets({
+        "title": "Leave",
+        "columns": [{"header": "Name"}, {"header": "Start date"},
+                    {"header": "Days", "number": True, "total": True}, {"header": "Taken from", "wrap": True}],
+        "rows": [["Avery", "Nov 2, 2026", 5, "5 vacation"], ["Blake", "Nov 9, 2026", "2.5", "No balance used"]],
+    }, {
+        "title": "Summary by person",
+        "columns": [{"header": "Name"}, {"header": "Requests", "number": True, "total": True}],
+        "rows": [["Avery", 1], ["Blake", 1]],
+    })
+    book = load_workbook(BytesIO(build_requests_workbook(sheets)))
+    assert book.sheetnames == ["Leave", "Summary by person"]
+    leave = book["Leave"]
+    assert [c.value for c in leave[1]] == ["Name", "Start date", "Days", "Taken from"]
+    assert leave["B2"].value == "Nov 2, 2026"                  # dates arrive as the dashboard words them
+    assert leave["C3"].value == 2.5                            # a number column holds real numbers
+    assert leave["A4"].value == "Total" and leave["C4"].value == 7.5   # the totals row sums them
+    assert leave.freeze_panes == "A2" and leave.auto_filter.ref == "A1:D3"   # filter stops above the totals
+    assert leave["D2"].alignment.wrap_text                     # long text wraps
 
 
-def test_the_export_opens_even_with_no_requests():
+def test_the_export_keeps_sheet_names_excel_accepts():
     from openpyxl import load_workbook
     from io import BytesIO
-    book = load_workbook(BytesIO(build_requests_workbook([])))
-    assert book.sheetnames                                     # at least one sheet, so the file opens
+    sheets = _sheets(*[{"title": "Carry-over / payout: a very long sheet name indeed",
+                        "columns": [{"header": "Name"}], "rows": []}] * 2)
+    names = load_workbook(BytesIO(build_requests_workbook(sheets))).sheetnames
+    assert len(names) == 2 and names[0] != names[1]            # repeated titles are numbered
+    assert all(len(n) <= 31 and "/" not in n and ":" not in n for n in names)
 
 
 def test_the_export_neutralises_a_formula_in_a_field():
@@ -354,17 +365,30 @@ def test_the_export_neutralises_a_formula_in_a_field():
     # runs as a live formula. The export prefixes a quote so it stays text (#294 S1).
     from openpyxl import load_workbook
     from io import BytesIO
-    requests = [
-        {"request_type": "leave", "id": "1", "employee_name": "Avery", "managers": "Sam",
-         "Status": "Pending", "LeaveType": "Vacation", "Title": '=HYPERLINK("http://evil","click")'},
-        {"request_type": "leave", "id": "2", "employee_name": "Blake", "managers": "Sam",
-         "Status": "Pending", "LeaveType": "Vacation", "Title": "@SUM(A1:A9)"},
-    ]
-    sheet = load_workbook(BytesIO(build_requests_workbook(requests)))["Leave Requests"]
-    headers = [c.value for c in sheet[1]]
-    title_col = headers.index("Title") + 1                      # 1-based column of the Title field
-    assert sheet.cell(row=2, column=title_col).value.startswith("'=")   # quoted, so inert
-    assert sheet.cell(row=3, column=title_col).value.startswith("'@")
+    sheets = _sheets({
+        "title": "Requests",
+        "columns": [{"header": "Name"}, {"header": "Details"}],
+        "rows": [["Avery", '=HYPERLINK("http://evil","click")'], ["Blake", "@SUM(A1:A9)"]],
+    })
+    sheet = load_workbook(BytesIO(build_requests_workbook(sheets)))["Requests"]
+    assert sheet["B2"].value.startswith("'=")                  # quoted, so inert
+    assert sheet["B3"].value.startswith("'@")
+
+
+def test_the_export_cuts_text_too_long_for_one_excel_cell():
+    # Excel holds 32,767 characters in a cell; a longer one makes it call the file
+    # damaged. Fields that only grow ("Taken from", audit trails) are cut with a note.
+    from openpyxl import load_workbook
+    from io import BytesIO
+    sheets = _sheets({
+        "title": "Requests",
+        "columns": [{"header": "Name"}, {"header": "Taken from", "wrap": True}],
+        "rows": [["Avery", "x" * 40000], ["Blake", "2 vacation"]],
+    })
+    sheet = load_workbook(BytesIO(build_requests_workbook(sheets)))["Requests"]
+    assert len(sheet["B2"].value) == 32767                     # exactly at the limit
+    assert sheet["B2"].value.endswith("see the dashboard)")    # and says it was cut
+    assert sheet["B3"].value == "2 vacation"                   # short text untouched
 
 
 # ----- a missing request through the dashboard actions is a clean 4xx -----
