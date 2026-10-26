@@ -14,8 +14,41 @@ before it flips, so in practice the exception only covers the switch's own final
 steps.
 """
 import logging
+import re
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# The staff-history import (#448) is the one job allowed to read SharePoint after
+# the switch. It needs exactly two read-only GETs: the Staff Directory item
+# versions it backfills, and the site-id lookup that versions URL is built from
+# (the app never resolves the site after the switch, so the id is otherwise
+# unknown). These two patterns gate that exception; nothing else, and never a
+# write, so the cut-off still refuses every other call.
+_SITE_LOOKUP = f"/sites/{settings.SP_SITE_HOST}:{settings.SP_SITE_PATH}"   # the site-id resolve GET
+_STAFF_VERSIONS = re.compile(                                             # /lists/<staff>/items/<id>/versions
+    rf"/lists/{re.escape(settings.SP_LIST_STAFF_DIRECTORY)}/items/[^/]+/versions(?:\?|$)"
+)
+
+
+def is_staff_history_read(method: str, path: str) -> bool:
+    """Whether a call is a read the staff-history import may make after the switch.
+
+    Args:
+        method: The HTTP method of the call.
+        path: The Graph path (relative, or an absolute ``@odata.nextLink``).
+
+    Returns:
+        True only for a GET of the Staff Directory item versions, or the site-id
+        lookup that read depends on. Every write, and every read of another list,
+        returns False so the cut-off still refuses it.
+    """
+    if method.upper() != "GET":                            # a write is never allowed, flag or not
+        return False
+    if path.startswith(_SITE_LOOKUP):                      # the site-id resolve the versions URL needs
+        return True
+    return bool(_STAFF_VERSIONS.search(path))              # the Staff Directory versions read itself
 
 
 class SharePointCutOff(RuntimeError):

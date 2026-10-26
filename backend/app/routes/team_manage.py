@@ -240,6 +240,7 @@ async def team_update_entitlements(user: AuthUser, employee_id: str, body: TeamE
         # write and history path as the admin's, only under the manager's channel.
         return await apply_entitlement_changes(
             employee_id, body.changes, recorded_reason, body.fields, source=MANAGER_CHANNEL,
+            actor=manager_name,                               # the history names the manager (#447)
         )
     except LookupError as e:                                   # the person disappeared mid-edit
         raise HTTPException(status_code=404, detail=str(e))
@@ -403,6 +404,7 @@ async def team_add_member(user: AuthUser, employee_id: str):
                 int(employee_id), current_ids + [link_id],
                 history_source=MANAGER_CHANNEL,
                 history_reason=f"Added to the team by {manager_name} from the manager dashboard.",
+                history_actor=manager_name,                   # the history names the manager (#447)
             )
             return {**result, "added": True}
     except SystemPaused as e:                             # the switch began mid-write: refuse cleanly
@@ -451,6 +453,7 @@ async def team_remove_member(user: AuthUser, employee_id: str):
                 int(employee_id), [m["sp_user_id"] for m in kept],
                 history_source=MANAGER_CHANNEL,
                 history_reason=f"{manager_name} removed themselves as a manager from the manager dashboard.",
+                history_actor=manager_name,                   # the history names the manager (#447)
             )
             return {**result, "removed": True, "has_other_manager": len(kept) > 0}
     except SystemPaused as e:                             # the switch began mid-write: refuse cleanly

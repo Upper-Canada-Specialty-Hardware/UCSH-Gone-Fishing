@@ -18,6 +18,7 @@ import ManagersOnVacation from '../components/admin/ManagersOnVacation';
 import StaffScreen from '../components/admin/StaffScreen';
 import RequestColumnsCard from '../components/admin/RequestColumnsCard';
 import RequestStorageCard from '../components/admin/RequestStorageCard';
+import StaffHistoryImportCard from '../components/admin/StaffHistoryImportCard';
 import AdminPasswordCard from '../components/admin/AdminPasswordCard';
 import { Enter, leaveDelay } from '../components/Motion';
 import { AdminSkeleton } from '../components/Skeletons';
@@ -703,6 +704,8 @@ export default function AdminDashboard() {
                 <Stack spacing={2}>
                   {/* Where requests live, and the copy before the move to Postgres. */}
                   <RequestStorageCard processingEnabled={processingEnabled} />
+                  {/* Backfill each person's entitlement/balance history from SharePoint (#448). */}
+                  <StaffHistoryImportCard />
                   <RequestColumnsCard processingEnabled={processingEnabled} />
                 </Stack>
               )}

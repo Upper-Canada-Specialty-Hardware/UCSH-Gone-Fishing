@@ -26,9 +26,13 @@ class SharePointClient:
     def __init__(self):
         self.site_id: str | None = None
 
-    async def resolve_site_id(self):
+    async def resolve_site_id(self, *, allow_after_switch: bool = False):
+        # allow_after_switch lets the staff-history import (#448) resolve the site
+        # after the switch: the versions URL below is built from this id, and the
+        # app otherwise never resolves the site once it is on Postgres.
         path = f"/sites/{settings.SP_SITE_HOST}:{settings.SP_SITE_PATH}"
-        data = await graph_client.get(path)
+        extra = {"allow_after_switch": True} if allow_after_switch else {}   # keep the ordinary call shape
+        data = await graph_client.get(path, **extra)
         self.site_id = data["id"]
         logger.info("Resolved site ID: %s", self.site_id)
 
@@ -98,7 +102,9 @@ class SharePointClient:
                 return None
             raise
 
-    async def get_item_versions(self, list_id: str, item_id: str | int) -> list[dict]:
+    async def get_item_versions(
+        self, list_id: str, item_id: str | int, *, allow_after_switch: bool = False,
+    ) -> list[dict]:
         """Every kept version of one list item, newest first, with its fields (#357).
 
         Read only. SharePoint keeps a version each time an item is written, so a
@@ -108,6 +114,9 @@ class SharePointClient:
         Args:
             list_id: The list the item is on.
             item_id: The item's id.
+            allow_after_switch: For the staff-history import only (#448): opt in to
+                read the Staff Directory versions after the switch. The Graph gate
+                still refuses it for any other list, so this is safe to pass.
 
         Returns:
             Graph listItemVersion objects (``id``, ``lastModifiedDateTime``,
@@ -119,10 +128,13 @@ class SharePointClient:
             SharePointReadTruncated: When the versions run past the page limit.
         """
         url = f"{self._list_path(list_id)}/items/{item_id}/versions"
+        # Pass the opt-in only when it is set, so the ordinary call shape (and the
+        # fakes that patch ``graph_client.get``) stay exactly as they were.
+        extra = {"allow_after_switch": True} if allow_after_switch else {}
         versions: list[dict] = []
         try:
             for _ in range(MAX_PAGES):
-                data = await graph_client.get(url)
+                data = await graph_client.get(url, **extra)
                 versions.extend(data.get("value", []))
                 url = data.get("@odata.nextLink")              # absolute, with its own query
                 if not url:

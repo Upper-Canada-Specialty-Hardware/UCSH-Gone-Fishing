@@ -15,6 +15,12 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models.staff_change import StaffChange
 
+# Actor labels for the two app channels that have no per-person identity: the
+# admin dashboard shares one password (so "HR"), and an automatic change has no
+# person behind it (so "system"). A manager edit records the manager's own name.
+ADMIN_ACTOR = "HR"
+SYSTEM_ACTOR = "system"
+
 
 def _to_utc_iso(moment: datetime) -> str:
     """Render a stored timestamp as an ISO 8601 string in UTC.
@@ -39,6 +45,7 @@ async def record_changes(
     changes: list[tuple[str, object, object]],   # (SharePoint column, old value, new value)
     reason: str,
     source: str = "admin_dashboard",
+    actor: str | None = None,
 ) -> int:
     """Add one history row per changed field, all in one transaction.
 
@@ -47,14 +54,17 @@ async def record_changes(
         employee_name: Their name at the time, so the history reads well later.
         changes: One (field, old_value, new_value) tuple per field that moved;
             the values may be numbers, strings or None (JSON-stored).
-        reason: Why HR made the change; required on every row.
+        reason: Why HR made the change; required on every row written here (an
+            app edit always has one; the SharePoint import writes its own rows).
         source: Where the change came from; "admin_dashboard" by default.
+        actor: Who or what made the change ("HR", a manager's name, "system");
+            None leaves the reader to fall back to ``source``.
 
     Returns:
         How many rows were added; 0 when ``changes`` is empty.
 
     Raises:
-        ValueError: When ``reason`` is blank, so no row can lack an explanation.
+        ValueError: When ``reason`` is blank, so no app-recorded row lacks one.
     """
     if not reason or not reason.strip():                        # guard first -> blank reason never writes
         raise ValueError("A reason is required for a staff change.")
@@ -70,6 +80,7 @@ async def record_changes(
             new_value=new_value,
             reason=reason,
             source=source,
+            actor=actor,                                      # who made it; None -> reader uses source
         )
         for field, old_value, new_value in changes
     ]
@@ -88,8 +99,9 @@ async def list_changes(employee_id: str, limit: int = 100) -> list[dict]:
 
     Returns:
         A list of dicts, each {"field", "old_value", "new_value", "reason",
-        "source", "changed_at"}, ordered newest first (changed_at desc, then id
-        desc for a stable tie-break), with changed_at an ISO 8601 UTC string.
+        "source", "actor", "version", "changed_at"}, ordered newest first
+        (changed_at desc, then id desc for a stable tie-break), with changed_at
+        an ISO 8601 UTC string.
     """
     employee_id = str(employee_id)                            # match how the rows were stored
     async with async_session() as session:
@@ -107,6 +119,8 @@ async def list_changes(employee_id: str, limit: int = 100) -> list[dict]:
             "new_value": r.new_value,
             "reason": r.reason,
             "source": r.source,
+            "actor": r.actor,                                 # who made it; None -> reader uses source
+            "version": r.version,                             # SharePoint version label, or None
             "changed_at": _to_utc_iso(r.changed_at),          # stored timestamp -> ISO UTC string
         }
         for r in rows
@@ -125,9 +139,9 @@ async def list_changes_for(employee_ids: list[str], limit: int = 5000) -> list[d
 
     Returns:
         A list of dicts, each {"employee_id", "employee_name", "field",
-        "old_value", "new_value", "reason", "source", "changed_at"}, ordered
-        newest first, with changed_at an ISO 8601 UTC string. Empty when the id
-        list is empty.
+        "old_value", "new_value", "reason", "source", "actor", "version",
+        "changed_at"}, ordered newest first, with changed_at an ISO 8601 UTC
+        string. Empty when the id list is empty.
     """
     ids = [str(i) for i in employee_ids]                      # match how rows were stored
     if not ids:                                               # nothing to look up
@@ -149,6 +163,8 @@ async def list_changes_for(employee_ids: list[str], limit: int = 5000) -> list[d
             "new_value": r.new_value,
             "reason": r.reason,
             "source": r.source,
+            "actor": r.actor,                                 # who made it; None -> reader uses source
+            "version": r.version,                             # SharePoint version label, or None
             "changed_at": _to_utc_iso(r.changed_at),
         }
         for r in rows

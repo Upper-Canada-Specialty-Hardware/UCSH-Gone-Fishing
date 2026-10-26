@@ -1349,7 +1349,7 @@ function Activity({ requests, history }: { requests: any[]; history: StaffChange
       </ToggleButtonGroup>
       {/* Legend: what the pencil-marked rows are. */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, color: 'text.secondary', fontSize: 12.5 }}>
-        <EditOutlinedIcon sx={{ fontSize: 15 }} /> a change made by HR, not a request
+        <EditOutlinedIcon sx={{ fontSize: 15 }} /> a change to this person's record, not a request
       </Box>
 
       <Enter key={filter}>
@@ -1426,9 +1426,29 @@ function RequestRow({ r }: { r: any }) {
 }
 
 /**
- * One HR hand edit in the Activity list: a pencil marker, a muted tint and a
- * dashed left edge set it apart from a request; it names the field and before to
- * after, then who, when and why, and never shows a status.
+ * Who made a change, in words: the recorded actor when there is one ("Mandy
+ * Leong", "HR"), with "system" read as "the system"; otherwise a fallback from
+ * the source, so an older row with no actor still names a sensible author.
+ *
+ * @param e - The change row.
+ * @returns The author phrase to follow "by ".
+ */
+function changeWho(e: StaffChange): string {
+  if (e.actor) return e.actor === 'system' ? 'the system' : e.actor;   // the recorded actor wins
+  switch (e.source) {                                                  // fall back to the channel
+    case 'admin_dashboard': return 'HR';
+    case 'manager_dashboard': return 'a manager';
+    case 'system': return 'the system';
+    case 'sharepoint': return 'SharePoint';
+    default: return e.source || 'HR';
+  }
+}
+
+/**
+ * One record change in the Activity list: a pencil marker, a muted tint and a
+ * dashed left edge set it apart from a request. It names the field and before to
+ * after (or "First value" / "Earliest saved value" for a starting row, which has
+ * no "before"), then who made it, when, and the reason when there is one.
  *
  * @param props.e - The change row.
  * @returns The change row.
@@ -1436,15 +1456,23 @@ function RequestRow({ r }: { r: any }) {
 function ChangeRow({ e }: { e: StaffChange }) {
   const theme = useTheme();
   const t = theme.tokens;
+  // A starting row (an imported baseline) has no "before" and carries a version;
+  // "1.0" is the first saved version, anything later is the earliest one kept.
+  const isStarting = e.old_value == null && !!e.version;
+  const startLabel = e.version === '1.0' ? 'First value' : 'Earliest saved value';
   return (
     <Box sx={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', columnGap: 1.25, rowGap: 0.25, py: 1, px: 1.25, borderBottom: 1, borderColor: 'divider', borderLeft: `2px dashed ${t.line2}`, bgcolor: t.hover, minWidth: 0 }}>
       <EditOutlinedIcon sx={{ fontSize: 16, color: 'text.secondary', mt: '2px' }} />
       <Typography sx={{ fontSize: 14, minWidth: 0, overflowWrap: 'anywhere' }}>
         {HISTORY_LABELS[e.field] || e.field}{' '}
-        <b style={{ fontVariantNumeric: 'tabular-nums' }}>{String(e.old_value ?? '')} → {String(e.new_value ?? '')}</b>
+        {isStarting ? (
+          <b style={{ fontVariantNumeric: 'tabular-nums' }}>{startLabel}: {String(e.new_value ?? '')}</b>
+        ) : (
+          <b style={{ fontVariantNumeric: 'tabular-nums' }}>{String(e.old_value ?? '')} → {String(e.new_value ?? '')}</b>
+        )}
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ gridColumn: 2, minWidth: 0, overflowWrap: 'anywhere' }}>
-        Changed by HR · {formatInstantDay(e.changed_at)} · {e.reason}
+        by {changeWho(e)} · {formatInstantDay(e.changed_at)}{e.reason ? ` · ${e.reason}` : ''}
       </Typography>
     </Box>
   );
