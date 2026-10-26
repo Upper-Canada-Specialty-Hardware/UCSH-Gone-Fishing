@@ -51,6 +51,7 @@ from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.employment import HOURLY_TYPES, NO_COST_LEAVE, SALARY, employment_type
 from app.services.legacy_findings import record_finding  # shared writer: one row per fingerprint
 from app.services.request_journal import append_event, post_ledger, step_key
+from app.services.request_states import backfill_state  # one state-derivation rule, shared with the migration
 from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 
 logger = logging.getLogger(__name__)
@@ -768,6 +769,15 @@ async def _import_item(
         record.balance_state = HISTORY_STATES[found]
     if record.decided_at is not None and record.decided_by is None:
         record.decided_by = record.manager_name                 # best available decider for a legacy row
+
+    # The state-machine position (#455), derived from the same signals the
+    # migration backfill uses. An import always records an imported/submitted event
+    # (appended below), so a pending row with a manager (or a legacy row) is
+    # waiting_on_approval and an unfinished one needs_attention.
+    record.state = backfill_state(
+        record.status, has_manager=bool(record.manager_id),
+        has_submit_event=True, legacy=bool(record.legacy),
+    )
 
     session.add(record)
     await session.flush()                                      # assign id and enforce the CHECK constraints

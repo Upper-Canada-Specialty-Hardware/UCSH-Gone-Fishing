@@ -56,6 +56,7 @@ async def _add_request(
     employee_name: str = "Pat Staff",
     status: str = "pending",
     stage: str = "Submitted",
+    state: str = "waiting_on_approval",
     leave_type: str | None = "Vacation",
     start: date | None = date(2026, 11, 2),
     days: float | None = 2,
@@ -82,7 +83,7 @@ async def _add_request(
     async with async_session() as s:
         row = RequestRecord(
             kind=kind, item_id=item_id, employee_id=employee_id, manager_id=manager_id,
-            employee_name=employee_name, status=status, stage=stage, leave_type=leave_type,
+            employee_name=employee_name, status=status, stage=stage, state=state, leave_type=leave_type,
             start_date=start, days=days, description="Family trip", extra=extra or {},
         )
         s.add(row)
@@ -416,9 +417,11 @@ def test_indexed_admin_read_matches_the_sharepoint_shape(dashboard_client, monke
     assert len(pg_rows) == 1
     pg_row = pg_rows[0]
 
-    # Same shape, plus the derived stage and the admin table's failed-send flag (#423, #424).
+    # Same shape, plus the derived stage, the admin table's failed-send flag and
+    # the state-machine position (#423, #424, #455).
     assert set(sp_row).issubset(set(pg_row))
-    assert set(pg_row) - set(sp_row) == {"stage", "failed_send"}
+    assert set(pg_row) - set(sp_row) == {"stage", "failed_send", "state"}
+    assert pg_row["state"] == "waiting_on_approval"   # a pending row with a manager (#455)
     for key in ("id", "request_type", "Status", "StartDate", "Days", "LeaveType", "employee_name", "managers"):
         assert pg_row[key] == sp_row[key], key
     assert pg_row["employee_name"] == "Pat Staff"
