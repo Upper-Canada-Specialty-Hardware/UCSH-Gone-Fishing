@@ -166,13 +166,13 @@ export const getNewRequestOptions = () =>
   api.get<{ staff: StaffOption[]; leave_types: string[] }>('/admin/requests/new-options');
 
 /**
- * Download the shown or selected requests as an .xlsx (one sheet per list).
+ * Write the sheets the export dialog built as an .xlsx (#488).
  *
- * @param requests - The request items the admin is viewing.
+ * @param sheets - Each sheet's title, columns and rows, as previewed.
  * @returns The axios response, with a Blob body.
  */
-export const exportAdminRequests = (requests: any[]) =>
-  api.post<Blob>('/admin/requests/export', { requests }, { responseType: 'blob' });
+export const exportAdminRequests = (sheets: unknown[]) =>
+  api.post<Blob>('/admin/requests/export', { sheets }, { responseType: 'blob' });
 
 /**
  * Send a deferred delete immediately when the page is hidden or unloaded.
