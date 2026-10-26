@@ -12,6 +12,7 @@ from datetime import date
 
 import pytest
 
+from app.graph import sharepoint
 from app.services import request_intake
 from app.services.balance import (
     booking_limit,
@@ -236,6 +237,13 @@ def test_submit_allows_a_vacation_within_the_limit(monkeypatch):
         return {"id": "99"}
 
     monkeypatch.setattr(request_intake, "process_new_leave_request", create)
+
+    # A leave submission now reads the leave list for an overlap clash (#446);
+    # an empty list means no clash, so only the booking limit is under test here.
+    async def no_leave(*a, **k):
+        return []
+
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", no_leave)
     today = date.today()
     form = parse_request_form("leave", {
         "leave_type": "Vacation", "start_date": today.isoformat(), "end_date": today.isoformat(),

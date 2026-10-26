@@ -20,6 +20,7 @@ from app.graph.sharepoint import sp_client
 from app.models.mixins import utcnow
 from app.routes import intake
 from app.services import email_codes, held_requests, leave_requests
+from app.services.request_intake import RequestFormError
 
 _counter = itertools.count()
 
@@ -135,6 +136,17 @@ def test_a_held_request_is_stored_and_the_supervisor_emailed(world):
     assert mail["to"] == ["sam@ucsh.com"] and "Lee New" in mail["subject"]
     assert "add_email=" in mail["html"] and "Vacation, 2026-11-02 to 2026-11-03" in mail["html"]
     assert "add_department=Installation" in mail["html"] and "Installation)" in mail["html"]
+
+
+def test_the_supervisor_email_offers_add_and_not_on_my_team_as_buttons(world):
+    _hold(_email())
+    [mail] = world.sent
+    body = mail["html"]
+    # Both choices are buttons (VML for classic Outlook, styled anchors elsewhere), not bare links.
+    assert body.count("v:roundrect xmlns") == 2
+    assert ">Add Lee New</a>" in body and ">Not on my team</a>" in body
+    assert "/#/held/not-on-team?token=" in body                         # the public page, not the backend
+    assert "let us know" not in body                                     # the old text link is gone
 
 
 def test_a_new_supervisor_with_nobody_under_them_can_be_picked(world):
@@ -302,6 +314,28 @@ def test_a_failed_release_is_kept_for_a_retry(world):
     world.fail_submit = False
     [retry] = asyncio.run(held_requests.release_held_requests(email, only_id=result.held_id))
     assert retry.status == "released"
+
+
+def test_a_release_blocked_by_an_overlap_is_recorded_not_crashed(world, monkeypatch):
+    # Releasing a held request runs it through submit_request, which refuses a
+    # leave that clashes with a live request (#446). The refusal is a
+    # RequestFormError, so it must land the row in the existing failed state with
+    # the message kept for the admin list, never crash the release loop.
+    email = _email()
+    _hold(email)
+    world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
+
+    async def refusing_submit(request_type, form, employee, source):
+        raise RequestFormError(
+            "You already have a request for Nov 2, 2026 "
+            "(#3926, pending). Cancel or change that one instead."
+        )
+
+    monkeypatch.setattr(held_requests, "submit_request", refusing_submit)
+
+    [result] = asyncio.run(held_requests.release_held_requests(email))
+    assert result.status == "failed"                           # kept, not lost
+    assert "#3926" in result.detail and "already have a request" in result.detail
 
 
 def test_with_requests_in_postgres_an_unlinked_person_is_released_at_once(world, monkeypatch):

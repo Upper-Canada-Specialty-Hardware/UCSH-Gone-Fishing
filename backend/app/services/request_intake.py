@@ -23,6 +23,7 @@ from app.services.app_settings import carryover_payout_window, toronto_today, wi
 from app.services.balance import booking_refusal  # the vacation booking limit, refused at submission (#407)
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.leave_requests import ALLOWED_LEAVE_TYPES, process_new_leave_request
+from app.services.overlap_detection import check_new_leave_clash, new_leave_clash_refusal
 from app.services.overtime_requests import process_new_overtime_request
 
 logger = logging.getLogger(__name__)
@@ -246,6 +247,23 @@ async def submit_request(
         refusal = booking_refusal(fields, form.leave_type, form.end_date, toronto_today())
         if refusal:
             raise RequestFormError(refusal)
+        # Overlap refusal (#446): a new leave request may not share any date with
+        # one of this person's leave requests that is not yet final (Pending or
+        # Approved). Refused here, before any row is created, so the person is told
+        # to cancel or change the existing one rather than ending up holding the
+        # same day twice. Matched by email and staff id, the identifiers every
+        # in-house row carries; the unchanged approval-time check still covers a
+        # legacy lookup-id-only row. Lookup id is left None on purpose: resolving
+        # it would add a 5000-row Graph read to every submission.
+        clash = await check_new_leave_clash(
+            submitter_lookup_id=None,
+            start_date=form.start_date.isoformat(),            # candidate's first day, ISO
+            end_date=form.end_date.isoformat(),                # last day (start for a part day)
+            submitter_email=email.lower(),                     # SubmitterEmail is stored lower-cased
+            employee_id=str(employee.get("id") or ""),         # this exact staff record
+        )
+        if clash:
+            raise RequestFormError(new_leave_clash_refusal(clash))
     name = (fields.get("Title") or "").strip()
     first_name, _, last_name = name.partition(" ")             # the title is "<first> <last>"
 

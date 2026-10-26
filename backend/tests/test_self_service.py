@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.graph import sharepoint
 from app.routes import self_service
 from app.services import request_intake, request_status
 from app.services.dashboard_tokens import generate_dashboard_token
@@ -59,6 +60,13 @@ def client(monkeypatch):
     monkeypatch.setattr(request_intake, "process_new_leave_request", recorder("leave"))
     monkeypatch.setattr(request_intake, "process_new_overtime_request", recorder("overtime"))
     monkeypatch.setattr(request_intake, "process_new_carryover_payout", recorder("carryover-payout"))
+
+    # A leave submission now reads the leave list for an overlap clash (#446);
+    # an empty list means no clash, leaving these submission tests unchanged.
+    async def no_leave(*a, **k):
+        return []
+
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", no_leave)
     return test_client
 
 
