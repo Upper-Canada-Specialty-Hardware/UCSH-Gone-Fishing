@@ -5,13 +5,14 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExportPeoplePicker from './ExportPeoplePicker';
-import { Row, num } from './requestTable';
+import { Row, Src, num } from './requestTable';
 import { formatTorontoDay, formatTorontoMoment } from '../../utils/dates';
 import { takenFromText } from '../../utils/takenFrom';
 
 /*
  * The requests export (#488), laid out like the staff export: which requests
- * (the shown or the ticked ones), which dates (a year, a month or a range,
+ * (the shown or the ticked ones), which types (leave, make-up, carry-over and
+ * payout; the table's own list first), which dates (a year, a month or a range,
  * #504), which of their people (each with a tick, #489), a column set or
  * single columns, one sheet or a sheet per type, an optional summary by
  * person, and a live preview. Every cell is worked out
@@ -93,7 +94,9 @@ const PREVIEW_COLS = 6;
 /** How many rows the preview shows. */
 const PREVIEW_ROWS = 12;
 /** The per-type sheet titles, in the order they are written. */
-const TYPE_SHEETS: [Row['src'], string][] = [['leave', 'Leave'], ['mu', 'Make-up'], ['co', 'Carry-over and payout']];
+const TYPE_SHEETS: [Src, string][] = [['leave', 'Leave'], ['mu', 'Make-up'], ['co', 'Carry-over and payout']];
+/** Every request type, in the order the type filter lists them. */
+const ALL_TYPES: Src[] = TYPE_SHEETS.map(([src]) => src);
 const SUMMARY_SHEET = 'Summary by person';
 
 /** Today as YYYY-MM-DD, for the download file name. */
@@ -160,6 +163,24 @@ function inRange(r: Row, first: string, last: string): boolean {
   return (!last || start <= last) && (!first || end >= first);   // overlap test
 }
 
+/**
+ * The year a fresh dialog opens on: this year when any request touches it,
+ * else the latest earlier year that has some, else the newest year at all.
+ *
+ * A list made last season (carry-over and payout made in Nov 2025, say) would
+ * otherwise open on an empty year.
+ *
+ * @param years - The years the requests touch, newest first (always has this year).
+ * @param touched - The years some request actually touches.
+ * @param thisYear - This calendar year.
+ * @returns The year to start on.
+ */
+function startYear(years: number[], touched: Set<number>, thisYear: number): number {
+  if (touched.has(thisYear) || touched.size === 0) return thisYear;   // this year has some, or nothing at all
+  const earlier = years.filter((y) => y < thisYear && touched.has(y));
+  return earlier.length ? earlier[0] : years[0];                      // newest earlier year, else the newest
+}
+
 /** The key a person is ticked by: their staff id when the row has one, else their name. */
 function personKey(r: Row): string {
   return String(r.raw?.EmployeeID || r.person);
@@ -204,6 +225,11 @@ interface Props {
   shownRows: Row[];
   /** The ticked requests, when the table offers ticking; empty or absent hides the choice. */
   tickedRows?: Row[];
+  /**
+   * The other lists' requests, when the table shows one list at a time, so the
+   * type filter can add them; absent when the shown requests already hold every type.
+   */
+  otherRows?: Row[];
   /** Build the file from the sheets; resolves to the .xlsx. */
   build: (sheets: ExportSheet[]) => Promise<Blob>;
   /** The file name before the date, e.g. "requests" or "team-requests". */
@@ -218,9 +244,10 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The dialog.
  */
-export default function RequestsExportDialog({ open, shownRows, tickedRows, build, filePrefix = 'requests', onClose, onNotify }: Props) {
+export default function RequestsExportDialog({ open, shownRows, tickedRows, otherRows, build, filePrefix = 'requests', onClose, onNotify }: Props) {
   const hasTicked = !!tickedRows && tickedRows.length > 0;
   const [which, setWhich] = useState<'shown' | 'ticked'>('shown');
+  const [types, setTypes] = useState<Set<Src>>(new Set(ALL_TYPES));   // which request types go in
   const thisYear = Number(today().slice(0, 4));                  // this calendar year, on this device
   const [rangeKind, setRangeKind] = useState<RangeKind>('year');  // date filter (#504): a year first
   const [year, setYear] = useState(thisYear);                    // the picked year
@@ -234,26 +261,54 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
   const [tab, setTab] = useState('');
   const [downloading, setDownloading] = useState(false);
 
-  // Each opening starts fresh: the ticked requests when there are some, everyone ticked.
+  // Each opening starts fresh: the ticked requests when there are some, the
+  // table's own list as the types (all three on "All lists"), everyone ticked.
   useEffect(() => {
     if (!open) return;
     setWhich(hasTicked ? 'ticked' : 'shown');
     setExcluded(new Set());
-    setRangeKind('year');                                   // back to this year
-    setYear(thisYear);
+    const onScreen = new Set(shownRows.map((r) => r.src));   // the types the table is showing
+    setTypes(onScreen.size ? onScreen : new Set(ALL_TYPES));  // an empty table: every type
+    setRangeKind('year');                                   // a year first; the effect below picks which
   }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const picked = which === 'ticked' && hasTicked ? tickedRows! : shownRows;   // the requests chosen
-  // The years those requests touch, newest first, always offering this year.
-  const years = useMemo(() => {
-    const set = new Set<number>([thisYear]);
+  // The requests to choose from: the ticked ones, or the shown ones plus the
+  // other lists' (for the type filter); then only the ticked types.
+  const pool = useMemo(
+    () => (which === 'ticked' && hasTicked ? tickedRows! : [...shownRows, ...(otherRows || [])]),
+    [which, hasTicked, tickedRows, shownRows, otherRows],
+  );
+  const typeCounts = useMemo(() => {
+    const n: Record<Src, number> = { leave: 0, mu: 0, co: 0 };
+    pool.forEach((r) => { n[r.src] += 1; });                  // how many of each type there are
+    return n;
+  }, [pool]);
+  const picked = useMemo(() => pool.filter((r) => types.has(r.src)), [pool, types]);   // the requests chosen
+  // The years those requests touch (touched), and the years to offer: those,
+  // always with this year, newest first.
+  const [years, touched] = useMemo(() => {
+    const set = new Set<number>();
     picked.forEach((r) => {
       const [start, end] = rowSpan(r);
       if (!start) return;                                       // undated: no year to offer
       for (let y = Number(start.slice(0, 4)); y <= Number(end.slice(0, 4)); y += 1) set.add(y);   // a leave over New Year adds both
     });
-    return Array.from(set).sort((a, b) => b - a);
+    return [Array.from(new Set([thisYear, ...set])).sort((a, b) => b - a), set] as const;
   }, [picked, thisYear]);
+  // A fresh dialog, or a change of types or of shown/ticked, lands on a year that has requests.
+  useEffect(() => {
+    if (open) setYear(startYear(years, touched, thisYear));
+  }, [open, types, which]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Tick or untick one request type; the last one cannot be unticked. */
+  const toggleType = (src: Src) => {
+    setTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(src)) { if (next.size > 1) next.delete(src); } else next.add(src);
+      return next;
+    });
+    setExcluded(new Set());                                  // a new set of people: everyone ticked
+  };
   const [first, last] = rangeBounds(rangeKind, year, month, from, to);
   const badRange = !!first && !!last && first > last;          // custom from after to
   // Then only those with a day in the range, so the people list follows the dates too.
@@ -340,9 +395,11 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
         </Typography>
       </DialogTitle>
       <DialogContent dividers sx={{ p: 0 }}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '300px minmax(0, 1fr)' } }}>
-          {/* Options */}
-          <Box sx={{ p: 2.5, borderRight: { md: 1 }, borderBottom: { xs: 1, md: 0 }, borderColor: 'divider', display: 'grid', gap: 1.5, alignContent: 'start' }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '340px minmax(0, 1fr)' } }}>
+          {/* Options. Its single minmax(0, 1fr) track keeps every control inside
+              the column: an auto track grew to the widest control (the two date
+              fields side by side) and spilled the column over the preview. */}
+          <Box sx={{ p: 2.5, minWidth: 0, borderRight: { md: 1 }, borderBottom: { xs: 1, md: 0 }, borderColor: 'divider', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 1.5, alignContent: 'start' }}>
             {hasTicked && (
               <>
                 <Typography variant="overline" color="text.secondary">Requests</Typography>
@@ -353,16 +410,27 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
               </>
             )}
 
+            <Typography variant="overline" color="text.secondary">Types</Typography>
+            <Box sx={{ display: 'grid' }}>
+              {TYPE_SHEETS.map(([src, label]) => (
+                <FormControlLabel
+                  key={src}
+                  control={<Checkbox size="small" checked={types.has(src)} onChange={() => toggleType(src)} />}
+                  label={<Typography variant="body2">{label} <Typography component="span" variant="caption" color="text.secondary">({typeCounts[src]})</Typography></Typography>}
+                />
+              ))}
+            </Box>
+
             <Typography variant="overline" color="text.secondary">Dates</Typography>
-            <ToggleButtonGroup exclusive size="small" value={rangeKind} onChange={(_, v) => v && setRangeKind(v)} fullWidth>
+            <ToggleButtonGroup exclusive size="small" value={rangeKind} onChange={(_, v) => v && setRangeKind(v)} fullWidth sx={{ '& .MuiToggleButton-root': { minWidth: 0, px: 1 } }}>
               <ToggleButton value="year">Year</ToggleButton>
               <ToggleButton value="month">Month</ToggleButton>
               <ToggleButton value="custom">Range</ToggleButton>
               <ToggleButton value="all">All</ToggleButton>
             </ToggleButtonGroup>
             {(rangeKind === 'year' || rangeKind === 'month') && (
-              <Stack direction="row" spacing={1}>
-                <TextField select label="Year" size="small" value={year} onChange={(e) => setYear(Number(e.target.value))} fullWidth>
+              <Stack direction="row" spacing={1} sx={{ '& > *': { minWidth: 0 } }}>
+                <TextField select label="Year" size="small" value={years.includes(year) ? year : ''} onChange={(e) => setYear(Number(e.target.value))} fullWidth>
                   {years.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
                 </TextField>
                 {rangeKind === 'month' && (
@@ -373,7 +441,7 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
               </Stack>
             )}
             {rangeKind === 'custom' && (
-              <Stack direction="row" spacing={1}>
+              <Stack direction="row" spacing={1} sx={{ '& > *': { minWidth: 0 } }}>
                 <TextField label="From" type="date" size="small" value={from} onChange={(e) => setFrom(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth />
                 <TextField label="To" type="date" size="small" value={to} onChange={(e) => setTo(e.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ min: from || undefined }} error={badRange} fullWidth />
               </Stack>
@@ -455,7 +523,8 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, buil
                   {current.rows.length === 0 && (
                     <Box component="tr"><Box component="td" colSpan={previewCols.length}>
                       <Typography variant="body2" color="text.secondary">
-                        {base.length === 0 && picked.length > 0 ? 'No requests fall in these dates.' : 'No requests are ticked for export.'}
+                        {base.length === 0 && picked.length > 0 ? 'No requests fall in these dates.'
+                          : 'No requests are ticked for export.'}
                       </Typography>
                     </Box></Box>
                   )}
