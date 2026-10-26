@@ -371,6 +371,14 @@ export default function RequestPage() {
         .then(({ data }) => {
           if (!live || data.status === 'waiting') return;
           if (data.status === 'sent') { void handleHeldSent(data); return; }   // released: follow + sign in (#482)
+          if (data.status === 'refused') {
+            // The release was refused on a booking rule: final, say why (#406).
+            setHeldWith(data.supervisor_name);
+            setHeldStatus('refused');
+            clearHeldWaiting();                        // do not resume the held page after a reload
+            setDoneText(data.reason || 'Your request could not be sent.');
+            return;
+          }
           // Cancelled: final, and stop resuming the held page after a reload.
           setHeldWith(data.supervisor_name);
           setHeldStatus(data.status);
@@ -395,7 +403,7 @@ export default function RequestPage() {
   // summary the re-pick control needs.
   useEffect(() => {
     if (step !== 'held-status' || !heldToken) return;
-    if (heldStatus === 'sent' || heldStatus === 'cancelled') return;   // final: nothing to follow
+    if (heldStatus === 'sent' || heldStatus === 'cancelled' || heldStatus === 'refused') return;   // final: nothing to follow
     let live = true;
     /** Ask once; a failed ask is simply tried again on the next tick. */
     const ask = () => {
@@ -416,8 +424,16 @@ export default function RequestPage() {
             setHeldStatus('waiting');
             return;
           }
-          // Sent or cancelled: final.
+          // Sent, refused or cancelled: final.
           if (data.status === 'sent') { void handleHeldSent(data); return; }   // released: follow + sign in (#482)
+          if (data.status === 'refused') {
+            // The release was refused on a booking rule: final, say why (#406).
+            setHeldWith(data.supervisor_name);
+            setHeldStatus('refused');
+            clearHeldWaiting();
+            setDoneText(data.reason || 'Your request could not be sent.');
+            return;
+          }
           setHeldWith(data.supervisor_name);
           setHeldStatus(data.status);                   // cancelled
           clearHeldWaiting();                           // stop resuming the held page after a reload
@@ -739,7 +755,9 @@ export default function RequestPage() {
   const added = heldStatus === 'sent';
   // While still waiting, show the new-hire steps; once added (or for a signed-in
   // employee) follow the real request's progress to the decision (#364, #482).
-  const next: NextItem[] = (held && !added) ? [
+  // A refusal is final and never goes to a supervisor, so it shows no next
+  // steps: the reason (in doneText) says what to do instead (#406).
+  const next: NextItem[] = heldStatus === 'refused' ? [] : (held && !added) ? [
     { title: 'Saved', note: 'Just now', done: true },
     { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
     { title: 'Your request goes to them', note: 'Automatically' },
@@ -954,6 +972,20 @@ export default function RequestPage() {
                     <Button variant="outlined" onClick={() => navigate('/', { replace: true })}>Back to start</Button>
                   </Box>
                 </>
+              ) : heldStatus === 'refused' ? (
+                // The release was refused on a booking rule (a date clash, the
+                // booking limit): say it was not sent, show the exact reason, and
+                // point them at what to do. They have also been emailed (#406).
+                <>
+                  <Heading>Request not sent</Heading>
+                  <Lead>{doneText || 'Your request could not be sent.'}</Lead>
+                  <Typography variant="body2" color="text.secondary">
+                    We emailed you about it. Start again with other dates, or cancel or change the request it clashes with.
+                  </Typography>
+                  <Box>
+                    <Button variant="outlined" onClick={() => navigate('/', { replace: true })}>Back to start</Button>
+                  </Box>
+                </>
               ) : (
                 <>
                   <Heading>Your request is saved</Heading>
@@ -973,17 +1005,23 @@ export default function RequestPage() {
 
             {step === 'done' && (
               <>
-                {/* A tick that pops in, then draws itself. */}
-                <Box sx={(t) => ({
-                  width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
-                  bgcolor: t.tokens.okSoft, color: 'success.main',
-                  animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
-                })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
+                {/* A tick that pops in, then draws itself; hidden for a refusal,
+                    which is not a success (#406). */}
+                {heldStatus !== 'refused' && (
+                  <Box sx={(t) => ({
+                    width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
+                    bgcolor: t.tokens.okSoft, color: 'success.main',
+                    animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
+                  })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
+                )}
                 <Heading>
-                  {!held || added ? 'Request sent' : heldStatus === 'cancelled' ? 'Request cancelled' : 'Request saved'}
+                  {!held || added ? 'Request sent'
+                    : heldStatus === 'refused' ? 'Request not sent'
+                    : heldStatus === 'cancelled' ? 'Request cancelled'
+                    : 'Request saved'}
                 </Heading>
                 <Lead>{doneText}</Lead>
-                <NextSteps items={next} />
+                {next.length > 0 && <NextSteps items={next} />}
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button variant="contained" onClick={another}>Make another request</Button>
                   {session && <Button variant="outlined" onClick={() => navigate('/my')}>See my requests</Button>}

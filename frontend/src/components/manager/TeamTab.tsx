@@ -5,12 +5,14 @@ import {
 import { alpha, useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
 import EventBusyIcon from '@mui/icons-material/EventBusy';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import { AnimatePresence, m } from 'motion/react';
 import KindPill from '../KindPill';
 import PillToggle from '../PillToggle';
 import { Panel } from '../Panels';
 import { EXIT, riseAt } from '../Motion';
 import PersonProfile from '../admin/PersonProfile';
+import NewHireConfirmDialog from './NewHireConfirmDialog';
 import { VacationRings } from './Charts';
 import { Absence } from './teamStats';
 import { addDays, dayKey, formatDayRange, mondayOf, today } from '../../utils/dates';
@@ -18,8 +20,11 @@ import { isHourly } from '../../utils/employment';
 import { kindColor } from '../../constants/leaveColors';
 import { StaffRecord } from '../../api/staff';
 import {
-  AddableMember, addTeamMember, getAddableMembers, getTeamMemberRecord,
+  AddableMember, addTeamMember, getAddableMembers, getTeamMemberRecord, type HeldWaiting,
 } from '../../api/client';
+
+/** The caption shown on a flagged card/row: a held request may be this person. */
+const CONFIRM_CAPTION = 'Request waiting: confirm it is them';
 
 /** A tile filter key, or null for "show everyone". */
 type FilterKey = 'waiting' | 'off' | 'low' | 'mu' | null;
@@ -85,6 +90,18 @@ interface Props {
   onRefresh: () => void;
   /** Surface a message on the dashboard snackbar. */
   onNotify: (message: string, severity: 'success' | 'error') => void;
+  /**
+   * Held new hires still waiting on this manager (#406): a request-page
+   * submission with a matched staff id flags that member's card; one with no
+   * match shows as a placeholder card. Already loaded by the dashboard.
+   */
+  heldNewHires: HeldWaiting[];
+  /** The held id whose decline is in flight, or null; locks the dialog's buttons. */
+  heldBusyId: number | null;
+  /** Open the Add-employee held-for-add flow for a held new hire (addHeldNewHire). */
+  onAddHeldNewHire: (item: HeldWaiting) => void;
+  /** Hand a held new hire back as "not on my team" (declineHeldNewHire). */
+  onDeclineHeldNewHire: (item: HeldWaiting) => void;
 }
 
 /**
@@ -102,6 +119,7 @@ export default function TeamTab({
   members, requests, pending, absences, colorOf, labelOf, managerName, processingEnabled,
   canLogSickDays, requestedFilter, onFilterApplied, requestedPerson, onPersonRequested,
   onAddNewHire, onLogSickDay, onRefresh, onNotify,
+  heldNewHires, heldBusyId, onAddHeldNewHire, onDeclineHeldNewHire,
 }: Props) {
   const theme = useTheme();
   const t = theme.tokens;
@@ -114,6 +132,31 @@ export default function TeamTab({
   const [selectedId, setSelectedId] = useState<string | null>(null);  // the open person's id
   const [record, setRecord] = useState<StaffRecord | null>(null);     // their fetched full record
   const [recordLoading, setRecordLoading] = useState(false);
+  // The held new hire whose confirm dialog is open, or null (#406). The same
+  // shared dialog the Today panel uses, so both paths confirm the person alike.
+  const [confirmHeld, setConfirmHeld] = useState<HeldWaiting | null>(null);
+
+  // Held new hires matched to a team member by staff id (server-side), so the
+  // member's card and row can be flagged "confirm it is them" (#406). Keyed by
+  // the matched staff id; a row with no single match is a placeholder instead.
+  const heldByMemberId = useMemo(() => {
+    const map = new Map<string, HeldWaiting>();
+    for (const h of heldNewHires) if (h.existing_id) map.set(String(h.existing_id), h);
+    return map;
+  }, [heldNewHires]);
+  // Held new hires with no card to flag: no staff match at all, or a match who is
+  // not on this team. Shown as outlined placeholder cards in the grid, before the
+  // dashed "Add a new hire" card, so every request waiting on this manager shows here.
+  const heldPlaceholders = useMemo(() => {
+    const onTeam = new Set(members.map((m) => String(m.id)));       // this team's staff ids
+    return heldNewHires.filter((h) => !h.existing_id || !onTeam.has(String(h.existing_id)));
+  }, [heldNewHires, members]);
+  // The open dialog's matched staff id, and whether that person is on this team,
+  // so a matched member keeps the "Open profile" shortcut (#406). String() takes
+  // null safely, so no narrowing is needed for the comparison.
+  const confirmExistingId = confirmHeld?.existing_id ?? null;
+  const confirmOnTeam = !!confirmExistingId
+    && members.some((m) => String(m.id) === String(confirmExistingId));
 
   // A Today tile asks for a filter by bumping a nonce; apply it once, then tell
   // the parent to drop it so a later manual open does not re-apply a stale one.
@@ -318,6 +361,9 @@ export default function TeamTab({
     const b = mem.balances || {};
     const n = nextOff(mem.name);                             // their next time away, approved or asked
     const hourly = isHourly(b);                              // hourly: Sick plus a vacation counter
+    const held = heldByMemberId.get(String(mem.id));         // a held request may be this person (#406)
+    // A flagged card opens the confirm dialog; a plain one opens the profile.
+    const openCard = () => (held ? setConfirmHeld(held) : openPerson(String(mem.id)));
     /** One balance line. @param label - Pot. @param v - Days. @param of - Entitlement. @returns The line. */
     const line = (label: string, v: number, of?: number) => (
       <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -334,17 +380,28 @@ export default function TeamTab({
         exit={{ opacity: 0, scale: 0.96, transition: EXIT }}
         style={{ display: 'grid' }}
       >
-        {/* A card lifts slightly under the pointer so it reads as one object. */}
+        {/* A card lifts slightly under the pointer so it reads as one object. A
+            flagged card wears a warning (orange) border and opens the confirm
+            dialog instead of the profile (#406). */}
         <Paper
-          role="button" tabIndex={0} aria-label={`Open ${mem.name}`}
-          onClick={() => openPerson(String(mem.id))}
-          onKeyDown={(e) => { if (e.key === 'Enter') openPerson(String(mem.id)); }}
+          role="button" tabIndex={0}
+          aria-label={held ? `Confirm the request waiting on ${mem.name}` : `Open ${mem.name}`}
+          onClick={openCard}
+          onKeyDown={(e) => { if (e.key === 'Enter') openCard(); }}
           sx={{
             p: 2, display: 'grid', gap: 0.75, alignContent: 'start', cursor: 'pointer', ...riseAt(k, { step: 40, max: 8 }),
             transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
-            '&:hover': { transform: 'translateY(-2px)', borderColor: t.line2 },
+            ...(held ? { borderColor: 'warning.main', borderWidth: 2 } : {}),   // orange when a request waits
+            '&:hover': { transform: 'translateY(-2px)', borderColor: held ? 'warning.dark' : t.line2 },
           }}
         >
+          {held && (
+            // The attention mark: a request on the request page named this person.
+            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', color: 'warning.main' }}>
+              <ErrorOutlineIcon fontSize="small" />
+              <Typography variant="caption" sx={{ fontWeight: 700 }}>{CONFIRM_CAPTION}</Typography>
+            </Box>
+          )}
           <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'center', mb: 0.5 }}>
             <Box sx={{ width: 36, height: 36, borderRadius: 999, bgcolor: colorOf(mem.name), color: theme.palette.mode === 'dark' ? theme.palette.background.default : '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13, flex: 'none' }}>
               {initials(mem.name)}
@@ -451,6 +508,7 @@ export default function TeamTab({
           <MemberTable
             members={shown} sortKey={sortKey} sortDir={sortDir} onSort={sortBy}
             selectedId={selectedId} nextOffOf={nextOff} onOpen={openPerson}
+            heldByMemberId={heldByMemberId} onFlag={setConfirmHeld}
           />
         )
       ) : (
@@ -471,6 +529,32 @@ export default function TeamTab({
                     ...hourlyShown.map((mem, k) => renderMemberCard(mem, k)),
                   ]
                 : shown.map((mem, k) => renderMemberCard(mem, k))}
+              {/* Held new hires with no staff match: an outlined orange card each,
+                  before the dashed add cards, opening the same confirm dialog (#406). */}
+              {heldPlaceholders.map((h) => (
+                <m.div key={`held-${h.id}`} layout style={{ display: 'grid' }}>
+                  <Paper
+                    role="button" tabIndex={0}
+                    aria-label={`Confirm the new hire request from ${h.name}`}
+                    onClick={() => setConfirmHeld(h)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') setConfirmHeld(h); }}
+                    sx={{
+                      p: 2, display: 'grid', gap: 0.5, alignContent: 'start', cursor: 'pointer', minHeight: 180,
+                      border: '2px solid', borderColor: 'warning.main',
+                      transition: 'transform .2s cubic-bezier(.2,.8,.2,1), border-color .2s ease',
+                      '&:hover': { transform: 'translateY(-2px)', borderColor: 'warning.dark' },
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', color: 'warning.main' }}>
+                      <ErrorOutlineIcon fontSize="small" />
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>New hire waiting on you</Typography>
+                    </Box>
+                    <Typography sx={{ fontWeight: 700, overflowWrap: 'anywhere' }}>{h.name}</Typography>
+                    <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{h.summary}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{h.email}</Typography>
+                  </Paper>
+                </m.div>
+              ))}
               {/* The dashed "add a new hire" card, unchanged from the old look. */}
               <m.div key="add-new-hire" layout style={{ display: 'grid' }}>
                 <Button variant="outlined" onClick={onAddNewHire} sx={{ minHeight: 180, borderStyle: 'dashed', borderRadius: `${theme.shape.borderRadius}px` }}>
@@ -495,6 +579,21 @@ export default function TeamTab({
           </Box>
         </>
       )}
+      {/* The one shared confirm dialog for flagged members and placeholders; the
+          Today panel renders its own copy of the same component (#406). */}
+      <NewHireConfirmDialog
+        item={confirmHeld}
+        matched={!!confirmHeld?.existing_id}
+        processingEnabled={processingEnabled}
+        busy={heldBusyId !== null && heldBusyId === confirmHeld?.id}
+        onAdd={onAddHeldNewHire}
+        onDecline={onDeclineHeldNewHire}
+        onOpenProfile={
+          // A matched member on the team keeps the normal way into their profile.
+          confirmOnTeam ? () => openPerson(String(confirmExistingId)) : undefined
+        }
+        onClose={() => setConfirmHeld(null)}
+      />
     </>
   );
 }
@@ -596,9 +695,13 @@ function AddToTeamCard({ processingEnabled, onAdd, onClose }: {
  * @param props.onOpen - Open a person's profile.
  * @returns The table.
  */
-function MemberTable({ members, sortKey, sortDir, onSort, selectedId, nextOffOf, onOpen }: {
+function MemberTable({ members, sortKey, sortDir, onSort, selectedId, nextOffOf, onOpen, heldByMemberId, onFlag }: {
   members: any[]; sortKey: string; sortDir: 1 | -1; onSort: (k: any) => void;
   selectedId: string | null; nextOffOf: (n: string) => Absence | null; onOpen: (id: string) => void;
+  /** Held new hires keyed by matched staff id, for the "confirm it is them" mark (#406). */
+  heldByMemberId: Map<string, HeldWaiting>;
+  /** Open the confirm dialog for a flagged row's held request. */
+  onFlag: (item: HeldWaiting) => void;
 }) {
   const theme = useTheme();
   // Person always; vacation and sick always; Make-Up and Next off only from sm up.
@@ -626,19 +729,30 @@ function MemberTable({ members, sortKey, sortDir, onSort, selectedId, nextOffOf,
         const vac = Number(b.vacation_balance ?? 0);
         const n = nextOffOf(m.name);
         const open = String(m.id) === selectedId;
+        const held = heldByMemberId.get(String(m.id));       // a held request may be this person (#406)
         return (
           <Box
-            key={m.id} component="button" type="button" aria-current={open} onClick={() => onOpen(String(m.id))}
+            key={m.id} component="button" type="button" aria-current={open}
+            aria-label={held ? `Confirm the request waiting on ${m.name}` : undefined}
+            // A flagged row opens the confirm dialog; a plain one opens the profile.
+            onClick={() => (held ? onFlag(held) : onOpen(String(m.id)))}
             sx={{
               width: '100%', textAlign: 'left', font: 'inherit', cursor: 'pointer',
               display: 'grid', gridTemplateColumns: cols, gap: 1.5, alignItems: 'center', px: 1, py: 1.25,
               border: 0, borderBottom: 1, borderColor: 'divider', background: open ? theme.tokens.hover : 'none',
+              // An orange left edge marks a row with a request waiting to be confirmed.
+              ...(held ? { borderLeft: 3, borderLeftColor: 'warning.main' } : {}),
               '&:hover': { background: theme.tokens.hover },
             }}
           >
             <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontWeight: 700, fontSize: 14, overflowWrap: 'anywhere' }}>{m.name}</Typography>
-              <Typography variant="caption" color="text.secondary">{m.department || 'No department'}</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                {held && <ErrorOutlineIcon fontSize="small" sx={{ color: 'warning.main', flex: 'none' }} />}
+                <Typography sx={{ fontWeight: 700, fontSize: 14, overflowWrap: 'anywhere' }}>{m.name}</Typography>
+              </Box>
+              <Typography variant="caption" color={held ? 'warning.main' : 'text.secondary'}>
+                {held ? CONFIRM_CAPTION : (m.department || 'No department')}
+              </Typography>
             </Box>
             <Typography sx={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: !isHourly(b) && vac < 3 ? 'error.main' : 'text.primary' }}>
               {isHourly(b) ? '-' : fmt(vac)}

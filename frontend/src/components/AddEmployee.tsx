@@ -71,6 +71,13 @@ interface Props {
    * the page first asks what happened to that request (#444, #462).
    */
   heldScope?: SetupScope;
+  /**
+   * Called once a held request's profile edit has saved, with the held id, so
+   * the parent can drop the row from its "waiting on you" panel at once and
+   * re-read the held list (#499). The create path already notifies via
+   * `onCreated`; this covers the profile-edit path, which did not before.
+   */
+  onHeldSaved?: (heldId: number) => void;
 }
 
 /** A new hire's details from a held request, and which held request it was. */
@@ -150,7 +157,7 @@ const EMPTY = {
  * @returns The Add Employee panel.
  */
 export default function AddEmployee({
-  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions, prefill, heldScope,
+  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions, prefill, heldScope, onHeldSaved,
 }: Props) {
   const [form, setForm] = useState({ ...EMPTY, ...detailsOf(prefill) });
   const [outcome, setOutcome] = useState<CreateOutcome | null>(null);
@@ -315,6 +322,7 @@ export default function AddEmployee({
         <HeldProfileEdit
           held={editing} scope={heldScope} processingEnabled={processingEnabled}
           locations={LOCATIONS} payTypes={SALARY_HOURLY}
+          onSaved={onHeldSaved}
         />
       )}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
@@ -594,16 +602,27 @@ function ConfirmPanel({
  */
 function CreatedSummary({ outcome }: { outcome: CreateOutcome }) {
   const released = outcome.released.filter((r) => r.status === 'released').length;
-  const stuck = outcome.released.filter((r) => r.status !== 'released');
+  // A refusal is a business-rule rejection (a date clash, the booking limit):
+  // it will never go through as it stands, so it is an error and the person has
+  // been emailed the reason (#406). A plain "stuck" row is an unexpected failure
+  // an admin can retry, so it stays a warning.
+  const refused = outcome.released.filter((r) => r.status === 'refused');
+  const stuck = outcome.released.filter((r) => r.status !== 'released' && r.status !== 'refused');
   return (
     <Stack spacing={1} sx={{ mb: 2 }}>
       <Alert severity="success">
         {outcome.name} was added.
         {released > 0 && <> {released} waiting request{released > 1 ? 's were' : ' was'} sent to their manager.</>}
       </Alert>
+      {refused.map((r) => (
+        <Alert key={r.held_id} severity="error">
+          Their request was not sent: {r.detail.replace(/\.$/, '')}. They have been emailed so they can change it.
+        </Alert>
+      ))}
       {stuck.length > 0 && (
         <Alert severity="warning">
-          {stuck.length} waiting request{stuck.length > 1 ? 's' : ''} could not be sent yet: {stuck[0].detail}
+          {stuck.length} waiting request{stuck.length > 1 ? 's' : ''} could not be sent yet: {stuck[0].detail.replace(/\.$/, '')}.
+          An admin will retry it.
         </Alert>
       )}
       {outcome.notices.map((n) => <Alert key={n} severity="warning">{n}</Alert>)}

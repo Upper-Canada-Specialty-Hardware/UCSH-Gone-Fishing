@@ -12,6 +12,7 @@ import { Kpi, Panel } from '../components/Panels';
 import RequestsHistoryTable, { HistoryFocus } from '../components/RequestsHistoryTable';
 import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
 import AddEmployee, { type AddPrefill } from '../components/AddEmployee';
+import NewHireConfirmDialog from '../components/manager/NewHireConfirmDialog';
 import DecisionCard from '../components/manager/DecisionCard';
 import RejectDialog from '../components/RejectDialog';
 import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
@@ -125,8 +126,10 @@ function NewHiresPanel({ items, processingEnabled, busyId, onAdd, onDecline }: {
   onAdd: (item: HeldWaiting) => void;
   onDecline: (item: HeldWaiting) => void;
 }) {
-  // Which card is showing its "are you sure" confirm, by held id; null when none.
-  const [confirmId, setConfirmId] = useState<number | null>(null);
+  // The held new hire whose confirm dialog is open, or null when none. The same
+  // shared dialog the Team tab uses, so both paths confirm the person the same
+  // way before adding or handing the request back (#406).
+  const [confirmItem, setConfirmItem] = useState<HeldWaiting | null>(null);
   return (
     <Panel title="New hires waiting on you" aside={String(items.length)}>
       <Stack spacing={1.5}>
@@ -138,28 +141,23 @@ function NewHiresPanel({ items, processingEnabled, busyId, onAdd, onDecline }: {
             <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>{item.summary}</Typography>
             {/* How long it has waited, in the same words the queue uses. */}
             <Typography variant="caption" color="text.secondary">{askedAgo({ Created: item.created_at })}</Typography>
-            {confirmId === item.id ? (
-              // The confirm step: hand it back, or back out.
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center', mt: 0.75 }}>
-                <Typography variant="body2">Ask {item.name} to pick another supervisor?</Typography>
-                <Button
-                  size="small" color="error" variant="contained"
-                  disabled={!processingEnabled || busyId === item.id}
-                  onClick={() => onDecline(item)}
-                >
-                  Yes, not on my team
-                </Button>
-                <Button size="small" onClick={() => setConfirmId(null)} disabled={busyId === item.id}>Cancel</Button>
-              </Box>
-            ) : (
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.75 }}>
-                <Button size="small" variant="contained" onClick={() => onAdd(item)}>Add employee</Button>
-                <Button size="small" variant="outlined" onClick={() => setConfirmId(item.id)}>Not on my team</Button>
-              </Box>
-            )}
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.75 }}>
+              {/* One button into the shared confirm dialog, which then offers add
+                  and "not on my team" behind the "is it really them?" check. */}
+              <Button size="small" variant="contained" onClick={() => setConfirmItem(item)}>Add employee</Button>
+            </Box>
           </Box>
         ))}
       </Stack>
+      <NewHireConfirmDialog
+        item={confirmItem}
+        matched={!!confirmItem?.existing_id}
+        processingEnabled={processingEnabled}
+        busy={busyId !== null && busyId === confirmItem?.id}
+        onAdd={onAdd}
+        onDecline={onDecline}
+        onClose={() => setConfirmItem(null)}
+      />
     </Panel>
   );
 }
@@ -863,6 +861,10 @@ export default function ManagerDashboard() {
           onLogSickDay={() => setSickDialogOpen(true)}
           onRefresh={refreshTeam}
           onNotify={(message, severity) => setSnack({ open: true, message, severity })}
+          heldNewHires={heldNewHires}
+          heldBusyId={heldActionId}
+          onAddHeldNewHire={addHeldNewHire}
+          onDeclineHeldNewHire={declineHeldNewHire}
         />
       )}
 
@@ -965,6 +967,14 @@ export default function ManagerDashboard() {
           onCreated={(name) => {
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' });
             refreshHeld();                               // the added new hire drops off the panel (#481)
+          }}
+          onHeldSaved={(id) => {
+            // A profile edit of an existing record saved: drop that row from the
+            // panel at once, then reconcile with the server (#499). The live
+            // staff-change event fires before the release finishes, so the panel
+            // is only right once this runs after the save returns.
+            setHeldNewHires((prev) => prev.filter((h) => h.id !== id));
+            refreshHeld();
           }}
         />
       )}

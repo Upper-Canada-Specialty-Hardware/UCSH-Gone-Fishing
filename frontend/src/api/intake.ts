@@ -400,13 +400,20 @@ export const holdRequest = (body: {
  * Where a held request stands, as the waiting page shows it. "not_on_team" is a
  * supervisor handing it back, so the person picks another supervisor (#443).
  */
-export type HeldStatus = 'waiting' | 'sent' | 'cancelled' | 'not_on_team';
+export type HeldStatus = 'waiting' | 'sent' | 'cancelled' | 'not_on_team' | 'refused';
 
 /** The held-request status, plus the extra fields a "not on my team" row carries (#443). */
 export interface HeldStatusResult {
   status: HeldStatus;
   /** The supervisor it waits on, or (for not_on_team) the one who declined it. */
   supervisor_name: string;
+  /**
+   * Why the request was not sent, present only when status is "refused" (#406):
+   * the release reached the booking rules and one refused the form (a date
+   * clash, the booking limit). The waiting page shows it and the person has been
+   * emailed the same reason.
+   */
+  reason?: string;
   /** The department to search another supervisor in; present on a not_on_team row. */
   department?: string;
   /** The request in words, to show while re-picking; present on a not_on_team row. */

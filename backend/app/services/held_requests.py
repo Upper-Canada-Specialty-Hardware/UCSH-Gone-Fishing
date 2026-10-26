@@ -48,7 +48,12 @@ from app.services.employee import (
     get_employee_by_name,
 )
 from app.services.manager_match import lists_manager
-from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
+from app.services.request_intake import (
+    RequestFormError,
+    ensure_request_type_open,
+    parse_request_form,
+    submit_request,
+)
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
 from app.templates_render import render_held_supervisor_actions
@@ -60,6 +65,11 @@ SUPERVISOR_REMINDER_BUSINESS_DAYS = 2   # supervisor gets one more email after t
 ADMIN_ESCALATION_BUSINESS_DAYS = 5      # then the admins are told
 MAX_OPEN_PER_EMAIL = 1                  # one request until set up (#442)
 RELEASE_SIGN_IN_DAYS = 7                # a released row may sign the new hire in for this long (#482)
+# Closed statuses (no further action, never retried): released, cancelled, and
+# "refused" (#406) - the release reached submit_request and it refused the form
+# on a business rule (a date clash, the booking limit, a closed window). A
+# refusal is kept off every open/active/cancellable set below on purpose, so it
+# is not retried and does not gate the person from making a new request.
 OPEN_STATUSES = ("held", "waiting_site", "failed")   # waiting to become a real request (releasable)
 # Every status in which the person still has a request in flight, so the request
 # page shows its status instead of a new form and the submit endpoints refuse a
@@ -868,8 +878,11 @@ class ReleaseResult:
 
     Attributes:
         held_id: The held_requests row id.
-        status: "released", "failed" or "waiting_site".
-        detail: The SharePoint item id, or why it did not go through.
+        status: "released", "failed", "waiting_site" or "refused" (#406 - a
+            business-rule refusal from submit_request; closed, never retried).
+        detail: The SharePoint item id, or why it did not go through (for a
+            refusal, the exact reason, which is shown to the manager and emailed
+            to the person).
     """
     held_id: int
     status: str
@@ -940,14 +953,24 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
                 row.supervisors_involved = _mark_outcome(row.supervisors_involved, row.supervisor_id, "handled")
                 approver_ids[row.id] = str((item.get("fields") or {}).get("ManagerID") or "")   # who decides it, when known
                 results.append(ReleaseResult(row.id, "released", row.sp_item_id))
-            except Exception as e:  # noqa: BLE001 - a bad form or a SharePoint error; kept for an admin retry
+            except RequestFormError as e:  # a deliberate business-rule refusal, not a transient error
+                # submit_request refused the form on a rule (a date clash, the
+                # booking limit, a closed window): it will never go through as it
+                # stands, so close the row "refused", keep the exact reason, and
+                # never retry it. The person is emailed the reason below (#406).
+                reason = str(e)                                # worded for the person already
+                logger.info("Held request #%s refused on release: %s", row.id, reason)
+                row.status, row.last_error = "refused", reason[:500]
+                results.append(ReleaseResult(row.id, "refused", reason))
+            except Exception as e:  # noqa: BLE001 - an unexpected SharePoint/DB/network error; kept for an admin retry
                 logger.exception("Could not release held request #%s", row.id)
                 row.status, row.last_error = "failed", str(e)[:500]
                 results.append(ReleaseResult(row.id, "failed", row.last_error))
             await session.commit()                            # outcome saved row by row
         await session.commit()                                 # waiting_site changes
-        # Only rows this run claimed can be "released" here; others were skipped.
+        # Only rows this run claimed can be "released"/"refused" here; others skipped.
         released = [r for r in rows if r.status == "released"]
+        refused = [r for r in rows if r.status == "refused"]   # business-rule refusals (#406)
 
     # Each released request closes its two conversations (#462): the person hears
     # it is in, and the supervisor who held it hears whether it now waits on them.
@@ -957,6 +980,14 @@ async def release_held_requests(email: str, only_id: int | None = None) -> list[
             await _email_released(employee, row, approver_ids.get(row.id, ""))
         except Exception:  # noqa: BLE001 - the request went through either way
             logger.exception("Could not send the release emails for held request #%s", row.id)
+    # A refusal is not silent (#406): the person is told, on their own thread,
+    # that it was not sent and why, so they can fix it. The supervisor's "released"
+    # email is deliberately never sent for a refusal (only released rows above get it).
+    for row in refused:
+        try:
+            await _email_refused(row, row.last_error or "")
+        except Exception:  # noqa: BLE001 - the row is already closed "refused" either way
+            logger.exception("Could not tell the person their request was refused (#%s)", row.id)
     return results
 
 
@@ -1043,6 +1074,26 @@ async def _email_released(employee: dict, row: HeldRequest, approver_id: str) ->
         to=[row.supervisor_email], subject=_supervisor_subject(row), html_body=f"<p>{line}</p>",
         headers=thread_headers(row.id, row.supervisor_email),   # the supervisor's thread about this request
     )
+
+
+async def _email_refused(row: HeldRequest, reason: str) -> None:
+    """Tell the person a released request was refused, on their own thread (#406).
+
+    Sent when the release reaches ``submit_request`` and it refuses the form on a
+    business rule (a date clash, the booking limit, a closed window). The message
+    is the exact reason, plus what to do next, in the same conversation every
+    other update to them uses (``PERSON_SUBJECT`` and ``_email_person``). The
+    supervisor's "released" email is never sent for a refusal.
+
+    Args:
+        row: The held request, now closed "refused".
+        reason: The refusal, already worded for the person.
+    """
+    await _email_person(row, [
+        "Your request was not sent.",
+        html.escape(reason),                                   # the exact reason, e.g. a date clash
+        "You can make a new request on the request page once that is sorted out.",
+    ])
 
 
 async def held_thread_for(session, request, recipient: str) -> tuple[str, list[dict]] | None:
@@ -1267,13 +1318,15 @@ async def held_request_status(held_id: int) -> dict | None:
         held_id: The held_requests row id.
 
     Returns:
-        {"status": "waiting" | "sent" | "cancelled" | "not_on_team",
+        {"status": "waiting" | "sent" | "cancelled" | "not_on_team" | "refused",
         "supervisor_name"}, or None when there is no such row. Every ordinary open
         status (held, waiting_site, releasing, failed) reads as waiting: to the
         person it is still on its way. A "not_on_team" row (a supervisor said the
         person is not on their team) carries the extra fields the page needs to
         let them pick another supervisor: department, summary and who declined it
-        (#443).
+        (#443). A "refused" row (the release reached submit_request and it refused
+        the form on a business rule) carries ``reason``, the exact text, so the
+        waiting page can say it was not sent and why (#406).
     """
     async with async_session() as session:
         row = await session.get(HeldRequest, held_id)
@@ -1281,8 +1334,13 @@ async def held_request_status(held_id: int) -> dict | None:
         return None
     status = {
         "released": "sent", "cancelled": "cancelled", "not_on_team": "not_on_team",
+        "refused": "refused",
     }.get(row.status, "waiting")
     result = {"status": status, "supervisor_name": row.supervisor_name}
+    if status == "refused":
+        # The release was refused on a business rule; the page shows it was not
+        # sent and why. The reason was kept on the row at refusal time (#406).
+        result["reason"] = row.last_error or ""
     if status == "not_on_team":
         # The page may re-pick, so hand it the department to search in, the
         # request summary to show, and who declined it. The ordinary waiting/sent
@@ -1371,7 +1429,10 @@ async def held_waiting_on_supervisor(supervisor_id: str) -> list[dict]:
     Returns:
         One dict per waiting row, oldest first, each with ``id``, ``name``,
         ``email``, ``department``, ``request_type``, ``summary`` (describe_form),
-        ``created_at`` (ISO) and ``status``.
+        ``created_at`` (ISO), ``status`` and ``existing_id`` (#406): the id of
+        the one active staff record sharing the row's name, or null when none or
+        more than one does, so the Team tab can mark the member the request may
+        belong to by id rather than matching names on the client.
     """
     holder = str(supervisor_id or "").strip()                 # the manager's own staff id, as stored
     async with async_session() as session:
@@ -1380,6 +1441,7 @@ async def held_waiting_on_supervisor(supervisor_id: str) -> list[dict]:
             .where(HeldRequest.supervisor_id == holder, HeldRequest.status == "held")
             .order_by(HeldRequest.id)                         # oldest first, like the admin list reversed
         )).all()
+    existing = await _existing_ids_for(rows)                  # held row id -> matched staff id, or None (#406)
     return [
         {
             "id": r.id, "name": r.name, "email": r.email,
@@ -1388,6 +1450,46 @@ async def held_waiting_on_supervisor(supervisor_id: str) -> list[dict]:
             "summary": describe_form(r.request_type, r.form_data),
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "status": r.status,
+            "existing_id": existing.get(r.id),                # the single same-name record, or None
         }
         for r in rows
     ]
+
+
+async def _existing_ids_for(rows: list[HeldRequest]) -> dict[int, str | None]:
+    """Map each held row to the one active staff id sharing its name, else None (#406).
+
+    One directory read, matched in memory with the same name key and archived
+    rule ``held_profile`` uses, so the Team tab's "confirm it is them" flag lands
+    on a member by id. A row whose name matches no active record, or more than
+    one, maps to None (nothing to flag, or too ambiguous to guess).
+
+    Args:
+        rows: The held rows to resolve.
+
+    Returns:
+        ``{held_row_id: staff_id or None}``; all None when the directory cannot
+        be read, so the rest of the panel still loads.
+    """
+    if not rows:
+        return {}
+    # Local imports break the module cycle (held_profile imports held_requests).
+    from app.repositories.postgres.staff import is_archived
+    from app.services.held_profile import _name_key
+    try:
+        staff = await _staff()                                 # one directory read for the whole panel
+    except Exception:  # noqa: BLE001 - degrade to no flags rather than failing the panel
+        logger.exception("Could not read the directory to match held new hires by name")
+        return {r.id: None for r in rows}
+    ids_by_name: dict[str, list[str]] = {}                     # name key -> active staff ids with that name
+    for item in staff:
+        if is_archived(item.get("fields", {})):                # archived records are not a match
+            continue
+        key = _name_key(item.get("fields", {}).get("Title"))   # same spacing/case rule as held_profile
+        if key:
+            ids_by_name.setdefault(key, []).append(str(item["id"]))
+    out: dict[int, str | None] = {}
+    for r in rows:
+        ids = ids_by_name.get(_name_key(r.name), [])           # the records sharing this row's name
+        out[r.id] = ids[0] if len(ids) == 1 else None          # exactly one is a match; none/many is null
+    return out

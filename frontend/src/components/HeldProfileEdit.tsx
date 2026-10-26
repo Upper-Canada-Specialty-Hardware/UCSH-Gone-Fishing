@@ -19,6 +19,13 @@ interface Props {
   locations: string[];
   /** The employment types offered (the Add Employee list). */
   payTypes: string[];
+  /**
+   * Called once the edit has saved, with the held request's id, so the dashboard
+   * can drop the row from its "waiting on you" panel at once and re-read the
+   * held list (#499). The staff-change live event fires before the release
+   * finishes, so the panel is only right once this fires after the save returns.
+   */
+  onSaved?: (heldId: number) => void;
 }
 
 /** The form's values, all as typed text until saved. */
@@ -46,7 +53,7 @@ interface EditForm {
  * @param props - See {@link Props}.
  * @returns The profile edit panel.
  */
-export default function HeldProfileEdit({ held, scope, processingEnabled, locations, payTypes }: Props) {
+export default function HeldProfileEdit({ held, scope, processingEnabled, locations, payTypes, onSaved }: Props) {
   const record = held.existing;
   // Start from the record, never from the request: nothing changes unless chosen.
   const [form, setForm] = useState<EditForm>({
@@ -103,6 +110,7 @@ export default function HeldProfileEdit({ held, scope, processingEnabled, locati
         changes, fields, manager_mode: mode, reason: form.reason.trim(),
       });
       setResult(res.data);                                // the outcome replaces the form
+      onSaved?.(held.held_id);                            // drop the row from the panel and re-read it (#499)
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'The record could not be saved. Please try again.');
@@ -113,11 +121,22 @@ export default function HeldProfileEdit({ held, scope, processingEnabled, locati
 
   if (result) {
     const sent = result.released.find((r) => r.status === 'released');
+    // A business-rule refusal (a date clash, the booking limit): the request was
+    // not sent and never will be as it stands, so it is an error, not a warning,
+    // and the person has already been emailed the reason (#406).
+    const refused = result.released.find((r) => r.status === 'refused');
     return (
       <Stack spacing={1}>
         <Alert severity="success">{record.name}&apos;s record was saved.</Alert>
         {sent && <Alert severity="success">Their request is now request #{sent.detail}.</Alert>}
-        {result.held_status !== 'released' && result.note && <Alert severity="warning">{result.note}</Alert>}
+        {refused && (
+          <Alert severity="error">
+            Their request was not sent: {refused.detail.replace(/\.$/, '')}. They have been emailed so they can change it.
+          </Alert>
+        )}
+        {/* The "still held" note only applies when nothing was released or refused. */}
+        {result.held_status !== 'released' && result.held_status !== 'refused' && result.note
+          && <Alert severity="warning">{result.note}</Alert>}
       </Stack>
     );
   }

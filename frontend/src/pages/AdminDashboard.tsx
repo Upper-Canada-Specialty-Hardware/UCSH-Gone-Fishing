@@ -696,6 +696,7 @@ export default function AdminDashboard() {
                   onCreated={(name) =>
                     setSnack({ open: true, message: `${name} created.`, severity: 'success' })
                   }
+                  onHeldSaved={() => loadHeld(heldIncludeClosed)}
                 />
               )}
 
