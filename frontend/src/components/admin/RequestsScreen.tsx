@@ -270,6 +270,15 @@ export default function RequestsScreen(props: Props) {
     return defs.every((f) => { const v = filters[f.key] || []; return !v.length || v.some((x) => f.test(r, x)); });
   }, [query, inRange, defs, filters]);
 
+  // The other lists' requests, for the export's type filter: when one list is
+  // picked, the rest are offered too, through the search box only (the filter
+  // chips belong to the picked list). Empty on "All lists".
+  const otherLists = useMemo(() => {
+    if (srcSel === 'all') return [];
+    const q = query.trim().toLowerCase();
+    return allRows.filter((r) => r.src !== srcSel && !deletedKeys.has(delKey(r)) && (!q || searchText(r).includes(q)));
+  }, [allRows, deletedKeys, srcSel, query]);
+
   // The rows on screen: scoped, searched, filtered, then sorted.
   const shown = useMemo(() => {
     const list = scoped.filter(matches);
@@ -655,6 +664,7 @@ export default function RequestsScreen(props: Props) {
         open={exportOpen}
         shownRows={shown}
         tickedRows={picked}
+        otherRows={otherLists}
         build={buildExport}
         onClose={() => setExportOpen(false)}
         onNotify={(message) => setSnack({ open: true, message })}

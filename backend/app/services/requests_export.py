@@ -51,18 +51,28 @@ class RequestsExportBody(BaseModel):
     sheets: list[ExportSheet] = Field(min_length=1, max_length=10)
 
 
+# Excel holds at most this many characters in one cell; a longer value makes
+# Excel report the file as damaged. A field that only grows (a request's "Taken
+# from" text, an audit trail) is cut here instead, with a note saying so.
+_CELL_MAX = 32767
+_CUT_NOTE = " ... (cut: too long for one Excel cell, see the dashboard)"
+
+
 def _sanitize_cell_text(text: str) -> str:
-    """Make a leading-formula string safe by keeping it as text (#294 S1).
+    """Make a cell's text safe to write: never a formula, never over Excel's limit (#294 S1).
 
     Args:
         text: A cell's string value.
 
     Returns:
         The text with a single quote in front when it starts with a formula
-        trigger, which Excel treats as plain text; the text unchanged otherwise.
+        trigger, which Excel treats as plain text, and cut to Excel's cell
+        limit with a note when it is longer; the text unchanged otherwise.
     """
     if text.startswith(_FORMULA_TRIGGERS):                     # would otherwise be read as a formula
-        return "'" + text                                      # quote prefix: Excel keeps it as text
+        text = "'" + text                                      # quote prefix: Excel keeps it as text
+    if len(text) > _CELL_MAX:                                  # past what one cell can hold
+        text = text[:_CELL_MAX - len(_CUT_NOTE)] + _CUT_NOTE   # keep the start, say it was cut
     return text
 
 

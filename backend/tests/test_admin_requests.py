@@ -375,6 +375,22 @@ def test_the_export_neutralises_a_formula_in_a_field():
     assert sheet["B3"].value.startswith("'@")
 
 
+def test_the_export_cuts_text_too_long_for_one_excel_cell():
+    # Excel holds 32,767 characters in a cell; a longer one makes it call the file
+    # damaged. Fields that only grow ("Taken from", audit trails) are cut with a note.
+    from openpyxl import load_workbook
+    from io import BytesIO
+    sheets = _sheets({
+        "title": "Requests",
+        "columns": [{"header": "Name"}, {"header": "Taken from", "wrap": True}],
+        "rows": [["Avery", "x" * 40000], ["Blake", "2 vacation"]],
+    })
+    sheet = load_workbook(BytesIO(build_requests_workbook(sheets)))["Requests"]
+    assert len(sheet["B2"].value) == 32767                     # exactly at the limit
+    assert sheet["B2"].value.endswith("see the dashboard)")    # and says it was cut
+    assert sheet["B3"].value == "2 vacation"                   # short text untouched
+
+
 # ----- a missing request through the dashboard actions is a clean 4xx -----
 
 @pytest.fixture
