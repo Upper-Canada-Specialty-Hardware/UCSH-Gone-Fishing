@@ -10,6 +10,7 @@ import ManagerAssignments from '../components/ManagerAssignments';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
 import EditRequestDialog from '../components/EditRequestDialog';
+import DecisionRefusedDialog from '../components/DecisionRefusedDialog';
 import AddEmployee, { ManagerOption } from '../components/AddEmployee';
 import EmailLog from '../components/EmailLog';
 import HolidaysManager from '../components/HolidaysManager';
@@ -127,6 +128,16 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [leaving, setLeaving] = useState<Set<string>>(new Set());   // decided pending rows on their way out
+  // The in-flight inline decision's direction (#485): true while an approve runs,
+  // false while a reject runs, null when neither is. Only one runs at a time, so
+  // with actionLoading (which row) this is enough to spin the pressed button.
+  const [decidingYes, setDecidingYes] = useState<boolean | null>(null);
+  // Rows just decided, each showing a filled green tick / red cross for the length
+  // of the fade before it leaves the list (#485); key `${type}-${id}` to the outcome.
+  const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
+  // An approve or reject the backend refused (#486): shown as a centred dialog, not
+  // a snackbar, with the backend's reason; null when there is nothing to show.
+  const [refusal, setRefusal] = useState<{ approving: boolean; message: string } | null>(null);
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
 
   // Edit pending request
@@ -288,38 +299,50 @@ export default function AdminDashboard() {
     setTimeout(() => {
       setPending((prev) => prev.filter((p) => !(p.request_type === type && String(p.id) === String(id))));
       setLeaving((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      // The outcome tick/cross is shown only while the row fades; drop it with the row (#485).
+      setDecided((prev) => { const next = new Map(prev); next.delete(key); return next; });
     }, leaveDelay());
   }, []);
 
   const handleApprove = useCallback(async (type: string, id: string) => {
-    setActionLoading(`${type}-${id}`);
+    const key = `${type}-${id}`;
+    setActionLoading(key);
+    setDecidingYes(true);                                          // the pressed approve button spins (#485)
     try {
       await adminApproveRequest(type, id);
+      setDecided((prev) => new Map(prev).set(key, true));          // show a filled green tick during the fade (#485)
       removeDecided(type, id);                                      // fades the row, then drops it
       // Also drop it from the managers-on-vacation section at once (#370).
       setVacationRows((prev) => prev.filter((v) => !(v.request_type === type && String(v.id) === String(id))));
-      setSnack({ open: true, message: 'Request approved', severity: 'success' });
+      // No success snackbar now: the button's tick is the confirmation (#485).
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Approval failed', severity: 'error' });
+      const detail = err.response?.data?.detail;                   // the backend's readable refusal
+      // A refused decision is shown centred (#486), not as a corner snackbar.
+      setRefusal({ approving: true, message: typeof detail === 'string' ? detail : 'The request could not be approved.' });
     } finally {
       setActionLoading(null);
+      setDecidingYes(null);                                        // clear the in-flight direction
     }
   }, [removeDecided]);
 
   const handleReject = useCallback(async (type: string, id: string, reason: string) => {
-    setActionLoading(`${type}-${id}`);
+    const key = `${type}-${id}`;
+    setActionLoading(key);
+    setDecidingYes(false);                                         // the pressed reject button spins (#485)
     try {
       await adminRejectRequest(type, id, reason);                   // the reason the child dialog collected (#433)
+      setDecided((prev) => new Map(prev).set(key, false));         // show a filled red cross during the fade (#485)
       removeDecided(type, id);                                      // fades the row, then drops it
       // Also drop it from the managers-on-vacation section at once (#370).
       setVacationRows((prev) => prev.filter((v) => !(v.request_type === type && String(v.id) === String(id))));
-      setSnack({ open: true, message: 'Request rejected', severity: 'success' });
+      // No success snackbar now: the button's cross is the confirmation (#485).
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Rejection failed', severity: 'error' });
+      const detail = err.response?.data?.detail;                   // the backend's readable refusal
+      // A refused decision is shown centred (#486), not as a corner snackbar.
+      setRefusal({ approving: false, message: typeof detail === 'string' ? detail : 'The request could not be rejected.' });
     } finally {
       setActionLoading(null);
+      setDecidingYes(null);                                        // clear the in-flight direction
     }
   }, [removeDecided]);
 
@@ -635,6 +658,8 @@ export default function AdminDashboard() {
                   processingEnabled={processingEnabled}
                   actionLoading={actionLoading}
                   leaving={leaving}
+                  busyYes={decidingYes}
+                  decided={decided}
                   onApprove={handleApprove}
                   onReject={handleReject}
                   onRemind={handleSendReminder}
@@ -653,6 +678,7 @@ export default function AdminDashboard() {
                   requests={vacationRows}
                   processingEnabled={processingEnabled}
                   actionLoading={actionLoading}
+                  decidingYes={decidingYes}
                   onApprove={handleApprove}
                   onReject={handleReject}
                 />
@@ -731,6 +757,14 @@ export default function AdminDashboard() {
         item={editItem}
         onClose={() => setEditItem(null)}
         onSave={handleEditSave}
+      />
+
+      {/* A refused approve or reject is shown centred, with the backend's reason (#486). */}
+      <DecisionRefusedDialog
+        open={refusal !== null}
+        approving={refusal?.approving ?? true}
+        message={refusal?.message ?? ''}
+        onClose={() => setRefusal(null)}
       />
     </>
   );
