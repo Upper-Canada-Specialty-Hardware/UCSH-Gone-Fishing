@@ -51,6 +51,7 @@ from app.services.manager_match import lists_manager
 from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
+from app.templates_render import render_held_supervisor_actions
 
 logger = logging.getLogger(__name__)
 
@@ -497,27 +498,22 @@ def _where(row: HeldRequest) -> str:
     return row.department or row.location or ""
 
 
-def _not_on_team_line(row: HeldRequest) -> str:
-    """The "Not on my team" link line for a supervisor email (#443).
+def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
+    """HTML for the supervisor: who the new hire is, the request, then two buttons.
+
+    The buttons (#483) are Add, which opens Add Employee filled in from this
+    request, and Not on my team, which opens the signed public page that hands
+    the request back (#443) so the person picks their supervisor again.
 
     Args:
-        row: The held request; the link names it and the current supervisor.
+        row: The held request; names the new hire and the current supervisor.
+        reminder: True for a re-send, which opens with "Reminder: ".
 
     Returns:
-        An HTML paragraph with the signed link, so the supervisor who is not the
-        person's manager can hand it back rather than acting on it.
+        The email body HTML.
     """
-    link = not_on_team_link(row.id, row.supervisor_id)
-    return (
-        f'<p>If {html.escape(row.name)} is not on your team, '
-        f'<a href="{html.escape(link)}">let us know</a> and they will be asked to '
-        "pick their supervisor again.</p>"
-    )
-
-
-def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
-    """HTML for the supervisor: who the new hire is, the request, Add Employee, not-mine."""
-    link = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "", row.id)
+    add_url = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "", row.id)
+    not_on_team_url = not_on_team_link(row.id, row.supervisor_id)   # signed for this supervisor only
     lead = "Reminder: " if reminder else ""
     return (
         f"<p>{lead}{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
@@ -526,8 +522,8 @@ def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
         f"<p><b>{html.escape(describe_form(row.request_type, row.form_data))}</b></p>"
         "<p>They are not in the Staff Directory yet, so the request is on hold. "
         "Add them and it is submitted to you automatically.</p>"
-        f'<p><a href="{html.escape(link)}">Add {html.escape(row.name)}</a></p>'
-        + _not_on_team_line(row)
+        # the template escapes the name and both links (autoescape)
+        + render_held_supervisor_actions(row.name, add_url, not_on_team_url)
     )
 
 

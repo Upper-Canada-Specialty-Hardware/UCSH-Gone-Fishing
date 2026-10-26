@@ -30,6 +30,19 @@
 </table>
 {%- endmacro %}
 
+{% macro outline_button(url, label, color, width=200) -%}
+{#- the quieter second choice: white fill, coloured border and label; same VML/anchor split as button -#}
+<!--[if mso]>
+<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ url }}" style="height:42px;v-text-anchor:middle;width:{{ width }}px;" arcsize="15%" strokecolor="{{ color }}" strokeweight="1.5pt" fillcolor="#ffffff">
+<w:anchorlock/>
+<center style="color:{{ color }};font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:bold;">{{ label }}</center>
+</v:roundrect>
+<![endif]-->
+<!--[if !mso]><!-->
+<a href="{{ url }}" style="display:inline-block;background:#ffffff;color:{{ color }};font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:bold;line-height:1;text-decoration:none;padding:10px 26px;border:2px solid {{ color }};border-radius:6px;">{{ label }}</a>
+<!--<![endif]-->
+{%- endmacro %}
+
 {% macro row(label, value, value_style='') -%}
 {#- one detail/balance line: muted label (~40%), ink value, hairline divider;
     value_style overrides the value's look (red for a below-zero floor) -#}

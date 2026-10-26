@@ -1,0 +1,14 @@
+{# The two choices at the foot of a held request's supervisor email (#483).
+   Add opens Add Employee with the new hire filled in; Not on my team opens
+   the public page that hands the request back so the person picks again.
+   Both are buttons, side by side, wrapping on a narrow screen. #}
+{% import "_macros.html" as ui %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0 8px;">
+  <tr>
+    {#- brand green: the action we hope for -#}
+    <td style="padding:0 12px 8px 0;">{{ ui.button(add_url, "Add " ~ name, "#2f5d50", 240) }}</td>
+    {#- outlined red: the way out, quieter than Add -#}
+    <td style="padding:0 0 8px 0;">{{ ui.outline_button(not_on_team_url, "Not on my team", "#b91c1c", 200) }}</td>
+  </tr>
+</table>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;line-height:1.5;color:#6b6257;margin:0 0 12px;">Not on my team asks {{ name }} to pick their supervisor again.</p>
