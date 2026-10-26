@@ -12,7 +12,8 @@ import { takenFromText } from '../../utils/takenFrom';
 /*
  * The requests export (#488), laid out like the staff export: which requests
  * (the shown or the ticked ones), which types (leave, make-up, carry-over and
- * payout; the table's own list first), which dates (a year, a month or a range,
+ * payout; the table's own list first), which statuses (approved only to start,
+ * #516), which dates (a year, a month or a range,
  * #504), which of their people (each with a tick, #489), a column set or
  * single columns, one sheet or a sheet per type, an optional summary by
  * person, and a live preview. Every cell is worked out
@@ -41,6 +42,10 @@ export interface ExportSheet {
   title: string;
   columns: { header: string; number: boolean; total: boolean; wrap: boolean }[];
   rows: Cell[][];
+  /** Which rows the totals row adds, one flag per row; absent adds every row. */
+  counted?: boolean[];
+  /** The totals row's first cell; absent writes "Total". */
+  total_label?: string;
 }
 
 /** A leave or make-up row's first day: the leave start, or the make-up date. */
@@ -97,6 +102,10 @@ const PREVIEW_ROWS = 12;
 const TYPE_SHEETS: [Src, string][] = [['leave', 'Leave'], ['mu', 'Make-up'], ['co', 'Carry-over and payout']];
 /** Every request type, in the order the type filter lists them. */
 const ALL_TYPES: Src[] = TYPE_SHEETS.map(([src]) => src);
+/** The status the totals count, and the one the status filter starts on (#516). */
+const APPROVED = 'Approved';
+/** The order the status filter lists statuses in; any other status follows. */
+const STATUS_ORDER = ['Approved', 'Pending', 'Rejected', 'Refunded', 'Stuck'];
 const SUMMARY_SHEET = 'Summary by person';
 
 /** Today as YYYY-MM-DD, for the download file name. */
@@ -248,6 +257,7 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
   const hasTicked = !!tickedRows && tickedRows.length > 0;
   const [which, setWhich] = useState<'shown' | 'ticked'>('shown');
   const [types, setTypes] = useState<Set<Src>>(new Set(ALL_TYPES));   // which request types go in
+  const [statuses, setStatuses] = useState<Set<string>>(new Set([APPROVED]));   // which statuses go in
   const thisYear = Number(today().slice(0, 4));                  // this calendar year, on this device
   const [rangeKind, setRangeKind] = useState<RangeKind>('year');  // date filter (#504): a year first
   const [year, setYear] = useState(thisYear);                    // the picked year
@@ -269,6 +279,7 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
     setExcluded(new Set());
     const onScreen = new Set(shownRows.map((r) => r.src));   // the types the table is showing
     setTypes(onScreen.size ? onScreen : new Set(ALL_TYPES));  // an empty table: every type
+    setStatuses(new Set([APPROVED]));                       // approved only: what payroll and HR count
     setRangeKind('year');                                   // a year first; the effect below picks which
   }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -283,7 +294,14 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
     pool.forEach((r) => { n[r.src] += 1; });                  // how many of each type there are
     return n;
   }, [pool]);
-  const picked = useMemo(() => pool.filter((r) => types.has(r.src)), [pool, types]);   // the requests chosen
+  const ofTypes = useMemo(() => pool.filter((r) => types.has(r.src)), [pool, types]);   // the ticked types
+  // The statuses those requests have, approved first, each with its count.
+  const statusCounts = useMemo(() => {
+    const n = new Map<string, number>(STATUS_ORDER.map((s) => [s, 0]));
+    ofTypes.forEach((r) => n.set(r.status, (n.get(r.status) || 0) + 1));
+    return Array.from(n.entries()).filter(([s, c]) => c > 0 || s === APPROVED);   // approved always listed
+  }, [ofTypes]);
+  const picked = useMemo(() => ofTypes.filter((r) => statuses.has(r.status)), [ofTypes, statuses]);   // the requests chosen
   // The years those requests touch (touched), and the years to offer: those,
   // always with this year, newest first.
   const [years, touched] = useMemo(() => {
@@ -298,13 +316,23 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
   // A fresh dialog, or a change of types or of shown/ticked, lands on a year that has requests.
   useEffect(() => {
     if (open) setYear(startYear(years, touched, thisYear));
-  }, [open, types, which]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, types, statuses, which]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Tick or untick one request type; the last one cannot be unticked. */
   const toggleType = (src: Src) => {
     setTypes((prev) => {
       const next = new Set(prev);
       if (next.has(src)) { if (next.size > 1) next.delete(src); } else next.add(src);
+      return next;
+    });
+    setExcluded(new Set());                                  // a new set of people: everyone ticked
+  };
+
+  /** Tick or untick one status; the last one cannot be unticked. */
+  const toggleStatus = (status: string) => {
+    setStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) { if (next.size > 1) next.delete(status); } else next.add(status);
       return next;
     });
     setExcluded(new Set());                                  // a new set of people: everyone ticked
@@ -347,7 +375,14 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
   // The sheets exactly as they will be written; the preview reads these too.
   const sheets = useMemo<ExportSheet[]>(() => {
     const columnsOut = chosen.map((c) => ({ header: c.label, number: !!c.number, total: !!c.total, wrap: !!c.wrap }));
-    const sheetOf = (title: string, list: Row[]): ExportSheet => ({ title, columns: columnsOut, rows: list.map((r) => chosen.map((c) => c.get(r))) });
+    // The totals add approved requests only, even when others are in the file (#516).
+    const sheetOf = (title: string, list: Row[]): ExportSheet => ({
+      title,
+      columns: columnsOut,
+      rows: list.map((r) => chosen.map((c) => c.get(r))),
+      counted: list.map((r) => r.status === APPROVED),
+      total_label: 'Total approved',
+    });
     let out: ExportSheet[];
     if (layout === 'type') {
       out = TYPE_SHEETS.map(([src, title]) => sheetOf(title, rows.filter((r) => r.src === src))).filter((s) => s.rows.length);
@@ -417,6 +452,17 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
                   key={src}
                   control={<Checkbox size="small" checked={types.has(src)} onChange={() => toggleType(src)} />}
                   label={<Typography variant="body2">{label} <Typography component="span" variant="caption" color="text.secondary">({typeCounts[src]})</Typography></Typography>}
+                />
+              ))}
+            </Box>
+
+            <Typography variant="overline" color="text.secondary">Statuses</Typography>
+            <Box sx={{ display: 'grid' }}>
+              {statusCounts.map(([status, count]) => (
+                <FormControlLabel
+                  key={status}
+                  control={<Checkbox size="small" checked={statuses.has(status)} onChange={() => toggleStatus(status)} />}
+                  label={<Typography variant="body2">{status} <Typography component="span" variant="caption" color="text.secondary">({count})</Typography></Typography>}
                 />
               ))}
             </Box>
@@ -524,7 +570,8 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
                     <Box component="tr"><Box component="td" colSpan={previewCols.length}>
                       <Typography variant="body2" color="text.secondary">
                         {base.length === 0 && picked.length > 0 ? 'No requests fall in these dates.'
-                          : 'No requests are ticked for export.'}
+                          : picked.length === 0 && ofTypes.length > 0 ? 'No requests have the ticked statuses.'
+                            : 'No requests are ticked for export.'}
                       </Typography>
                     </Box></Box>
                   )}
@@ -539,7 +586,7 @@ export default function RequestsExportDialog({ open, shownRows, tickedRows, othe
               {current.rows.length > PREVIEW_ROWS && (
                 <Typography variant="caption" color="text.secondary">Showing the first {PREVIEW_ROWS} of {current.rows.length} rows.</Typography>
               )}
-              <Typography variant="caption" color="text.secondary">Header frozen with Excel filters; days and hours are numbers with a totals row; dates are Toronto days, as on the dashboard.</Typography>
+              <Typography variant="caption" color="text.secondary">Header frozen with Excel filters; days and hours are numbers, and the totals row adds approved requests only; dates are Toronto days, as on the dashboard.</Typography>
             </Stack>
           </Box>
         </Box>
