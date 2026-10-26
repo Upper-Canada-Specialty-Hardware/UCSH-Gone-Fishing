@@ -12,6 +12,7 @@ import {
 import { LiveScope } from '../../api/events';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 import { useFitColumns } from './useFitColumns';
+import { StateDisplay, canDecide, stateDisplay } from '../../requestState';
 
 /** The actions a row offers; each is wired to the dashboard's existing handlers. */
 export interface TableActions {
@@ -374,11 +375,17 @@ function MoreRows({ rendered, total, step, onMore }: { rendered: number; total: 
 function StatusCell({ r, theme }: { r: Row; theme: Theme }) {
   const tone = statusTone(theme, r.status);
   const waited = r.waiting;
+  // While a pending row is not decidable yet (getting ready / needs attention),
+  // show that state beside the Pending pill so the gone buttons make sense (#455).
+  const notReady = r.status === 'Pending' && r.source !== 'stuck' && !canDecide(r.state) ? stateDisplay(r.state) : null;
   return (
     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '4px 8px', alignItems: 'center' }}>
       <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, fontSize: 12, fontWeight: 700, px: 1.125, py: 0.25, borderRadius: 999, color: tone.color, bgcolor: tone.bg }}>
         <Box component="span" sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: 'currentColor' }} />{r.status}
       </Box>
+      {notReady && (
+        <Box component="span" sx={{ fontSize: 11.5, fontWeight: 700, px: 1, py: 0.25, borderRadius: 1, color: `${notReady.color}.main`, bgcolor: notReady.color === 'error' ? theme.tokens.errSoft : theme.tokens.warnSoft }}>{notReady.label}</Box>
+      )}
       {r.status === 'Pending' && r.source !== 'stuck' && waited != null && waited >= 2 && (
         <Box component="span" sx={{ fontSize: 11.5, fontWeight: 700, color: waited >= 7 ? 'error.main' : 'warning.main' }}>{waited}d</Box>
       )}
@@ -398,7 +405,9 @@ function QuickActions({ r, mode, processingEnabled, busy, actions }: { r: Row; m
   if (mode === 'admin' && r.status === 'Approved') {
     return <Button size="small" variant="outlined" color="inherit" disabled={busy || !processingEnabled} onClick={(e) => { stop(e); actions.refund(r); }} sx={{ fontSize: 12.5 }}>Refund</Button>;
   }
-  if (r.status !== 'Pending' || r.source === 'stuck') return null;
+  // A pending row that is still getting ready (or needs attention) cannot be
+  // decided yet, so it offers no quick approve/reject; the status cell says why (#455).
+  if (r.status !== 'Pending' || r.source === 'stuck' || !canDecide(r.state)) return null;
   return (
     <Box sx={{ display: 'inline-flex', gap: 0.5 }} onClick={stop}>
       <Button size="small" variant="outlined" color="success" disabled={busy || !processingEnabled} onClick={() => actions.approve(r)} aria-label={`Approve ${r.id}`} sx={{ minWidth: 32, px: 0 }}>✓</Button>
@@ -506,10 +515,14 @@ function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r
   const writeOff = !processingEnabled;
   // The employee table is read-only.
   if (mode === 'mine') return null;
+  // A pending row that is not decidable yet (getting ready / needs attention): no
+  // approve/reject anywhere, with the state spelt out instead (#455).
+  const notReady = r.status === 'Pending' && r.source !== 'stuck' && !canDecide(r.state) ? stateDisplay(r.state) : null;
   // The manager team table offers only approve/reject on a waiting request; refund,
   // edit, reminders, reprocess and delete stay admin-only (#360).
   if (mode === 'team') {
     if (r.status !== 'Pending' || r.source === 'stuck') return null;
+    if (notReady) return <NotReadyNote display={notReady} />;   // still getting ready: no decision yet
     return (
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
         <Button size="small" variant="contained" color="success" disabled={busy || writeOff} onClick={() => actions.approve(r)}>Approve</Button>
@@ -521,6 +534,13 @@ function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r
     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
       {stuck ? (
         <Button size="small" variant="contained" disabled={busy || writeOff} onClick={() => actions.reprocess(r)}>Reprocess</Button>
+      ) : notReady ? (
+        // Getting ready / needs attention: the admin may still edit or delete it,
+        // but it cannot be approved or rejected until it finishes processing (#455).
+        <>
+          <NotReadyNote display={notReady} />
+          <Button size="small" variant="outlined" color="inherit" disabled={busy || writeOff} onClick={() => actions.edit(r)}>Edit</Button>
+        </>
       ) : r.status === 'Pending' ? (
         <>
           <Button size="small" variant="contained" color="success" disabled={busy || writeOff} onClick={() => actions.approve(r)}>Approve</Button>
@@ -537,6 +557,22 @@ function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r
         <Button size="small" variant="outlined" color="inherit" onClick={() => actions.audit(r)}>Audit trail</Button>
       ) : null}
       <Button size="small" color="error" disabled={writeOff} onClick={() => actions.delete([r])} sx={{ ml: 'auto' }}>Delete</Button>
+    </Box>
+  );
+}
+
+/**
+ * The in-place note shown where approve/reject would be, for a pending request
+ * that is not decidable yet (getting ready / needs attention), #455.
+ *
+ * @param props.display - The state's label and colour from requestState.
+ * @returns A coloured line naming the state and why no decision is offered.
+ */
+function NotReadyNote({ display }: { display: StateDisplay }) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, fontSize: 13, color: `${display.color}.main` }}>
+      <Box component="span" sx={{ fontWeight: 700 }}>{display.label}</Box>
+      <Box component="span" sx={{ color: 'text.secondary' }}>cannot be decided until it finishes processing</Box>
     </Box>
   );
 }

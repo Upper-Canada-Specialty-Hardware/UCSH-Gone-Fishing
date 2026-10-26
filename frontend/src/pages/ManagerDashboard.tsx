@@ -176,6 +176,9 @@ export default function ManagerDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  // Which way the in-flight decision goes, so the busy button reads "Approving..."
+  // or "Rejecting..." rather than a neutral word (#455); null when nothing runs.
+  const [decidingYes, setDecidingYes] = useState<boolean | null>(null);
   // Decided cards showing their outcome before they leave: key to true (approved) or false (rejected).
   const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
@@ -348,6 +351,7 @@ export default function ManagerDashboard() {
    */
   const decide = useCallback(async (type: string, id: string, yes: boolean, reason = '') => {
     setActionLoading(`${type}-${id}`);
+    setDecidingYes(yes);                                             // drives the busy label's verb (#455)
     try {
       await (yes ? approveRequest(type, id) : rejectRequest(type, id, reason));
       const key = `${type}-${id}`;
@@ -362,6 +366,7 @@ export default function ManagerDashboard() {
       setSnack({ open: true, message: typeof detail === 'string' ? detail : yes ? 'Approval failed' : 'Rejection failed', severity: 'error' });
     } finally {
       setActionLoading(null);
+      setDecidingYes(null);                                          // clear the in-flight verb
     }
   }, []);
 
@@ -553,6 +558,7 @@ export default function ManagerDashboard() {
                         clashes={clashesFor(item, absences, labelOf)}
                         processingEnabled={processingEnabled}
                         busy={actionLoading === key}
+                        busyYes={actionLoading === key ? decidingYes : null}
                         onApprove={() => decide(item.request_type, String(item.id), true)}
                         onReject={() => setRejectTarget({ type: item.request_type, id: String(item.id), name: requestWho(item), label: requestWhat(item) })}
                         colorOf={colorOf}

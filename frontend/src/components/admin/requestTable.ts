@@ -27,6 +27,9 @@ export interface Row {
   source: RowSource;
   kind: RequestKind | null;
   kindLabel: string;
+  // The state-machine position (#455): 'getting_ready', 'waiting_on_approval',
+  // 'needs_attention', ... or '' on the SharePoint path, which carries no state.
+  state: string;
   person: string;
   dept: string;
   loc: string;
@@ -117,6 +120,7 @@ export function toRow(raw: any, source: RowSource): Row {
     source,
     kind: kindOf(type, type === 'carryover-payout' ? item.TypeofRequest : item.LeaveType),
     kindLabel: kindLabelOf(item),
+    state: item.state || '',               // present in Postgres mode, blank in SharePoint mode (#455)
     person: item.employee_name || (item.Title || '').split(' /// ')[0] || 'Unknown',
     dept: choiceText(item.StaffDepartment || item.Department),   // a lookup object shows its name
     loc: choiceText(item.StaffLocation || item.Location),

@@ -102,6 +102,12 @@ def _approved(**fields) -> RequestRecord:
         decided_at=datetime(2026, 7, 27, tzinfo=timezone.utc), extra={},
     )
     base.update(fields)
+    # Match the state to the status so the refund's approved -> refunded move is
+    # legal (#455); a pending override becomes waiting_on_approval.
+    base.setdefault("state", {
+        "approved": "approved", "rejected": "rejected",
+        "refunded": "refunded", "cancelled": "cancelled",
+    }.get(base["status"], "waiting_on_approval"))
 
     async def insert():
         async with async_session() as session:
