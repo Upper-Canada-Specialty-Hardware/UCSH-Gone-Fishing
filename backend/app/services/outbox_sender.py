@@ -245,7 +245,17 @@ async def send_outbox_row(session, row: Outbox) -> None:
             # is left unset here; the log row still exists, found by recipient/time.
         else:
             from app.services.sms import send_sms
-            response = await send_sms(row.recipient, row.body)
+            # Label the text-log row with what this outbox row is: its message
+            # type as the kind, and the request it belongs to, so the admin Text
+            # Log can group every text for one request (#494).
+            response = await send_sms(
+                row.recipient, row.body,
+                kind=row.message_type,
+                request_kind=request.kind if request is not None else None,
+                request_item_id=request.item_id if request is not None else None,
+                outbox_id=row.id,
+                request_id=row.request_id,
+            )
             row.provider_message_id = (response or {}).get("sid")   # Twilio's message id
         row.status = "sent"
         row.sent_at = utcnow()

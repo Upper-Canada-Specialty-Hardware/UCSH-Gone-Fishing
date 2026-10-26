@@ -263,6 +263,26 @@ export const getAdminEmailLogRecent = (
 export const sendAdminTestEmail = (payload: { employee_id?: string; address?: string }) =>
   api.post('/admin/email-log/test', payload);
 
+// Admin - Text Log: every text to/from one person, or about one request. The
+// backend resolves the cell number from the Staff Directory when only an
+// employee_id is given, and matches on the last ten digits; `days` bounds the
+// window (default 30 server-side). Returns `sends` and inbound `replies`.
+export const getAdminSmsLog = (
+  params: { employee_id?: string; number?: string; request_kind?: string; item_id?: string; days?: number },
+) => api.get('/admin/sms-log', { params });
+
+// Admin - Text Log: every recent text, sent and received, no person needed.
+// `hours` bounds the window, `limit` caps rows, `text` narrows to a number or
+// body substring (server-side).
+export const getAdminSmsLogRecent = (
+  params: { hours?: number; limit?: number; text?: string },
+) => api.get('/admin/sms-log/recent', { params });
+
+// Admin - Text Log: text a labelled test to one person through the normal send
+// path and get that send's log row back.
+export const sendAdminTestSms = (payload: { employee_id?: string; number?: string }) =>
+  api.post('/admin/sms-log/test', payload);
+
 // Admin - Held Requests: request page submissions from people not in the Staff
 // Directory yet, waiting for their supervisor to add them.
 export const getHeldRequests = (includeClosed = false) =>

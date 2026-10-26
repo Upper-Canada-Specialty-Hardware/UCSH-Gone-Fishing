@@ -208,6 +208,7 @@ from app.routes.admin_requests import router as admin_requests_router
 from app.routes.team_export import router as team_export_router
 from app.routes.admin_storage import router as admin_storage_router
 from app.routes.email_api_log import router as email_api_log_router
+from app.routes.sms_api_log import router as sms_api_log_router
 from app.routes.intake import router as intake_router
 from app.routes.self_service import router as self_service_router
 from app.routes.events import router as events_router
@@ -244,6 +245,9 @@ app.include_router(admin_storage_router, prefix="/api/dashboard", tags=["dashboa
 # Same prefix as the dashboard router so the admin email-log lookup sits next
 # to the other /admin/* endpoints; kept in its own module to stay small.
 app.include_router(email_api_log_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The admin text-log lookup (#494), the SMS counterpart of the email log: same
+# prefix and admin password, its own module to stay small.
+app.include_router(sms_api_log_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # An employee signed in on the request page submits a request (/me/requests/{type}).
 app.include_router(self_service_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 # The live event stream, the catch-up fallback, the per-request timeline and the
