@@ -140,16 +140,16 @@ class StaffStore:
     async def update_list_item_fields(
         self, list_id: str, item_id, fields: dict, *,
         links: dict | None = None, history_source: str | None = None,
-        history_reason: str | None = None,
+        history_reason: str | None = None, history_actor: str | None = None,
     ) -> dict:
         """Merge fields into an item; returns its fields.
 
-        ``links``, ``history_source`` and ``history_reason`` only apply to a staff
-        write served from Postgres: they carry the manager/supervisor names the
-        Graph write shape lacks and ask the store to record the change in
-        ``staff_changes`` once. SharePoint reads the ``*LookupId`` keys already in
-        ``fields`` and records no history, so it is passed only the plain payload
-        and its behaviour is unchanged.
+        ``links``, ``history_source``, ``history_reason`` and ``history_actor``
+        only apply to a staff write served from Postgres: they carry the
+        manager/supervisor names the Graph write shape lacks and ask the store to
+        record the change in ``staff_changes`` once. SharePoint reads the
+        ``*LookupId`` keys already in ``fields`` and records no history, so it is
+        passed only the plain payload and its behaviour is unchanged.
 
         Args:
             list_id: The SharePoint list id the caller passed.
@@ -159,6 +159,9 @@ class StaffStore:
             history_source: ``"system"`` / ``"admin_dashboard"`` to record history in
                 Postgres, or None when the caller records its own.
             history_reason: The reason stored with that history.
+            history_actor: Who made the change ("HR", a manager's name, "system"),
+                stored on each history row; None leaves the reader to fall back to
+                ``history_source`` (#447).
 
         Returns:
             The item's fields after the change.
@@ -169,6 +172,7 @@ class StaffStore:
                 return await backend.update_list_item_fields(
                     list_id, item_id, fields,
                     links=links, history_source=history_source, history_reason=history_reason,
+                    history_actor=history_actor,
                 )
             return await backend.update_list_item_fields(list_id, item_id, fields)
 

@@ -585,9 +585,12 @@ def test_import_carries_the_approval_version_and_a_v2_link_approves(sp, monkeypa
             await session.commit()
 
     run(seed_state())
-    sp.lists[LEAVE] = [sp_item(3905, leave_fields(lookup=101))]
+    # A manager on the row so the import maps it to waiting_on_approval (a pending
+    # row with a manager and an imported event), the only decidable state (#455).
+    sp.lists[LEAVE] = [sp_item(3905, leave_fields(lookup=101, ManagerID="55"))]
     run(import_requests())
     assert run(_record("leave", 3905)).approval_version == 2     # carried from the approval state
+    assert run(_record("leave", 3905)).state == "waiting_on_approval"   # ready to be decided (#455)
 
     fake = _FakeStaffBalances()
 

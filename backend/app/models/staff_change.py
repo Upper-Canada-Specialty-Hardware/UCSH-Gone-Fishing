@@ -42,8 +42,16 @@ class StaffChange(Base):
     old_value: Mapped[object] = mapped_column(JSON, nullable=True)
     # Value after the change; same JSON shape as old_value.
     new_value: Mapped[object] = mapped_column(JSON, nullable=True)
-    # Why HR made the change -> free text, always required so a row explains itself.
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Why the change was made -> free text; nullable because an imported
+    # SharePoint version often carries no comment to explain it (#448).
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Who or what made the change: "HR", a manager's name, "system", or the
+    # SharePoint editor's name for an imported row. Null on older rows, where the
+    # reader falls back to ``source`` (#447).
+    actor: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The SharePoint version label an imported row came from (e.g. "1.0"); null
+    # for a change the app recorded directly (#447).
+    version: Mapped[str | None] = mapped_column(String, nullable=True)
     # Where the change came from; the admin dashboard now, "sharepoint" later.
     source: Mapped[str] = mapped_column(String(24), nullable=False, default="admin_dashboard")
     # When it happened (UTC, tz-aware); indexed because reads order by it newest first.

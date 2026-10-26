@@ -1,7 +1,8 @@
-import { Box, Button, Paper, Typography } from '@mui/material';
+import { Box, Button, Chip, Paper, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import KindPill from '../KindPill';
 import TakenFrom from '../TakenFrom';
+import { canDecide, stateDisplay } from '../../requestState';
 import { parseDay } from '../../utils/dates';
 import { ColorOf } from '../../utils/personColor';
 import { Clash } from './teamStats';
@@ -27,6 +28,8 @@ interface Props {
   clashes: Clash[];
   processingEnabled: boolean;
   busy: boolean;
+  /** While busy, which way the decision goes: true approving, false rejecting, null idle (#455). */
+  busyYes?: boolean | null;
   onApprove: () => void;
   onReject: () => void;
   /** Its place in the queue, so cards arrive oldest first. */
@@ -63,7 +66,7 @@ function DateBox({ iso }: { iso?: string }) {
  * @param props - See {@link Props}.
  * @returns The card.
  */
-export default function DecisionCard({ item, clashes, processingEnabled, busy, onApprove, onReject, colorOf, index = 0, decided }: Props) {
+export default function DecisionCard({ item, clashes, processingEnabled, busy, busyYes = null, onApprove, onReject, colorOf, index = 0, decided }: Props) {
   const theme = useTheme();
   const who = requestWho(item);
   const note = requestNote(item);
@@ -73,6 +76,16 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
   const belowZero = item.below_zero;                                            // set when approving drops the floor below zero (#300)
   const dated = item.request_type !== 'carryover-payout' && item.StartDate;     // carry-over has no dates
   const sameDay = !item.EndDate || item.EndDate.slice(0, 10) === item.StartDate?.slice(0, 10);
+  const decidable = canDecide(item.state);                                      // false while getting ready / needs attention (#455)
+  // Surface the state chip only while a card is still being prepared
+  // (getting_ready / needs_attention): that is the whole reason its buttons are
+  // off, so the manager sees why (#455). A waiting_on_approval row needs no chip,
+  // a decided row must not show a second "Approved"-style chip on top of its
+  // outcome, and the SharePoint path has no state.
+  const notYetReady = item.state === 'getting_ready' || item.state === 'needs_attention';
+  const stateChip = notYetReady ? stateDisplay(item.state) : null;
+  // The tooltip on the disabled buttons when the block is the state, not processing.
+  const notReadyHint = stateChip ? `${stateChip.label}: this request cannot be decided yet` : undefined;
 
   return (
     <Paper
@@ -98,6 +111,10 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
           <Typography variant="body2" color="text.secondary">{askedAgo(item)}</Typography>
         </Box>
         <KindPill kind={requestKind(item)} label={requestWhat(item)} />
+        {/* Why this card is not decidable yet (getting ready / needs attention), #455. */}
+        {stateChip && (
+          <Chip size="small" color={stateChip.color} variant="outlined" label={stateChip.label} />
+        )}
         {waited !== null && waited > 7 && (
           <Box component="span" sx={{ fontSize: 12, fontWeight: 700, px: 1, py: 0.25, borderRadius: 999, color: 'warning.main', bgcolor: alpha(theme.palette.warning.main, 0.12) }}>
             waiting {waited} days
@@ -175,15 +192,23 @@ export default function DecisionCard({ item, clashes, processingEnabled, busy, o
         </Box>
       )}
 
-      {/* The pressed button confirms in place ("Approved" with a tick) before the card leaves. */}
+      {/* The pressed button confirms in place ("Approved" with a tick) before the card leaves.
+          A card that is not decidable yet (getting ready / needs attention) has both buttons
+          off, with the state as the reason in the tooltip (#455). */}
       <Box sx={{ display: 'flex', gap: 1, position: 'relative', zIndex: 1 }}>
-        <Button variant="contained" color="success" disabled={!processingEnabled || busy || decided !== undefined} onClick={onApprove}
-          title={!processingEnabled ? 'Processing is currently disabled' : undefined}>
-          <Swap k={decided === true ? 'done' : 'ask'}>{decided === true ? '✓ Approved' : 'Approve'}</Swap>
+        <Button variant="contained" color="success" disabled={!processingEnabled || busy || decided !== undefined || !decidable} onClick={onApprove}
+          title={!processingEnabled ? 'Processing is currently disabled' : notReadyHint}>
+          {/* While this card's approval runs, the button says "Approving..."; a reject in flight leaves it on "Approve". */}
+          <Swap k={busyYes === true ? 'busy' : decided === true ? 'done' : 'ask'}>
+            {busyYes === true ? 'Approving...' : decided === true ? '✓ Approved' : 'Approve'}
+          </Swap>
         </Button>
-        <Button variant="outlined" color="error" disabled={!processingEnabled || busy || decided !== undefined} onClick={onReject}
-          title={!processingEnabled ? 'Processing is currently disabled' : undefined}>
-          <Swap k={decided === false ? 'done' : 'ask'}>{decided === false ? '✓ Rejected' : 'Reject'}</Swap>
+        <Button variant="outlined" color="error" disabled={!processingEnabled || busy || decided !== undefined || !decidable} onClick={onReject}
+          title={!processingEnabled ? 'Processing is currently disabled' : notReadyHint}>
+          {/* While this card's rejection runs, the button says "Rejecting...". */}
+          <Swap k={busyYes === false ? 'busy' : decided === false ? 'done' : 'ask'}>
+            {busyYes === false ? 'Rejecting...' : decided === false ? '✓ Rejected' : 'Reject'}
+          </Swap>
         </Button>
       </Box>
     </Paper>

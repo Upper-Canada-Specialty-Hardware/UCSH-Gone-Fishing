@@ -28,10 +28,12 @@ export interface LiveEvent {
   type: string;                 // approved / rejected / submitted / ...
   channel: string;
   actor: string | null;
+  actor_name: string | null;    // the actor's staff name when resolved, else the raw actor (#455)
   detail: Record<string, unknown>;
   created_at: string | null;
   stage: string | null;         // the request's stage in words, now
   status: string | null;        // pending / approved / rejected / ...
+  state: string | null;         // the state-machine position (#455)
   employee_name: string | null;
   leave_type: string | null;
   start_date: string | null;
@@ -138,6 +140,9 @@ export function eventToRow(ev: LiveEvent): Record<string, unknown> {
   // decided event, where the stored stage is right and should update live (finding 11).
   if (ev.stage && ev.status !== 'pending') patch.stage = ev.stage;
   if (ev.status) patch.Status = statusLabel(ev.status);    // Pending/Approved/...
+  // The state-machine position drives the chip and whether Approve/Reject are
+  // enabled; a decision event carries the new state, so the row updates live (#455).
+  if (ev.state) patch.state = ev.state;
   if (ev.employee_name) patch.employee_name = ev.employee_name;
   if (ev.leave_type) patch.LeaveType = ev.leave_type;
   if (ev.start_date) patch.StartDate = ev.start_date;

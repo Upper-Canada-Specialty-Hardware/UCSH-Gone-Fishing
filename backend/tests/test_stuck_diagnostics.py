@@ -196,3 +196,49 @@ def test_an_unreadable_send_record_lists_none_of_them(monkeypatch):
     result = asyncio.run(dash.admin_stuck_requests())
 
     assert result["stuck"] == []
+
+
+# ----- on Postgres the state column judges stuck, including incomplete waiting rows (#455) -----
+
+
+def test_postgres_flags_a_waiting_request_that_is_not_fully_processed(monkeypatch):
+    """A waiting_on_approval row still missing its Days or manager is listed as stuck.
+
+    On Postgres the request's own state drives the stuck list. A waiting row the
+    manager cannot actually act on (no computed Days, or no assigned manager) must
+    still surface, while a complete waiting row does not. A getting_ready row
+    younger than the window is also not flagged, so the few seconds while a submit
+    sends is never a false "stuck".
+    """
+    monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")       # the Postgres stuck path
+
+    from datetime import datetime, timezone
+    recent = datetime.now(timezone.utc).isoformat()                     # a few seconds ago: inside the window
+
+    def _row(item_id, state, **fields):
+        base = {"Status": "Pending", "state": state, "LeaveType": "Vacation",
+                "Title": "Time off", "StartDate": "2026-09-02T00:00:00Z",
+                "EndDate": "2026-09-02T00:00:00Z", "Created": "2026-09-01T00:00:00Z"}
+        base.update(fields)
+        return {"id": item_id, "fields": base}
+
+    rows = [
+        _row("ok", "waiting_on_approval", Days=1, ManagerLookupId=7),    # complete: not stuck
+        _row("no-days", "waiting_on_approval", ManagerLookupId=7),       # waiting but no Days: stuck
+        _row("no-mgr", "waiting_on_approval", Days=1),                   # waiting but no manager: stuck
+        _row("fresh", "getting_ready", Days=1, ManagerLookupId=7, Created=recent),  # young: not stuck
+    ]
+
+    async def _get_list_items(list_id, *a, **k):
+        return rows if list_id == settings.SP_LIST_LEAVE_REQUESTS else []
+
+    monkeypatch.setattr(dash.request_store, "get_list_items", _get_list_items)
+
+    async def _lookups():
+        return {}, {}, {}, {}
+
+    monkeypatch.setattr(dash, "_build_staff_lookups", _lookups)
+
+    result = asyncio.run(dash.admin_stuck_requests())
+    flagged = {row["id"] for row in result["stuck"]}
+    assert flagged == {"no-days", "no-mgr"}                             # only the incomplete waiting rows

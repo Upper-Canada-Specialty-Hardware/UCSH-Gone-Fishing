@@ -563,6 +563,7 @@ def test_a_carry_over_approval_records_its_new_balance(switched):
             session.add(RequestRecord(
                 kind="carryover_payout", item_id=7001, status="pending", employee_id="10",
                 employee_email="alice@ucsh.com", days=2.0, request_option="carry_over",
+                state="waiting_on_approval",   # ready to be decided (#455)
             ))
             await session.commit()
     run(seed())

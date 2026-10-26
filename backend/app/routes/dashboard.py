@@ -187,6 +187,54 @@ def _is_fully_processed(fields: dict, request_type: str) -> bool:
     return True
 
 
+def _hide_pending_unprocessed(fields: dict, request_type: str, pg: bool) -> bool:
+    """Whether a pending row should be hidden because it is not yet processed.
+
+    On the SharePoint path an SP-created pending item with no computed days or no
+    assigned manager is hidden until the dispatcher finishes it. On the Postgres
+    path a request carries an explicit state (#455): a ``getting_ready`` row is
+    shown instead of hidden (the frontend renders it "Getting ready" with the
+    buttons disabled), so nothing is hidden here.
+
+    Args:
+        fields: The request's fields (Status, and on Postgres the state).
+        request_type: The url-form kind, for the SharePoint processed check.
+        pg: True on the Postgres path.
+
+    Returns:
+        True only on the SharePoint path, for a pending row not yet processed.
+    """
+    if pg:
+        return False                                           # the state column drives display, nothing hidden
+    return fields.get("Status") == "Pending" and not _is_fully_processed(fields, request_type)
+
+
+# How long a request may sit getting_ready before the stuck list flags it (#455).
+GETTING_READY_STUCK_MINUTES = 10
+
+
+def _getting_ready_stuck(created_iso) -> bool:
+    """Whether a getting_ready request has been stuck preparing for too long (#455).
+
+    Args:
+        created_iso: The request's Created timestamp (ISO 8601), or None.
+
+    Returns:
+        True when it was created more than ``GETTING_READY_STUCK_MINUTES`` ago, so
+        the backend should have finished preparing it by now.
+    """
+    if not created_iso:
+        return False                                           # no timestamp: give it the benefit of the doubt
+    from datetime import datetime, timedelta, timezone
+    try:
+        created = datetime.fromisoformat(str(created_iso).replace("Z", "+00:00"))   # Graph uses a trailing Z
+    except ValueError:
+        return False                                           # unparseable: do not flag on a bad value
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)         # a naive value is UTC here
+    return datetime.now(timezone.utc) - created > timedelta(minutes=GETTING_READY_STUCK_MINUTES)
+
+
 def _format_balances(fields: dict, vacation_taken: float | None = None) -> dict:
     """One person's balances in the dashboard wire shape.
 
@@ -686,7 +734,7 @@ async def my_requests(
     if not type or type == "leave":
         for item in await _own_items("leave", settings.SP_LIST_LEAVE_REQUESTS, "SubmittedTest"):
             for r in _filter_requests([item], None, status, from_date, to_date):
-                if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
+                if _hide_pending_unprocessed(r, "leave", pg):      # getting_ready rows show on Postgres (#455)
                     continue
                 r["request_type"] = "leave"
                 r["managers"] = managers
@@ -696,7 +744,7 @@ async def my_requests(
     if not type or type == "overtime":
         for item in await _own_items("overtime", settings.SP_LIST_OVERTIME_REQUESTS, "SubmittedBy"):
             for r in _filter_requests([item], None, status, from_date, to_date):
-                if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
+                if _hide_pending_unprocessed(r, "overtime", pg):   # getting_ready rows show on Postgres (#455)
                     continue
                 r["request_type"] = "overtime"
                 r["managers"] = managers
@@ -706,7 +754,7 @@ async def my_requests(
     if not type or type == "carryover-payout":
         for item in await _own_items("carryover-payout", settings.SP_LIST_CARRYOVER_PAYOUT, ""):
             for r in _filter_requests([item], None, status, from_date, to_date):
-                if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
+                if _hide_pending_unprocessed(r, "carryover-payout", pg):   # getting_ready rows show on Postgres (#455)
                     continue
                 r["request_type"] = "carryover-payout"
                 r["managers"] = managers
@@ -782,6 +830,7 @@ async def team_pending(user: AuthUser):
 
     staff_by_name, staff_by_id, sp_user_to_name, mgr_to_emp_names = await _build_staff_lookups()
     my_employees = team_names(mgr_to_emp_names, manager_name)   # by id or by name (#376)
+    pg = await requests_in_postgres()                          # on Postgres, getting_ready rows show too (#455)
     pending = []
 
     # Leave — check submitter in my_employees (dynamic manager lookup)
@@ -794,7 +843,7 @@ async def team_pending(user: AuthUser):
         f = item.get("fields", {})
         if f.get("Status") != "Pending":
             continue
-        if not _is_fully_processed(f, "leave"):
+        if not pg and not _is_fully_processed(f, "leave"):     # Postgres shows getting_ready (#455)
             continue
         emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
         if emp_name not in my_employees:
@@ -813,7 +862,7 @@ async def team_pending(user: AuthUser):
         f = item.get("fields", {})
         if f.get("Status") != "Pending":
             continue
-        if not _is_fully_processed(f, "overtime"):
+        if not pg and not _is_fully_processed(f, "overtime"):  # Postgres shows getting_ready (#455)
             continue
         submitter_name = _resolve_sp_user_name(f, "SubmittedBy", sp_user_to_name)
         mgr_name = _resolve_sp_user_name(f, "Manager", sp_user_to_name)
@@ -833,7 +882,7 @@ async def team_pending(user: AuthUser):
         f = item.get("fields", {})
         if f.get("Status") != "Pending":
             continue
-        if not _is_fully_processed(f, "carryover-payout"):
+        if not pg and not _is_fully_processed(f, "carryover-payout"):   # Postgres shows getting_ready (#455)
             continue
         emp_id = f.get("EmployeeID")
         emp_name = ""
@@ -924,7 +973,7 @@ async def team_requests(
             if not pg and _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name) not in my_employees:
                 continue
             for r in _filter_requests([item], None, status, from_date, to_date):
-                if r.get("Status") == "Pending" and not _is_fully_processed(r, "leave"):
+                if _hide_pending_unprocessed(r, "leave", pg):      # getting_ready rows show on Postgres (#455)
                     continue
                 _project(r, "leave", f)
                 results.append(r)
@@ -939,7 +988,7 @@ async def team_requests(
                 if normalise_name(mgr_name) != normalise_name(manager_name) and submitter_name not in my_employees:
                     continue
             for r in _filter_requests([item], None, status, from_date, to_date):
-                if r.get("Status") == "Pending" and not _is_fully_processed(r, "overtime"):
+                if _hide_pending_unprocessed(r, "overtime", pg):   # getting_ready rows show on Postgres (#455)
                     continue
                 _project(r, "overtime", f)
                 results.append(r)
@@ -961,7 +1010,7 @@ async def team_requests(
                 if emp_name not in my_employees:
                     continue
             for r in _filter_requests([item], None, status, from_date, to_date):
-                if r.get("Status") == "Pending" and not _is_fully_processed(r, "carryover-payout"):
+                if _hide_pending_unprocessed(r, "carryover-payout", pg):   # getting_ready rows show on Postgres (#455)
                     continue
                 _project(r, "carryover-payout", f)
                 results.append(r)
@@ -1024,7 +1073,8 @@ async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str,
     HMAC-signed over the manager and request, and the SMS path checks the sender is
     on the submitter's manager list). This closes that hole on the dashboard: a
     manager may decide only a request whose employee lists them (or one assigned to
-    them, so a #342 stand-in still works), and never their own request. Admins are
+    them, so a #342 stand-in still works). A manager's own request is now allowed
+    on every channel (#455), so that case is permitted here too. Admins are
     unchanged. Postgres only (the preview path); the SharePoint path keeps its
     existing behaviour, as nothing reads SharePoint after the switch.
 
@@ -1034,8 +1084,8 @@ async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str,
         request_id: The item_id being decided.
 
     Raises:
-        HTTPException: 403 when a manager is not on the request's team, or is the
-            request's own employee.
+        HTTPException: 403 when a manager is not on the request's team (their own
+            request is allowed).
     """
     if user.role != "manager":                                 # admins may decide any request
         return
@@ -1055,8 +1105,8 @@ async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str,
         )).scalars().first()
     if record is None:
         return                                                 # gone: the handler returns the "no longer exists" error
-    if str(record.employee_id) == str(user.user_id):           # a manager cannot decide their own request
-        raise HTTPException(status_code=403, detail="You cannot decide your own request.")
+    if str(record.employee_id) == str(user.user_id):           # approving your own request is allowed now (#455)
+        return                                                 # permit it, like every other channel does
     if record.manager_id is not None and str(record.manager_id) == str(user.user_id):
         return                                                 # the assigned manager (or a #342 stand-in)
     employee = await get_employee_by_id(record.employee_id)    # resolve the submitter's managers
@@ -1190,7 +1240,13 @@ async def team_create_employee(user: AuthUser, body: dict):
 
     from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
-        record = await create_employee(body, supervisor_ids)
+        # A manager added this hire from the manager dashboard: record the first
+        # supervisor assignment under the manager's own name, not HR/system (#447).
+        record = await create_employee(
+            body, supervisor_ids,
+            history_source="manager_dashboard",
+            history_actor=manager["fields"].get("Title") or None,
+        )
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
@@ -1547,7 +1603,7 @@ async def admin_requests(
         if type and type != request_type:
             continue
         for item in _filter_requests(await _all_items(request_type, list_id), None, status, from_date, to_date):
-            if item.get("Status") == "Pending" and not _is_fully_processed(item, request_type):
+            if _hide_pending_unprocessed(item, request_type, pg):   # getting_ready rows show on Postgres (#455)
                 continue
             item["request_type"] = request_type
             # The person blob names the employee in SharePoint; the typed column does in Postgres.
@@ -1566,6 +1622,7 @@ async def admin_requests(
 @router.get("/admin/pending")
 async def admin_pending():
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
+    pg = await requests_in_postgres()                          # on Postgres, getting_ready rows show too (#455)
     pending = []
 
     for list_id, req_type in [
@@ -1579,7 +1636,7 @@ async def admin_pending():
                 f = item.get("fields", {})
                 if f.get("Status") != "Pending":
                     continue
-                if not _is_fully_processed(f, req_type):
+                if not pg and not _is_fully_processed(f, req_type):   # Postgres shows getting_ready (#455)
                     continue
                 item_data = {"id": item["id"], "request_type": req_type, **f}
                 _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
@@ -1715,6 +1772,7 @@ async def admin_stuck_requests():
 
     staff_by_name, staff_by_id, sp_user_to_name, _mgr_map = await _build_staff_lookups()
     today = toronto_today()                                    # for the pending projection year
+    pg = await requests_in_postgres()                          # Postgres uses the state column to judge stuck (#455)
     stuck = []
 
     try:
@@ -1730,11 +1788,12 @@ async def admin_stuck_requests():
     # version (imported rows also honour the old table); in SharePoint mode it is
     # the approval-state row the email build wrote. ApproveProcessedFlag is set
     # only when a decision is applied, so reading it listed every healthy pending
-    # request as stuck (#416).
+    # request as stuck (#416). On Postgres the state column replaces the
+    # "manager asked but not notified" condition, so the records are only read for
+    # the SharePoint path.
     entries = [("leave", settings.SP_LIST_LEAVE_REQUESTS, item) for item in pending_items]
     emailed = (
-        await fetch_manager_asked_records(entries)
-        if await requests_in_postgres()
+        None if pg
         else await fetch_approval_email_records(entries)
     )
 
@@ -1754,21 +1813,36 @@ async def admin_stuck_requests():
             else (settings.SP_LIST_LEAVE_REQUESTS, str(item.get("id", ""))) in emailed
         )
 
-        # Three stuck conditions:
-        # 1. Not fully processed (no Days or no Manager)
-        # 2. Has a manager but no record of an approval email
-        # 3. Blocked at approval by an already-approved absence
-        is_stuck = (
-            not _is_fully_processed(f, "leave")
-            or ((f.get("ManagerLookupId") or f.get("ManagerID")) and notified is False)   # either backend's manager
-            or blocked_by is not None
-        )
+        # What counts as stuck depends on the backend. On Postgres the request's
+        # own state says it (#455): needs_attention (getting ready failed), or
+        # getting_ready for too long (the backend never finished preparing it), or
+        # waiting_on_approval but still missing its computed Days or a manager (so
+        # the manager cannot actually act), or blocked at approval by an
+        # already-approved absence. A getting_ready row younger than the window is
+        # not flagged, so the 3-second gap while the submit sends is not "stuck".
+        # The "manager asked but not notified" condition is dropped here, since the
+        # state covers it. On SharePoint the three legacy conditions still apply.
+        if pg:
+            state = f.get("state")
+            is_stuck = (
+                state == "needs_attention"
+                or (state == "getting_ready" and _getting_ready_stuck(f.get("Created")))
+                or (state == "waiting_on_approval" and not _is_fully_processed(f, "leave"))
+                or blocked_by is not None
+            )
+        else:
+            is_stuck = (
+                not _is_fully_processed(f, "leave")                                       # no Days or no Manager
+                or ((f.get("ManagerLookupId") or f.get("ManagerID")) and notified is False)  # asked but not notified
+                or blocked_by is not None                                                 # blocked by an approved absence
+            )
         if not is_stuck:
             continue
 
         emp_name = _resolve_sp_user_name(f, "SubmittedTest", sp_user_to_name)
         diagnostics, diagnostic_detail = _diagnose_stuck_leave(
-            f, staff_by_name, sp_user_to_name, blocked_by=blocked_by, notified=notified,
+            f, staff_by_name, sp_user_to_name, blocked_by=blocked_by,
+            notified=None if pg else notified,   # the "email pending" diagnostic is a SharePoint-only signal
         )
 
         # Which pots this would take from if approved. Computed from the full SP
@@ -2460,7 +2534,12 @@ async def admin_update_manager_assignment(employee_id: str, body: dict):
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
     from app.services.manager_assignments import update_employee_managers
     manager_ids = body.get("manager_ids", [])
-    result = await update_employee_managers(int(employee_id), manager_ids)
+    # An admin made this change on the shared admin dashboard: record it as HR
+    # under the admin channel, not the automatic "system" default (#447).
+    result = await update_employee_managers(
+        int(employee_id), manager_ids,
+        history_source="admin_dashboard", history_actor="HR",
+    )
     return result
 
 
@@ -2545,6 +2624,7 @@ async def admin_set_balances(body: dict):
                     settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
                     history_source="admin_dashboard",
                     history_reason="Balance correction from the admin dashboard.",
+                    history_actor="HR",                # the shared admin dashboard records as HR (#447)
                 )
 
                 vacation = sp_updates.get("CurrentVacationBalance",
@@ -2645,6 +2725,7 @@ async def admin_update_entitlements(employee_id: str, body: EntitlementChanges):
     try:
         return await apply_entitlement_changes(
             employee_id, body.changes, body.reason, body.fields,
+            actor="HR",                                # the shared admin dashboard records as HR (#447)
         )
     except LookupError as e:                           # employee not found
         raise HTTPException(status_code=404, detail=str(e))

@@ -142,10 +142,10 @@ def wired(monkeypatch):
     async def fake_recalc(emp_id, vacation, carryover):
         calls["recalc"].append((str(emp_id), vacation, carryover))
 
-    async def fake_record(emp_id, name, changes, reason, source="admin_dashboard"):
+    async def fake_record(emp_id, name, changes, reason, source="admin_dashboard", actor=None):
         calls["history"].append(
             {"emp": str(emp_id), "name": name, "changes": changes,
-             "reason": reason, "source": source}
+             "reason": reason, "source": source, "actor": actor}
         )
         return len(changes)
 

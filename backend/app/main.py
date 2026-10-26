@@ -83,6 +83,17 @@ async def lifespan(app: FastAPI):
         carryover_reset_task = start_carryover_reset_task()
         reminder_task = start_reminder_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
+
+        # Deferred so the server is already answering /health: a deploy that
+        # overlapped an in-flight decision can leave a request's state behind its
+        # status (#455). This idempotent pass realigns decided rows and finishes
+        # the submit move for getting_ready rows that were really submitted. It
+        # never raises into startup.
+        async def _deferred_state_reconcile():
+            from app.services.request_states import reconcile_request_states
+            await reconcile_request_states()
+
+        asyncio.create_task(_deferred_state_reconcile())
     else:                                                      # still on SharePoint: connect as before
         try:
             await token_manager.get_token()
@@ -215,6 +226,7 @@ from app.routes.admin_auth import public_router as admin_sign_in_router, router 
 from app.routes.admin_legacy import router as admin_legacy_router
 from app.routes.admin_archive import router as admin_archive_router
 from app.routes.admin_vacation_cover import router as admin_vacation_cover_router
+from app.routes.admin_staff_history import router as admin_staff_history_router
 from app.services.admin_auth import admin_guard
 
 # Every /api/dashboard/admin/* call needs an admin session (#228). The guard
@@ -263,6 +275,9 @@ app.include_router(admin_archive_router, prefix="/api/dashboard", tags=["dashboa
 # The pending requests whose managers are all on vacation (#370): same prefix and
 # admin password as the other admin screens.
 app.include_router(admin_vacation_cover_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The one-off Staff Directory version-history backfill (#448): same prefix and
+# admin password as the other admin tools.
+app.include_router(admin_staff_history_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])

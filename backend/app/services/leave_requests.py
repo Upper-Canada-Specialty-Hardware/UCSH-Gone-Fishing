@@ -208,6 +208,13 @@ async def _flag_post_create_failure(item_id: str | int, exc: BaseException) -> N
                 session, record, "flagged", "system", None,
                 {"error": f"{type(exc).__name__}: {exc}", "step": "post_create"}, key,
             )
+            # Getting ready failed: mark the request needs_attention so the stuck
+            # list surfaces it and it cannot be decided (#455). Only when it is
+            # still getting_ready: a row whose submit already finished (so only the
+            # bereavement alert failed) stays waiting_on_approval, decidable.
+            from app.services.request_states import move
+            if record.state == "getting_ready":
+                move(record, "needs_attention", reason="post-create step failed")
             await session.commit()
     except Exception:  # noqa: BLE001 - flagging is best-effort; never raise from the create path
         logger.exception("Could not flag leave request #%s after a post-create failure", item_id)

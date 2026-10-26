@@ -185,8 +185,9 @@ def _patch(monkeypatch, *, name_exists=False, email_exists=False):
         calls["created"] = fields
         return {"id": "777", "fields": fields}
 
-    async def _update_managers(emp_id, ids):
+    async def _update_managers(emp_id, ids, *, history_source="system", history_reason=None, history_actor=None):
         calls["managers"] = (emp_id, ids)
+        calls["manager_history"] = (history_source, history_actor)   # who/where the assignment was recorded (#447)
 
     async def _rad(emp_id, vacation, carryover):
         calls["rad"] = (emp_id, vacation, carryover)
@@ -213,6 +214,9 @@ def test_creating_writes_the_record_then_the_manager_and_the_allow_date(monkeypa
     # allow date is derived from the opening vacation and carry-over.
     assert calls["created"]["Title"] == "New Hire"
     assert calls["managers"] == (777, [501])
+    # The admin create records the first supervisor as HR on the admin channel,
+    # not the automatic "system" default (#447).
+    assert calls["manager_history"] == ("admin_dashboard", "HR")
     assert calls["rad"] == ("777", 0, 0)
 
 

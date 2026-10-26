@@ -70,17 +70,49 @@ def _iso(value) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _event_payload(event: RequestEvent, request: RequestRecord) -> dict:
+async def _actor_names_for(session, actors) -> dict[str, str]:
+    """Map numeric staff-id actors to their staff names, in one query (#455).
+
+    A decision's actor is stored as a staff id ("416"), so a timeline or a live
+    row would read "by 416" without this. Resolves every numeric actor in a batch
+    (``Staff.sp_item_id`` in the set); non-numeric actors (a name, "admin",
+    "system") are skipped and fall back to their raw value at the call site.
+
+    Args:
+        session: An open session.
+        actors: The actor values seen, any mix of ids, names and None.
+
+    Returns:
+        ``{staff id: name}`` for the numeric actors that resolved; empty when
+        none are numeric or the staff table cannot be read.
+    """
+    ids = {str(a) for a in actors if a is not None and str(a).isdigit()}   # numeric ids only
+    if not ids:
+        return {}
+    try:
+        from app.models.staff import Staff                # local import: keeps this module's load light
+        rows = (await session.execute(
+            select(Staff.sp_item_id, Staff.name).where(Staff.sp_item_id.in_(ids))
+        )).all()
+    except Exception:  # noqa: BLE001 - a name lookup must never break the feed
+        logger.exception("Could not resolve actor names for the live feed")
+        return {}
+    return {str(sp_id): name for sp_id, name in rows if name}   # drop any blank name
+
+
+def _event_payload(event: RequestEvent, request: RequestRecord, actor_name: str | None = None) -> dict:
     """Build the snake_case message one event sends to a live reader.
 
-    It carries the event's own fields plus the request's current stage, status
-    and the handful of columns a table row needs, so a reader can update a row
-    in place without a second fetch. Outbox bodies and anything a timeline does
-    not need are deliberately left out.
+    It carries the event's own fields plus the request's current stage, status,
+    state and the handful of columns a table row needs, so a reader can update a
+    row in place without a second fetch. Outbox bodies and anything a timeline
+    does not need are deliberately left out.
 
     Args:
         event: The timeline event row.
         request: The request the event is about (joined on request_id).
+        actor_name: The actor's resolved staff name when the actor is a numeric
+            id (from ``_actor_names_for``); None falls back to the raw actor.
 
     Returns:
         The payload dict, JSON-serialisable.
@@ -95,10 +127,12 @@ def _event_payload(event: RequestEvent, request: RequestRecord) -> dict:
         "type": event.type,                              # the event type (approved, rejected, ...)
         "channel": event.channel,                        # where it came from (email_link, sms, ...)
         "actor": event.actor,                            # who caused it, or None
+        "actor_name": actor_name or event.actor,         # the actor's name when resolved, else the raw value (#455)
         "detail": event.detail or {},                    # what a timeline line needs
         "created_at": _iso(event.created_at),            # when the event happened
         "stage": request.stage,                          # the request's stage in words, now
         "status": request.status,                        # pending / approved / rejected / ...
+        "state": request.state,                          # the state-machine position (#455)
         "employee_name": request.employee_name,          # for the table row
         "leave_type": request.leave_type,                # leave only
         "start_date": _iso(request.start_date),          # first day / date worked
@@ -132,7 +166,10 @@ async def fetch_events(after_id: int, limit: int = FETCH_LIMIT) -> list[dict]:
             .order_by(RequestEvent.id)
             .limit(limit)
         )).all()
-    return [_event_payload(event, request) for event, request in rows]
+        # Resolve the numeric actors to staff names once for the whole batch, so a
+        # live row shows "by Dave", not "by 416" (#455).
+        names = await _actor_names_for(session, {event.actor for event, _ in rows})
+    return [_event_payload(event, request, names.get(str(event.actor))) for event, request in rows]
 
 
 async def _current_max_id() -> int:

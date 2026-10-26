@@ -49,6 +49,7 @@ from app.services.admin_auth import (
 from app.services.dashboard_tokens import validate_dashboard_token
 from app.services.event_bus import (
     LOOKBACK_WINDOW,
+    _actor_names_for,
     _current_max_id,
     event_bus,
     fetch_events,
@@ -378,11 +379,14 @@ async def version():
     return {"version": app_version()}
 
 
-def _timeline_line(event) -> str:
+def _timeline_line(event, actor_names: dict | None = None) -> str:
     """One plain-words line for a timeline event, e.g. "Approved by email by Dave".
 
     Args:
         event: A RequestEvent row.
+        actor_names: ``{staff id: name}`` for the numeric actors on this timeline
+            (from ``_actor_names_for``); a numeric actor not in it, or a
+            non-numeric one, falls back to its raw value (#455).
 
     Returns:
         The line text (the time is shown separately by the reader).
@@ -394,7 +398,8 @@ def _timeline_line(event) -> str:
     elif event.channel == "system" and not event.actor:
         parts.append("automatically")                          # a background step with no person
     if event.actor:
-        parts.append(f"by {event.actor}")                      # who did it
+        who = (actor_names or {}).get(str(event.actor), event.actor)   # staff name, else the raw actor (#455)
+        parts.append(f"by {who}")                              # who did it
     line = " ".join(parts)
     # A rejection stores its reason on the event detail (#433); show it inline so
     # the timeline says why, not just that it was rejected.
@@ -413,7 +418,8 @@ async def _load_timeline(stored_kind: str, item_id: int):
         item_id: The item_id (the number people see).
 
     Returns:
-        (request, events, changes); request is None when there is no such item.
+        (request, events, changes, actor_names); request is None when there is no
+        such item, and actor_names maps numeric actor ids to staff names (#455).
     """
     from sqlalchemy import select
 
@@ -429,23 +435,28 @@ async def _load_timeline(stored_kind: str, item_id: int):
             )
         )).scalars().first()
         if request is None:
-            return None, [], []
+            return None, [], [], {}
         events = (await session.execute(
             select(RequestEvent).where(RequestEvent.request_id == request.id).order_by(RequestEvent.id)
         )).scalars().all()
         changes = (await session.execute(
             select(RequestChange).where(RequestChange.request_id == request.id).order_by(RequestChange.changed_at)
         )).scalars().all()
-    return request, events, changes
+        # Resolve the numeric actors (e.g. "416") to staff names in one query, so
+        # the lines read "by Dave" (#455); works for past events with no change row.
+        actor_names = await _actor_names_for(session, {e.actor for e in events})
+    return request, events, changes, actor_names
 
 
-def _timeline_payload(events, changes, *, with_changes: bool) -> dict:
+def _timeline_payload(events, changes, *, with_changes: bool, actor_names: dict | None = None) -> dict:
     """Shape a timeline response: event lines, and field history for admins.
 
     Args:
         events: The RequestEvent rows, oldest first.
         changes: The RequestChange rows, oldest first.
         with_changes: Include the field history (admins only).
+        actor_names: ``{staff id: name}`` for the numeric actors, so the lines
+            name who acted (from ``_load_timeline``) (#455).
 
     Returns:
         {"events": [...], "changes": [...]}; changes is empty when not asked for.
@@ -457,7 +468,7 @@ def _timeline_payload(events, changes, *, with_changes: bool) -> dict:
             "channel": e.channel,
             "actor": e.actor,
             "at": e.created_at.isoformat() if e.created_at else None,
-            "line": _timeline_line(e),
+            "line": _timeline_line(e, actor_names),
         }
         for e in events
     ]
@@ -512,10 +523,10 @@ async def admin_request_timeline(kind: str, item_id: int):
     Raises:
         HTTPException: 404 when there is no such request.
     """
-    request, events, changes = await _load_timeline(_stored_kind(kind), item_id)
+    request, events, changes, actor_names = await _load_timeline(_stored_kind(kind), item_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
-    return _timeline_payload(events, changes, with_changes=True)
+    return _timeline_payload(events, changes, with_changes=True, actor_names=actor_names)
 
 
 @router.get("/me/requests/{kind}/{item_id}/timeline")
@@ -533,10 +544,10 @@ async def my_request_timeline(user: AuthUser, kind: str, item_id: int):
     Raises:
         HTTPException: 404 when there is no such request of theirs.
     """
-    request, events, _changes = await _load_timeline(_stored_kind(kind), item_id)
+    request, events, _changes, actor_names = await _load_timeline(_stored_kind(kind), item_id)
     if request is None or str(request.employee_id) != str(user.user_id):
         raise HTTPException(status_code=404, detail="Request not found")
-    return _timeline_payload(events, [], with_changes=False)
+    return _timeline_payload(events, [], with_changes=False, actor_names=actor_names)
 
 
 @router.get("/team/requests/{kind}/{item_id}/timeline")
@@ -555,7 +566,7 @@ async def team_request_timeline(user: AuthUser, kind: str, item_id: int):
         HTTPException: 403 for a non-manager, 404 when the request is not on their team.
     """
     _require_role(user, "manager", "admin")
-    request, events, _changes = await _load_timeline(_stored_kind(kind), item_id)
+    request, events, _changes, actor_names = await _load_timeline(_stored_kind(kind), item_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
     manager_id, team_ids = await _team_ids_for(user.user_id)
@@ -564,4 +575,4 @@ async def team_request_timeline(user: AuthUser, kind: str, item_id: int):
     )
     if not on_team:
         raise HTTPException(status_code=404, detail="Request not found")
-    return _timeline_payload(events, [], with_changes=False)
+    return _timeline_payload(events, [], with_changes=False, actor_names=actor_names)
