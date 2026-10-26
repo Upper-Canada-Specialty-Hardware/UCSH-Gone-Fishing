@@ -21,10 +21,10 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, BookingLimit, EmployeeSession, HeldGate, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
-  clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, holdRequest, loadNewHire,
-  loadSession, repick, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
-  takeSignInNotice, verifyCode,
+  Balances, BookingLimit, EmployeeSession, HeldGate, HeldStatus, HeldStatusResult, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
+  clearHeldWaiting, clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, heldSignIn, holdRequest,
+  loadHeldWaiting, loadNewHire, loadSession, repick, requestCode, saveHeldWaiting, saveNewHire, saveSession,
+  setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
 /**
@@ -262,6 +262,9 @@ export default function RequestPage() {
   const [repickChoice, setRepickChoice] = useState<SupervisorChoice>(EMPTY_SUPERVISOR);   // the re-pick
   const [myToken, setMyToken] = useState('');                  // signed token to follow a sent request's progress (#364)
   const [progress, setProgress] = useState<RequestProgress | null>(null);   // that request's latest progress
+  // A held request was released but the automatic sign-in was refused (#482):
+  // the page still follows the request and offers a plain email sign-in link.
+  const [heldSignedOut, setHeldSignedOut] = useState(false);
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
@@ -306,9 +309,21 @@ export default function RequestPage() {
     ? { 'carryover-payout': 'Not for hourly staff. Vacation is tracked, not a balance.' }
     : carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
 
-  // Pick up where this address starts: a new hire's verified email, the
-  // shared sign-in for a new request, or the landing page's note.
+  // Pick up where this address starts: a held request still being followed, a
+  // new hire's verified email, the shared sign-in for a new request, or the
+  // landing page's note.
   useEffect(() => {
+    // A held request this device is still following returns to its status page
+    // instead of the email step or the new-hire form, so a reload resumes (#482).
+    const waitingToken = loadHeldWaiting();
+    if (waitingToken && !loadSession()) {
+      const v = loadNewHire();                       // the re-pick needs this when the tab still has it
+      if (v) { setVerified(v); setEmail(v.email); }
+      setHeldToken(waitingToken);
+      setHeldStatus('waiting');                      // the poll corrects it to sent/cancelled/not_on_team
+      setStep('held-status');
+      return;
+    }
     if (newHirePage) {
       const v = loadNewHire();
       if (!v) {                                        // no verified email in this tab (or it expired)
@@ -355,11 +370,12 @@ export default function RequestPage() {
       getHeldStatus(heldToken)
         .then(({ data }) => {
           if (!live || data.status === 'waiting') return;
+          if (data.status === 'sent') { void handleHeldSent(data); return; }   // released: follow + sign in (#482)
+          // Cancelled: final, and stop resuming the held page after a reload.
           setHeldWith(data.supervisor_name);
-          setHeldStatus(data.status);                   // stops this effect: the answer is final
-          setDoneText(data.status === 'sent'
-            ? `${data.supervisor_name} added you to the staff list, so your request was sent to them. You will get an email when it is approved or rejected.`
-            : 'This request was cancelled. If you still need it, start again with your email.');
+          setHeldStatus(data.status);
+          clearHeldWaiting();
+          setDoneText('This request was cancelled. If you still need it, start again with your email.');
         })
         .catch(() => { /* retried on the next tick */ });
     };
@@ -400,12 +416,12 @@ export default function RequestPage() {
             setHeldStatus('waiting');
             return;
           }
-          // Sent or cancelled: final, so this effect stops after the state settles.
+          // Sent or cancelled: final.
+          if (data.status === 'sent') { void handleHeldSent(data); return; }   // released: follow + sign in (#482)
           setHeldWith(data.supervisor_name);
-          setHeldStatus(data.status);
-          setDoneText(data.status === 'sent'
-            ? `${data.supervisor_name} confirmed it, so your request was sent to them. You will get an email when it is approved or rejected.`
-            : 'This request was cancelled. If you still need it, start again with your email.');
+          setHeldStatus(data.status);                   // cancelled
+          clearHeldWaiting();                           // stop resuming the held page after a reload
+          setDoneText('This request was cancelled. If you still need it, start again with your email.');
         })
         .catch(() => { /* retried on the next tick */ });
     };
@@ -424,7 +440,10 @@ export default function RequestPage() {
   // manager approves or rejects by email, text or dashboard. It stops once the
   // request is finished, and gives up after a cap so it never polls forever.
   useEffect(() => {
-    if (step !== 'done' || !session || !myToken || progress?.finished) return;   // nothing to follow
+    // Follows a request whenever the done page holds its token: a signed-in
+    // employee's own request, and a released held request after sign-in (even a
+    // refused one, so the steps still fill in without a session) (#364, #482).
+    if (step !== 'done' || !myToken || progress?.finished) return;   // nothing to follow
     let live = true;
     let timer: ReturnType<typeof setInterval>;
     const deadline = Date.now() + STATUS_POLL_CAP_MS;   // half an hour from when following began
@@ -563,6 +582,7 @@ export default function RequestPage() {
       clearDraft();                                     // held: no draft to keep
       setHeldWith(res.data.supervisor_name);
       setHeldToken(res.data.status_token);              // lets the page follow it from here
+      saveHeldWaiting(res.data.status_token);           // resume the status page after a reload (#482)
       setHeldStatus('waiting');
       saveNewHire(null);                                // held: a refresh must not send it twice
       setDoneText(
@@ -585,6 +605,44 @@ export default function RequestPage() {
   };
 
   /**
+   * A held request has just been released ("sent"): follow the real request, and
+   * treat the release as a sign-in for a short window so the person moves onto
+   * their signed-in pages without a new code (#482). A refused sign-in still
+   * follows the request and shows a plain email sign-in link.
+   *
+   * @param data - The held status answer that reported "sent".
+   */
+  const handleHeldSent = async (data: HeldStatusResult) => {
+    setHeldWith(data.supervisor_name);
+    setHeldStatus('sent');                              // final: the polling effects stop
+    setMyToken(data.request_status_token || '');        // follow the real request from here (#364)
+    setProgress(null);                                  // the first request poll fills it in
+    setDoneText(
+      `${data.supervisor_name || 'Your supervisor'} added you to the staff list, so your request was sent to them. `
+      + 'You will get an email when it is approved or rejected.',
+    );
+    setStep('done');                                    // both held flows converge on the done page
+    try {
+      // The release signs them in: the supervisor confirmed who they are and this
+      // device proved the address, so a staff session comes back (#482).
+      const { data: signed } = await heldSignIn(heldToken);
+      const session: EmployeeSession = {
+        name: signed.name, role: signed.role, uid: signed.uid,
+        token: signed.token, exp: signed.exp, email: signed.email,
+      };
+      saveSession(session);                             // 30 days on this device
+      setSession(session);
+      setMyToken(signed.request_status_token || data.request_status_token || '');
+      setHeldSignedOut(false);
+      clearHeldWaiting();                               // signed in: stop resuming the held page
+    } catch {
+      // The window closed or the record is gone: keep following the request and
+      // offer a plain email sign-in instead.
+      setHeldSignedOut(true);
+    }
+  };
+
+  /**
    * Show the status of a request already waiting to be set up, instead of a new
    * form (#442). Reached when /verify says the person has one in flight, so they
    * cannot stack a second request and can re-pick a handed-back one.
@@ -595,6 +653,7 @@ export default function RequestPage() {
   const enterHeldStatus = (gate: HeldGate, verifiedToken?: VerifiedEmail) => {
     if (verifiedToken) setVerified(verifiedToken);     // lets the status page re-pick a supervisor
     setHeldToken(gate.status_token);                   // the page follows the request with this
+    saveHeldWaiting(gate.status_token);                // resume this held page after a reload (#482)
     setHeldWith(gate.supervisor_name);
     // "not_on_team" means a supervisor handed it back, so the page offers a re-pick.
     setHeldStatus(gate.state === 'not_on_team' ? 'not_on_team' : 'waiting');
@@ -616,6 +675,7 @@ export default function RequestPage() {
       });
       setHeldWith(res.data.supervisor_name);
       setHeldToken(res.data.status_token);              // refreshed token for the same request
+      saveHeldWaiting(res.data.status_token);           // keep resuming with the refreshed token (#482)
       setHeldStatus('waiting');                         // waiting on the new supervisor now
       setRepickChoice({ ...EMPTY_SUPERVISOR });
     } catch (err: any) {
@@ -677,16 +737,14 @@ export default function RequestPage() {
   // What happens next, shown once the request is sent or saved.
   // A new hire's list moves on by itself once their supervisor adds them.
   const added = heldStatus === 'sent';
-  const next: NextItem[] = held ? [
-    { title: 'Saved', note: added ? 'Earlier' : 'Just now', done: true },
-    added
-      ? { title: `${heldWith || 'Your supervisor'} added you to the staff list`, note: 'Just now', done: true }
-      : { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
-    added
-      ? { title: `Sent to ${heldWith || 'your supervisor'}`, note: 'Just now', done: true }
-      : { title: 'Your request goes to them', note: 'Automatically' },
+  // While still waiting, show the new-hire steps; once added (or for a signed-in
+  // employee) follow the real request's progress to the decision (#364, #482).
+  const next: NextItem[] = (held && !added) ? [
+    { title: 'Saved', note: 'Just now', done: true },
+    { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
+    { title: 'Your request goes to them', note: 'Automatically' },
     { title: 'You get an email with the decision' },
-  ] : staffNextSteps(progress);   // a sent request's points follow its real progress (#364)
+  ] : staffNextSteps(progress);
 
   const dir = useDirection(step === 'newhire' ? 2 : STEP_ORDER.indexOf(step));
   const big = { py: 1.5, fontSize: 15 } as const;                                       // the main buttons' size
@@ -857,6 +915,14 @@ export default function RequestPage() {
                   <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                   {verified && heldDept ? (
                     <SupervisorPicker verified={verified} department={heldDept} value={repickChoice} onChange={setRepickChoice} />
+                  ) : !verified ? (
+                    // Resumed after a reload with no verified token in this tab (#482):
+                    // the re-pick needs one, so send them back to sign in with email.
+                    <Typography variant="body2" color="text.secondary">
+                      <Link component="button" variant="body2" onClick={() => navigate('/', { replace: true })}>
+                        Sign in with your email
+                      </Link>{' '}to pick another supervisor.
+                    </Typography>
                   ) : (
                     <CircularProgress size={20} />        // the department is still loading from the first poll
                   )}
@@ -921,6 +987,12 @@ export default function RequestPage() {
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button variant="contained" onClick={another}>Make another request</Button>
                   {session && <Button variant="outlined" onClick={() => navigate('/my')}>See my requests</Button>}
+                  {/* Released but the automatic sign-in was refused: a plain way in (#482). */}
+                  {!session && heldSignedOut && (
+                    <Link component="button" variant="body2" onClick={() => navigate('/', { replace: true })}>
+                      Sign in with your email to see your requests
+                    </Link>
+                  )}
                 </Box>
               </>
             )}

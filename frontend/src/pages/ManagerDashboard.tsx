@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
 import { staffCacheKey } from '../api/intake';
 import {
-  Alert, Box, Button, Paper, Snackbar, Tab, Tabs, Typography,
+  Alert, Box, Button, Paper, Snackbar, Stack, Tab, Tabs, Typography,
 } from '@mui/material';
 import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
@@ -27,7 +27,7 @@ import {
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { addDays, dayKey, mondayOf, today } from '../utils/dates';
 import { firstName, teamColors, teamLabeler } from '../utils/personColor';
-import { daysWaiting, requestWhat, requestWho, shortDate } from '../utils/requestText';
+import { askedAgo, daysWaiting, requestWhat, requestWho, shortDate } from '../utils/requestText';
 import {
   getMyBalances,
   getTeamMembers,
@@ -41,6 +41,9 @@ import {
   checkEmployee,
   logSickDay,
   getTeamEmployeeSetup,
+  getTeamHeld,
+  heldNotOnTeam,
+  type HeldWaiting,
 } from '../api/client';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
@@ -102,6 +105,66 @@ function TileLink({ label, onClick, children }: { label: string; onClick: () => 
 }
 
 /**
+ * The Today tab's "New hires waiting on you" panel (#481): one card per held
+ * request-page submission this supervisor still has to act on. Each card offers
+ * Add employee (opens the add tab's held-for-add flow) and Not on my team (a
+ * two-step confirm, then the backend hands it back). Cards wrap and never scroll
+ * sideways on a phone.
+ *
+ * @param props.items - The held new hires waiting on this manager.
+ * @param props.processingEnabled - Writes allowed; the decline is disabled otherwise.
+ * @param props.busyId - The id of the row whose decline is in flight, or null.
+ * @param props.onAdd - Open Add employee prefilled from a held new hire.
+ * @param props.onDecline - Hand a held new hire back as "not on my team".
+ * @returns The panel.
+ */
+function NewHiresPanel({ items, processingEnabled, busyId, onAdd, onDecline }: {
+  items: HeldWaiting[];
+  processingEnabled: boolean;
+  busyId: number | null;
+  onAdd: (item: HeldWaiting) => void;
+  onDecline: (item: HeldWaiting) => void;
+}) {
+  // Which card is showing its "are you sure" confirm, by held id; null when none.
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  return (
+    <Panel title="New hires waiting on you" aside={String(items.length)}>
+      <Stack spacing={1.5}>
+        {items.map((item) => (
+          <Box key={item.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, display: 'grid', gap: 0.25 }}>
+            <Typography sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{item.name}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>{item.email}</Typography>
+            {item.department && <Typography variant="body2" color="text.secondary">{item.department}</Typography>}
+            <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>{item.summary}</Typography>
+            {/* How long it has waited, in the same words the queue uses. */}
+            <Typography variant="caption" color="text.secondary">{askedAgo({ Created: item.created_at })}</Typography>
+            {confirmId === item.id ? (
+              // The confirm step: hand it back, or back out.
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center', mt: 0.75 }}>
+                <Typography variant="body2">Ask {item.name} to pick another supervisor?</Typography>
+                <Button
+                  size="small" color="error" variant="contained"
+                  disabled={!processingEnabled || busyId === item.id}
+                  onClick={() => onDecline(item)}
+                >
+                  Yes, not on my team
+                </Button>
+                <Button size="small" onClick={() => setConfirmId(null)} disabled={busyId === item.id}>Cancel</Button>
+              </Box>
+            ) : (
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.75 }}>
+                <Button size="small" variant="contained" onClick={() => onAdd(item)}>Add employee</Button>
+                <Button size="small" variant="outlined" onClick={() => setConfirmId(item.id)}>Not on my team</Button>
+              </Box>
+            )}
+          </Box>
+        ))}
+      </Stack>
+    </Panel>
+  );
+}
+
+/**
  * The manager dashboard: Today (numbers, the requests waiting on a decision,
  * the next two weeks and a few notes), Calendar (an animated timeline or a
  * month view, and who is in day by day), Team (vacation rings and a card per
@@ -126,7 +189,9 @@ export default function ManagerDashboard() {
   const theme = useTheme();
   const params = useParams();
   const navigate = useNavigate();
-  const [prefill] = useState(takeAddEmployeePrefill);
+  // The Add employee prefill: from the supervisor's email link at launch, or set
+  // by the "Add employee" button in the new-hires panel (#481).
+  const [prefill, setPrefill] = useState(takeAddEmployeePrefill);
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'today';
   /** Open a tab (changes the url). @param k - Tab key. */
   const go = useCallback((k: TabKey) => navigate(`/team/${k}`), [navigate]);
@@ -254,18 +319,30 @@ export default function ManagerDashboard() {
     setupTimer.current = setTimeout(() => { void refreshEmployeeSetup(); }, 1000);
   }, [refreshEmployeeSetup]);
 
+  // Held new hires waiting on this manager (#481): the Today panel reads these.
+  // Refreshed at launch, after an action in the panel, and on a staff change (a
+  // new hire added or a held profile saved releases the row off the panel).
+  const [heldNewHires, setHeldNewHires] = useState<HeldWaiting[]>([]);
+  const [heldActionId, setHeldActionId] = useState<number | null>(null);   // the row being handed back
+  const refreshHeld = useCallback(() => {
+    getTeamHeld()
+      .then((r) => setHeldNewHires(r.data.held || []))
+      .catch(() => { /* leave the panel as it was until the next read */ });
+  }, []);
+
   // A staff record changed (a new hire added, an edit, a balance move): re-read
   // the team cards, debounced so a burst of saves costs one read.
   const staffRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaffChange = useCallback(() => {
     scheduleSetupRefresh();                                // the setup tab follows staff edits too
+    refreshHeld();                                         // a release drops the new hire off the panel (#481)
     if (staffRefresh.current) clearTimeout(staffRefresh.current);
     staffRefresh.current = setTimeout(() => {
       getTeamMembers()
         .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
         .catch(() => { /* the cards keep their figures until the next change */ });
     }, 300);
-  }, [scheduleSetupRefresh]);
+  }, [scheduleSetupRefresh, refreshHeld]);
   useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   useEffect(() => {
@@ -330,6 +407,10 @@ export default function ManagerDashboard() {
   useEffect(() => {
     if (!loading) void refreshEmployeeSetup(true);         // quiet: only the tab's count depends on it
   }, [loading, refreshEmployeeSetup]);
+  // Held new hires waiting on this manager, read once the dashboard is up (#481).
+  useEffect(() => {
+    if (!loading) refreshHeld();
+  }, [loading, refreshHeld]);
   const prevTab = useRef(tab);
   useEffect(() => {
     if (tab === 'setup' && prevTab.current !== 'setup' && !loading) void refreshEmployeeSetup();
@@ -427,6 +508,43 @@ export default function ManagerDashboard() {
   const notes = useMemo(() => insights(members, absences, labelOf), [members, absences, labelOf]);
   const calFrom = mondayOf(today());                     // the calendar shows four weeks from this Monday
   const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
+
+  /**
+   * Open Add employee prefilled from a held new hire, so AddEmployee's
+   * held-for-add flow runs (including the existing-name profile edit) (#481).
+   *
+   * @param item - The held new hire to add.
+   */
+  const addHeldNewHire = useCallback((item: HeldWaiting) => {
+    // The same prefill shape the supervisor's email link gives, so the add tab
+    // asks what happened to the held request and offers the profile edit (#444).
+    setPrefill({ title: item.name, email_address: item.email, department: item.department, held_id: item.id });
+    go('add');
+  }, [go]);
+
+  /**
+   * Hand a held new hire back as "not on my team", then refresh the panel (#481).
+   *
+   * @param item - The held new hire to hand back.
+   */
+  const declineHeldNewHire = useCallback(async (item: HeldWaiting) => {
+    setHeldActionId(item.id);
+    try {
+      await heldNotOnTeam(item.id);
+      setHeldNewHires((prev) => prev.filter((h) => h.id !== item.id));   // drop it from the panel at once
+      setSnack({
+        open: true,
+        message: `${item.name} was handed back; they will be asked to pick another supervisor.`,
+        severity: 'success',
+      });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Could not hand that request back', severity: 'error' });
+    } finally {
+      setHeldActionId(null);
+      refreshHeld();                                       // reconcile with the server either way
+    }
+  }, [refreshHeld]);
 
   /** Pull the team again after a manager change (balances, add, remove) so the
    *  cards and the waiting count follow it at once (#362, #363). */
@@ -582,6 +700,17 @@ export default function ManagerDashboard() {
               </AnimatePresence>
             </Box>
             <Box sx={{ display: 'grid', gap: 2 }}>
+              {/* New hires from the request page waiting on this manager (#481);
+                  shown only when there are any. */}
+              {heldNewHires.length > 0 && (
+                <NewHiresPanel
+                  items={heldNewHires}
+                  processingEnabled={processingEnabled}
+                  busyId={heldActionId}
+                  onAdd={addHeldNewHire}
+                  onDecline={declineHeldNewHire}
+                />
+              )}
               <Panel title="Next two weeks" aside="dashed = asked">
                 {/* Only people off in the window, at most eight rows; the rest link to the Calendar tab. */}
                 <LeaveTimeline
@@ -833,9 +962,10 @@ export default function ManagerDashboard() {
           checkEmployee={checkEmployee}
           prefill={prefill}
           heldScope="team"
-          onCreated={(name) =>
-            setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
-          }
+          onCreated={(name) => {
+            setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' });
+            refreshHeld();                               // the added new hire drops off the panel (#481)
+          }}
         />
       )}
       </Enter>

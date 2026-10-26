@@ -46,6 +46,7 @@ from app.repositories.postgres.staff import is_archived  # tells an archived rec
 from app.repositories.staff_store import staff_in_postgres, staff_store
 from app.database import async_session
 from app.services import balance_settle  # settle a teammate's unmoved request (#463)
+from app.services import held_requests  # held new hires waiting on this manager (#481)
 from app.services.concurrency import lock_manager  # serialise the AllManagers read-modify-write
 from app.services.employee import get_employee_by_id
 from app.services.employee_validation import validate_all_employee_setups, validate_employee_setup
@@ -735,3 +736,64 @@ async def team_held_update_existing(user: AuthUser, held_id: int, body: HeldProf
     actor = (manager.get("fields", {}).get("Title") or "").strip() or "Your supervisor"
     return await held_profile_update(held_id, body, actor_name=actor, supervisor_id=str(user.user_id),
                                      source=MANAGER_CHANNEL)
+
+
+# ============================
+# #481 - held new hires on the manager dashboard
+# ============================
+
+@router.get("/team/held")
+async def team_held(user: AuthUser):
+    """The held new hires still waiting on the signed-in supervisor (#481).
+
+    Feeds the Today tab's "New hires waiting on you" panel: the request-page
+    submissions held for people this manager was picked to add, that they still
+    have to act on. Managers and admins only. Read-only.
+
+    Args:
+        user: The signed-in manager or admin.
+
+    Returns:
+        ``{"held": [{id, name, email, department, request_type, summary,
+        created_at, status}, ...]}``, oldest first.
+
+    Raises:
+        HTTPException: 403 for an employee token, 404 when the caller's own staff
+            record cannot be found.
+    """
+    await _signed_in_manager(user)                        # managers and admins only (role + record)
+    held = await held_requests.held_waiting_on_supervisor(str(user.user_id))   # only rows still theirs
+    return {"held": held}
+
+
+@router.post("/team/held/{held_id}/not-on-team")
+async def team_held_not_on_team(user: AuthUser, held_id: int):
+    """Hand a held new hire back as "not on my team", from the dashboard (#481).
+
+    The same action the supervisor's email link performs: it calls the shared,
+    idempotent ``decline_held_request``, allowed only for the supervisor who
+    currently holds the row (the service guards that), and the person is asked to
+    pick another supervisor. Mirrors the email POST's processing gate (503 off).
+
+    Args:
+        user: The signed-in manager or admin.
+        held_id: The held request to hand back.
+
+    Returns:
+        ``{"status": "declined"}`` when it was handed back.
+
+    Raises:
+        HTTPException: 503 when processing is off, 404 when there is no such
+            request, 409 when it is no longer this supervisor's to decline.
+    """
+    await _signed_in_manager(user)                        # managers and admins only
+    if not settings.PROCESSING_ENABLED:                   # same gate as the email link's POST
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    # The supervisor acting is the signed-in manager; the service refuses a row
+    # that is not theirs or has moved on (returns "already" / "unknown").
+    outcome = await held_requests.decline_held_request(held_id, str(user.user_id))
+    if outcome == "unknown":
+        raise HTTPException(status_code=404, detail="Held request not found")
+    if outcome == "already":                              # not theirs, already declined, or moved on
+        raise HTTPException(status_code=409, detail="This request is no longer waiting for you.")
+    return {"status": "declined"}
