@@ -366,14 +366,13 @@ def test_a_manager_cannot_decide_a_request_off_their_team(seeded, monkeypatch):
     run(_wipe_requests())
 
 
-def test_a_manager_cannot_decide_their_own_request(seeded, monkeypatch):
+def test_a_manager_may_decide_their_own_request(seeded, monkeypatch):
+    # Approving your own request is allowed on every channel now (#455): the
+    # own-team gate permits it instead of refusing with 403.
     monkeypatch.setattr(settings, "STORAGE_REQUESTS", "postgres")
     run(_wipe_requests())
     run(_seed_leave(90002, employee_id="42", manager_id="43"))        # Steve's own request
-    with pytest.raises(HTTPException) as err:
-        run(dash._refuse_manager_not_on_request(STEVE_USER, "leave", "90002"))
-    assert err.value.status_code == 403
-    assert "your own" in err.value.detail.lower()
+    run(dash._refuse_manager_not_on_request(STEVE_USER, "leave", "90002"))   # no refusal
     run(_wipe_requests())
 
 
