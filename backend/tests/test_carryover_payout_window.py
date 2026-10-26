@@ -16,6 +16,7 @@ from sqlalchemy import delete
 
 from app.config import settings
 from app.database import async_session
+from app.graph import sharepoint
 from app.models.app_setting import AppSetting
 from app.routes import intake, self_service
 from app.routes.dashboard import router as dashboard_router
@@ -71,6 +72,13 @@ def client(monkeypatch):
     monkeypatch.setattr(self_service, "get_employee_by_id", by_id)
     monkeypatch.setattr(request_intake, "process_new_carryover_payout", create)
     monkeypatch.setattr(request_intake, "process_new_leave_request", create)
+
+    # A leave submission now reads the leave list for an overlap clash (#446);
+    # an empty list means no clash, so leave still goes through here untouched.
+    async def no_leave(*a, **k):
+        return []
+
+    monkeypatch.setattr(sharepoint.sp_client, "get_list_items", no_leave)
     return test_client
 
 

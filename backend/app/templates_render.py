@@ -56,6 +56,21 @@ def render_dashboard_footer(site_url: str) -> str:
     return _render("dashboard_footer.html", site_url=site_url)
 
 
+def render_held_supervisor_actions(name: str, add_url: str, not_on_team_url: str) -> str:
+    """The Add and Not on my team buttons for a held request's supervisor email.
+
+    Args:
+        name: The new hire's name, shown on the Add button and the note below.
+        add_url: Add Employee, filled in from the held request.
+        not_on_team_url: The signed public page that hands the request back.
+
+    Returns:
+        Two Outlook-safe buttons side by side and one muted line saying what
+        Not on my team does.
+    """
+    return _render("held_supervisor_actions.html", name=name, add_url=add_url, not_on_team_url=not_on_team_url)
+
+
 # --- Leave Requests ---
 
 def render_leave_approval_email(

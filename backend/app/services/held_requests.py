@@ -51,6 +51,7 @@ from app.services.manager_match import lists_manager
 from app.services.request_intake import ensure_request_type_open, parse_request_form, submit_request
 from app.services.request_submitter import SOURCE_REQUEST_PAGE
 from app.repositories.staff_store import staff_store  # Staff Directory reads follow staff_storage
+from app.templates_render import render_held_supervisor_actions
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ TORONTO = ZoneInfo("America/Toronto")
 SUPERVISOR_REMINDER_BUSINESS_DAYS = 2   # supervisor gets one more email after this
 ADMIN_ESCALATION_BUSINESS_DAYS = 5      # then the admins are told
 MAX_OPEN_PER_EMAIL = 1                  # one request until set up (#442)
+RELEASE_SIGN_IN_DAYS = 7                # a released row may sign the new hire in for this long (#482)
 OPEN_STATUSES = ("held", "waiting_site", "failed")   # waiting to become a real request (releasable)
 # Every status in which the person still has a request in flight, so the request
 # page shows its status instead of a new form and the submit endpoints refuse a
@@ -117,6 +119,18 @@ def toronto_date(moment: datetime) -> date:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=ZoneInfo("UTC"))
     return moment.astimezone(TORONTO).date()
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """A stored timestamp as aware UTC (SQLite hands naive values back).
+
+    Args:
+        moment: Aware, or naive UTC.
+
+    Returns:
+        The same instant, tagged UTC when it was naive, so arithmetic is safe.
+    """
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=ZoneInfo("UTC"))
 
 
 def add_employee_url(supervisor_id: str, name: str, email: str, department: str, held_id: int | None = None) -> str:
@@ -197,16 +211,23 @@ def decode_not_on_team_token(token: str) -> tuple[int, str] | None:
 
 
 def not_on_team_link(held_id: int, supervisor_id: str) -> str:
-    """The full "Not on my team" URL pointing back at the backend endpoint (#443).
+    """The full "Not on my team" URL, on the public site (#443, #483).
+
+    Points at the public request site's hash route (the same base the emailed
+    dashboard links use), not the backend, so the supervisor lands on a styled
+    page like the other request-page screens. That page reads the request over
+    the JSON endpoints and shows a confirm button; the signed backend GET/POST
+    HTML routes stay unchanged, so links in emails already sent keep working.
 
     Args:
         held_id: The held request the link is for.
         supervisor_id: The supervisor the email was sent to.
 
     Returns:
-        A signed GET URL on the backend ``BASE_URL``.
+        A signed URL on ``DASHBOARD_FRONTEND_URL`` (the public site).
     """
-    return f"{settings.BASE_URL}/api/intake/held/not-on-team?token={not_on_team_token(held_id, supervisor_id)}"
+    base = settings.DASHBOARD_FRONTEND_URL.rstrip("/")         # the public site, same base as the dashboard links
+    return f"{base}/#/held/not-on-team?token={not_on_team_token(held_id, supervisor_id)}"
 
 
 # ----- one email thread per held request per recipient (#443) -----
@@ -477,27 +498,22 @@ def _where(row: HeldRequest) -> str:
     return row.department or row.location or ""
 
 
-def _not_on_team_line(row: HeldRequest) -> str:
-    """The "Not on my team" link line for a supervisor email (#443).
+def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
+    """HTML for the supervisor: who the new hire is, the request, then two buttons.
+
+    The buttons (#483) are Add, which opens Add Employee filled in from this
+    request, and Not on my team, which opens the signed public page that hands
+    the request back (#443) so the person picks their supervisor again.
 
     Args:
-        row: The held request; the link names it and the current supervisor.
+        row: The held request; names the new hire and the current supervisor.
+        reminder: True for a re-send, which opens with "Reminder: ".
 
     Returns:
-        An HTML paragraph with the signed link, so the supervisor who is not the
-        person's manager can hand it back rather than acting on it.
+        The email body HTML.
     """
-    link = not_on_team_link(row.id, row.supervisor_id)
-    return (
-        f'<p>If {html.escape(row.name)} is not on your team, '
-        f'<a href="{html.escape(link)}">let us know</a> and they will be asked to '
-        "pick their supervisor again.</p>"
-    )
-
-
-def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
-    """HTML for the supervisor: who the new hire is, the request, Add Employee, not-mine."""
-    link = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "", row.id)
+    add_url = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "", row.id)
+    not_on_team_url = not_on_team_link(row.id, row.supervisor_id)   # signed for this supervisor only
     lead = "Reminder: " if reminder else ""
     return (
         f"<p>{lead}{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
@@ -506,8 +522,8 @@ def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
         f"<p><b>{html.escape(describe_form(row.request_type, row.form_data))}</b></p>"
         "<p>They are not in the Staff Directory yet, so the request is on hold. "
         "Add them and it is submitted to you automatically.</p>"
-        f'<p><a href="{html.escape(link)}">Add {html.escape(row.name)}</a></p>'
-        + _not_on_team_line(row)
+        # the template escapes the name and both links (autoescape)
+        + render_held_supervisor_actions(row.name, add_url, not_on_team_url)
     )
 
 
@@ -672,6 +688,47 @@ async def not_on_team_link_state(held_id: int, supervisor_id: str) -> dict | Non
     else:                                                    # waiting_site, releasing, failed
         result["state"] = "sending"
     return result
+
+
+async def not_on_team_page_info(held_id: int, supervisor_id: str) -> dict | None:
+    """What the public "Not on my team" page shows for one supervisor's link (#483).
+
+    Wraps ``not_on_team_link_state`` (so a link opened late says what really
+    happened) and, only while the request is still theirs to decline, adds the
+    request summary and the supervisor's name for the confirm screen. Once it has
+    moved on, nothing about where it went or how it ended is shared (#462).
+
+    Args:
+        held_id: The held request the signed link names.
+        supervisor_id: The supervisor the link was issued to.
+
+    Returns:
+        None when there is no such row, else ``{"state", "name",
+        "supervisor_name", "summary", "request_number", "set_up_on"}``. State is
+        the same set ``not_on_team_link_state`` returns ("open", "declined",
+        "released", "cancelled", "sending"); ``supervisor_name`` and ``summary``
+        are filled only when state is "open".
+    """
+    state = await not_on_team_link_state(held_id, supervisor_id)   # one read; the #462 privacy rules apply
+    if state is None:
+        return None                                          # no such row: the caller answers "invalid"
+    result = {
+        "state": state["state"], "name": state.get("name", ""),
+        "supervisor_name": "", "summary": "",
+        "request_number": state.get("request_number", ""), "set_up_on": state.get("set_up_on", ""),
+    }
+    if state["state"] == "open":                             # still theirs: show the request and who was asked
+        row = await _load_held(held_id)
+        if row is not None:
+            result["supervisor_name"] = row.supervisor_name
+            result["summary"] = describe_form(row.request_type, row.form_data)
+    return result
+
+
+async def _load_held(held_id: int) -> HeldRequest | None:
+    """One held request row by id, or None (a small read used by the page info)."""
+    async with async_session() as session:
+        return await session.get(HeldRequest, held_id)
 
 
 async def repick_supervisor(
@@ -1235,7 +1292,58 @@ async def held_request_status(held_id: int) -> dict | None:
             "summary": describe_form(row.request_type, row.form_data),
             "declined_by": row.supervisor_name,
         })
+    if row.status == "released" and row.sp_item_id:
+        # Released: there is now a real request to follow, so hand the page its
+        # status token and it keeps the #364 progress steps to approved/rejected
+        # after sign-in (#482). Only on the Postgres path, the same condition the
+        # submit response uses; on SharePoint there is no row to follow.
+        token = await _released_request_status_token(row)
+        if token:
+            result["request_status_token"] = token
     return result
+
+
+async def _released_request_status_token(row: HeldRequest) -> str | None:
+    """The progress status token for a released held row's real request (#482).
+
+    Args:
+        row: A released held request (``sp_item_id`` is the created request).
+
+    Returns:
+        The token to follow the request with, or None off the Postgres path
+        (where there is no row to follow) or when the kind/id cannot be named.
+    """
+    from app.repositories.request_store import requests_in_postgres   # local: avoid an import cycle
+    from app.services import request_status
+    if not await requests_in_postgres():
+        return None                                          # SharePoint path: nothing to follow
+    return request_status.status_token_for(row.request_type, row.sp_item_id)
+
+
+async def released_sign_in_target(held_id: int) -> dict | None:
+    """Who a just-released held row may sign in as, and the request to follow (#482).
+
+    The held status token was only ever given to the device that proved the
+    address, and the supervisor confirmed who the person is, so a release is
+    treated as a sign-in for a short window (``RELEASE_SIGN_IN_DAYS``). This says
+    whether that window is open and, if so, hands back the person's email (to
+    find their staff record) and the released request's status token.
+
+    Args:
+        held_id: The held request the status token named.
+
+    Returns:
+        None when there is no such row, it is not released, or its release is
+        older than ``RELEASE_SIGN_IN_DAYS`` (the caller then answers 409).
+        Otherwise ``{"email", "request_status_token"}``; the token is None off
+        the Postgres path.
+    """
+    row = await _load_held(held_id)
+    if row is None or row.status != "released" or row.released_at is None:
+        return None                                          # nothing to sign in from
+    if _as_utc(utcnow()) - _as_utc(row.released_at) > timedelta(days=RELEASE_SIGN_IN_DAYS):
+        return None                                          # released too long ago: sign in with email instead
+    return {"email": row.email, "request_status_token": await _released_request_status_token(row)}
 
 
 async def held_request_email(held_id: int) -> str | None:
@@ -1243,3 +1351,43 @@ async def held_request_email(held_id: int) -> str | None:
     async with async_session() as session:
         row = await session.get(HeldRequest, held_id)
         return row.email if row else None
+
+
+# ----- the manager dashboard's held new hires (#481) -----
+
+async def held_waiting_on_supervisor(supervisor_id: str) -> list[dict]:
+    """Held new hires still waiting on one supervisor, for their dashboard panel (#481).
+
+    Only rows this supervisor currently holds and still has to act on: status
+    "held" with ``supervisor_id`` matching. A "not_on_team" row (the other
+    ``SUPERVISOR_STATUSES`` value) is excluded on purpose, because it has already
+    left this supervisor and waits on the person to re-pick, so the "Not on my
+    team" action would be a no-op; "held" is exactly the state
+    ``not_on_team_link_state`` and ``held_for_add`` treat as "open"/still theirs.
+
+    Args:
+        supervisor_id: The signed-in manager's Staff Directory id.
+
+    Returns:
+        One dict per waiting row, oldest first, each with ``id``, ``name``,
+        ``email``, ``department``, ``request_type``, ``summary`` (describe_form),
+        ``created_at`` (ISO) and ``status``.
+    """
+    holder = str(supervisor_id or "").strip()                 # the manager's own staff id, as stored
+    async with async_session() as session:
+        rows = (await session.scalars(
+            select(HeldRequest)
+            .where(HeldRequest.supervisor_id == holder, HeldRequest.status == "held")
+            .order_by(HeldRequest.id)                         # oldest first, like the admin list reversed
+        )).all()
+    return [
+        {
+            "id": r.id, "name": r.name, "email": r.email,
+            "department": r.department or "",
+            "request_type": r.request_type,
+            "summary": describe_form(r.request_type, r.form_data),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "status": r.status,
+        }
+        for r in rows
+    ]

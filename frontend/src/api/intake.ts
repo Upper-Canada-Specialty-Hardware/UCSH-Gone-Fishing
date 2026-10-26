@@ -413,6 +413,12 @@ export interface HeldStatusResult {
   summary?: string;
   /** Who declined it; present on a not_on_team row. */
   declined_by?: string;
+  /**
+   * Once the held request has been released ("sent"), the status token for the
+   * real request, so the page follows it to the decision (#482). Present only on
+   * the Postgres path; null/absent otherwise.
+   */
+  request_status_token?: string | null;
 }
 
 /**
@@ -452,6 +458,100 @@ export const repick = (body: {
   supervisor_id?: string;
   supervisor_email?: string;
 }) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held/repick', body);
+
+const HELD_WAITING_KEY = 'held-waiting';         // localStorage: a held request this device is following (#482)
+const HELD_WAITING_MAX_DAYS = 30;                // forget a stale held token after this many days
+
+/**
+ * Keep the held status token on this device, so a reload returns to the waiting
+ * page instead of the email step (#482).
+ *
+ * @param statusToken - The held request's status token, or null to forget it.
+ */
+export function saveHeldWaiting(statusToken: string | null): void {
+  try {
+    if (!statusToken) localStorage.removeItem(HELD_WAITING_KEY);
+    else localStorage.setItem(HELD_WAITING_KEY, JSON.stringify({ token: statusToken, at: Date.now() }));
+  } catch {
+    /* storage blocked: the page just will not resume after a reload */
+  }
+}
+
+/**
+ * The held status token this device is following, if still fresh (#482).
+ *
+ * @returns The token, or null when there is none, it is over 30 days old, or
+ *   storage is blocked.
+ */
+export function loadHeldWaiting(): string | null {
+  try {
+    const raw = localStorage.getItem(HELD_WAITING_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as { token: string; at: number };
+    if (!saved.token || Date.now() - saved.at > HELD_WAITING_MAX_DAYS * 86400000) {
+      localStorage.removeItem(HELD_WAITING_KEY);               // too old: drop it
+      return null;
+    }
+    return saved.token;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget the followed held request (once signed in or cancelled) (#482). */
+export const clearHeldWaiting = () => saveHeldWaiting(null);
+
+/** What the held sign-in returns: a normal staff session plus the request token (#482). */
+export interface HeldSignInResult extends EmployeeSession {
+  /** The released request's status token, so the page keeps following it; may be null off Postgres. */
+  request_status_token: string | null;
+}
+
+/**
+ * Sign a released new hire in from their waiting page (#482).
+ *
+ * A release is treated as a sign-in for a short window (the supervisor confirmed
+ * who they are and this device proved the address), so the page can move the
+ * person onto their signed-in pages without a new code.
+ *
+ * @param statusToken - The held request's status token.
+ * @returns The staff session (name/role/uid/token/exp/email) and the request token.
+ * @throws AxiosError 404 bad token or record gone, 409 not released or past the window.
+ */
+export const heldSignIn = (statusToken: string) =>
+  intake.post<HeldSignInResult>('/held/sign-in', { status_token: statusToken });
+
+/**
+ * What the public "Not on my team" page shows (#483). ``state`` drives the
+ * screen; ``summary`` and ``supervisor_name`` are filled only while "open".
+ */
+export interface NotOnTeamInfo {
+  state: 'open' | 'declined' | 'released' | 'cancelled' | 'sending' | 'done' | 'invalid';
+  name: string;
+  supervisor_name: string;
+  summary: string;
+  request_number: string;
+  set_up_on: string;
+}
+
+/**
+ * The details for the public "Not on my team" page (#483).
+ *
+ * @param token - The signed not-on-team token from the email link.
+ * @returns The request's details and current state (read-only).
+ */
+export const getNotOnTeamInfo = (token: string) =>
+  intake.get<NotOnTeamInfo>('/held/not-on-team/info', { params: { token } });
+
+/**
+ * Hand the held request back from the public page's confirm button (#483).
+ *
+ * @param token - The signed not-on-team token.
+ * @returns The outcome state (``done`` on a fresh decline, else what happened).
+ * @throws AxiosError 503 while processing is off.
+ */
+export const confirmNotOnTeam = (token: string) =>
+  intake.post<NotOnTeamInfo>('/held/not-on-team/confirm', null, { params: { token } });
 
 /**
  * Submit a request as the signed-in employee.

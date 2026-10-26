@@ -238,6 +238,39 @@ export const getHeldForAdd = (heldId: number, scope: SetupScope) =>
 export const updateExistingFromHeld = (heldId: number, scope: SetupScope, body: HeldProfileSave) =>
   api.post<HeldProfileResult>(`/${scope}/held/${heldId}/update-existing`, body);
 
+// Manager — held new hires waiting on the signed-in supervisor (#481). The
+// Today tab's "New hires waiting on you" panel reads these and can hand one back.
+/** One held new hire still waiting on the signed-in supervisor (#481). */
+export interface HeldWaiting {
+  id: number;
+  name: string;
+  email: string;
+  department: string;
+  request_type: string;
+  /** The request in words, e.g. "Vacation, 2026-11-02 to 2026-11-03". */
+  summary: string;
+  /** When it was held (ISO 8601), or null. */
+  created_at: string | null;
+  status: string;
+}
+
+/**
+ * The held new hires still waiting on the signed-in supervisor (#481).
+ *
+ * @returns ``{ held: HeldWaiting[] }``, oldest first.
+ */
+export const getTeamHeld = () => api.get<{ held: HeldWaiting[] }>('/team/held');
+
+/**
+ * Hand a held new hire back as "not on my team", from the dashboard (#481).
+ *
+ * @param heldId - The held request to hand back.
+ * @returns ``{ status: 'declined' }`` on success.
+ * @throws The axios error: 404 gone, 409 no longer waiting on this supervisor, 503 off.
+ */
+export const heldNotOnTeam = (heldId: number) =>
+  api.post<{ status: string }>(`/team/held/${heldId}/not-on-team`);
+
 // Manager — create a new employee (Staff Directory record) for their team
 export const createEmployee = (payload: Record<string, unknown>) =>
   api.post('/team/employees', payload);

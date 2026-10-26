@@ -580,6 +580,75 @@ async def held_not_on_team_submit(token: str = Query(...)):
     ))
 
 
+# One payload shape for a token that names no live request, so the public page
+# shows the "bad link" screen (#483). Every field is present so the client never
+# reads undefined.
+_NOT_ON_TEAM_INVALID = {
+    "state": "invalid", "name": "", "supervisor_name": "",
+    "summary": "", "request_number": "", "set_up_on": "",
+}
+
+
+@router.get("/held/not-on-team/info")
+async def held_not_on_team_info(token: str = Query(...)):
+    """Details for the public "Not on my team" page, as JSON (#483).
+
+    The JSON twin of the HTML GET, for the page at ``#/held/not-on-team``: same
+    signed token and same validation, and read-only. A forged or gone link reads
+    as ``{"state": "invalid"}`` and learns nothing; a valid link whose request has
+    moved on says what happened (released, cancelled, declined, sending), and one
+    still open carries the request summary and the supervisor's name (#462).
+
+    Args:
+        token: The signed not-on-team token from the email link.
+
+    Returns:
+        ``{"state", "name", "supervisor_name", "summary", "request_number",
+        "set_up_on"}``; see ``held_requests.not_on_team_page_info``.
+    """
+    decoded = held_requests.decode_not_on_team_token(token)
+    if decoded is not None:
+        info = await held_requests.not_on_team_page_info(*decoded)   # None for a gone row
+        if info is not None:
+            return info
+    return _NOT_ON_TEAM_INVALID                                # forged or gone: the bad-link screen
+
+
+@router.post("/held/not-on-team/confirm")
+async def held_not_on_team_confirm(token: str = Query(...)):
+    """Hand a held request back from the public page's confirm button, as JSON (#483).
+
+    The JSON twin of the HTML POST: same signed token, same guarded and
+    idempotent ``decline_held_request``, same processing gate. Returns the
+    outcome as a state the page shows: "done" when it was just handed back, else
+    whatever the request has become (released, cancelled, declined, sending) or
+    "invalid" for a forged or gone link.
+
+    Args:
+        token: The signed not-on-team token, submitted by the confirm button.
+
+    Returns:
+        The same payload shape as the info endpoint, with ``state`` set to "done"
+        on a fresh decline.
+
+    Raises:
+        HTTPException: 503 while processing is off (nothing is handed back).
+    """
+    if not settings.PROCESSING_ENABLED:                        # read-only: hand nothing back, email nobody
+        raise HTTPException(status_code=503, detail="This cannot be done right now. Try again later.")
+    decoded = held_requests.decode_not_on_team_token(token)
+    if decoded is None:
+        return _NOT_ON_TEAM_INVALID                            # forged link: learns nothing
+    held_id, supervisor_id = decoded
+    outcome = await held_requests.decline_held_request(held_id, supervisor_id)   # guarded + idempotent
+    info = await held_requests.not_on_team_page_info(held_id, supervisor_id)
+    if info is None:                                           # the row vanished between the two reads
+        return _NOT_ON_TEAM_INVALID
+    if outcome == "declined":                                  # just handed back: the "done" screen
+        return {**info, "state": "done"}
+    return info                                                # already handled / moved on: say what happened
+
+
 @router.get("/held/status")
 async def held_status(token: str = Query(...)):
     """How a held request is going, for the page that held it.
@@ -603,6 +672,55 @@ async def held_status(token: str = Query(...)):
     if found is None:
         raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
     return found
+
+
+class HeldSignInBody(BaseModel):
+    """Body of POST /held/sign-in: the held status token the waiting page holds."""
+    status_token: str
+
+
+@router.post("/held/sign-in")
+async def held_sign_in(body: HeldSignInBody):
+    """Sign a released new hire in from their waiting page (#482).
+
+    The held status token was only ever given to the device that proved the
+    address, and the supervisor confirmed who the person is when they set them
+    up, so a release is treated as a sign-in for a short window
+    (``RELEASE_SIGN_IN_DAYS``). It answers exactly as a normal staff sign-in does
+    (``_signed_in_as``), plus the released request's status token so the page
+    keeps following it, so a reload after this lands the person on their
+    signed-in pages.
+
+    Args:
+        body: The held status token the waiting page holds.
+
+    Returns:
+        ``{name, department, location, role, uid, token, exp, email,
+        request_status_token}``: the same fields a staff sign-in returns, plus
+        the person's email (so the page can store a complete session) and the
+        request status token (``None`` off the Postgres path).
+
+    Raises:
+        HTTPException: 404 for a forged or gone token, or when the staff record
+            is not found; 409 when the row is not released or was released longer
+            than ``RELEASE_SIGN_IN_DAYS`` ago (sign in with an email code
+            instead).
+    """
+    held_id = held_requests.held_id_from_status_token(body.status_token)
+    if held_id is None:
+        raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
+    target = await held_requests.released_sign_in_target(held_id)
+    if target is None:                                         # not released, or past the short window
+        raise HTTPException(status_code=409, detail="This request can no longer sign you in. Sign in with your email.")
+    employee = await get_employee_by_email(target["email"])    # the staff record the release created or matched
+    if not employee:                                           # added then removed, or never matched
+        raise HTTPException(status_code=404, detail="Your staff record could not be found. Sign in with your email.")
+    answer = await _signed_in_as(employee)                     # the normal staff sign-in answer
+    # Add the person's own email so the page stores a complete session, and the
+    # released request's status token so it keeps following it to the decision.
+    answer["email"] = (employee.get("fields", {}).get("EmailAddress") or target["email"] or "").strip()
+    answer["request_status_token"] = target["request_status_token"]
+    return answer
 
 
 @router.get("/request-status")
