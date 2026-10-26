@@ -360,6 +360,64 @@ async def send_email(
     return combine_summaries(summaries)
 
 
+class MailerUnavailableError(RuntimeError):
+    """An email that must go through the UCSH mailer cannot be sent that way."""
+
+
+async def send_email_via_mailer(
+    to: list[str],
+    subject: str,
+    html_body: str,
+    idempotency_key: str | None = None,
+) -> ExchangeSummary | None:
+    """Send one email through the UCSH mailer (Microsoft HVE) only, never SMTP2GO.
+
+    For mail to a company distribution group (the daily out-of-office email,
+    #466): the group takes mail from company senders only, so a fallback to
+    SMTP2GO would be refused or land as outside mail. Where ``send_email``
+    falls back to SMTP2GO, this raises instead. The shared layout, the
+    rehearsal allowlist and the ``email_api_log`` row are the same as for
+    ``send_email``.
+
+    Args:
+        to: Internal recipient addresses.
+        subject: Email subject.
+        html_body: The email's content; wrapped in the shared layout here.
+        idempotency_key: The mailer's Idempotency-Key; a fresh one when None.
+
+    Returns:
+        The mailer's ``ExchangeSummary``, or None when rehearsal mode dropped
+        every recipient.
+
+    Raises:
+        MailerUnavailableError: The mailer is off or not configured, there is
+            no recipient, or an address is not internal.
+        httpx.HTTPStatusError: The mailer answered 4xx/5xx (row written first).
+    """
+    from app.templates_render import render_layout                  # local: avoids an import cycle
+    recipients = [addr.strip() for addr in to if addr and addr.strip()]
+    if not recipients:
+        raise MailerUnavailableError("No recipient to send to")
+    outside = [addr for addr in recipients if _domain_of(addr) not in _internal_domains()]
+    if outside:                                                     # the mailer only takes company addresses
+        raise MailerUnavailableError(f"Not a company address: {', '.join(outside)}")
+    if not _mailer_usable():                                        # off or misconfigured: no SMTP2GO fallback
+        raise MailerUnavailableError("The UCSH mailer is off or not configured (MAILER_ENABLED, MAILER_URL, MAILER_KEY)")
+
+    from app.services.rehearsal import allow_recipient, rehearsal_enabled
+    if rehearsal_enabled():                                         # rehearsal: allow-listed addresses only
+        recipients = [addr for addr in recipients if allow_recipient(addr)]
+        if not recipients:
+            logger.info("Rehearsal: every recipient of %r was dropped; nothing sent", subject)
+            return None
+
+    _, reply_mailer = _resolve_reply_to(None)                       # the default Reply-To, internal only
+    return await mailer_client.send(
+        recipients, [], subject, render_layout(html_body), idempotency_key or uuid.uuid4().hex,
+        reply_to=reply_mailer,
+    )
+
+
 async def _send_via_smtp2go(
     to: list[str],
     cc: list[str],

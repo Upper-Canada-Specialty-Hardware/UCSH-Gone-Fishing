@@ -1,0 +1,20 @@
+{# The weekday 7:00 am "on leave starting today" email to the out-of-office notifications group.
+   One list for Ontario: everyone whose approved leave starts today and the day they are returning.
+   Never sent with an empty list (the sender skips that day). BC staff are left out. No location and no leave type are shown. Wrapped in the shared
+   layout by send_email. #}
+<h2 style="color:#2f5d50;font-family:'Segoe UI',Arial,sans-serif;font-size:18px;font-weight:bold;margin:0 0 4px;">On leave starting today</h2>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#6b6257;margin:0 0 16px;">{{ day_label }}</p>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f1a14;margin:0 0 8px;">{{ people | length }} {{ 'person starts' if people | length == 1 else 'people start' }} approved leave today.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:8px 0;">
+  <tr>
+    <th align="left" style="padding:8px 0;border-bottom:2px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#6b6257;">Name</th>
+    <th align="left" width="40%" style="width:40%;padding:8px 0;border-bottom:2px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#6b6257;">Returning</th>
+  </tr>
+  {% for person in people %}
+  <tr>
+    <td style="padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1f1a14;">{{ person.name }}</td>
+    <td style="padding:8px 0;border-bottom:1px solid #ebe4d8;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1f1a14;">{{ person.returning }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p style="font-family:'Segoe UI',Arial,sans-serif;font-size:12px;line-height:1.5;color:#6b6257;margin:20px 0 0;">Approved leave only. Sent at 7:00 am Toronto time on weekdays when someone's leave starts.</p>

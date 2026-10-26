@@ -15,6 +15,7 @@ from app.graph.auth import token_manager
 from app.graph.sharepoint import sp_client
 from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
+from app.tasks.out_of_office_email import start_out_of_office_email_task  # weekday 7:00 am "on leave starting today" email (#466)
 from app.tasks.reminders import start_reminder_task
 from app.tasks.held_request_reminders import start_held_request_reminder_task
 from app.tasks.sync_tasks import start_shadow_sync_task
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     # webhooks, catch-up or syncs, and the jobs run on Postgres alone.
     renewal_task = None
     carryover_reset_task = None
+    out_of_office_task = None
     reminder_task = None
     held_request_task = None
     shadow_sync_task = None
@@ -81,6 +83,7 @@ async def lifespan(app: FastAPI):
     if switched:
         logger.info("Switched to Postgres: SharePoint startup, webhooks and syncs are skipped")
         carryover_reset_task = start_carryover_reset_task()
+        out_of_office_task = start_out_of_office_email_task()  # weekday 7:00 am "on leave starting today" email
         reminder_task = start_reminder_task()
         held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
     else:                                                      # still on SharePoint: connect as before
@@ -101,6 +104,7 @@ async def lifespan(app: FastAPI):
 
             renewal_task = start_subscription_renewal_task()
             carryover_reset_task = start_carryover_reset_task()
+            out_of_office_task = start_out_of_office_email_task()  # weekday 7:00 am "on leave starting today" email
             reminder_task = start_reminder_task()
             held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
             # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
@@ -141,6 +145,8 @@ async def lifespan(app: FastAPI):
         renewal_task.cancel()
     if carryover_reset_task:
         carryover_reset_task.cancel()
+    if out_of_office_task:
+        out_of_office_task.cancel()
     if reminder_task:
         reminder_task.cancel()
     if held_request_task:
