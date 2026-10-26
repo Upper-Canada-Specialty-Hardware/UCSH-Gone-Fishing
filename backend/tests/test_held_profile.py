@@ -193,6 +193,28 @@ def test_alongside_keeps_the_managers_on_record(staff):
     assert not any("moved off" in m["subject"] for m in staff["sent"])           # nobody was taken off
 
 
+def test_a_refused_release_is_returned_to_the_caller(staff, monkeypatch):
+    # When the record ends up with the request's address, the release runs; if it
+    # is refused on a business rule, update_existing passes the refusal straight
+    # back (held_status "refused" and the reason in released) so the UI can show
+    # it, rather than reporting a plain success (#406).
+    held_id = _held()
+    email = run(_row(held_id)).email
+
+    async def refusing_release(address, only_id=None):
+        return [held_requests.ReleaseResult(
+            only_id, "refused",
+            "You already have a request for Nov 2, 2026 (#3926, approved). Cancel or change that one instead.",
+        )]
+
+    monkeypatch.setattr(held_profile.held_requests, "release_held_requests", refusing_release)
+
+    result = _update(held_id, fields={"email": email, "department": "Project Management"})
+    assert result["held_status"] == "refused"
+    [released] = result["released"]
+    assert released["status"] == "refused" and "#3926" in released["detail"]
+
+
 def test_a_record_without_the_requests_address_stays_held_with_a_note(staff):
     held_id = _held()
     result = _update(held_id)                                      # email not changed

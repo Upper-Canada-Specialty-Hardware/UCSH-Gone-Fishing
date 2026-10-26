@@ -36,6 +36,11 @@ export interface HeldRow {
 export const HELD_STATUS_LABEL: Record<string, string> = {
   held: 'Not on staff', waiting_site: 'Waiting for site access', releasing: 'Sending',
   failed: 'Failed', not_on_team: 'Picking a new supervisor', released: 'Sent', cancelled: 'Cancelled',
+  // refused (#406): the release reached submit_request and it refused the form on
+  // a business rule (a date clash, the booking limit). Closed, never retried, so
+  // it is left out of OPEN_HELD below; the reason shows in the row's detail
+  // (fromHeld reads it from last_error) and the person was emailed.
+  refused: 'Refused',
 };
 
 /** Held statuses that still need someone; matches the backend's ACTIVE_STATUSES. */

@@ -252,6 +252,13 @@ export interface HeldWaiting {
   /** When it was held (ISO 8601), or null. */
   created_at: string | null;
   status: string;
+  /**
+   * The id of the one active staff record that shares this new hire's name, or
+   * null when none or more than one does (#406). Lets the Team tab flag the
+   * member the request may belong to by id, never by matching names on the
+   * client.
+   */
+  existing_id: string | null;
 }
 
 /**

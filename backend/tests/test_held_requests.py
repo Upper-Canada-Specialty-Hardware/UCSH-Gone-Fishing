@@ -227,6 +227,28 @@ def test_the_waiting_page_sees_its_request_go_through(client, world):
     assert sent.json() == {"status": "sent", "supervisor_name": "Sam Boss"}
 
 
+def test_the_waiting_page_shows_a_refusal_with_the_reason(client, world, monkeypatch):
+    # When the release is refused on a business rule, the waiting page the person
+    # keeps open says it was not sent and why, instead of looping on "waiting" (#406).
+    email = _email()
+    body = {"verified": email_codes.sign_verified_email(email), "first_name": "Lee", "last_name": "New", "department": "Installation",
+            "supervisor_id": "3", "request_type": "leave", "form": VACATION}
+    token = client.post("/api/intake/held", json=body).json()["status_token"]
+    world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
+
+    async def refusing_submit(request_type, form, employee, source):
+        raise RequestFormError(
+            "You already have a request for Nov 2, 2026 "
+            "(#3926, approved). Cancel or change that one instead."
+        )
+
+    monkeypatch.setattr(held_requests, "submit_request", refusing_submit)
+    asyncio.run(held_requests.release_held_requests(email))
+
+    answer = client.get("/api/intake/held/status", params={"token": token}).json()
+    assert answer["status"] == "refused" and "#3926" in answer["reason"]
+
+
 def test_a_status_token_only_opens_its_own_request(client, world):
     row = _hold(_email())
     other = _hold(_email())
@@ -316,26 +338,41 @@ def test_a_failed_release_is_kept_for_a_retry(world):
     assert retry.status == "released"
 
 
-def test_a_release_blocked_by_an_overlap_is_recorded_not_crashed(world, monkeypatch):
+def test_a_release_refused_on_a_rule_is_closed_refused_and_the_person_told(world, monkeypatch):
     # Releasing a held request runs it through submit_request, which refuses a
-    # leave that clashes with a live request (#446). The refusal is a
-    # RequestFormError, so it must land the row in the existing failed state with
-    # the message kept for the admin list, never crash the release loop.
+    # leave that clashes with a live request (#446). That refusal is a deliberate
+    # business-rule rejection, not a transient error (#406): the row is closed
+    # "refused" (never retried), the reason is kept, and the person is emailed it.
     email = _email()
-    _hold(email)
+    row = _hold(email)
     world.staff_by_email[email] = {"id": "8", "fields": {"Title": "Lee New", "EmailAddress": email}}
+    world.sent.clear()                                         # drop the hold email; watch the release's
 
     async def refusing_submit(request_type, form, employee, source):
         raise RequestFormError(
             "You already have a request for Nov 2, 2026 "
-            "(#3926, pending). Cancel or change that one instead."
+            "(#3926, approved). Cancel or change that one instead."
         )
 
     monkeypatch.setattr(held_requests, "submit_request", refusing_submit)
 
     [result] = asyncio.run(held_requests.release_held_requests(email))
-    assert result.status == "failed"                           # kept, not lost
+    assert result.status == "refused"                          # closed, not the retryable "failed"
     assert "#3926" in result.detail and "already have a request" in result.detail
+
+    # The row is closed refused with the reason kept for the admin list, and a
+    # retry of it does nothing (it is no longer an open status).
+    listed = asyncio.run(held_requests.list_held_requests(include_closed=True))
+    mine = next(r for r in listed if r["id"] == row.id)
+    assert mine["status"] == "refused" and "#3926" in (mine["last_error"] or "")
+    assert asyncio.run(held_requests.release_held_requests(email, only_id=row.id)) == []
+
+    # Only the person is emailed, on their own thread, with the exact reason; the
+    # supervisor's "released" email is never sent for a refusal.
+    assert [m["to"] for m in world.sent] == [[email]]
+    [person] = world.sent
+    assert person["subject"] == held_requests.PERSON_SUBJECT
+    assert "not sent" in person["html"] and "#3926" in person["html"]
 
 
 def test_with_requests_in_postgres_an_unlinked_person_is_released_at_once(world, monkeypatch):

@@ -42,9 +42,11 @@ class HeldRequest(Base):
     form_data: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     # "held" (waiting), "released" (submitted as a request), "failed" (release
-    # tried and SharePoint refused; retried by an admin), "not_on_team" (a
-    # supervisor said the person is not on their team; waiting for them to pick
-    # another), "cancelled".
+    # hit an unexpected SharePoint/DB/network error; retried by an admin),
+    # "refused" (#406 - the release reached submit_request and it refused the form
+    # on a business rule, e.g. a date clash; closed, never retried, the person is
+    # emailed), "not_on_team" (a supervisor said the person is not on their team;
+    # waiting for them to pick another), "cancelled".
     status: Mapped[str] = mapped_column(String, nullable=False, default="held", index=True)
 
     # Every supervisor this request has been sent to, in order, each as

@@ -112,6 +112,19 @@ def test_held_waiting_on_supervisor_is_only_their_open_rows(world):
     assert row["summary"] == "Vacation, 2026-11-02 to 2026-11-03" and row["department"] == "Project Management"
 
 
+def test_held_waiting_on_supervisor_reports_the_single_name_match(world):
+    # existing_id is the one active staff record sharing the row's name, matched
+    # by id on the server, or null when none or more than one does (#406).
+    unmatched = _hold(_email(), supervisor_id="3")             # "Lee New": no record by that name
+    matched = asyncio.run(held_requests.hold_request(
+        _email(), name="Eduardo Del Sarto", department="Project Management",
+        supervisor_id="3", request_type="leave", form=VACATION))   # matches EDUARDO (id 4)
+
+    rows = {r["id"]: r for r in asyncio.run(held_requests.held_waiting_on_supervisor("3"))}
+    assert rows[unmatched.id]["existing_id"] is None           # no staff record by that name
+    assert rows[matched.id]["existing_id"] == "4"              # exactly one match, by id
+
+
 @pytest.fixture
 def team_client(world, monkeypatch):
     """A client for the team router, with the caller's own record stubbed."""
