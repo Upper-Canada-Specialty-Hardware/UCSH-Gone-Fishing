@@ -1,7 +1,8 @@
 import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Box, Typography, TextField, Button, Alert, CircularProgress, Link,
+  Box, Typography, TextField, Button, Alert, AlertTitle, CircularProgress, Link,
+  Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
 } from '@mui/material';
 import { ThemeProvider, useTheme } from '@mui/material/styles';
 import { AnimatePresence, m } from 'motion/react';
@@ -216,6 +217,52 @@ function Lead({ children }: { children: ReactNode }) {
 }
 
 /**
+ * What a new hire's saved request means, said loudly: it is not sent yet.
+ *
+ * Staff who signed in with a personal address land on this page too, so it
+ * also tells them what to do instead of waiting.
+ *
+ * @param props.supervisor - Who was asked to add them, or "" when unknown.
+ * @returns The note.
+ */
+function HeldWaitingNote({ supervisor }: { supervisor: string }) {
+  const who = supervisor || 'your supervisor';
+  return (
+    <Box sx={{ display: 'grid', gap: 1.5, mt: -0.5 }}>
+      <Alert severity="info">
+        <AlertTitle sx={{ fontWeight: 700 }}>Saved, not sent yet</AlertTitle>
+        It waits until {who} adds you to the staff list. Then it goes to them automatically, and you get an
+        email when it is approved or rejected. You can close this page.
+      </Alert>
+      <Alert severity="warning">
+        <strong>Already work at UCSH?</strong> Then you signed in with an email that is not on your staff record.
+        Sign in again with your work email and send the request from there, and let {who} know.
+      </Alert>
+    </Box>
+  );
+}
+
+/**
+ * A request that was not sent, with the reason first and in bold.
+ *
+ * @param props.reason - The exact reason from the server, or "" when none came.
+ * @returns The note.
+ */
+function RefusedNote({ reason }: { reason: string }) {
+  return (
+    <Box sx={{ display: 'grid', gap: 1.25, mt: -0.5 }}>
+      <Alert severity="error">
+        <AlertTitle sx={{ fontWeight: 700 }}>{reason || 'Your request could not be sent.'}</AlertTitle>
+        Nothing was sent to a manager. We emailed you this too.
+      </Alert>
+      <Typography variant="body2" color="text.secondary">
+        <strong>What to do:</strong> start again with other dates, or cancel or change the request it clashes with.
+      </Typography>
+    </Box>
+  );
+}
+
+/**
  * The sign-in, request and new-hire pages: the in-house way to ask for leave,
  * overtime or a carry-over/payout, with no Microsoft sign-in. It serves three
  * addresses:
@@ -294,6 +341,9 @@ export default function RequestPage() {
 
   // What a new starter says about themselves (#226).
   const [starter, setStarter] = useState<NewStarter>(EMPTY_STARTER);
+  // The "are you sure you are new?" step before a new-hire request is sent: a
+  // staff member who signed in with the wrong email gets one last chance to stop.
+  const [confirmNewHire, setConfirmNewHire] = useState(false);
 
   // Carry-over and payout are only taken between the dates an admin set (#176).
   useEffect(() => {
@@ -802,10 +852,36 @@ export default function RequestPage() {
     }
   };
 
-  /** Start another request, keeping the sign-in; a new hire starts again from the landing page. */
+  /**
+   * Back to the email step with nothing left over from a held request.
+   *
+   * Navigating to "/" alone did nothing when the page was already there (the
+   * start-up effect only runs on a path change), so every piece of held and
+   * new-hire state is cleared here and the step set directly.
+   */
+  const startOver = () => {
+    clearHeldWaiting();                                 // do not resume the held page after a reload
+    saveNewHire(null);                                  // forget the verified new-hire pass
+    setVerified(null);
+    setHeldToken(''); setHeldStatus('waiting'); setHeldWith('');
+    setHeldSummary(''); setHeldDept(''); setRepickChoice({ ...EMPTY_SUPERVISOR });
+    setHeldSignedOut(false);
+    setStarter(EMPTY_STARTER);
+    setValues({ ...EMPTY_REQUEST });
+    clearDraft();
+    setMyToken(''); setProgress(null);
+    setSent(null); setCancelledMine(false);
+    setClash(null); setClashNote('');
+    setDoneText(''); setError(''); setInfo(''); setCode('');
+    setConfirmNewHire(false);
+    setStep('email');
+    navigate('/', { replace: true });                   // leave #/new-hire, if there
+  };
+
+  /** Start another request, keeping the sign-in; without one, back to the start. */
   const another = () => {
     if (!session) {
-      navigate('/', { replace: true });
+      startOver();
       return;
     }
     setValues({ ...EMPTY_REQUEST });
@@ -851,6 +927,8 @@ export default function RequestPage() {
   // What happens next, shown once the request is sent or saved.
   // A new hire's list moves on by itself once their supervisor adds them.
   const added = heldStatus === 'sent';
+  // A new hire's request saved but not sent yet: still waiting on the supervisor.
+  const heldWaiting = held && !session && (heldStatus === 'waiting' || heldStatus === 'not_on_team');
   // While still waiting, show the new-hire steps; once added (or for a signed-in
   // employee) follow the real request's progress to the decision (#364, #482).
   // A refusal is final and never goes to a supervisor, so it shows no next
@@ -901,8 +979,10 @@ export default function RequestPage() {
                 <Button variant="contained" size="large" sx={big} disabled={!emailOk || busy} onClick={sendCode}>
                   <BusyLabel busy={busy}>Email me a code</BusyLabel>
                 </Button>
+                {/* The usual mistake is a staff member signing in with a personal address: say it loudly. */}
                 <Typography variant="body2" color="text.secondary">
-                  New and no work email yet? Use your personal email. Your supervisor is asked to add you.
+                  <Box component="strong" sx={{ color: 'text.primary' }}>Already work at UCSH? Use the email on your staff record</Box>{' '}
+                  (usually your work email). Only someone new, with no work email yet, should use a personal email.
                 </Typography>
               </>
             )}
@@ -1009,9 +1089,20 @@ export default function RequestPage() {
             {step === 'newhire' && verified && (
               <>
                 <Heading>Tell us who you are</Heading>
-                <Alert severity="info">
-                  {email.trim()} is not in the Staff Directory yet. Tell us who you are and who your
-                  supervisor is; they will be asked to add you, and your request goes to them once they do.
+                {/* Loud on purpose: staff who used a personal address land here by mistake,
+                    and their request then waits on their manager instead of being sent. */}
+                <Alert severity="warning">
+                  <AlertTitle sx={{ fontWeight: 700 }}>{email.trim()} is not on any staff record</AlertTitle>
+                  <Box component="p" sx={{ m: 0, mb: 1 }}>
+                    <strong>Already work at UCSH? Stop here.</strong> Go back and sign in with the email on your
+                    staff record (usually your work email). A request sent from this address is not processed
+                    until your supervisor confirms who you are.
+                  </Box>
+                  <Box component="p" sx={{ m: 0, mb: 1.25 }}>
+                    <strong>New and not set up yet?</strong> Tell us who you are and who your supervisor is.
+                    They are asked to add you, and your request goes to them once they do.
+                  </Box>
+                  <Button size="small" variant="outlined" color="inherit" onClick={startOver}>Use a different email</Button>
                 </Alert>
                 <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <WhoYouAre verified={verified} value={starter} onChange={setStarter} onError={setError} />
@@ -1040,9 +1131,30 @@ export default function RequestPage() {
                     </m.div>
                   </AnimatePresence>
                 </AutoHeight>
-                <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire}>
+                {/* Send asks first: the last chance for a staff member on the wrong email to stop. */}
+                <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={() => setConfirmNewHire(true)}>
                   <BusyLabel busy={busy}>Send request</BusyLabel>
                 </Button>
+                <Dialog open={confirmNewHire} onClose={() => setConfirmNewHire(false)} maxWidth="xs">
+                  <DialogTitle>Are you new at UCSH?</DialogTitle>
+                  <DialogContent>
+                    <DialogContentText sx={{ mb: 1.5 }}>
+                      This request is <strong>not sent</strong> until{' '}
+                      {starter.useEmail ? 'your supervisor' : (starter.supervisor?.name || 'your supervisor')}{' '}
+                      adds you to the staff list.
+                    </DialogContentText>
+                    <DialogContentText>
+                      <strong>Already work here?</strong> Do not send it. Sign in with the email on your staff
+                      record instead and send it from there.
+                    </DialogContentText>
+                  </DialogContent>
+                  <DialogActions sx={{ flexWrap: 'wrap', gap: 1 }}>
+                    <Button onClick={() => { setConfirmNewHire(false); startOver(); }}>I already work here</Button>
+                    <Button variant="contained" onClick={() => { setConfirmNewHire(false); void submitAsNewHire(); }}>
+                      I am new, send it
+                    </Button>
+                  </DialogActions>
+                </Dialog>
               </>
             )}
 
@@ -1097,7 +1209,7 @@ export default function RequestPage() {
                   <Heading>Request cancelled</Heading>
                   <Lead>{doneText || 'This request was cancelled. If you still need it, start again with your email.'}</Lead>
                   <Box>
-                    <Button variant="outlined" onClick={() => navigate('/', { replace: true })}>Back to start</Button>
+                    <Button variant="outlined" onClick={startOver}>Back to start</Button>
                   </Box>
                 </>
               ) : heldStatus === 'refused' ? (
@@ -1106,21 +1218,15 @@ export default function RequestPage() {
                 // point them at what to do. They have also been emailed (#406).
                 <>
                   <Heading>Request not sent</Heading>
-                  <Lead>{doneText || 'Your request could not be sent.'}</Lead>
-                  <Typography variant="body2" color="text.secondary">
-                    We emailed you about it. Start again with other dates, or cancel or change the request it clashes with.
-                  </Typography>
+                  <RefusedNote reason={doneText} />
                   <Box>
-                    <Button variant="outlined" onClick={() => navigate('/', { replace: true })}>Back to start</Button>
+                    <Button variant="outlined" onClick={startOver}>Back to start</Button>
                   </Box>
                 </>
               ) : (
                 <>
                   <Heading>Your request is saved</Heading>
-                  <Lead>
-                    We asked {heldWith || 'your supervisor'} to add you to the staff list.
-                    Your request goes to them automatically, and you will get an email when it is approved or rejected. You can close this page.
-                  </Lead>
+                  <HeldWaitingNote supervisor={heldWith} />
                   <NextSteps items={[
                     { title: 'Request saved', note: 'Just now', done: true },
                     { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
@@ -1149,11 +1255,21 @@ export default function RequestPage() {
                     : heldStatus === 'cancelled' ? 'Request cancelled'
                     : 'Request saved'}
                 </Heading>
-                <Lead>{doneText}</Lead>
+                {/* A new hire's saved (not sent) request and a refusal get the louder notes;
+                    everything else keeps the plain sentence. */}
+                {heldWaiting ? <HeldWaitingNote supervisor={heldWith} />
+                  : heldStatus === 'refused' ? <RefusedNote reason={doneText} />
+                  : <Lead>{doneText}</Lead>}
                 {next.length > 0 && <NextSteps items={next} />}
                 <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <Button variant="contained" onClick={another}>Make another request</Button>
+                  {/* No second request while one waits to be set up (one at a time, #442):
+                      the button only ever led back to this same status. */}
+                  {!heldWaiting && (
+                    <Button variant={session ? 'contained' : 'outlined'} onClick={another}>
+                      {session ? 'Make another request' : 'Back to start'}
+                    </Button>
+                  )}
                   {session && <Button variant="outlined" onClick={() => navigate('/my')}>See my requests</Button>}
                   {/* Changed their mind: cancel while it still waits for a decision (#519). */}
                   {session && sent && !cancelledMine && (!progress || progress.status === 'pending') && (
