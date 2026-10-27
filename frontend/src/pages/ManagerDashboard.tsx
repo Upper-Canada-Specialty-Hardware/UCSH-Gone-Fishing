@@ -1,7 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
-import { staffCacheKey } from '../api/intake';
+import { RETIRED_HELD_LINK, staffCacheKey } from '../api/intake';
 import {
   Alert, Box, Button, Paper, Snackbar, Tab, Tabs, Typography,
 } from '@mui/material';
@@ -49,21 +49,17 @@ import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
 
 /**
- * A new hire's details left by the supervisor's "add this person" email link
- * (see AuthHandler in App.tsx). Read once, then cleared so a refresh does not
- * prefill again.
+ * Whether this visit came from a link in an old "add this new hire" email
+ * (see LinkSignIn in App.tsx). Those emails are no longer used (#525): the link
+ * still signs the manager in, but fills in nothing, and the dashboard says so
+ * once. Read once, then cleared so a refresh does not say it again.
  *
- * @returns The prefill, or null.
+ * @returns True when the visit came from such a link.
  */
-function takeAddEmployeePrefill(): { title: string; email_address: string; department?: string; location?: string } | null {
-  const raw = sessionStorage.getItem('add_employee_prefill');
-  if (!raw) return null;
-  sessionStorage.removeItem('add_employee_prefill');
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+function takeRetiredHeldLink(): boolean {
+  const seen = sessionStorage.getItem(RETIRED_HELD_LINK) === '1';
+  sessionStorage.removeItem(RETIRED_HELD_LINK);       // once only
+  return seen;
 }
 
 /** The tabs, keyed by url segment (#/team/<key>). "add" is reached by its button. */
@@ -126,7 +122,8 @@ export default function ManagerDashboard() {
   const theme = useTheme();
   const params = useParams();
   const navigate = useNavigate();
-  const [prefill] = useState(takeAddEmployeePrefill);
+  // Came from an old held-request email link: a dismissable note, nothing else (#525).
+  const [retiredLink, setRetiredLink] = useState(takeRetiredHeldLink);
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'today';
   /** Open a tab (changes the url). @param k - Tab key. */
   const go = useCallback((k: TabKey) => navigate(`/team/${k}`), [navigate]);
@@ -141,13 +138,6 @@ export default function ManagerDashboard() {
     setHistoryFocus({ ...target });                     // a fresh object so a repeat click re-applies
     go('history');
   }, [go]);
-
-  // Opened from an "add this new hire" email: go straight to Add employee.
-  // Runs on arrival only; later tab changes are the manager's own.
-  const [arrived] = useState(() => !!prefill && tab !== 'add');
-  useEffect(() => {
-    if (arrived) navigate('/team/add', { replace: true });
-  }, [arrived, navigate]);
 
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');
   // The leave bar selected on the Calendar timeline, and the day picked on the
@@ -493,6 +483,14 @@ export default function ManagerDashboard() {
         <Alert severity="info">System is in reporting-only mode. Approve/reject actions are disabled.</Alert>
       )}
 
+      {/* An old "add this new hire" email link: it changed nothing (#525). */}
+      {retiredLink && (
+        <Alert severity="info" onClose={() => setRetiredLink(false)}>
+          That email link is no longer used, and opening it changed nothing. To add someone to your team,
+          use Add a new hire.
+        </Alert>
+      )}
+
       <Tabs value={tab === 'add' ? false : tab} onChange={(_, v) => go(v)} variant="scrollable" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider' }}>
         <Tab value="today" label={waiting.length ? <span>Today (<Swap k={waiting.length}>{waiting.length}</Swap>)</span> : 'Today'} />
         <Tab value="calendar" label="Calendar" />
@@ -831,7 +829,6 @@ export default function ManagerDashboard() {
           processingEnabled={processingEnabled}
           submitEmployee={createEmployee}
           checkEmployee={checkEmployee}
-          prefill={prefill}
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
           }

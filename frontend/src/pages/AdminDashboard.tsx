@@ -21,7 +21,7 @@ import RequestStorageCard from '../components/admin/RequestStorageCard';
 import AdminPasswordCard from '../components/admin/AdminPasswordCard';
 import { Enter, leaveDelay } from '../components/Motion';
 import { AdminSkeleton } from '../components/Skeletons';
-import { HeldRow, OPEN_HELD, RequestView } from '../components/admin/requestRows';
+import { RequestView } from '../components/admin/requestRows';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
 import {
   getAdminBalances,
@@ -46,9 +46,6 @@ import {
   getAdminImpersonateUrl,
   sendDashboardLink,
   getEmployeeDashboardLink,
-  getHeldRequests,
-  releaseHeldRequest,
-  cancelHeldRequest,
   VacationCoverRequest,
 } from '../api/client';
 
@@ -57,7 +54,6 @@ const SCREEN_TITLES: Record<string, string> = {
   home: 'Home',
   pending: 'Pending approvals',
   vacation: 'Managers on vacation',
-  held: 'Held for new hires',
   setup: 'Potential Employee Setup Issues',
   add: 'Add employee',
   staff: 'Staff',
@@ -71,10 +67,10 @@ const SCREEN_TITLES: Record<string, string> = {
   password: 'Admin password',
 };
 
-/** The four screens that are views of the one requests table. */
-const REQUEST_VIEWS: Record<string, RequestView> = { pending: 'pending', held: 'held', stuck: 'stuck', requests: 'all' };
+/** The three screens that are views of the one requests table. */
+const REQUEST_VIEWS: Record<string, RequestView> = { pending: 'pending', stuck: 'stuck', requests: 'all' };
 /** A view back to its screen key, for the view chips. */
-const VIEW_SCREEN: Record<RequestView, string> = { pending: 'pending', held: 'held', stuck: 'stuck', all: 'requests' };
+const VIEW_SCREEN: Record<RequestView, string> = { pending: 'pending', stuck: 'stuck', all: 'requests' };
 
 /**
  * The admin dashboard: a grouped sidebar instead of a tab strip, a home screen
@@ -95,7 +91,6 @@ interface AdminSnapshot {
   setup: EmployeeSetupSummary | null;
   stats: any;
   processing_enabled: boolean;
-  held: HeldRow[];
   vacation: VacationCoverRequest[];
 }
 
@@ -110,10 +105,6 @@ export default function AdminDashboard() {
     window.scrollTo(0, 0);                             // a new screen starts at the top
   }, [navigate]);
   const [menuOpen, setMenuOpen] = useState(false);     // small screens: the slide-out menu
-  const [heldRows, setHeldRows] = useState<HeldRow[]>([]);         // held requests (open, or all with the switch on)
-  const [heldIncludeClosed, setHeldIncludeClosed] = useState(false);
-  // Open held requests, for home and the sidebar, whatever the switch shows.
-  const heldCount = heldRows.filter((h) => OPEN_HELD.includes(h.status)).length;
   const [employees, setEmployees] = useState<any[]>([]);
   const [pending, setPending] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -130,15 +121,6 @@ export default function AdminDashboard() {
 
   // Edit pending request
   const [editItem, setEditItem] = useState<any | null>(null);
-
-  // A held request's person, to prefill Add Employee from the Held Requests tab.
-  const [addPrefill, setAddPrefill] = useState<
-    { title: string; email_address: string; department: string; location: string } | null
-  >(null);
-  const handleAddFromHeld = useCallback((row: HeldRow) => {
-    setAddPrefill({ title: row.name, email_address: row.email, department: row.department, location: row.location });
-    setTab('add');                                     // the Add Employee screen
-  }, [setTab]);
 
   // The supervisor picker for Add Employee. Fetched once, lazily, when that tab
   // is first opened — not on every poll of loadData, since it is a full staff
@@ -165,7 +147,6 @@ export default function AdminDashboard() {
       setEmployeeSetup(s.setup);
       setStats(s.stats);
       setProcessingEnabled(s.processing_enabled);
-      setHeldRows(s.held || []);                                  // an older saved snapshot may lack it
       // A snapshot saved by an older build has no vacation list (#370); empty, not
       // undefined, or the nav count's .length throws and blanks the whole page.
       setVacationRows(s.vacation || []);
@@ -178,7 +159,7 @@ export default function AdminDashboard() {
       if (cached && !cancelled) show(cached);
       while (!cancelled) {
         try {
-          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes, heldRes, vacRes] = await Promise.all([
+          const [balRes, pendRes, reqRes, statsRes, stuckRes, setupRes, configRes, vacRes] = await Promise.all([
             getAdminBalances(),
             getAdminPending(),
             getAdminRequests(),
@@ -186,9 +167,7 @@ export default function AdminDashboard() {
             getAdminStuckRequests(),
             getAdminEmployeeSetup(),
             getConfig(),
-            // A failure here must not hold up the dashboard; the held view just shows empty.
-            getHeldRequests(false).catch(() => ({ data: { held: [] } })),
-            // Same: a failure leaves the managers-on-vacation section empty, not the dashboard broken.
+            // A failure leaves the managers-on-vacation section empty, not the dashboard broken.
             getAdminVacationCover().catch(() => ({ data: { requests: [] } })),
           ]);
           if (cancelled) return;
@@ -200,7 +179,6 @@ export default function AdminDashboard() {
             setup: setupRes.data,
             stats: statsRes.data,
             processing_enabled: configRes.data.processing_enabled || false,
-            held: heldRes.data.held || [],
             vacation: vacRes.data.requests || [],
           };
           show(fresh);
@@ -410,47 +388,6 @@ export default function AdminDashboard() {
     setSnack({ open: true, message: 'Request updated and approval email re-sent', severity: 'success' });
   }, [editItem]);
 
-  /**
-   * Reload the held list.
-   *
-   * @param includeClosed - Also show sent and cancelled ones.
-   */
-  const loadHeld = useCallback(async (includeClosed: boolean) => {
-    try {
-      const res = await getHeldRequests(includeClosed);
-      setHeldRows(res.data.held || []);
-    } catch {
-      setSnack({ open: true, message: 'Held requests could not be loaded', severity: 'error' });
-    }
-  }, []);
-
-  /** Show or hide sent and cancelled held requests. @param v - Show them. */
-  const handleHeldIncludeClosed = useCallback((v: boolean) => {
-    setHeldIncludeClosed(v);
-    loadHeld(v);
-  }, [loadHeld]);
-
-  /**
-   * Run one held-request action, then reload the held list.
-   *
-   * @param id - The held request.
-   * @param action - The call to make.
-   * @param done - What to say when it worked.
-   */
-  const heldAction = useCallback(async (id: number, action: () => Promise<unknown>, done: string) => {
-    setActionLoading(`held-${id}`);                    // the busy key the requests table looks for
-    try {
-      await action();
-      setSnack({ open: true, message: done, severity: 'success' });
-      await loadHeld(heldIncludeClosed);
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'That did not work', severity: 'error' });
-    } finally {
-      setActionLoading(null);
-    }
-  }, [loadHeld, heldIncludeClosed]);
-
   // Refetch the request lists and their totals after a new request or a delete,
   // so the rebuilt requests table shows the real state once an action lands.
   const reloadRequests = useCallback(async () => {
@@ -560,7 +497,6 @@ export default function AdminDashboard() {
     { title: 'Approvals', items: [
       { key: 'pending', label: 'Pending approvals', count: pending.length },
       { key: 'vacation', label: 'Managers on vacation', count: vacationRows.length },
-      { key: 'held', label: 'Held for new hires', count: heldCount },
     ] },
     { title: 'People', items: [
       { key: 'staff', label: 'Staff' },
@@ -612,7 +548,6 @@ export default function AdminDashboard() {
               {tab === 'home' && (
                 <AdminHome
                   pending={pending}
-                  heldCount={heldCount}
                   stuckCount={stuckRequests.length}
                   setupCount={setupCount}
                   vacationCount={vacationRows.length}
@@ -627,9 +562,6 @@ export default function AdminDashboard() {
                   pending={pending}
                   stuck={stuckRequests}
                   requests={requests}
-                  held={heldRows}
-                  heldIncludeClosed={heldIncludeClosed}
-                  onHeldIncludeClosed={handleHeldIncludeClosed}
                   stats={stats}
                   processingEnabled={processingEnabled}
                   actionLoading={actionLoading}
@@ -640,9 +572,6 @@ export default function AdminDashboard() {
                   onRefund={handleRefund}
                   onEdit={(item) => setEditItem(item)}
                   onReprocess={handleReprocess}
-                  onAddHeld={handleAddFromHeld}
-                  onRetryHeld={(id) => heldAction(id, () => releaseHeldRequest(id), 'Sent on.')}
-                  onCancelHeld={(id) => heldAction(id, () => cancelHeldRequest(id), 'Cancelled.')}
                   onReload={reloadRequests}
                 />
               )}
@@ -686,7 +615,6 @@ export default function AdminDashboard() {
                   submitEmployee={createEmployeeAdmin}
                   checkEmployee={checkEmployeeAdmin}
                   managerOptions={spUsers}
-                  prefill={addPrefill}
                   onCreated={(name) =>
                     setSnack({ open: true, message: `${name} created.`, severity: 'success' })
                   }

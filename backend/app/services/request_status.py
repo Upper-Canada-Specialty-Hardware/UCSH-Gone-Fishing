@@ -3,8 +3,7 @@
 When a signed-in employee sends a request from the public request page
 (routes/self_service.py), the page shows "what happens next": sent to the
 manager, approved or rejected, the balance applied, and the result email. These
-helpers let that page follow its own request without a sign-in, the same way a
-held new hire's page follows its held request (services/held_requests.py):
+helpers let that page follow its own request without a sign-in:
 
 * ``status_token_for`` mints a signed token naming one request (its kind and
   item_id); the submit response hands it to the page.
@@ -14,7 +13,7 @@ held new hire's page follows its held request (services/held_requests.py):
   returns only the few booleans and times the steps need.
 
 The token is an HMAC over the request's kind and item_id with
-``APPROVAL_LINK_SECRET``, the same approach as the held status token, so no
+``APPROVAL_LINK_SECRET``, the same approach as the approval links, so no
 other request can be asked about and the token cannot be forged without the
 secret. The progress read works on the Postgres ``requests`` table; on the
 SharePoint path there is no row to follow, so no token is minted and the page

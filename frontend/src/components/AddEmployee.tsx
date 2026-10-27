@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Paper, Typography, TextField, MenuItem, Button, Alert, Stack,
   Divider, CircularProgress, Box, Select, InputLabel, FormControl,
@@ -58,19 +58,12 @@ interface Props {
    * dashboard, which assigns the signed-in manager).
    */
   managerOptions?: ManagerOption[];
-  /**
-   * Details to start the form with: a new hire's name, email and location from
-   * a held request on the request page (the supervisor's email link, or the
-   * admin Held Requests list).
-   */
-  prefill?: { title?: string; email_address?: string; department?: string; location?: string } | null;
 }
 
 /** What the server reports back after a create, beyond the record itself. */
 interface CreateOutcome {
   name: string;
   notices: string[];
-  released: { held_id: number; status: string; detail: string }[];
 }
 
 /** The blank form. Balances default to zero — a new hire starts empty. */
@@ -102,15 +95,10 @@ const EMPTY = {
  * @returns The Add Employee panel.
  */
 export default function AddEmployee({
-  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions, prefill,
+  processingEnabled, submitEmployee, checkEmployee, onCreated, managerOptions,
 }: Props) {
-  const [form, setForm] = useState({ ...EMPTY, ...(prefill ?? {}) });
+  const [form, setForm] = useState({ ...EMPTY });
   const [outcome, setOutcome] = useState<CreateOutcome | null>(null);
-
-  // A new prefill (another held request picked) replaces the form.
-  useEffect(() => {
-    if (prefill) setForm({ ...EMPTY, ...prefill });
-  }, [prefill]);
   const [managerIds, setManagerIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -169,11 +157,10 @@ export default function AddEmployee({
     try {
       const res: any = await submitEmployee(payloadOf());
       const data = res?.data ?? {};
-      // Released requests are reported, never blocking.
+      // Notices (a welcome email that failed) are reported, never blocking.
       setOutcome({
         name: form.title.trim(),
         notices: data.notices ?? [],
-        released: data.released ?? [],
       });
       onCreated(form.title.trim());
       setForm({ ...EMPTY });
@@ -487,26 +474,15 @@ function ConfirmPanel({
 }
 
 /**
- * What happened after a create: notices and any held requests
- * from the request page that were sent on.
+ * What happened after a create, with any notices.
  *
  * @param props.outcome - From the create response.
  * @returns A success alert, plus warnings when something needs attention.
  */
 function CreatedSummary({ outcome }: { outcome: CreateOutcome }) {
-  const released = outcome.released.filter((r) => r.status === 'released').length;
-  const stuck = outcome.released.filter((r) => r.status !== 'released');
   return (
     <Stack spacing={1} sx={{ mb: 2 }}>
-      <Alert severity="success">
-        {outcome.name} was added.
-        {released > 0 && <> {released} waiting request{released > 1 ? 's were' : ' was'} sent to their manager.</>}
-      </Alert>
-      {stuck.length > 0 && (
-        <Alert severity="warning">
-          {stuck.length} waiting request{stuck.length > 1 ? 's' : ''} could not be sent yet: {stuck[0].detail}
-        </Alert>
-      )}
+      <Alert severity="success">{outcome.name} was added.</Alert>
       {outcome.notices.map((n) => <Alert key={n} severity="warning">{n}</Alert>)}
     </Stack>
   );

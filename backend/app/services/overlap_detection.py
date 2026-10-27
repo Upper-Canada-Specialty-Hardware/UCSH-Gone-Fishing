@@ -491,6 +491,260 @@ def find_requests_blocked_by(
     return blocked
 
 
+# --- Creation-time clash (the request page and its callers) ---------------------
+#
+# A separate rule from the approval-time check above (#446, ruling 2026-10-26):
+# a NEW leave request is refused the moment it is submitted if it shares any
+# date with one of the same person's leave requests that is not yet final.
+# Pending counts here as well as Approved, so a person cannot end up holding the
+# same day on two requests that a manager must later untangle. Part days do not
+# accumulate the way the approval check lets them: one request per date, so two
+# part-day requests on one date clash too.
+
+# A still-live leave request reserves its dates against a new one. Rejected,
+# cancelled and refunded requests are final and free the dates again.
+NOT_FINAL_STATUSES = {"Pending", "Approved"}
+
+
+def find_new_leave_clashes(
+    items: list[dict],
+    submitter_lookup_id: int | None,
+    start_date: str,
+    end_date: str,
+    submitter_email: str = "",
+    employee_id: str = "",
+    exclude_item_id: str | int | None = None,
+) -> list[dict]:
+    """Every not-yet-final leave request of the same person sharing a date.
+
+    Unlike `find_leave_conflict`, this runs at creation, counts Pending as well
+    as Approved, and does no part-day accumulation: a new leave request may not
+    share any date with an existing live one, so two part days on the same date
+    clash too (#446). One request per date. What the caller does with each kind
+    differs (#518): an approved clash is refused, a pending one is offered to the
+    person to change or cancel.
+
+    Args:
+        items: Leave rows in the {"id", "fields"} shape the store returns.
+        submitter_lookup_id: Microsoft 365 lookup id of the submitter, or None.
+        start_date: First date of the request being created.
+        end_date: Last date of that request.
+        submitter_email: Their SubmitterEmail, normalised, or "".
+        employee_id: Their staff id (EmployeeID), or "".
+        exclude_item_id: A request to leave out, so a change to it is not
+            reported as clashing with itself; None checks every row.
+
+    Returns:
+        One dict per clashing request, approved ones first:
+        {"item_id", "start_date", "end_date", "status", "leave_type", "days"}.
+        Empty when no date is shared.
+    """
+    new_start = _parse_date(start_date)                        # the candidate's first day
+    new_end = _parse_date(end_date)                            # its last day
+    if not new_start or not new_end:
+        return []                                              # no dates to compare
+    skip = str(exclude_item_id) if exclude_item_id is not None else None   # the request being changed
+
+    clashes: list[dict] = []
+    for item in items:                                         # every leave row already fetched
+        f = item.get("fields", {})                             # the row's SharePoint fields
+
+        if skip is not None and str(item.get("id")) == skip:
+            continue                                           # the request being changed never clashes with itself
+
+        if f.get("Status") not in NOT_FINAL_STATUSES:          # rejected/cancelled/refunded free the dates
+            continue
+
+        if not _same_submitter(f, "SubmittedTest", submitter_lookup_id, submitter_email, employee_id):
+            continue                                           # someone else's leave
+
+        existing_start = _parse_date(f.get("StartDate"))       # the existing request's first day
+        existing_end = _parse_date(f.get("EndDate"))           # its last day
+        if not existing_start or not existing_end:
+            continue                                           # an undated row cannot clash
+
+        # Inclusive overlap: the two ranges touch on at least one shared date.
+        if new_start <= existing_end and existing_start <= new_end:
+            clashes.append({
+                "item_id": item.get("id"),                     # the request to name to the person
+                "start_date": str(existing_start),             # ISO; made readable for the person later
+                "end_date": str(existing_end),
+                "status": f.get("Status"),                     # "Pending" or "Approved"
+                "leave_type": f.get("LeaveType") or "",        # shown in the change-or-cancel offer
+                "days": f.get("Days"),
+            })
+
+    # Approved first: an approved clash decides the outcome (a refusal).
+    clashes.sort(key=lambda c: c["status"] != "Approved")
+    return clashes
+
+
+def find_new_leave_clash(
+    items: list[dict],
+    submitter_lookup_id: int | None,
+    start_date: str,
+    end_date: str,
+    submitter_email: str = "",
+    employee_id: str = "",
+) -> dict | None:
+    """The one clash that decides a new leave request: an approved one first.
+
+    Args:
+        items: Leave rows in the {"id", "fields"} shape the store returns.
+        submitter_lookup_id: Microsoft 365 lookup id of the submitter, or None.
+        start_date: First date of the request being created.
+        end_date: Last date of that request.
+        submitter_email: Their SubmitterEmail, normalised, or "".
+        employee_id: Their staff id (EmployeeID), or "".
+
+    Returns:
+        None when no date is shared, otherwise the first clash from
+        `find_new_leave_clashes` (approved before pending).
+    """
+    clashes = find_new_leave_clashes(
+        items, submitter_lookup_id, start_date, end_date, submitter_email, employee_id,
+    )
+    return clashes[0] if clashes else None
+
+
+async def check_new_leave_clashes(
+    submitter_lookup_id: int | None,
+    start_date: str,
+    end_date: str,
+    submitter_email: str = "",
+    employee_id: str = "",
+    exclude_item_id: str | int | None = None,
+) -> list[dict]:
+    """Fetch the leave list, then list every not-yet-final clash at creation.
+
+    Thin wrapper over `find_new_leave_clashes` for the submission and change
+    paths, which do not already hold the rows. Mirrors `check_leave_overlap`.
+
+    Args:
+        submitter_lookup_id: Microsoft 365 lookup id of the submitter, or None.
+        start_date: First date of the request being created or changed.
+        end_date: Last date of that request.
+        submitter_email: Their SubmitterEmail, normalised, or "".
+        employee_id: Their staff id (EmployeeID), or "".
+        exclude_item_id: The request being changed, left out of the check.
+
+    Returns:
+        Whatever `find_new_leave_clashes` returns.
+    """
+    # Nothing to compare without both dates, so skip the list read entirely.
+    if not _parse_date(start_date) or not _parse_date(end_date):
+        return []
+
+    items = await request_store.get_list_items(settings.SP_LIST_LEAVE_REQUESTS)
+    return find_new_leave_clashes(
+        items,
+        submitter_lookup_id=submitter_lookup_id,
+        start_date=start_date,
+        end_date=end_date,
+        submitter_email=submitter_email,
+        employee_id=employee_id,
+        exclude_item_id=exclude_item_id,
+    )
+
+
+async def check_new_leave_clash(
+    submitter_lookup_id: int | None,
+    start_date: str,
+    end_date: str,
+    submitter_email: str = "",
+    employee_id: str = "",
+) -> dict | None:
+    """The one clash that decides a new leave request, read from the leave list.
+
+    Args:
+        submitter_lookup_id: Microsoft 365 lookup id of the submitter, or None.
+        start_date: First date of the request being created.
+        end_date: Last date of that request.
+        submitter_email: Their SubmitterEmail, normalised, or "".
+        employee_id: Their staff id (EmployeeID), or "".
+
+    Returns:
+        The first of `check_new_leave_clashes` (approved before pending), or None.
+    """
+    clashes = await check_new_leave_clashes(
+        submitter_lookup_id, start_date, end_date, submitter_email, employee_id,
+    )
+    return clashes[0] if clashes else None
+
+
+def _readable_date(iso: str) -> str:
+    """One date as "Oct 26, 2026", with no leading zero on the day.
+
+    Args:
+        iso: An ISO date string.
+
+    Returns:
+        The date in "%b D, YYYY" form, or the input unchanged when unparseable.
+    """
+    d = _parse_date(iso)                                       # reuse the module's tolerant parser
+    if not d:
+        return iso                                             # leave an odd value as-is
+    return f"{d:%b} {d.day}, {d.year}"                         # %b is OS-safe; d.day has no zero pad
+
+
+def _readable_range(start: str, end: str) -> str:
+    """A date range for the person: one date, or "X to Y" across days.
+
+    Args:
+        start: ISO first date.
+        end: ISO last date.
+
+    Returns:
+        A single readable date when start equals end, else "start to end".
+    """
+    if start == end:
+        return _readable_date(start)                           # a single day or a part day
+    return f"{_readable_date(start)} to {_readable_date(end)}"  # a multi-day range
+
+
+def new_leave_clash_refusal(conflict: dict) -> str:
+    """The sentence a submitter sees when a new leave request clashes (#446, #518).
+
+    An approved clash is a refusal: approved time off is changed by a manager or
+    an admin (a refund), never by the person. A pending clash names the request
+    to change or cancel; the request page offers both as buttons, and every other
+    way in (held release, admin New request, /api/forms) shows this sentence.
+
+    Args:
+        conflict: A conflict from `find_new_leave_clashes`.
+
+    Returns:
+        One sentence naming the clashing request, its dates and what to do.
+    """
+    when = _readable_range(conflict["start_date"], conflict["end_date"])  # readable dates
+    if conflict["status"] == "Approved":
+        return (
+            f"You already have approved time off for {when} (#{conflict['item_id']}). "
+            "To change approved time off, ask your manager or an admin."
+        )
+    return (
+        f"You already have a pending request for {when} (#{conflict['item_id']}). "
+        "Change that request or cancel it instead."
+    )
+
+
+def clash_for_page(conflict: dict) -> dict:
+    """A pending clash as the request page shows it in the change-or-cancel offer (#518).
+
+    Args:
+        conflict: A conflict from `find_new_leave_clashes`.
+
+    Returns:
+        ``{"item_id", "when", "leave_type", "days"}``, snake_case for the wire.
+    """
+    return {
+        "item_id": str(conflict["item_id"]),                   # the request number
+        "when": _readable_range(conflict["start_date"], conflict["end_date"]),   # "Nov 2, 2026 to Nov 6, 2026"
+        "leave_type": conflict.get("leave_type") or "",
+        "days": conflict.get("days"),
+    }
+
+
 # --- Approval-time entry points -------------------------------------------------
 #
 # The shared approve handlers call these, so all three approval channels — the

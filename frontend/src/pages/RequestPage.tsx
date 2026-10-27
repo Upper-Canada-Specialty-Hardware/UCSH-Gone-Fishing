@@ -12,7 +12,6 @@ import BalancePreview from '../components/request/BalancePreview';
 import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
-import WhoYouAre, { EMPTY_STARTER, NewStarter, starterReady } from '../components/request/WhoYouAre';
 import { buildTheme } from '../theme';
 import { carryoverClosedReason } from '../utils/carryoverWindow';
 import { isHourly } from '../utils/employment';
@@ -20,25 +19,23 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, BookingLimit, EmployeeSession, HeldStatus, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
-  clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, holdRequest, loadNewHire,
-  loadSession, requestCode, saveNewHire, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn,
-  takeSignInNotice, verifyCode,
+  Balances, BookingLimit, EmployeeSession, PendingClashDetail, RequestProgress, RequestType, SignInChoice,
+  cancelMyRequestAs, changeMyLeave, clearSession, errorText, getRequestStatus, getRequestTypes, loadSession,
+  pendingClashOf, requestCode, saveSession, setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice,
+  verifyCode,
 } from '../api/intake';
 
 /**
  * Where the person is in the flow.
  * - email: type your email
  * - code: type the 6-digit code that was emailed
+ * - choose: several staff records share the address; pick which one
  * - form: signed in as an employee; pick a form and fill it in
- * - newhire: email is on no staff record; say who you are and who your supervisor is
- * - newhire-request: then pick a form and fill it in
- * - done: submitted (or held for a new hire)
+ * - done: submitted
  */
-type Step = 'email' | 'code' | 'choose' | 'form' | 'newhire' | 'newhire-request' | 'done';
+type Step = 'email' | 'code' | 'choose' | 'form' | 'done';
 
 const RESEND_SECONDS = 60;   // wait before "send a new code" is offered
-const HELD_POLL_MS = 3000;   // how often a new hire's waiting page asks whether their request went through
 const STATUS_POLL_MS = 3000; // how often a sent request's page asks how it is going (#364)
 const STATUS_POLL_CAP_MS = 30 * 60 * 1000;   // stop following after half an hour, even if nothing decided it
 
@@ -180,8 +177,6 @@ const STEP_LABELS: Record<Step, string> = {
   code: 'The code we email you',
   choose: 'Which person you are',
   form: 'Your request',
-  newhire: 'About you',
-  'newhire-request': 'Your request',
   done: 'Sent',
 };
 
@@ -211,18 +206,15 @@ function Lead({ children }: { children: ReactNode }) {
 }
 
 /**
- * The sign-in, request and new-hire pages: the in-house way to ask for leave,
- * overtime or a carry-over/payout, with no Microsoft sign-in. It serves three
- * addresses:
+ * The sign-in and request pages: the in-house way to ask for leave, overtime
+ * or a carry-over/payout, with no Microsoft sign-in. It serves two addresses:
  * - #/ (the public landing page): someone types their email and proves they
  *   own it with an emailed code. A Staff Directory employee is then signed in
  *   on this device for 30 days and moves on to My requests (or the page they
- *   had opened). Anyone else moves on to #/new-hire.
+ *   had opened). An address on no staff record is told to ask their manager,
+ *   who adds them or makes the request for them (#526).
  * - #/my/request: a signed-in employee's new request, which goes straight to
  *   their manager.
- * - #/new-hire: someone not on staff yet says who they are and who their
- *   supervisor is, then makes the request, which waits until that
- *   supervisor adds them.
  *
  * The page is split in two: a coloured panel with the steps, and the current
  * step beside it. Once past signing in, the page colour and the panel's words
@@ -239,7 +231,6 @@ export default function RequestPage() {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [session, setSession] = useState<EmployeeSession | null>(null);
-  const [verified, setVerified] = useState<VerifiedEmail | null>(null);
   const [choices, setChoices] = useState<SignInChoice[]>([]);   // the records on a shared mailbox, to pick from
   const [values, setValues] = useState<RequestValues>({ ...EMPTY_REQUEST });
   const [busy, setBusy] = useState(false);
@@ -247,11 +238,15 @@ export default function RequestPage() {
   const [info, setInfo] = useState('');
   const [resendIn, setResendIn] = useState(0);
   const [doneText, setDoneText] = useState('');
-  const [heldWith, setHeldWith] = useState('');                // the supervisor a new hire's request waits on
-  const [heldToken, setHeldToken] = useState('');              // signed token to ask how the held request is going
-  const [heldStatus, setHeldStatus] = useState<HeldStatus>('waiting');   // what that request is doing now
   const [myToken, setMyToken] = useState('');                  // signed token to follow a sent request's progress (#364)
   const [progress, setProgress] = useState<RequestProgress | null>(null);   // that request's latest progress
+  // The person's own pending request(s) on the days just asked for (#518): the
+  // form offers to change or cancel one instead of sending a second.
+  const [clash, setClash] = useState<PendingClashDetail | null>(null);
+  const [clashNote, setClashNote] = useState('');             // "#N is cancelled, send this now" after a cancel there
+  // The request the done page shows, so it can be cancelled while pending (#519).
+  const [sent, setSent] = useState<{ type: RequestType; item_id: string } | null>(null);
+  const [cancelledMine, setCancelledMine] = useState(false);  // the done page's request was just cancelled
   const [notice, setNotice] = useState('');                    // why someone was sent to the landing page
   // Why carry-over and payout are greyed out, or null when open. Closed until the server says otherwise.
   const [carryoverClosed, setCarryoverClosed] = useState<string | null>(CARRYOVER_UNKNOWN);
@@ -269,11 +264,7 @@ export default function RequestPage() {
     'request-form-draft', values, (saved) => setValues({ ...EMPTY_REQUEST, ...saved }),
   );
   const { pathname } = useLocation();
-  const newHirePage = pathname === '/new-hire';               // the #131 path for people not on staff
   const signedInPage = pathname.startsWith('/my/request');    // under the top bar with the page tabs
-
-  // What a new starter says about themselves (#226).
-  const [starter, setStarter] = useState<NewStarter>(EMPTY_STARTER);
 
   // Carry-over and payout are only taken between the dates an admin set (#176).
   useEffect(() => {
@@ -296,20 +287,9 @@ export default function RequestPage() {
     ? { 'carryover-payout': 'Not for hourly staff. Vacation is tracked, not a balance.' }
     : carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
 
-  // Pick up where this address starts: a new hire's verified email, the
-  // shared sign-in for a new request, or the landing page's note.
+  // Pick up where this address starts: the shared sign-in for a new request,
+  // or the landing page's note.
   useEffect(() => {
-    if (newHirePage) {
-      const v = loadNewHire();
-      if (!v) {                                        // no verified email in this tab (or it expired)
-        navigate('/', { replace: true });
-        return;
-      }
-      setVerified(v);
-      setEmail(v.email);
-      setStep('newhire');                              // who you are comes first
-      return;
-    }
     const saved = loadSession();
     if (saved) {
       setSession(saved);
@@ -319,11 +299,11 @@ export default function RequestPage() {
     }
     const note = takeSignInNotice();
     if (note) setNotice(note);                         // read once; a second run finds nothing
-  }, [newHirePage]);
+  }, []);
 
   // Once signed in, read this employee's balances: an hourly employee gets the
-  // sick-days panel and adapted forms (#300). Read-only and harmless for new hires
-  // (no session), who are never hourly here. Read again after each request is
+  // sick-days panel and adapted forms (#300). Read-only; nothing to read before
+  // sign-in (no session). Read again after each request is
   // sent (doneText changes), so the panel shows the new numbers next time.
   useEffect(() => {
     if (!session) { setMyBalances(null); return; }
@@ -333,34 +313,6 @@ export default function RequestPage() {
       .catch(() => { if (live) setMyBalances(null); });         // unknown: treat as not hourly
     return () => { live = false; };
   }, [session, doneText]);
-
-  // A new hire's waiting page follows its held request: ask every few seconds,
-  // and once the supervisor adds them (or an admin cancels it) say so at once.
-  useEffect(() => {
-    if (step !== 'done' || !heldToken || heldStatus !== 'waiting') return;   // nothing to follow
-    let live = true;
-    /** Ask once; a failed ask is simply tried again on the next tick. */
-    const ask = () => {
-      if (document.hidden) return;                     // a background tab waits until it is looked at
-      getHeldStatus(heldToken)
-        .then(({ data }) => {
-          if (!live || data.status === 'waiting') return;
-          setHeldWith(data.supervisor_name);
-          setHeldStatus(data.status);                   // stops this effect: the answer is final
-          setDoneText(data.status === 'sent'
-            ? `${data.supervisor_name} added you to the staff list, so your request was sent to them. You will get an email when it is approved or rejected.`
-            : 'This request was cancelled. If you still need it, start again with your email.');
-        })
-        .catch(() => { /* retried on the next tick */ });
-    };
-    const timer = setInterval(ask, HELD_POLL_MS);
-    document.addEventListener('visibilitychange', ask); // coming back to the tab asks straight away
-    return () => {
-      live = false;
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', ask);
-    };
-  }, [step, heldToken, heldStatus]);
 
   // A signed-in employee's sent request follows itself the same way (#364): ask
   // every few seconds while the done page is open, so the steps fill in as the
@@ -418,7 +370,11 @@ export default function RequestPage() {
     }
   };
 
-  /** Check the code, then move on: staff to their pages, anyone else to #/new-hire. */
+  /**
+   * Check the code, then move on to the person's pages. An address on no staff
+   * record is refused by the server with "ask your manager" (#526), shown as the
+   * error; the code itself was right, so the boxes do not shake.
+   */
   const checkCode = async () => {
     setError(''); setBusy(true);
     try {
@@ -428,13 +384,10 @@ export default function RequestPage() {
       } else if (res.data.status === 'choose') {
         setChoices(res.data.people);                    // a shared mailbox: ask which record this is
         setStep('choose');
-      } else {
-        saveNewHire(res.data.verified);                 // the code is used up; this tab keeps the 24-hour pass
-        navigate('/new-hire', { replace: true });
       }
-    } catch (err) {
+    } catch (err: any) {
       setError(errorText(err, 'That code could not be checked. Try again.'));
-      setMisses((n) => n + 1);
+      if (err?.response?.status !== 403) setMisses((n) => n + 1);   // a refusal is not a wrong code
     } finally {
       setBusy(false);
     }
@@ -454,73 +407,120 @@ export default function RequestPage() {
     navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
   };
 
+  // A change to the form makes the change-or-cancel offer stale: drop it (#518).
+  useEffect(() => { setClash(null); }, [type, values]);
+
+  /**
+   * Send a signed-out person back to sign in, when the failure was a lapsed sign-in.
+   *
+   * @param err - What axios threw.
+   * @returns True when it was a 401 and the page has moved on.
+   */
+  const endedSignIn = (err: any): boolean => {
+    if (err?.response?.status !== 401) return false;   // some other failure: the caller shows it
+    clearSession();                                     // the 30 days ran out
+    setSignInNotice('Your sign-in has ended. Enter your email for a new code.');
+    navigate('/', { replace: true });
+    return true;
+  };
+
+  /**
+   * Show the done page for a request the person just sent or changed.
+   *
+   * @param kind - Which form it was.
+   * @param itemId - The request number, for the done page's cancel button.
+   * @param statusToken - The token to follow its progress, or null.
+   * @param text - What the done page says.
+   */
+  const showSent = (kind: RequestType, itemId: string, statusToken: string | null, text: string) => {
+    clearDraft();                                   // submitted: no draft to keep
+    setMyToken(statusToken || '');                  // follow this request's progress (#364)
+    setProgress(null);                              // the first poll fills it in
+    setSent({ type: kind, item_id: itemId });       // the done page can cancel it while pending (#519)
+    setCancelledMine(false);
+    setClash(null); setClashNote('');
+    setDoneText(text);
+    setStep('done');
+  };
+
   /** Submit as the signed-in employee. */
   const submitAsEmployee = async () => {
     if (!session) return;
-    setError(''); setBusy(true);
+    setError(''); setClashNote(''); setBusy(true);
     try {
       const res = await submitMyRequest(session, type, buildRequestBody(type, values));
-      clearDraft();                                   // submitted: no draft to keep
-      setHeldWith('');
-      setHeldToken('');                               // a staff request has nothing to wait on
-      setMyToken(res.data.status_token || '');        // follow this request's progress (#364)
-      setProgress(null);                              // the first poll fills it in
-      setDoneText('Your request was sent to your manager. You will get an email when it is approved or rejected.');
-      setStep('done');
+      showSent(type, res.data.item_id, res.data.status_token,
+        'Your request was sent to your manager. You will get an email when it is approved or rejected.');
     } catch (err: any) {
-      if (err?.response?.status === 401) {              // the 30 days ran out
-        clearSession();
-        setSignInNotice('Your sign-in has ended. Enter your email for a new code.');
-        navigate('/', { replace: true });
-      } else {
-        setError(errorText(err, 'Your request could not be sent. Try again.'));
-      }
+      if (endedSignIn(err)) return;
+      const offer = pendingClashOf(err);                // their own pending request holds these days (#518)
+      if (offer) setClash(offer);                       // offer to change or cancel it instead
+      else setError(errorText(err, 'Your request could not be sent. Try again.'));
     } finally {
       setBusy(false);
     }
   };
 
-  /** Submit as a new hire: held until the supervisor adds them. */
-  const submitAsNewHire = async () => {
-    if (!verified) return;
+  /**
+   * Change the clashing pending request to what the form says now, instead of sending a second (#518).
+   *
+   * @param itemId - The pending request to change.
+   */
+  const changeInstead = async (itemId: string) => {
+    if (!session) return;
     setError(''); setBusy(true);
     try {
-      const res = await holdRequest({
-        verified,
-        first_name: starter.first.trim(),
-        last_name: starter.last.trim(),
-        department: starter.department,
-        // The search pick, or the typed work email when the search did not find them.
-        ...(starter.useEmail
-          ? { supervisor_email: starter.supervisorEmail.trim() }
-          : { supervisor_id: starter.supervisor?.id }),
-        request_type: type, form: buildRequestBody(type, values),
-      });
-      clearDraft();                                     // held: no draft to keep
-      setHeldWith(res.data.supervisor_name);
-      setHeldToken(res.data.status_token);              // lets the page follow it from here
-      setHeldStatus('waiting');
-      saveNewHire(null);                                // held: a refresh must not send it twice
-      setDoneText(
-        `You are not in the Staff Directory yet, so we asked ${res.data.supervisor_name} to add you. `
-        + 'Your request is sent to them automatically as soon as they do, and you will get an email.',
-      );
-      setStep('done');
+      const res = await changeMyLeave(session, itemId, buildRequestBody('leave', values));
+      showSent('leave', itemId, res.data.status_token,
+        `Request #${itemId} was changed. Your manager was asked again, and you will get an email when it is approved or rejected.`);
     } catch (err: any) {
-      if (err?.response?.status === 401 || err?.response?.status === 409) {
-        // Expired, or on staff now: start again from the landing page, which says why.
-        saveNewHire(null);
-        setSignInNotice(errorText(err, 'Start again with your email.'));
-        navigate('/', { replace: true });
-        return;
-      }
-      setError(errorText(err, 'Your request could not be sent. Try again.'));
+      if (endedSignIn(err)) return;
+      setClash(null);                                   // the offer no longer holds: show why
+      setError(errorText(err, `Request #${itemId} could not be changed. Try again.`));
     } finally {
       setBusy(false);
     }
   };
 
-  /** Start another request, keeping the sign-in; a new hire starts again from the landing page. */
+  /**
+   * Cancel the clashing pending request, so the form can be sent as it is (#518, #519).
+   *
+   * @param itemId - The pending request to cancel.
+   */
+  const cancelClashing = async (itemId: string) => {
+    if (!session) return;
+    setError(''); setBusy(true);
+    try {
+      await cancelMyRequestAs(session, 'leave', itemId);
+      setClash(null);
+      setClashNote(`Request #${itemId} is cancelled and your manager was told. You can send this request now.`);
+    } catch (err: any) {
+      if (endedSignIn(err)) return;
+      setClash(null);
+      setError(errorText(err, `Request #${itemId} could not be cancelled. Try again.`));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Cancel the request the done page shows, while it is still pending (#519). */
+  const cancelSent = async () => {
+    if (!session || !sent) return;
+    setError(''); setBusy(true);
+    try {
+      await cancelMyRequestAs(session, sent.type, sent.item_id);
+      setCancelledMine(true);
+      setMyToken('');                                   // nothing left to follow
+      setDoneText(`Request #${sent.item_id} is cancelled. Your manager was told, and nothing comes off your balances.`);
+    } catch (err: any) {
+      if (endedSignIn(err)) return;
+      setError(errorText(err, 'This request could not be cancelled. Try again.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Start another request, keeping the sign-in; signed out, back to the landing page. */
   const another = () => {
     if (!session) {
       navigate('/', { replace: true });
@@ -530,13 +530,14 @@ export default function RequestPage() {
     clearDraft();                                       // fresh form: drop the old draft
     setMyToken('');                                     // stop following the request just finished (#364)
     setProgress(null);
+    setSent(null); setCancelledMine(false);             // a fresh form has nothing to cancel yet
+    setClash(null); setClashNote('');
     setError('');
     setStep('form');
   };
 
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const formReady = isRequestReady(type, values);
-  const newHireReady = formReady && starterReady(starter);
 
   // The page colour follows the kind of request once the person is past signing in.
   const outer = useTheme();
@@ -545,32 +546,19 @@ export default function RequestPage() {
   const theme = useMemo(() => (mood ? buildTheme(mode, MOODS[mood][mode]) : outer), [mood, mode, outer]);
   const words = mood ? MOODS[mood].words : DEFAULT_WORDS;
 
-  // The steps in the side panel: a new hire's third step is about them, not just the request.
-  const held = step === 'newhire' || step === 'newhire-request' || (step === 'done' && !session);
-  const order: Step[] = held
-    ? ['email', 'code', 'newhire', 'newhire-request', 'done']
-    : step === 'choose' ? ['email', 'code', 'choose', 'form', 'done'] : ['email', 'code', 'form', 'done'];   // the pick shows only when asked
+  // The steps in the side panel; the pick between records shows only when asked.
+  const order: Step[] = step === 'choose' ? ['email', 'code', 'choose', 'form', 'done'] : ['email', 'code', 'form', 'done'];
   const at = order.indexOf(step);
   const steps: StepItem[] = order.map((k, i) => ({
     label: STEP_LABELS[k],
     state: i < at || (k === 'done' && step === 'done') ? 'done' : i === at ? 'on' : 'todo',
   }));
 
-  // What happens next, shown once the request is sent or saved.
-  // A new hire's list moves on by itself once their supervisor adds them.
-  const added = heldStatus === 'sent';
-  const next: NextItem[] = held ? [
-    { title: 'Saved', note: added ? 'Earlier' : 'Just now', done: true },
-    added
-      ? { title: `${heldWith || 'Your supervisor'} added you to the staff list`, note: 'Just now', done: true }
-      : { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
-    added
-      ? { title: `Sent to ${heldWith || 'your supervisor'}`, note: 'Just now', done: true }
-      : { title: 'Your request goes to them', note: 'Automatically' },
-    { title: 'You get an email with the decision' },
-  ] : staffNextSteps(progress);   // a sent request's points follow its real progress (#364)
+  // What happens next, shown once the request is sent: its real progress to the
+  // decision (#364). A cancelled request has nothing next.
+  const next: NextItem[] = cancelledMine ? [] : staffNextSteps(progress);
 
-  const dir = useDirection(step === 'newhire' ? 2 : STEP_ORDER.indexOf(step));
+  const dir = useDirection(STEP_ORDER.indexOf(step));
   const big = { py: 1.5, fontSize: 15 } as const;                                       // the main buttons' size
 
   return (
@@ -602,7 +590,7 @@ export default function RequestPage() {
                 <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <TextField
                   label="Your email" type="email" autoComplete="email" autoFocus
-                  placeholder="you@ucsh.com or your personal email"
+                  placeholder="you@ucsh.com"
                   value={email} onChange={(e) => setEmail(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && emailOk && !busy && sendCode()}
                 />
@@ -610,7 +598,8 @@ export default function RequestPage() {
                   <BusyLabel busy={busy}>Email me a code</BusyLabel>
                 </Button>
                 <Typography variant="body2" color="text.secondary">
-                  New and no work email yet? Use your personal email. Your supervisor is asked to add you.
+                  Use the email on your staff record. Not on staff yet, or your email does not work? Ask your manager:
+                  they can add you, or make the request for you.
                 </Typography>
               </>
             )}
@@ -676,70 +665,66 @@ export default function RequestPage() {
                 </AutoHeight>
                 {/* Days and balances after approval, once the form is complete. */}
                 <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} vacationTaken={myBalances?.vacation_taken ?? null} onBookingLimit={setBookingLimit} />
-                {/* Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407). */}
-                <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
-                  <BusyLabel busy={busy}>Send request</BusyLabel>
-                </Button>
-              </>
-            )}
-
-            {/* A new starter says who they are first (#226), then makes the request. */}
-            {step === 'newhire' && verified && (
-              <>
-                <Heading>Tell us who you are</Heading>
-                <Alert severity="info">
-                  {email.trim()} is not in the Staff Directory yet. Tell us who you are and who your
-                  supervisor is; they will be asked to add you, and your request goes to them once they do.
-                </Alert>
-                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
-                <WhoYouAre verified={verified} value={starter} onChange={setStarter} onError={setError} />
-                <Button variant="contained" size="large" sx={big} disabled={!starterReady(starter)}
-                  onClick={() => { setError(''); setStep('newhire-request'); }}>
-                  Continue to your request
-                </Button>
-              </>
-            )}
-
-            {step === 'newhire-request' && (
-              <>
-                <Heading>Your request</Heading>
-                <Lead>
-                  {starter.first.trim()} {starter.last.trim()}, {starter.department}. Supervisor:{' '}
-                  {starter.useEmail ? starter.supervisorEmail.trim() : starter.supervisor?.name}.{' '}
-                  <Link component="button" variant="body2" onClick={() => { setError(''); setStep('newhire'); }}>Change</Link>
-                </Lead>
-                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
-                <TypeCards value={type} onPick={setType} closed={closedTypes} />
-                {/* Another form cross-fades in, and the block's height follows. */}
-                <AutoHeight>
-                  <AnimatePresence mode="wait" initial={false}>
-                    <m.div key={type} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: EXIT }}>
-                      <RequestForm type={type} values={values} onChange={setValue} carryoverWindow={carryoverWindow} />
-                    </m.div>
-                  </AnimatePresence>
-                </AutoHeight>
-                <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire}>
-                  <BusyLabel busy={busy}>Send request</BusyLabel>
-                </Button>
+                <Fold show={!!clashNote}><Alert severity="success">{clashNote}</Alert></Fold>
+                {clash ? (
+                  // These days are already in their own pending request (#518):
+                  // change that one to this, or cancel it, instead of sending a second.
+                  <Alert severity="warning" sx={{ '& .MuiAlert-message': { width: '100%' } }}>
+                    <Typography variant="body2" sx={{ mb: 1 }}>{clash.message}</Typography>
+                    {clash.pending.map((p) => (
+                      <Box key={p.item_id} sx={{ display: 'grid', gap: 1, mt: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          #{p.item_id}: {p.leave_type || 'Leave'}, {p.when}
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                          {/* Only one request can become this form, so the change is offered for a single clash. */}
+                          {clash.pending.length === 1 && (
+                            <Button size="small" variant="contained" disabled={busy} onClick={() => changeInstead(p.item_id)}>
+                              Change #{p.item_id} to this
+                            </Button>
+                          )}
+                          <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => cancelClashing(p.item_id)}>
+                            Cancel #{p.item_id}
+                          </Button>
+                        </Box>
+                      </Box>
+                    ))}
+                    <Box sx={{ mt: 1.5 }}>
+                      <Link component="button" variant="body2" onClick={() => setClash(null)}>Back to the form</Link>
+                    </Box>
+                  </Alert>
+                ) : (
+                  // Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407).
+                  <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
+                    <BusyLabel busy={busy}>Send request</BusyLabel>
+                  </Button>
+                )}
               </>
             )}
 
             {step === 'done' && (
               <>
-                {/* A tick that pops in, then draws itself. */}
-                <Box sx={(t) => ({
-                  width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
-                  bgcolor: t.tokens.okSoft, color: 'success.main',
-                  animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
-                })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
-                <Heading>
-                  {!held || added ? 'Request sent' : heldStatus === 'cancelled' ? 'Request cancelled' : 'Request saved'}
-                </Heading>
+                {/* A tick that pops in, then draws itself; not for a cancelled request. */}
+                {!cancelledMine && (
+                  <Box sx={(t) => ({
+                    width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
+                    bgcolor: t.tokens.okSoft, color: 'success.main',
+                    animation: `${KF.pop} .5s cubic-bezier(.2,1.6,.4,1) both !important`,
+                  })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
+                )}
+                <Heading>{cancelledMine ? 'Request cancelled' : 'Request sent'}</Heading>
                 <Lead>{doneText}</Lead>
-                <NextSteps items={next} />
+                {next.length > 0 && <NextSteps items={next} />}
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button variant="contained" onClick={another}>Make another request</Button>
                   {session && <Button variant="outlined" onClick={() => navigate('/my')}>See my requests</Button>}
+                  {/* Changed their mind: cancel while it still waits for a decision (#519). */}
+                  {session && sent && !cancelledMine && (!progress || progress.status === 'pending') && (
+                    <Button variant="text" color="error" disabled={busy} onClick={cancelSent}>
+                      <BusyLabel busy={busy}>Cancel this request</BusyLabel>
+                    </Button>
+                  )}
                 </Box>
               </>
             )}

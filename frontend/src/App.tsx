@@ -11,8 +11,9 @@ const ManagerDashboard = lazy(() => import('./pages/ManagerDashboard'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
+import CancelRequest from './pages/CancelRequest';
 import {
-  canSeeTeam, loadSession, refreshSessionRole, saveLinkSession, sessionRoleChecked, setAfterSignIn, setSignInNotice,
+  RETIRED_HELD_LINK, canSeeTeam, loadSession, refreshSessionRole, saveLinkSession, sessionRoleChecked, setAfterSignIn, setSignInNotice,
 } from './api/intake';
 import { useVersionReload } from './hooks/useVersionReload';
 
@@ -123,16 +124,11 @@ function LinkSignIn() {
     // An old or cut-off link: an existing sign-in still works, otherwise sign in.
     return <Navigate to="/" replace />;
   }
-  // A supervisor's "add this new hire" email link carries the person's
-  // details; keep them for the Add Employee tab to prefill.
-  const addEmail = params.get('add_email');
-  if (addEmail) {
-    sessionStorage.setItem('add_employee_prefill', JSON.stringify({
-      title: params.get('add_name') || '',
-      email_address: addEmail,
-      department: params.get('add_department') || '',
-      location: params.get('add_location') || '',       // links emailed before #226
-    }));
+  // An old "add this new hire" email link carries the person's details. Those
+  // emails are no longer used (#525): it still signs in, fills in nothing, and
+  // the manager dashboard says the link changed nothing.
+  if (params.get('add_email') || params.get('add_held')) {
+    sessionStorage.setItem(RETIRED_HELD_LINK, '1');
   }
   saveLinkSession({ token, role, uid, exp });
   const to = role === 'admin' ? '/admin' : role === 'manager' ? '/team' : '/my';
@@ -165,8 +161,8 @@ function Ended() {
 /**
  * One public address for everyone. Before sign-in, #/ is the landing page.
  * After the emailed code, staff move to #/my (their requests) and
- * #/my/request (a new one), managers also to #/team. People not on staff yet
- * go to #/new-hire. The admin dashboard stays its own bookmark at #/admin.
+ * #/my/request (a new one), managers also to #/team. An address on no staff
+ * record is refused at sign-in. The admin dashboard stays its own bookmark at #/admin.
  *
  * @returns The app.
  */
@@ -181,7 +177,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/request" element={<Navigate to="/my/request" replace />} />
-          <Route path="/new-hire" element={<RequestPage />} />
+          {/* The new hire page is gone (#525); an old bookmark lands on sign-in. */}
+          <Route path="/new-hire" element={<Navigate to="/" replace />} />
+          <Route path="/cancel" element={<CancelRequest />} />
           <Route path="/my/request" element={<SignedIn><TopBar nav /><Enter><RequestPage /></Enter></SignedIn>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/my/:tab?" element={<SignedIn><Framed><EmployeeDashboard /></Framed></SignedIn>} />

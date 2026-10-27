@@ -21,6 +21,7 @@ from app.routes.dashboard import AuthUser, _format_balances
 from app.services.employee import get_employee_by_id
 from app.services.leave_requests import _resolve_user_lookup_id
 from app.services.request_intake import (
+    PendingClash,
     RequestFormError,
     ensure_request_type_open,
     parse_request_form,
@@ -94,6 +95,12 @@ async def submit_my_request(user: AuthUser, request_type: str, body: dict):
 
     try:
         item = await submit_request(request_type, form, employee, SOURCE_REQUEST_PAGE)
+    except PendingClash as e:
+        # Days held by their own pending request (#518): not a plain refusal. The
+        # page shows the sentence and offers to change or cancel that request.
+        raise HTTPException(status_code=409, detail={
+            "code": "pending_clash", "message": str(e), "pending": e.clashes,
+        })
     except RequestFormError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:  # noqa: BLE001 - a SharePoint failure is reported, not a crash
@@ -156,3 +163,101 @@ async def preview_my_request(user: AuthUser, request_type: str, body: dict):
         # Untouched pots (Payout, entitlements) carry over from the record.
         "projected": _format_balances({**fields, **projected}) if projected else None,
     }
+
+
+# ----- change or cancel your own pending request (#518, #519) -----
+
+
+async def _signed_in_employee(user: AuthUser) -> dict:
+    """The signed-in person's staff record, refused when gone or archived.
+
+    Args:
+        user: From the signed token.
+
+    Returns:
+        The staff record ({"id", "fields"}).
+
+    Raises:
+        HTTPException: 503 while processing is off; 404 when the record is gone;
+            403 when it is archived.
+    """
+    if not settings.PROCESSING_ENABLED:                        # read-only: change nothing, email nobody
+        raise HTTPException(status_code=503, detail="This cannot be done right now. Try again later.")
+    employee = await get_employee_by_id(user.user_id)
+    if not employee:
+        raise HTTPException(status_code=404, detail="Your staff record could not be found.")
+    if is_archived(employee.get("fields", {})):                # left the company (#119)
+        raise HTTPException(status_code=403, detail="This account has been archived. Contact HR.")
+    return employee
+
+
+@router.post("/me/requests/leave/{item_id}/change")
+async def change_my_leave(user: AuthUser, item_id: int, body: dict):
+    """Change the signed-in person's own pending leave to the form sent (#518).
+
+    The request page calls this from its change-or-cancel offer, with the form the
+    person just filled in. The request keeps its number; the manager is asked
+    again with fresh links and a line saying what changed, and the person gets a
+    fresh receipt, all in the request's one email thread.
+
+    Args:
+        user: From the signed token; uid is the staff id the request must belong to.
+        item_id: The pending leave request to change.
+        body: The leave form, snake_case, as for submitting.
+
+    Returns:
+        {"status": "changed", "request_type": "leave", "item_id", "status_token"}.
+
+    Raises:
+        HTTPException: 400 for a bad form or nothing changed; 404 when it is not
+            theirs; 409 when it is no longer pending or the new days clash; 503
+            while processing is off.
+    """
+    from app.services.own_requests import OwnRequestError, change_own_leave
+    try:
+        form = parse_request_form("leave", body)               # the same checks as submitting
+    except RequestFormError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    employee = await _signed_in_employee(user)
+    try:
+        result = await change_own_leave(item_id, employee, form)
+    except OwnRequestError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    return {
+        **result, "request_type": "leave",
+        "status_token": status_token_for("leave", item_id),     # the page follows the changed request
+    }
+
+
+@router.post("/me/requests/{request_type}/{item_id}/cancel")
+async def cancel_my_request(user: AuthUser, request_type: str, item_id: int, body: dict | None = None):
+    """Cancel the signed-in person's own pending request (#519).
+
+    From the request page (the change-or-cancel offer, or the page after sending)
+    and from History. Only a pending request: approved time off is refunded by an
+    admin. The manager who was asked is told in the request's thread.
+
+    Args:
+        user: From the signed token; uid is the staff id the request must belong to.
+        request_type: "leave", "overtime" or "carryover-payout".
+        item_id: The request number.
+        body: Optional ``{"from": "history"}`` to record where it came from.
+
+    Returns:
+        {"status": "cancelled", "item_id", "already"}.
+
+    Raises:
+        HTTPException: 400 for an unknown type; 404 when it is not theirs; 409
+            when it is no longer pending; 503 while processing is off.
+    """
+    from app.services.own_requests import KIND_FROM_URL, OwnRequestError, cancel_own_request
+    kind = KIND_FROM_URL.get(request_type)
+    if kind is None:
+        raise HTTPException(status_code=400, detail="Unknown request type.")
+    employee = await _signed_in_employee(user)
+    channel = "employee_dashboard" if (body or {}).get("from") == "history" else "request_page"
+    try:
+        return await cancel_own_request(kind, item_id, employee["id"], channel=channel)
+    except OwnRequestError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+

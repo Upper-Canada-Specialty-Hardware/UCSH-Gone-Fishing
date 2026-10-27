@@ -1438,33 +1438,17 @@ async def admin_check_employee(body: dict):
 async def _after_employee_created(record: dict) -> dict:
     """Follow-ups once Add Employee has written a record, on either dashboard.
 
-    Submits any requests the person made on the request page while they were
-    not on staff yet, then sends them the welcome email. Neither undoes or
-    blocks the create: a failure is
-    reported in the response and stays visible on the admin dashboard.
+    Sends the new employee the welcome email. It never undoes or blocks the
+    create: a failure is reported in the response.
 
     Args:
         record: The created record from create_employee.
 
     Returns:
-        The record plus "released": one {"held_id", "status", "detail"} per
-        held request for this email, and "welcome_email": "sent", "skipped"
-        (no address) or "failed".
+        The record plus "welcome_email": "sent", "skipped" (no address) or
+        "failed".
     """
-    from app.services.held_requests import release_held_requests
-    email = record.get("fields", {}).get("EmailAddress", "")      # held rows are keyed by email
-    try:
-        results = await release_held_requests(email)
-        record["released"] = [vars(r) for r in results]
-    except Exception:  # noqa: BLE001 - the employee exists either way
-        logger.exception("Could not release held requests for a new employee")
-        record["released"] = []
-        record.setdefault("notices", []).append(
-            "Their waiting requests could not be submitted; see Held Requests on the admin dashboard."
-        )
-
-    # Welcome email with how to sign in and the staff tutorial (#227). After
-    # the release, so anything they asked for is already on its way.
+    # Welcome email with how to sign in and the staff tutorial (#227).
     from app.services.welcome_email import send_welcome_email
     try:
         record["welcome_email"] = "sent" if await send_welcome_email(record) else "skipped"
@@ -2266,60 +2250,6 @@ async def admin_manager_assignments():
     return {"assignments": assignments}
 
 
-@router.get("/admin/held-requests")
-async def admin_held_requests(include_closed: bool = Query(False)):
-    """Requests from the request page waiting for their submitter to be added.
-
-    Behind the admin password like every other /admin/* route (#228).
-
-    Args:
-        include_closed: Also list released and cancelled ones.
-
-    Returns:
-        {"held": [...]} newest first.
-    """
-    from app.services.held_requests import list_held_requests
-    return {"held": await list_held_requests(include_closed)}
-
-
-@router.post("/admin/held-requests/{held_id}/release")
-async def admin_release_held_request(held_id: int):
-    """Retry submitting one held request whose person is now on staff.
-
-    Args:
-        held_id: The held request's id.
-
-    Returns:
-        {"results": [...]}; empty when the person is still not on staff.
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.held_requests import held_request_email, release_held_requests
-    email = await held_request_email(held_id)
-    if email is None:
-        raise HTTPException(status_code=404, detail="Held request not found")
-    results = await release_held_requests(email, only_id=held_id)
-    if not results:
-        raise HTTPException(status_code=409, detail="They are not in the Staff Directory yet. Add them first.")
-    return {"results": [vars(r) for r in results]}
-
-
-@router.post("/admin/held-requests/{held_id}/cancel")
-async def admin_cancel_held_request(held_id: int):
-    """Cancel one held request (a mistake or a duplicate).
-
-    Args:
-        held_id: The held request's id.
-
-    Returns:
-        {"cancelled": true}.
-    """
-    from app.services.held_requests import cancel_held_request
-    if not await cancel_held_request(held_id):
-        raise HTTPException(status_code=404, detail="No open held request with that id")
-    return {"cancelled": True}
-
-
 @router.get("/admin/request-columns")
 async def admin_request_columns():
     """Report whether SubmitterEmail and RequestSource exist on the request lists.
@@ -2394,7 +2324,7 @@ async def admin_carryover_payout_window():
 async def admin_set_carryover_payout_window(body: CarryoverPayoutWindow):
     """Set or clear the dates carry-over and payout requests are open (#176).
 
-    Only new requests from the request page, held requests and /api/forms
+    Only new requests from the request page and /api/forms
     are affected. Requests already sent keep going through approval, and the
     Microsoft Form stays under HR's control on the bulletin board.
 

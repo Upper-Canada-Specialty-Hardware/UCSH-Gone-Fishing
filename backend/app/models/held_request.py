@@ -8,13 +8,14 @@ from app.models.mixins import utcnow
 
 
 class HeldRequest(Base):
-    """A request from someone not in the Staff Directory yet, waiting for them.
+    """History only: a request once held for someone not in the Staff Directory.
 
-    The public request page lets anyone who proves they own an email address
-    fill in a form. When that address is not on any staff record, nothing can
-    route the request (no balances, no manager), so it is kept here and the
-    supervisor they picked is emailed to add them. Adding them releases it:
-    the stored form is submitted as a normal request (services/held_requests.py).
+    The request page used to let someone on no staff record fill in a form,
+    keep it here and email the supervisor they picked to add them. That new
+    hire path was removed (#525): an address on no staff record is now refused
+    and a manager adds people from the manager dashboard. Nothing writes or
+    reads these rows any more; the table is kept so the history stays, and
+    the rows still open then were closed by Alembic 0025.
 
     Auxiliary state, like email_codes. Not a SharePoint list.
     """

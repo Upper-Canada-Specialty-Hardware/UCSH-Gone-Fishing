@@ -37,19 +37,6 @@ export interface SignInChoice {
   exp: string;
 }
 
-/** The token /verify returns for an address on no staff record. */
-export interface VerifiedEmail {
-  email: string;
-  exp: string;
-  token: string;
-}
-
-/** One person a new starter can pick as their supervisor. */
-export interface Person {
-  id: string;
-  name: string;
-}
-
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
 /** What the page needs to know about carry-over and payout right now. */
@@ -72,7 +59,8 @@ const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day
 const LINK_KEYS = ['dashboard_token', 'dashboard_role', 'dashboard_uid', 'dashboard_exp'];   // sessionStorage, from an emailed link
 const NOTICE_KEY = 'sign_in_notice';           // sessionStorage: why someone was sent to the landing page
 const AFTER_KEY = 'after_sign_in';             // sessionStorage: the page to open once signed in
-const NEW_HIRE_KEY = 'new_hire_verified';      // sessionStorage: a new hire's verified-email token
+/** sessionStorage flag: this visit came from an old "add this new hire" email link (#525). */
+export const RETIRED_HELD_LINK = 'retired_held_link';
 
 /**
  * Whether a sign-in's expiry (unix seconds) has passed.
@@ -210,8 +198,8 @@ function replaceSessionToken(fresh: { role: string; uid: string; token: string; 
  * asks the server again and, when it hands back a new token, stores it.
  *
  * The server only ever promotes an employee to manager; it never demotes a
- * manager back to employee (#395), so a supervisor opening the add-new-hire
- * link, or an admin's open-as-manager link, keeps My team (and Add Employee)
+ * manager back to employee (#395), so an admin's open-as-manager link keeps
+ * My team (and Add Employee)
  * even with nobody under them. This call just applies whatever the server
  * returns, so it too can only move someone up.
  *
@@ -316,29 +304,6 @@ export const setAfterSignIn = (path: string) => tabSet(AFTER_KEY, path);
 export const takeAfterSignIn = () => tabTake(AFTER_KEY);
 
 /**
- * Keep a new hire's verified-email token for this tab, so /new-hire survives a refresh.
- *
- * @param verified - From verifyCode, or null to forget it.
- */
-export const saveNewHire = (verified: VerifiedEmail | null) =>
-  tabSet(NEW_HIRE_KEY, verified ? JSON.stringify(verified) : null);
-
-/**
- * The new hire's verified-email token for this tab, if it has not expired (24 hours).
- *
- * @returns The token, or null.
- */
-export function loadNewHire(): VerifiedEmail | null {
-  try {
-    const raw = sessionStorage.getItem(NEW_HIRE_KEY);
-    const verified = raw ? (JSON.parse(raw) as VerifiedEmail) : null;
-    return verified && !expired(verified.exp) ? verified : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Ask for a 6-digit code to be emailed. The answer is the same for every address.
  *
  * @param email - The address typed.
@@ -351,63 +316,100 @@ export const requestCode = (email: string) => intake.post('/code', { email });
  *
  * @param email - The same address.
  * @param code - The 6 digits typed.
- * @returns {status: "employee", name, role, uid, token, exp}; {status: "choose", people}
- *   when several staff records share the address; or {status: "unknown", verified}.
- * @throws AxiosError 400 with a readable reason when the code is wrong or expired.
+ * @returns {status: "employee", name, role, uid, token, exp}; or {status: "choose", people}
+ *   when several staff records share the address.
+ * @throws AxiosError 400 with a readable reason when the code is wrong or expired; 403
+ *   for an archived address or one on no staff record (ask your manager, #526).
  */
 export const verifyCode = (email: string, code: string) =>
   intake.post('/verify', { email, code });
 
 /**
- * The departments a new starter can choose from, as the Staff Directory spells them.
- *
- * @param verified - The token from verifyCode.
- * @throws AxiosError 401 when the token expired.
+ * What the public cancel page shows for a receipt's "cancel this request" link (#519).
+ * ``state`` is "open" while it can still be cancelled, "done" right after this
+ * page cancelled it, "invalid" for a bad link, else the request's status now.
  */
-export const getDepartments = (verified: VerifiedEmail) =>
-  intake.get<{ departments: string[] }>('/departments', { params: verified });
+export interface CancelInfo {
+  state: string;
+  request_number: string;
+  summary: string;
+}
 
 /**
- * People in a department whose name contains the typed text (a few at most).
+ * The details for the public cancel page (#519). Read-only.
  *
- * @param verified - The token from verifyCode.
- * @param department - The department picked.
- * @param q - What was typed; nobody comes back for fewer than two letters.
- * @throws AxiosError 401 when the token expired.
+ * @param token - The signed cancel token from the receipt's link.
+ * @returns The request's summary and current state.
  */
-export const searchSupervisors = (verified: VerifiedEmail, department: string, q: string) =>
-  intake.get<{ people: Person[] }>('/supervisor-search', { params: { ...verified, department, q } });
+export const getCancelInfo = (token: string) =>
+  intake.get<CancelInfo>('/cancel/info', { params: { token } });
 
 /**
- * Hold a request from someone not on staff until their supervisor adds them.
+ * Cancel the request from the public page's confirm button (#519).
  *
- * @param body - verified token, name, department, the supervisor (supervisor_id
- *   from the search, or supervisor_email), request_type and form.
- * @throws AxiosError 400 with a reason, 401 expired, 409 already on staff.
+ * @param token - The signed cancel token.
+ * @returns The outcome (``done`` on a fresh cancel, else what it is now).
+ * @throws AxiosError 503 while processing is off.
  */
-export const holdRequest = (body: {
-  verified: VerifiedEmail;
-  first_name: string;
-  last_name: string;
-  department: string;
-  supervisor_id?: string;
-  supervisor_email?: string;
-  request_type: RequestType;
-  form: Record<string, unknown>;
-}) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held', body);
+export const confirmCancel = (token: string) =>
+  intake.post<CancelInfo>('/cancel/confirm', null, { params: { token } });
 
-/** Where a held request stands, as the waiting page shows it. */
-export type HeldStatus = 'waiting' | 'sent' | 'cancelled';
+/** One of the person's own pending requests that holds the days they asked for (#518). */
+export interface PendingClash {
+  item_id: string;
+  /** The dates in words, e.g. "Nov 2, 2026 to Nov 6, 2026". */
+  when: string;
+  leave_type: string;
+  days: number | null;
+}
+
+/** The 409 body when the new leave lands on days of the person's own pending request (#518). */
+export interface PendingClashDetail {
+  code: 'pending_clash';
+  message: string;
+  pending: PendingClash[];
+}
 
 /**
- * Ask how a held request is going, so the waiting page can update on its own.
+ * The pending-clash offer from a failed submit, when that is what it was (#518).
  *
- * @param statusToken - The status_token holdRequest returned.
- * @returns The status and the supervisor it waits on.
- * @throws AxiosError 404 when the token is bad or the request is gone.
+ * @param err - What axios threw.
+ * @returns The offer, or null for any other failure.
  */
-export const getHeldStatus = (statusToken: string) =>
-  intake.get<{ status: HeldStatus; supervisor_name: string }>('/held/status', { params: { token: statusToken } });
+export function pendingClashOf(err: any): PendingClashDetail | null {
+  const detail = err?.response?.data?.detail;                  // FastAPI puts the body under "detail"
+  return err?.response?.status === 409 && detail?.code === 'pending_clash' ? detail : null;
+}
+
+/**
+ * Change the signed-in person's own pending leave to the form they just filled in (#518).
+ *
+ * @param session - The saved sign-in.
+ * @param itemId - The pending leave request to change.
+ * @param form - The leave form, snake_case, as for submitting.
+ * @returns The changed request's number and a fresh status token.
+ * @throws AxiosError 400 bad form or nothing changed, 404 not theirs, 409 no longer pending or clashes, 503 off.
+ */
+export const changeMyLeave = (session: EmployeeSession, itemId: string, form: Record<string, unknown>) =>
+  dashboard.post<{ status: string; request_type: string; item_id: string; status_token: string | null }>(
+    `/me/requests/leave/${itemId}/change`, form, {
+      params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+    });
+
+/**
+ * Cancel the signed-in person's own pending request from the request page (#519).
+ *
+ * @param session - The saved sign-in.
+ * @param type - "leave", "overtime" or "carryover-payout".
+ * @param itemId - The request number.
+ * @returns ``{status: "cancelled", item_id, already}``.
+ * @throws AxiosError 404 not theirs, 409 no longer pending, 503 off.
+ */
+export const cancelMyRequestAs = (session: EmployeeSession, type: string, itemId: string) =>
+  dashboard.post<{ status: string; item_id: string; already: boolean }>(
+    `/me/requests/${type}/${itemId}/cancel`, {}, {
+      params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+    });
 
 /**
  * Submit a request as the signed-in employee.

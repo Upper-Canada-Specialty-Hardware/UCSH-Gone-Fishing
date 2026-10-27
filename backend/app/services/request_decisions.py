@@ -107,6 +107,9 @@ ALREADY_DECIDED_MESSAGE = "Already processed"
 NOT_APPROVED_MESSAGE = "Only approved requests can be refunded"
 GONE_MESSAGE = "This request no longer exists."
 CARRYOVER_NEGATIVE_MESSAGE = "This would take vacation below zero, so it was not approved."
+# What a manager sees acting on a request its owner cancelled (#519): the old
+# approve and reject links stop working, and say why instead of "out of date".
+CANCELLED_MESSAGE = "This request was cancelled by the person who asked for it. Nothing is needed from you."
 
 
 async def decisions_active() -> bool:
@@ -745,6 +748,10 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
         if request is None:
             return {"error": GONE_MESSAGE}
         version = request.approval_version
+        if request.status == "cancelled":                          # its owner cancelled it (#519)
+            await _refuse(session, request, channel, actor, version, "cancelled", CANCELLED_MESSAGE)
+            await session.commit()
+            return {"error": CANCELLED_MESSAGE, "refused": "cancelled"}
         if link_version is not None and int(link_version) != version:   # the link is out of date
             await _refuse(session, request, channel, actor, link_version, "stale", STALE_MESSAGE)
             await session.commit()
@@ -880,6 +887,10 @@ async def reject(kind, item_id, actor, channel, link_version=None, reason=None) 
         if request is None:
             return {"error": GONE_MESSAGE}
         version = request.approval_version
+        if request.status == "cancelled":                          # its owner cancelled it (#519)
+            await _refuse(session, request, channel, actor, version, "cancelled", CANCELLED_MESSAGE)
+            await session.commit()
+            return {"error": CANCELLED_MESSAGE, "refused": "cancelled"}
         if link_version is not None and int(link_version) != version:
             await _refuse(session, request, channel, actor, link_version, "stale", STALE_MESSAGE)
             await session.commit()
@@ -1230,6 +1241,7 @@ async def _after_decision_followups(
         fields = TypedRequestList(request.kind)._item_shape(request)["fields"]   # the approved row, SharePoint shape
         await notify_requests_blocked_by_approval(
             request.kind, request.item_id, fields, request.employee_email or "",
+            employee_name=request.employee_name,                   # the blocked requests' own thread subject (#520)
         )
     except Exception:  # noqa: BLE001 - a notice failure must never undo the approval
         logger.exception("Blocked-request notice failed after %s #%s", request.kind, request.item_id)
