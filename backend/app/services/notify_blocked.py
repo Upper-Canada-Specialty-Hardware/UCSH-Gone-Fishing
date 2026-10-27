@@ -28,6 +28,7 @@ from app.services.overlap_detection import (
     find_requests_blocked_by,
 )
 from app.services.request_submitter import submitter_email_of
+from app.services.request_threads import SUBJECT_KEY, build_thread_subject  # one subject per request (#520)
 from app.repositories.request_store import request_store
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ async def notify_requests_blocked_by_approval(
     approved_item_id: str | int,
     approved_fields: dict,
     employee_email: str,
+    employee_name: str | None = None,
 ) -> int:
     """Email the employee about each pending request this approval has stranded.
 
@@ -53,6 +55,8 @@ async def notify_requests_blocked_by_approval(
         approved_fields: Its field values, read here for the submitter so the
             caller does not need to know which person column the list uses.
         employee_email: Where to send. Empty skips.
+        employee_name: Whose requests these are, for the request's one email
+            subject (#520). None (the SharePoint path) keeps the old subject.
 
     Returns:
         How many notices were sent. Zero on any failure, which is logged.
@@ -93,10 +97,7 @@ async def notify_requests_blocked_by_approval(
             )
             await send_email(
                 to=[employee_email],
-                subject=(
-                    f"{'Leave' if kind == 'leave' else 'Time Make-Up'} Request "
-                    f"#{item_id} Cannot Be Approved"
-                ),
+                subject=_blocked_subject(kind, item_id, item.get("fields", {}), employee_name),
                 html_body=html,
             )
             sent += 1
@@ -108,3 +109,26 @@ async def notify_requests_blocked_by_approval(
             logger.exception("Could not send the blocked-request notice for %s #%s", kind, item_id)
 
     return sent
+
+
+def _blocked_subject(kind: str, item_id, fields: dict, employee_name: str | None) -> str:
+    """The subject for a blocked-request notice: the blocked request's own thread (#520).
+
+    Args:
+        kind: "leave" or "overtime".
+        item_id: The blocked request's number.
+        fields: The blocked request's fields; a Postgres row carries its fixed
+            subject here (``ThreadSubject``, from its extra).
+        employee_name: Whose request it is, or None on the SharePoint path.
+
+    Returns:
+        The request's one subject when it has one or the name is known, so the
+        notice joins that request's thread; otherwise the old stand-alone subject.
+    """
+    stored = fields.get(SUBJECT_KEY)                           # fixed when the request was submitted
+    if stored:
+        return stored
+    if employee_name:                                          # a Postgres row from before the fixed subject
+        return build_thread_subject(kind, item_id, employee_name)
+    # The SharePoint path sends no other threaded email, so it keeps its old subject.
+    return f"{'Leave' if kind == 'leave' else 'Time Make-Up'} Request #{item_id} Cannot Be Approved"

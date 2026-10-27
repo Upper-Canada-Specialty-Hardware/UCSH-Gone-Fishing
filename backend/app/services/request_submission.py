@@ -52,6 +52,7 @@ from app.services.request_decisions import _wake_sender, decisions_active
 from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
 from app.services.request_states import can_decide, move
 from app.services.request_submitter import resolve_request_submitter
+from app.services.request_threads import stamp_thread_subject  # one email subject per request (#520)
 from app.services.vacation_cover import choose_available_manager, today_toronto
 from app import templates_render as tr
 
@@ -68,6 +69,14 @@ SOURCE_TO_CHANNEL = {
 }
 # A carry-over/payout option stored on the row -> the word the emails and SMS use.
 OPTION_WORD = {"carry_over": "Carry Over", "payout": "Payout"}
+
+# The line a reminder email opens with. Reminders keep the request's one subject
+# so they thread with the first ask (#520), so the body has to say it.
+REMINDER_NOTE = (
+    '<p style="font-family:\'Segoe UI\',Arial,sans-serif;font-size:14px;line-height:1.5;'
+    'color:#b45309;font-weight:bold;margin:0 0 12px;">'
+    "Reminder: this request is still waiting for your decision.</p>"
+)
 
 
 async def submission_active() -> bool:
@@ -216,9 +225,9 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
 
     One manager email (and a text when they have a cell) per manager, then one
     receipt to the employee. With a ``suffix`` (a date) and the reminder step the
-    same rows become a once-a-day reminder instead, email only, its subject
-    prefixed "Reminder: " (#422). An admin edit asks the manager again with fresh
-    links but sends no receipt (``include_receipt`` False). A ``reask_suffix``
+    same rows become a once-a-day reminder instead, email only, opening with a
+    reminder line (#422) under the request's one subject (#520). An admin edit
+    asks the manager again with fresh links but sends no receipt (``include_receipt`` False). A ``reask_suffix``
     makes a fresh manager ask (a reprocess) key-unique so every press sends and
     both channels go out (#421). Each row carries a step_key that is unique in the
     outbox, so a repeat queues nothing again.
@@ -255,7 +264,9 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         mgr_email = (mgr_fields.get("EmailAddress") or "").strip()
         subject, html, sms_body = built(manager_id)                # links are per manager
         if is_reminder:
-            subject = f"Reminder: {subject}"                       # match the SharePoint path's reminder subject (#422)
+            # The subject stays the request's one subject (#520), so the
+            # reminder joins the ask's thread; the body says it is a reminder.
+            html = REMINDER_NOTE + html
         if mgr_email:
             await enqueue_message(
                 session, record, event, message_type, "email", mgr_email, subject, html,
@@ -694,6 +705,9 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     )
     assigned = chosen or (managers[0] if managers else None)
     _set_identity(record, employee, assigned, channel or _channel_from_source(record))
+    # Fix the request's one email subject now the name is on the row, so every
+    # email about it threads, whatever is changed later (#520).
+    stamp_thread_subject(record)
 
     version = record.approval_version
     submitted_key = step_key(kind, record.item_id, "submitted", version)

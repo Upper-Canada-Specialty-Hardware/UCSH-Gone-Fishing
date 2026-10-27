@@ -31,6 +31,7 @@ from app.models.request_record import RequestRecord
 from app.services import request_submission as rsub
 from app.services.outbox_sender import send_outbox_row
 from app.services.request_journal import step_key
+from app.services.request_threads import thread_subject
 from app.services.sms import (
     InvalidPhoneNumber,
     mask_phone,
@@ -372,7 +373,7 @@ def test_a_reminder_for_a_still_pending_current_request_still_sends(monkeypatch)
     assert row.status == "sent" and len(calls) == 1
 
 
-# ===== #422: the Postgres reminder subject is prefixed "Reminder: " =====
+# ===== #422 / #520: a Postgres reminder keeps the request's one subject =====
 
 
 _EMPLOYEE = {"id": "7", "fields": {"Title": "Casey Demo", "EmailAddress": "casey@ucsh.com"}}
@@ -393,20 +394,23 @@ async def _enqueue_via(record, *, suffix=None, reask_suffix=None):
         )).scalars().all()
 
 
-def test_a_postgres_reminder_subject_is_prefixed_and_email_only():
+def test_a_postgres_reminder_keeps_the_request_subject_and_says_reminder_in_the_body():
     record = run(_leave(status="pending"))
     rows = run(_enqueue_via(record, suffix="2026-11-02"))     # a reminder (dated)
     assert all(r.channel == "email" for r in rows)            # reminders are email-only
-    assert all(r.subject.startswith("Reminder: ") for r in rows)
+    # Same subject as the first ask, so it threads; the body says it is a reminder (#520).
+    assert all(r.subject == thread_subject(record) for r in rows)
+    assert all(r.body.startswith(rsub.REMINDER_NOTE) for r in rows)
 
 
-def test_a_first_manager_ask_has_no_reminder_prefix_and_a_text():
+def test_a_first_manager_ask_has_no_reminder_line_and_a_text():
     record = run(_leave(status="pending"))
     rows = run(_enqueue_via(record))                          # a first ask (suffix None)
     channels = sorted(r.channel for r in rows)
     assert channels == ["email", "sms"]                       # email and a text
     email = next(r for r in rows if r.channel == "email")
-    assert not email.subject.startswith("Reminder: ")
+    assert email.subject == thread_subject(record)
+    assert "Reminder:" not in email.body
 
 
 # ===== #421: reprocess re-asks over both channels, every press, no cadence bump =====
@@ -449,10 +453,10 @@ def test_reprocess_sends_both_channels_every_press_without_touching_the_cadence(
             return rows, events, fresh
 
     rows, events, fresh = run(read())
-    # Two presses, each one email + one text = four outbox rows, none a reminder subject.
+    # Two presses, each one email + one text = four outbox rows, none a reminder.
     assert len(rows) == 4
     assert sorted(r.channel for r in rows) == ["email", "email", "sms", "sms"]
-    assert not any((r.subject or "").startswith("Reminder: ") for r in rows)
+    assert not any("Reminder:" in r.body for r in rows if r.channel == "email")
     assert len(events) == 2                                   # one timeline step per press
     assert any(e.detail.get("reason") == "resend #2" for e in events)
     assert not fresh.reminder_count                           # the cadence did not advance (0 or None)
@@ -678,7 +682,7 @@ def test_failed_send_flag_is_absent_without_the_send_status_flag():
 
 
 def test_a_bereavement_leave_queues_the_hr_alert_once(monkeypatch):
-    from app.services.leave_requests import BEREAVEMENT_ALERT_RECIPIENTS, BEREAVEMENT_ALERT_SUBJECT
+    from app.services.leave_requests import BEREAVEMENT_ALERT_RECIPIENTS
 
     record = run(_leave(status="pending", leave_type="Bereavement"))
 
@@ -701,7 +705,8 @@ def test_a_bereavement_leave_queues_the_hr_alert_once(monkeypatch):
 
     rows = run(read())
     assert sorted(r.recipient for r in rows) == sorted(BEREAVEMENT_ALERT_RECIPIENTS)
-    assert all(r.subject == BEREAVEMENT_ALERT_SUBJECT and r.channel == "email" for r in rows)
+    # HR gets the request's one subject too (#520); the body still opens "Jury Duty / Bereavement Alert".
+    assert all(r.subject == thread_subject(record) and r.channel == "email" for r in rows)
 
 
 def test_a_delivered_bereavement_alert_records_no_stage_event(monkeypatch):
