@@ -106,9 +106,10 @@ OUTBOX_CHANNELS = ("email", "sms")
 # The kinds of outbox message, for reference; the column is open, so not CHECKed.
 # bereavement_alert is the HR side-notice for a bereavement/jury-duty leave; it
 # records no stage-changing event when delivered (see outbox_sender) (finding 3).
+# cancel_notice tells the manager and the person a request was cancelled (#519).
 OUTBOX_MESSAGE_TYPES = (
     "manager_approval", "receipt", "result", "reminder", "refund", "rejection", "welcome",
-    "bereavement_alert",
+    "bereavement_alert", "cancel_notice",
 )
 
 # What the SharePoint sweep decided about one item (sharepoint_seen.outcome).

@@ -649,6 +649,46 @@ async def held_not_on_team_confirm(token: str = Query(...)):
     return info                                                # already handled / moved on: say what happened
 
 
+@router.get("/cancel/info")
+async def cancel_link_info(token: str = Query(...)):
+    """What the public cancel page shows for a receipt's cancel link (#519).
+
+    Read-only and public, but only for the one request its signed token names. A
+    forged or gone link reads as ``{"state": "invalid"}`` and learns nothing.
+
+    Args:
+        token: The signed token from the receipt's link.
+
+    Returns:
+        ``{"state", "request_number", "summary"}``; see ``own_requests.cancel_page_info``.
+    """
+    from app.services.own_requests import cancel_page_info
+    return await cancel_page_info(token)
+
+
+@router.post("/cancel/confirm")
+async def cancel_link_confirm(token: str = Query(...)):
+    """Cancel the request a receipt's link names, from the page's confirm button (#519).
+
+    A POST, sent only by the button, so a mail scanner opening the link cancels
+    nothing. Guarded and idempotent: a second click, or a request decided in the
+    meantime, just says what it is now.
+
+    Args:
+        token: The signed token from the receipt's link.
+
+    Returns:
+        The info shape, with ``state`` "done" when this click cancelled it.
+
+    Raises:
+        HTTPException: 503 while processing is off (nothing is cancelled).
+    """
+    if not settings.PROCESSING_ENABLED:                        # read-only: cancel nothing, email nobody
+        raise HTTPException(status_code=503, detail="This cannot be done right now. Try again later.")
+    from app.services.own_requests import cancel_from_link
+    return await cancel_from_link(token)
+
+
 @router.get("/held/status")
 async def held_status(token: str = Query(...)):
     """How a held request is going, for the page that held it.

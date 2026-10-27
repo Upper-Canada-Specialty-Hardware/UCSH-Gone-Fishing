@@ -129,8 +129,8 @@ def test_the_refusal_names_the_request_and_its_state():
     existing = [_row(3926, "Pending", "2026-10-26", "2026-10-26")]
     conflict = _clash(existing, "2026-10-26", "2026-10-26")
     assert new_leave_clash_refusal(conflict) == (
-        "You already have a request for Oct 26, 2026 "
-        "(#3926, pending). Cancel or change that one instead."
+        "You already have a pending request for Oct 26, 2026 "
+        "(#3926). Change that request or cancel it instead."
     )
 
 
@@ -138,8 +138,8 @@ def test_the_refusal_describes_a_range():
     existing = [_row(3927, "Approved", "2026-10-26", "2026-10-30")]
     conflict = _clash(existing, "2026-10-28", "2026-10-28")
     assert new_leave_clash_refusal(conflict) == (
-        "You already have a request for Oct 26, 2026 to Oct 30, 2026 "
-        "(#3927, approved). Cancel or change that one instead."
+        "You already have approved time off for Oct 26, 2026 to Oct 30, 2026 "
+        "(#3927). To change approved time off, ask your manager or an admin."
     )
 
 

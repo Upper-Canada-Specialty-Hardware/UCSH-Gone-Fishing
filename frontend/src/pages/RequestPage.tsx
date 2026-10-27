@@ -21,9 +21,9 @@ import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
 import { AutoHeight, DrawnTick, EXIT, Fold, INSTANT, KF, SPRING, staggerChildren, useCalm, useDirection } from '../components/Motion';
 import {
-  Balances, BookingLimit, EmployeeSession, HeldGate, HeldStatus, HeldStatusResult, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
-  clearHeldWaiting, clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, heldSignIn, holdRequest,
-  loadHeldWaiting, loadNewHire, loadSession, repick, requestCode, saveHeldWaiting, saveNewHire, saveSession,
+  Balances, BookingLimit, EmployeeSession, HeldGate, HeldStatus, HeldStatusResult, PendingClashDetail, RequestProgress, RequestType, SignInChoice, VerifiedEmail,
+  cancelMyRequestAs, changeMyLeave, clearHeldWaiting, clearSession, errorText, getHeldStatus, getRequestStatus, getRequestTypes, heldSignIn, holdRequest,
+  loadHeldWaiting, loadNewHire, loadSession, pendingClashOf, repick, requestCode, saveHeldWaiting, saveNewHire, saveSession,
   setSignInNotice, submitMyRequest, takeAfterSignIn, takeSignInNotice, verifyCode,
 } from '../api/intake';
 
@@ -262,6 +262,13 @@ export default function RequestPage() {
   const [repickChoice, setRepickChoice] = useState<SupervisorChoice>(EMPTY_SUPERVISOR);   // the re-pick
   const [myToken, setMyToken] = useState('');                  // signed token to follow a sent request's progress (#364)
   const [progress, setProgress] = useState<RequestProgress | null>(null);   // that request's latest progress
+  // The person's own pending request(s) on the days just asked for (#518): the
+  // form offers to change or cancel one instead of sending a second.
+  const [clash, setClash] = useState<PendingClashDetail | null>(null);
+  const [clashNote, setClashNote] = useState('');             // "#N is cancelled, send this now" after a cancel there
+  // The request the done page shows, so it can be cancelled while pending (#519).
+  const [sent, setSent] = useState<{ type: RequestType; item_id: string } | null>(null);
+  const [cancelledMine, setCancelledMine] = useState(false);  // the done page's request was just cancelled
   // A held request was released but the automatic sign-in was refused (#482):
   // the page still follows the request and offers a plain email sign-in link.
   const [heldSignedOut, setHeldSignedOut] = useState(false);
@@ -553,27 +560,116 @@ export default function RequestPage() {
     navigate(takeAfterSignIn() || '/my', { replace: true });   // back to a bookmarked page, or My requests
   };
 
+  // A change to the form makes the change-or-cancel offer stale: drop it (#518).
+  useEffect(() => { setClash(null); }, [type, values]);
+
+  /**
+   * Send a signed-out person back to sign in, when the failure was a lapsed sign-in.
+   *
+   * @param err - What axios threw.
+   * @returns True when it was a 401 and the page has moved on.
+   */
+  const endedSignIn = (err: any): boolean => {
+    if (err?.response?.status !== 401) return false;   // some other failure: the caller shows it
+    clearSession();                                     // the 30 days ran out
+    setSignInNotice('Your sign-in has ended. Enter your email for a new code.');
+    navigate('/', { replace: true });
+    return true;
+  };
+
+  /**
+   * Show the done page for a request the person just sent or changed.
+   *
+   * @param kind - Which form it was.
+   * @param itemId - The request number, for the done page's cancel button.
+   * @param statusToken - The token to follow its progress, or null.
+   * @param text - What the done page says.
+   */
+  const showSent = (kind: RequestType, itemId: string, statusToken: string | null, text: string) => {
+    clearDraft();                                   // submitted: no draft to keep
+    setHeldWith('');
+    setHeldToken('');                               // a staff request has nothing to wait on
+    setMyToken(statusToken || '');                  // follow this request's progress (#364)
+    setProgress(null);                              // the first poll fills it in
+    setSent({ type: kind, item_id: itemId });       // the done page can cancel it while pending (#519)
+    setCancelledMine(false);
+    setClash(null); setClashNote('');
+    setDoneText(text);
+    setStep('done');
+  };
+
   /** Submit as the signed-in employee. */
   const submitAsEmployee = async () => {
     if (!session) return;
-    setError(''); setBusy(true);
+    setError(''); setClashNote(''); setBusy(true);
     try {
       const res = await submitMyRequest(session, type, buildRequestBody(type, values));
-      clearDraft();                                   // submitted: no draft to keep
-      setHeldWith('');
-      setHeldToken('');                               // a staff request has nothing to wait on
-      setMyToken(res.data.status_token || '');        // follow this request's progress (#364)
-      setProgress(null);                              // the first poll fills it in
-      setDoneText('Your request was sent to your manager. You will get an email when it is approved or rejected.');
-      setStep('done');
+      showSent(type, res.data.item_id, res.data.status_token,
+        'Your request was sent to your manager. You will get an email when it is approved or rejected.');
     } catch (err: any) {
-      if (err?.response?.status === 401) {              // the 30 days ran out
-        clearSession();
-        setSignInNotice('Your sign-in has ended. Enter your email for a new code.');
-        navigate('/', { replace: true });
-      } else {
-        setError(errorText(err, 'Your request could not be sent. Try again.'));
-      }
+      if (endedSignIn(err)) return;
+      const offer = pendingClashOf(err);                // their own pending request holds these days (#518)
+      if (offer) setClash(offer);                       // offer to change or cancel it instead
+      else setError(errorText(err, 'Your request could not be sent. Try again.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Change the clashing pending request to what the form says now, instead of sending a second (#518).
+   *
+   * @param itemId - The pending request to change.
+   */
+  const changeInstead = async (itemId: string) => {
+    if (!session) return;
+    setError(''); setBusy(true);
+    try {
+      const res = await changeMyLeave(session, itemId, buildRequestBody('leave', values));
+      showSent('leave', itemId, res.data.status_token,
+        `Request #${itemId} was changed. Your manager was asked again, and you will get an email when it is approved or rejected.`);
+    } catch (err: any) {
+      if (endedSignIn(err)) return;
+      setClash(null);                                   // the offer no longer holds: show why
+      setError(errorText(err, `Request #${itemId} could not be changed. Try again.`));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Cancel the clashing pending request, so the form can be sent as it is (#518, #519).
+   *
+   * @param itemId - The pending request to cancel.
+   */
+  const cancelClashing = async (itemId: string) => {
+    if (!session) return;
+    setError(''); setBusy(true);
+    try {
+      await cancelMyRequestAs(session, 'leave', itemId);
+      setClash(null);
+      setClashNote(`Request #${itemId} is cancelled and your manager was told. You can send this request now.`);
+    } catch (err: any) {
+      if (endedSignIn(err)) return;
+      setClash(null);
+      setError(errorText(err, `Request #${itemId} could not be cancelled. Try again.`));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Cancel the request the done page shows, while it is still pending (#519). */
+  const cancelSent = async () => {
+    if (!session || !sent) return;
+    setError(''); setBusy(true);
+    try {
+      await cancelMyRequestAs(session, sent.type, sent.item_id);
+      setCancelledMine(true);
+      setMyToken('');                                   // nothing left to follow
+      setDoneText(`Request #${sent.item_id} is cancelled. Your manager was told, and nothing comes off your balances.`);
+    } catch (err: any) {
+      if (endedSignIn(err)) return;
+      setError(errorText(err, 'This request could not be cancelled. Try again.'));
     } finally {
       setBusy(false);
     }
@@ -716,6 +812,8 @@ export default function RequestPage() {
     clearDraft();                                       // fresh form: drop the old draft
     setMyToken('');                                     // stop following the request just finished (#364)
     setProgress(null);
+    setSent(null); setCancelledMine(false);             // a fresh form has nothing to cancel yet
+    setClash(null); setClashNote('');
     setError('');
     setStep('form');
   };
@@ -757,7 +855,7 @@ export default function RequestPage() {
   // employee) follow the real request's progress to the decision (#364, #482).
   // A refusal is final and never goes to a supervisor, so it shows no next
   // steps: the reason (in doneText) says what to do instead (#406).
-  const next: NextItem[] = heldStatus === 'refused' ? [] : (held && !added) ? [
+  const next: NextItem[] = heldStatus === 'refused' || cancelledMine ? [] : (held && !added) ? [
     { title: 'Saved', note: 'Just now', done: true },
     { title: `${heldWith || 'Your supervisor'} adds you to the staff list`, note: 'They got an email with a link' },
     { title: 'Your request goes to them', note: 'Automatically' },
@@ -870,11 +968,41 @@ export default function RequestPage() {
                 </AutoHeight>
                 {/* Days and balances after approval, once the form is complete. */}
                 <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} vacationTaken={myBalances?.vacation_taken ?? null} onBookingLimit={setBookingLimit} />
-                {/* Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407). */}
-                <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
-                  {/* While the request is being created the label says so, beside the spinner (#455). */}
-                  <BusyLabel busy={busy}>{busy ? 'Creating request...' : 'Send request'}</BusyLabel>
-                </Button>
+                <Fold show={!!clashNote}><Alert severity="success">{clashNote}</Alert></Fold>
+                {clash ? (
+                  // These days are already in their own pending request (#518):
+                  // change that one to this, or cancel it, instead of sending a second.
+                  <Alert severity="warning" sx={{ '& .MuiAlert-message': { width: '100%' } }}>
+                    <Typography variant="body2" sx={{ mb: 1 }}>{clash.message}</Typography>
+                    {clash.pending.map((p) => (
+                      <Box key={p.item_id} sx={{ display: 'grid', gap: 1, mt: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          #{p.item_id}: {p.leave_type || 'Leave'}, {p.when}
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                          {/* Only one request can become this form, so the change is offered for a single clash. */}
+                          {clash.pending.length === 1 && (
+                            <Button size="small" variant="contained" disabled={busy} onClick={() => changeInstead(p.item_id)}>
+                              Change #{p.item_id} to this
+                            </Button>
+                          )}
+                          <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => cancelClashing(p.item_id)}>
+                            Cancel #{p.item_id}
+                          </Button>
+                        </Box>
+                      </Box>
+                    ))}
+                    <Box sx={{ mt: 1.5 }}>
+                      <Link component="button" variant="body2" onClick={() => setClash(null)}>Back to the form</Link>
+                    </Box>
+                  </Alert>
+                ) : (
+                  // Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407).
+                  <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
+                    {/* While the request is being created the label says so, beside the spinner (#455). */}
+                    <BusyLabel busy={busy}>{busy ? 'Creating request...' : 'Send request'}</BusyLabel>
+                  </Button>
+                )}
               </>
             )}
 
@@ -1009,7 +1137,7 @@ export default function RequestPage() {
               <>
                 {/* A tick that pops in, then draws itself; hidden for a refusal,
                     which is not a success (#406). */}
-                {heldStatus !== 'refused' && (
+                {heldStatus !== 'refused' && !cancelledMine && (
                   <Box sx={(t) => ({
                     width: 64, height: 64, borderRadius: '50%', display: 'grid', placeItems: 'center',
                     bgcolor: t.tokens.okSoft, color: 'success.main',
@@ -1017,16 +1145,24 @@ export default function RequestPage() {
                   })}><DrawnTick size={34} delay={0.3} stroke={3} /></Box>
                 )}
                 <Heading>
-                  {!held || added ? 'Request sent'
+                  {cancelledMine ? 'Request cancelled'
+                    : !held || added ? 'Request sent'
                     : heldStatus === 'refused' ? 'Request not sent'
                     : heldStatus === 'cancelled' ? 'Request cancelled'
                     : 'Request saved'}
                 </Heading>
                 <Lead>{doneText}</Lead>
                 {next.length > 0 && <NextSteps items={next} />}
+                <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
                 <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button variant="contained" onClick={another}>Make another request</Button>
                   {session && <Button variant="outlined" onClick={() => navigate('/my')}>See my requests</Button>}
+                  {/* Changed their mind: cancel while it still waits for a decision (#519). */}
+                  {session && sent && !cancelledMine && (!progress || progress.status === 'pending') && (
+                    <Button variant="text" color="error" disabled={busy} onClick={cancelSent}>
+                      <BusyLabel busy={busy}>Cancel this request</BusyLabel>
+                    </Button>
+                  )}
                   {/* Released but the automatic sign-in was refused: a plain way in (#482). */}
                   {!session && heldSignedOut && (
                     <Link component="button" variant="body2" onClick={() => navigate('/', { replace: true })}>

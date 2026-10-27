@@ -23,7 +23,7 @@ from app.services.app_settings import carryover_payout_window, toronto_today, wi
 from app.services.balance import booking_refusal  # the vacation booking limit, refused at submission (#407)
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.leave_requests import ALLOWED_LEAVE_TYPES, process_new_leave_request
-from app.services.overlap_detection import check_new_leave_clash, new_leave_clash_refusal
+from app.services.overlap_detection import check_new_leave_clashes, clash_for_page, new_leave_clash_refusal
 from app.services.overtime_requests import process_new_overtime_request
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,57 @@ REQUEST_FORMS: dict[str, type[BaseModel]] = {
 }
 
 
+class PendingClash(RequestFormError):
+    """A new leave request shares a day with the person's own PENDING request (#518).
+
+    Still a RequestFormError, so every caller that only knows that (held release,
+    admin New request, /api/forms) refuses it with the plain sentence. The request
+    page catches it first and offers to change or cancel the pending request.
+
+    Attributes:
+        clashes: The pending requests it shares a day with, in the page shape
+            (``overlap_detection.clash_for_page``).
+    """
+
+    def __init__(self, message: str, clashes: list[dict]):
+        super().__init__(message)
+        self.clashes = clashes
+
+
+async def refuse_leave_clashes(
+    start_date: str, end_date: str, email: str, employee_id: str, exclude_item_id=None,
+) -> None:
+    """Refuse a leave on days the person already has leave for (#446, #518).
+
+    Any day with APPROVED leave is refused outright. Otherwise a day with a
+    PENDING request raises PendingClash, naming every pending request it touches.
+    Matched by email and staff id, the identifiers every in-house row carries;
+    the approval-time check still covers a legacy lookup-id-only row. The lookup
+    id is left None on purpose: resolving it would add a 5000-row Graph read to
+    every submission.
+
+    Args:
+        start_date: The leave's first day, ISO.
+        end_date: Its last day, ISO (the start for a part day).
+        email: The person's address, lower-cased as SubmitterEmail is stored.
+        employee_id: Their staff id.
+        exclude_item_id: The request being changed, which never clashes with itself.
+
+    Raises:
+        RequestFormError: A day already has approved leave.
+        PendingClash: A day already has one of their pending requests.
+    """
+    clashes = await check_new_leave_clashes(
+        submitter_lookup_id=None, start_date=start_date, end_date=end_date,
+        submitter_email=email, employee_id=employee_id, exclude_item_id=exclude_item_id,
+    )
+    if not clashes:
+        return
+    if clashes[0]["status"] == "Approved":                     # approved sorts first: refuse
+        raise RequestFormError(new_leave_clash_refusal(clashes[0]))
+    raise PendingClash(new_leave_clash_refusal(clashes[0]), [clash_for_page(c) for c in clashes])
+
+
 def parse_request_form(request_type: str, data: dict) -> BaseModel:
     """Check a submitted form and return it typed.
 
@@ -247,23 +298,14 @@ async def submit_request(
         refusal = booking_refusal(fields, form.leave_type, form.end_date, toronto_today())
         if refusal:
             raise RequestFormError(refusal)
-        # Overlap refusal (#446): a new leave request may not share any date with
-        # one of this person's leave requests that is not yet final (Pending or
-        # Approved). Refused here, before any row is created, so the person is told
-        # to cancel or change the existing one rather than ending up holding the
-        # same day twice. Matched by email and staff id, the identifiers every
-        # in-house row carries; the unchanged approval-time check still covers a
-        # legacy lookup-id-only row. Lookup id is left None on purpose: resolving
-        # it would add a 5000-row Graph read to every submission.
-        clash = await check_new_leave_clash(
-            submitter_lookup_id=None,
-            start_date=form.start_date.isoformat(),            # candidate's first day, ISO
-            end_date=form.end_date.isoformat(),                # last day (start for a part day)
-            submitter_email=email.lower(),                     # SubmitterEmail is stored lower-cased
-            employee_id=str(employee.get("id") or ""),         # this exact staff record
+        # Overlap (#446, #518): one leave request per day. A day that already has
+        # approved leave is refused before any row is created. A day held by one
+        # of their pending requests raises PendingClash: the request page turns it
+        # into a change-or-cancel offer, every other caller shows the sentence.
+        await refuse_leave_clashes(
+            form.start_date.isoformat(), form.end_date.isoformat(),
+            email.lower(), str(employee.get("id") or ""),
         )
-        if clash:
-            raise RequestFormError(new_leave_clash_refusal(clash))
     name = (fields.get("Title") or "").strip()
     first_name, _, last_name = name.partition(" ")             # the title is "<first> <last>"
 

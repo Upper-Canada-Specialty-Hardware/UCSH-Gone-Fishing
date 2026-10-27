@@ -25,6 +25,8 @@ export interface TableActions {
   reprocess: (r: Row) => void;
   audit: (r: Row) => void;
   delete: (rows: Row[]) => void;
+  /** Cancel your own pending request (#519); only the employee's History passes it. */
+  cancel?: (r: Row) => void;
 }
 
 interface Props {
@@ -574,8 +576,15 @@ function RequestDetail({ r, mode, timelineScope, processingEnabled, busy, action
 /** The actions shown in the opened request, by its state and the dashboard it is on. */
 function DetailActions({ r, mode, stuck, processingEnabled, busy, actions }: { r: Row; mode: TableMode; stuck: boolean; processingEnabled: boolean; busy: boolean; actions: TableActions }) {
   const writeOff = !processingEnabled;
-  // The employee table is read-only.
-  if (mode === 'mine') return null;
+  // The employee table offers one thing: cancelling their own request while it still waits (#519).
+  if (mode === 'mine') {
+    if (!actions.cancel || r.status !== 'Pending' || r.source === 'stuck') return null;
+    return (
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+        <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => actions.cancel?.(r)}>Cancel request</Button>
+      </Box>
+    );
+  }
   // A pending row that is not decidable yet (getting ready / needs attention): no
   // approve/reject anywhere, with the state spelt out instead (#455).
   const notReady = r.status === 'Pending' && r.source !== 'stuck' && !canDecide(r.state) ? stateDisplay(r.state) : null;

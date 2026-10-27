@@ -194,3 +194,62 @@ def test_a_sharepoint_failure_is_reported(client, monkeypatch):
 
     monkeypatch.setattr(request_intake, "process_new_leave_request", broken)
     assert _submit(client, "leave", VACATION).status_code == 502
+
+
+# ===== #518 / #519: the change-or-cancel offer, and changing or cancelling your own =====
+
+
+def test_days_held_by_your_pending_request_get_the_change_or_cancel_offer(client, monkeypatch):
+    async def pending(**kwargs):
+        return [{"item_id": "60", "start_date": "2026-11-02", "end_date": "2026-11-06",
+                 "status": "Pending", "leave_type": "Vacation", "days": 5}]
+    monkeypatch.setattr(request_intake, "check_new_leave_clashes", pending)
+    res = _submit(client, "leave", VACATION)
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert detail["code"] == "pending_clash" and "#60" in detail["message"]
+    assert detail["pending"][0]["item_id"] == "60"
+    assert client.created == []                               # nothing saved
+
+
+def test_cancel_calls_the_service_for_the_signed_in_person(client, monkeypatch):
+    calls = []
+
+    async def cancel(kind, item_id, staff_id, *, channel):
+        calls.append((kind, item_id, staff_id, channel))
+        return {"status": "cancelled", "item_id": str(item_id), "already": False}
+
+    from app.services import own_requests
+    monkeypatch.setattr(own_requests, "cancel_own_request", cancel)
+    token = generate_dashboard_token("employee", "7")
+    res = client.post("/api/dashboard/me/requests/carryover-payout/41/cancel", params=token, json={"from": "history"})
+    assert res.status_code == 200 and res.json()["status"] == "cancelled"
+    assert calls == [("carryover_payout", 41, "7", "employee_dashboard")]   # url spelling -> stored kind
+
+
+def test_a_cancel_the_service_refuses_keeps_its_status_and_reason(client, monkeypatch):
+    from app.services import own_requests
+
+    async def refuse(*a, **k):
+        raise own_requests.OwnRequestError("Request #41 is already approved.", 409)
+
+    monkeypatch.setattr(own_requests, "cancel_own_request", refuse)
+    token = generate_dashboard_token("employee", "7")
+    res = client.post("/api/dashboard/me/requests/leave/41/cancel", params=token)
+    assert res.status_code == 409 and res.json()["detail"] == "Request #41 is already approved."
+
+
+def test_change_checks_the_form_then_returns_a_status_token(client, monkeypatch):
+    from app.services import own_requests
+
+    async def change(item_id, employee, form):
+        assert employee["id"] == "7" and form.leave_type == "Vacation"
+        return {"status": "changed", "item_id": str(item_id)}
+
+    monkeypatch.setattr(own_requests, "change_own_leave", change)
+    token = generate_dashboard_token("employee", "7")
+    res = client.post("/api/dashboard/me/requests/leave/60/change", params=token, json=VACATION)
+    assert res.status_code == 200
+    assert res.json()["status"] == "changed" and res.json()["status_token"]
+    bad = client.post("/api/dashboard/me/requests/leave/60/change", params=token, json={"leave_type": "Nap"})
+    assert bad.status_code == 400
