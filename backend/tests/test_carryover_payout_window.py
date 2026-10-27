@@ -20,7 +20,7 @@ from app.graph import sharepoint
 from app.models.app_setting import AppSetting
 from app.routes import intake, self_service
 from app.routes.dashboard import router as dashboard_router
-from app.services import app_settings, held_requests, request_intake
+from app.services import app_settings, request_intake
 from app.services.dashboard_tokens import generate_dashboard_token
 
 PAT = {"id": "7", "fields": {"Title": "Pat Q Staff", "EmailAddress": "pat@ucsh.com"}}
@@ -134,13 +134,6 @@ def test_an_open_payout_request_is_created(client):
 def test_leave_is_never_affected(client):
     body = {"leave_type": "Vacation", "start_date": "2026-11-02", "end_date": "2026-11-03"}
     assert _submit(client, "leave", body).status_code == 200
-
-
-def test_a_new_hire_cannot_hold_one_while_closed():
-    with pytest.raises(request_intake.RequestTypeClosed):
-        run(held_requests.hold_request(
-            "newhire@gmail.com", "Lee New", "Shop", "3", "carryover-payout", PAYOUT,   # refused before the department is looked up
-        ))
 
 
 def test_the_request_page_and_the_admin_see_the_same_dates(client):

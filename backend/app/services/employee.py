@@ -85,7 +85,7 @@ async def email_belongs_to_archived(email: str) -> bool:
 
     The default directory read leaves archived people out, so ``get_employees_by_email``
     cannot see them; this read keeps them, to tell "archived, refuse" apart from
-    "not on staff, new-hire path". A shared mailbox with even one active record is
+    "not on staff, ask your manager". A shared mailbox with even one active record is
     not treated as archived, so that record still signs in.
 
     Args:

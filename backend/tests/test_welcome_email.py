@@ -4,7 +4,7 @@ import asyncio
 
 from app.config import settings
 from app.routes import dashboard
-from app.services import held_requests, welcome_email
+from app.services import welcome_email
 
 RECORD = {"id": "812", "fields": {"Title": "Lee New", "EmailAddress": "lee.new@ucsh.com"}}
 
@@ -42,21 +42,13 @@ def test_nothing_is_sent_without_an_address(monkeypatch):
     assert sent == []
 
 
-def _no_release(monkeypatch):
-    async def none(email):
-        return []
-    monkeypatch.setattr(held_requests, "release_held_requests", none)
-
-
 def test_add_employee_sends_it(monkeypatch):
     sent = _spy(monkeypatch)
-    _no_release(monkeypatch)
     out = run(dashboard._after_employee_created(dict(RECORD)))
     assert out["welcome_email"] == "sent" and len(sent) == 1
 
 
 def test_a_failed_send_never_undoes_the_add(monkeypatch):
-    _no_release(monkeypatch)
 
     async def broken(record):
         raise RuntimeError("email service down")

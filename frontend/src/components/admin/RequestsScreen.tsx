@@ -1,6 +1,6 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Box, Button, Chip, Collapse, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel,
+  Box, Button, Collapse, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel,
   MenuItem, Paper, Snackbar, Switch, TextField, Typography,
 } from '@mui/material';
 import { Theme, useTheme } from '@mui/material/styles';
@@ -10,7 +10,7 @@ import RequestTimelineDialog from '../RequestTimelineDialog';
 import AuditTrailDialog from '../AuditTrailDialog';
 import PillToggle from '../PillToggle';
 import { CountUp } from '../Motion';
-import { DIAGNOSTIC_LABELS, HELD_STATUS_LABEL, HeldRow, OPEN_HELD, RequestView } from './requestRows';
+import { DIAGNOSTIC_LABELS, RequestView } from './requestRows';
 import {
   COLUMN_SETS, FilterDef, Row, SRC_META, Src, columnValue, filterDefs, num, refDate, searchText, toRow, whenText,
 } from './requestTable';
@@ -50,7 +50,6 @@ function parseFocusKey(key: string): { type: string; id: string } | null {
 const VIEWS: { key: RequestView; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'pending', label: 'Pending' },
-  { key: 'held', label: 'Held for new hires' },
   { key: 'stuck', label: 'Stuck' },
 ];
 
@@ -80,9 +79,6 @@ interface Props {
   pending: any[];
   stuck: any[];
   requests: any[];
-  held: HeldRow[];
-  heldIncludeClosed: boolean;
-  onHeldIncludeClosed: (v: boolean) => void;
   stats: any;
   processingEnabled: boolean;
   actionLoading: string | null;
@@ -92,11 +88,6 @@ interface Props {
   onRefund: (type: string, id: string) => Promise<void>;
   onEdit: (item: any) => void;
   onReprocess: (id: string, reason: string) => Promise<void>;
-  onAddHeld: (row: HeldRow) => void;
-  onRetryHeld: (id: number) => Promise<void>;
-  // Cancelling now opens a reason prompt (handled by the parent), so it takes the row (#445).
-  onCancelHeld: (row: HeldRow) => void;
-  onUncancelHeld: (id: number) => Promise<void>;
   /** Refetch the requests, pending, stuck and stats after a new request or a delete. */
   onReload: () => void | Promise<void>;
   leaving?: Set<string>;
@@ -119,10 +110,10 @@ interface StatDef {
 
 /**
  * The admin requests screen (#278): one table (or calendar) over the three
- * SharePoint request lists, with a view (pending, held, stuck, all), a list
+ * SharePoint request lists, with a view (pending, stuck, all), a list
  * switch, a stat strip, search, a filter drawer, date range, grouping, row
  * selection with a command bar, inline actions, a new-request dialog and a
- * delete with Undo. The data and the approve/reject/refund/reprocess/held
+ * delete with Undo. The data and the approve/reject/refund/reprocess
  * actions are the dashboard's existing endpoints; new, delete, preview and
  * export are the screen's own.
  *
@@ -410,26 +401,10 @@ export default function RequestsScreen(props: Props) {
     }
   }, [options.staff.length]);
 
-  // ---- The held view keeps its own simple table (a different data shape and actions). ----
-  if (view === 'held') {
-    return (
-      <>
-        <Paper sx={{ overflow: 'clip' }}>  {/* clip, not hidden, so the toolbar and table header can stick (#294 S9) */}
-          <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, held: props.held.filter((h) => OPEN_HELD.includes(h.status)).length, stuck: props.stuck.length }} />
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', p: 1.5, borderBottom: `1px solid ${theme.tokens.line}` }}>
-            <Typography color="text.secondary" sx={{ fontSize: 13, flex: 1 }}>Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on.</Typography>
-            <FormControlLabel control={<Switch size="small" checked={props.heldIncludeClosed} onChange={(e) => props.onHeldIncludeClosed(e.target.checked)} />} label="Show sent and cancelled" />
-          </Box>
-          <HeldTable held={props.held} actionLoading={actionLoading} onAdd={props.onAddHeld} onRetry={props.onRetryHeld} onCancel={props.onCancelHeld} onUncancel={props.onUncancelHeld} />
-        </Paper>
-      </>
-    );
-  }
-
   return (
     <>
       <Paper sx={{ overflow: 'clip' }}>  {/* clip, not hidden, so the toolbar and table header can stick (#294 S9) */}
-        <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, held: props.held.filter((h) => OPEN_HELD.includes(h.status)).length, stuck: props.stuck.length }} />
+        <ViewTabs view={view} onView={onView} counts={{ all: props.requests.length, pending: props.pending.length, stuck: props.stuck.length }} />
 
         {/* Focused on one request (from a deep link): a banner to clear it. */}
         {focusKey && (
@@ -803,126 +778,6 @@ function CommandBar({ picked, processingEnabled, onClear, onOpen, onApprove, onR
       <Button size="small" color="error" disabled={!processingEnabled} onClick={onDelete}>Delete</Button>
       <Box sx={{ flex: '1 1 auto' }} />
       <Box sx={{ fontSize: 12, color: 'text.secondary', display: { xs: 'none', sm: 'block' } }}>Del to delete, Esc to clear</Box>
-    </Box>
-  );
-}
-
-/** The held table's columns and the assumed width each spends in the fit. */
-const HELD_COLUMNS: { key: string; label: string; width: number }[] = [
-  { key: 'person', label: 'Person', width: 200 },
-  { key: 'department', label: 'Department', width: 130 },
-  { key: 'supervisor', label: 'Supervisor', width: 150 },
-  { key: 'request', label: 'Request', width: 220 },
-  { key: 'status', label: 'Status', width: 170 },
-  { key: 'actions', label: 'Actions', width: 170 },
-];
-/** Most important first: person, status and the actions are kept longest. */
-const HELD_PRIORITY = ['person', 'status', 'actions', 'request', 'supervisor', 'department'];
-const HELD_WIDTHS: Record<string, number> = Object.fromEntries(HELD_COLUMNS.map((c) => [c.key, c.width]));
-
-/**
- * The held-for-new-hires table: a different shape and its own add/retry/cancel
- * actions. Like the main table it never scrolls sideways - it drops the
- * lowest-priority columns as it narrows (the actions are kept) and becomes
- * labelled cards on a phone (#294 S11).
- *
- * @param props.held - The held requests.
- * @param props.actionLoading - The key of the row an action is running on, or null.
- * @param props.onAdd - Add the new hire to the Staff Directory, releasing their requests.
- * @param props.onRetry - Retry a failed send.
- * @param props.onCancel - Open the cancel-with-reason prompt for a held request (#445).
- * @param props.onUncancel - Undo a cancel, restoring the request (#445).
- * @returns The held table.
- */
-function HeldTable({ held, actionLoading, onAdd, onRetry, onCancel, onUncancel }: {
-  held: HeldRow[]; actionLoading: string | null; onAdd: (h: HeldRow) => void; onRetry: (id: number) => Promise<void>;
-  onCancel: (h: HeldRow) => void; onUncancel: (id: number) => Promise<void>;
-}) {
-  const theme = useTheme();
-  const fit = useFitColumns(HELD_PRIORITY, HELD_WIDTHS);
-  const hidden = new Set(fit.hidden);
-  const headSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', fontSize: 12.5, fontWeight: 700, color: 'text.secondary', bgcolor: theme.tokens.hover } as const;
-  const cellSx = { p: '10px 12px', borderBottom: `1px solid ${theme.tokens.line}`, textAlign: 'left', verticalAlign: 'top' } as const;
-
-  /** One held row's cell content for a column key. */
-  const cell = (h: HeldRow, key: string): ReactNode => {
-    const busy = actionLoading === `held-${h.id}`;
-    switch (key) {
-      case 'person': return (
-        <>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
-            <Box sx={{ fontWeight: 700 }}>{h.name}</Box>
-            {/* Whether the person is on staff now, so the admin can see what a retry will do (#445). */}
-            {h.on_staff && <Chip size="small" label="On staff" color="success" variant="outlined" />}
-          </Box>
-          <Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.email}</Box>
-        </>
-      );
-      case 'department': return h.department || '-';
-      // routes_to is the supervisor a retry goes to; it equals supervisor_name (#445).
-      case 'supervisor': return h.routes_to || h.supervisor_name || '-';
-      case 'request': return h.summary;
-      case 'status': return (
-        <>
-          {HELD_STATUS_LABEL[h.status] ?? h.status}
-          {h.last_error ? <Box sx={{ fontSize: 12, color: 'error.main' }}>{h.last_error}</Box> : null}
-          {/* Why it was cancelled, so the reason is visible and the undo has context (#445). */}
-          {h.status === 'cancelled' && h.cancel_reason ? <Box sx={{ fontSize: 12, color: 'text.secondary' }}>{h.cancel_reason}</Box> : null}
-        </>
-      );
-      case 'actions': return (
-        <Box sx={{ display: 'inline-flex', gap: 0.5, flexWrap: 'wrap' }}>
-          {h.status === 'held' && <Button size="small" variant="contained" disabled={busy} onClick={() => onAdd(h)}>Add employee</Button>}
-          {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="inherit" disabled={busy} onClick={() => onRetry(h.id)}>Retry</Button>}
-          {OPEN_HELD.includes(h.status) && <Button size="small" variant="outlined" color="error" disabled={busy} onClick={() => onCancel(h)}>Cancel</Button>}
-          {/* A cancelled request can be put back the way it was (#445). */}
-          {h.status === 'cancelled' && <Button size="small" variant="outlined" color="inherit" disabled={busy} onClick={() => onUncancel(h.id)}>Undo cancel</Button>}
-        </Box>
-      );
-      default: return null;
-    }
-  };
-
-  if (!held.length) return <Typography color="text.secondary" sx={{ p: 3 }}>Nothing is waiting.</Typography>;
-
-  // Before the first measure: a light placeholder, so the container (and its
-  // ref) is in the DOM to be measured without laying out every column at a guess.
-  if (!fit.measured) return <Box ref={fit.ref} sx={{ overflow: 'clip', minHeight: 120 }} aria-hidden />;
-
-  // Cards on a phone: each held request a labelled block, person and actions full width.
-  if (fit.cards) {
-    return (
-      <Box ref={fit.ref} sx={{ overflow: 'clip' }}>
-        {held.map((h) => (
-          <Box key={h.id} sx={{ borderBottom: `1px solid ${theme.tokens.line}`, p: '12px 14px', display: 'grid', gap: '6px 12px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
-            <Box sx={{ gridColumn: '1 / -1' }}>{cell(h, 'person')}</Box>
-            {['department', 'supervisor', 'request', 'status'].map((k) => (
-              <Box key={k} sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
-                <Box sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '.04em' }}>{HELD_COLUMNS.find((c) => c.key === k)!.label}</Box>
-                {cell(h, k)}
-              </Box>
-            ))}
-            <Box sx={{ gridColumn: '1 / -1' }}>{cell(h, 'actions')}</Box>
-          </Box>
-        ))}
-      </Box>
-    );
-  }
-
-  // Skip hidden cells rather than render them display:none; the actions column stays.
-  const visibleCols = HELD_COLUMNS.filter((c) => !hidden.has(c.key));
-  return (
-    <Box ref={fit.ref} sx={{ overflow: 'clip' }}>  {/* clip, not scroll: the table never goes sideways (#294 S11) */}
-      <Box component="table" sx={{ borderCollapse: 'separate', borderSpacing: 0, width: '100%', fontSize: 14 }}>
-        <Box component="thead"><Box component="tr">{visibleCols.map((c) => <Box key={c.key} component="th" sx={headSx}>{c.label}</Box>)}</Box></Box>
-        <Box component="tbody">
-          {held.map((h) => (
-            <Box component="tr" key={h.id}>
-              {visibleCols.map((c) => <Box key={c.key} component="td" sx={cellSx}>{cell(h, c.key)}</Box>)}
-            </Box>
-          ))}
-        </Box>
-      </Box>
     </Box>
   );
 }

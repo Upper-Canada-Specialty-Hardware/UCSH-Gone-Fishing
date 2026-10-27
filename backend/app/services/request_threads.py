@@ -12,10 +12,6 @@ request's ``extra`` under ``ThreadSubject``, so a later change (an admin switchi
 carry-over to payout, a name fix on the staff record) can never split the thread.
 A request submitted before this keeps no stored subject; it gets the same wording
 built from its row, which matches as long as those fields never changed.
-
-A request released from a held new-hire request is the one exception: emails to
-the new hire and to their supervisor keep the held conversation's subject
-(``held_requests.held_thread_for``), which the outbox sender applies at send time.
 """
 
 # Where the subject is kept on the request row (its extra JSON, SharePoint-column style).

@@ -566,7 +566,6 @@ def _link_payload(field_changes: list[dict], fields_in: dict) -> dict | None:
 async def apply_entitlement_changes(
     employee_id: str, requested: dict, reason: str, fields: dict | None = None,
     source: str = "admin_dashboard", actor: str | None = None,
-    managers_from=None,
 ) -> dict:
     """Apply balance/entitlement and Staff Directory field changes, with a reason.
 
@@ -592,10 +591,6 @@ async def apply_entitlement_changes(
             admin dashboard, the manager's name for a team edit); None leaves the
             reader to fall back to ``source`` (#447). The automatic
             request-allow-date row is always recorded as the system.
-        managers_from: Optional function given the record's fields as re-read
-            under the per-employee lock; its ``{"ids", "names"}`` result is saved
-            as the managers. Lets a caller add to the current managers without a
-            manager added meanwhile being dropped (#444).
 
     Returns:
         ``{"employee_id", "name", "changed": [...], "history_recorded": bool}``,
@@ -613,12 +608,12 @@ async def apply_entitlement_changes(
         raise ValueError("A reason is required.")
     requested = requested or {}                      # numeric pots (may be empty)
     fields_in = fields or {}                          # directory fields (may be empty)
-    if not requested and not fields_in and managers_from is None:   # nothing asked to change at all
+    if not requested and not fields_in:              # nothing asked to change at all
         raise ValueError("No changes were provided.")
 
     # The people "before" names need the User Information List; read it once,
     # outside the lock, and only when a person/manager field is actually edited.
-    needs_people = managers_from is not None or any(
+    needs_people = any(
         k in PERSON_FIELDS or k == MANAGERS_KEY for k in fields_in
     )
     id_to_name: dict[int, str] = {}
@@ -634,8 +629,6 @@ async def apply_entitlement_changes(
         if not emp:                                  # gone or never existed
             raise LookupError("Employee not found")
         current = emp.get("fields", {})              # current column values
-        if managers_from is not None:                # managers worked out from this fresh read
-            fields_in = {**fields_in, MANAGERS_KEY: managers_from(current)}
         name = current.get("Title", "")              # person's display name
 
         # The type this record will have after the save decides whether a zero

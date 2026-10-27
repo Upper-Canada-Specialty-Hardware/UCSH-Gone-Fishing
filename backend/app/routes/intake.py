@@ -6,15 +6,9 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  every address, so the page never reveals who is on staff.
 * POST /verify - check the code. A Staff Directory employee gets a 30-day
                  employee dashboard token (the same signed token the emailed
-                 links carry). Anyone else gets a short "verified email" token
-                 to carry into the new-hire path.
-* GET /departments, GET /supervisor-search, POST /held - the new-hire
-                 path, all needing that verified-email token: the departments
-                 to pick from, a typed search for the supervisor in one, then
-                 hold a request until the supervisor adds the person
-                 (services/held_requests.py).
-* GET /held/status - how one held request is going, for the page that held
-                 it; needs the signed status token POST /held returned.
+                 links carry). An address on no active staff record is refused:
+                 setting yourself up is not done here, a manager adds people
+                 from the manager dashboard (#526).
 * POST /session/refresh - re-check a signed-in person's role on each visit, so
                  someone made a manager after signing in gets My team (#376).
 
@@ -23,29 +17,25 @@ whichever email service that routes to (SMTP2GO today; the UCSH mailer for
 UCSH addresses once it is switched on) needs no change here.
 """
 
-import html
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.config import settings
 
 from app.graph.email import send_email
-from app.services import email_codes, held_requests, request_status
+from app.services import email_codes, request_status
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.dashboard_tokens import generate_dashboard_token, validate_dashboard_token
 from app.services.employee import (
     email_belongs_to_archived,
-    get_employee_by_email,
     get_employee_by_id,
     get_employees_by_email,
     is_manager,
 )
 from app.services.manager_match import manager_name_of  # who manages whom, by id or name (#376)
 from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
-from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -56,6 +46,14 @@ _CODE_SENT = {
     "status": "sent",
     "detail": "If that address can receive email, a 6-digit code is on its way. It works for 10 minutes.",
 }
+
+
+# The refusal for an address on no staff record (#526): what to do next, and
+# nothing about who is on staff or who their manager is.
+NOT_ON_STAFF = (
+    "This email is not on a staff record, so it cannot be used to sign in. "
+    "Ask your manager: they can add you, or make the request for you."
+)
 
 
 class CodeRequest(BaseModel):
@@ -75,48 +73,6 @@ class SessionBody(BaseModel):
     role: str
     uid: str
     exp: str
-
-
-class VerifiedEmail(BaseModel):
-    """The token /verify hands to someone not on staff."""
-    email: str
-    exp: str
-    token: str
-
-
-class HeldRequestBody(BaseModel):
-    """Body of POST /held: who they are, who supervises them, and the form.
-
-    The supervisor is supervisor_id (picked from the search) or
-    supervisor_email (typed when the search did not find them), not both.
-    """
-    verified: VerifiedEmail
-    first_name: str
-    last_name: str
-    department: str
-    supervisor_id: str | None = None
-    supervisor_email: str | None = None
-    request_type: str
-    form: dict
-
-
-def _require_verified(email: str, exp: str, token: str) -> str:
-    """Check a verified-email token and return its normalised address.
-
-    Args:
-        email: The address the token claims.
-        exp: Its expiry.
-        token: The signature.
-
-    Returns:
-        The normalised address.
-
-    Raises:
-        HTTPException: 401 when the token is wrong or expired.
-    """
-    if not email_codes.check_verified_email(email, exp, token):
-        raise HTTPException(status_code=401, detail="Your email check has expired. Start again.")
-    return email_codes.normalise_email(email)
 
 
 def _client_ip(request: Request) -> str:
@@ -219,12 +175,12 @@ async def verify_code(body: VerifyRequest):
         pages), otherwise "employee". When more than one Staff Directory record
         carries the address (a shared mailbox): {"status": "choose", "people":
         [one employee answer per record, plus "department" and "location"]}, so
-        the page asks which person is signing in. For anyone else:
-        {"status": "unknown", "verified": {email, exp, token}}.
+        the page asks which person is signing in.
 
     Raises:
         HTTPException: 400 with a readable reason when the code is wrong,
-            expired, used up or missing.
+            expired, used up or missing; 403 for an archived address or one on
+            no staff record (ask your manager).
     """
     email = email_codes.normalise_email(body.email)
     result = await email_codes.check_code(email, body.code)
@@ -240,56 +196,21 @@ async def verify_code(body: VerifyRequest):
             "people": [await _signed_in_as(employee) for employee in people],
         }
     if people:
-        answer = {"status": "employee", **await _signed_in_as(people[0])}
-        # One request until set up (#442): while this person has a held request in
-        # flight, hand the page its status and a verified-email token, so it shows
-        # the status instead of a new form and can re-pick a supervisor.
-        held = await _held_gate(email=email, statuses=held_requests.SUPERVISOR_STATUSES)   # on staff: only these block
-        if held:
-            answer["held"] = held
-            answer["verified"] = email_codes.sign_verified_email(email)
-        return answer
+        return {"status": "employee", **await _signed_in_as(people[0])}
 
     # No active record. If an archived one carries this address, the person has
-    # left: refuse with a plain message rather than send them down the new-hire
-    # path (#119). An archived person cannot make a request.
+    # left: refuse with a plain message (#119). An archived person cannot make
+    # a request.
     if await email_belongs_to_archived(email):
         raise HTTPException(
             status_code=403,
-            detail="This account has been archived. Contact HR if you think this is a mistake.",
+            detail="This account has been archived. Ask your manager if you think this is a mistake.",
         )
 
-    # Not on staff yet: prove the address was verified for the new-hire path.
-    answer = {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
-    # One request until set up (#442): a new hire who already has a request
-    # waiting sees its status instead of the new-hire form.
-    held = await _held_gate(email=email)
-    if held:
-        answer["held"] = held
-    return answer
-
-
-async def _held_gate(*, email: str, statuses: tuple = held_requests.ACTIVE_STATUSES) -> dict | None:
-    """The status of a person's in-flight held request, for the sign-in gate (#442).
-
-    Args:
-        email: Match a held request on the person's address.
-        statuses: Which held statuses count (fewer for someone already on staff).
-
-    Returns:
-        ``{"status_token", "supervisor_name", "state"}`` when they have a request
-        waiting to be set up, or None when they do not. ``state`` is "not_on_team"
-        when a supervisor handed it back (so the page offers a re-pick), else
-        "waiting".
-    """
-    row = await held_requests.open_held_request_for(email=email, statuses=statuses)
-    if row is None:
-        return None
-    return {
-        "status_token": held_requests.held_status_token(row.id),
-        "supervisor_name": row.supervisor_name,
-        "state": "not_on_team" if row.status == "not_on_team" else "waiting",
-    }
+    # On no staff record: refused, never set up from here (#526). The manager
+    # adds them, or makes the request for them, from the manager dashboard. No
+    # manager is named: the address alone says nothing about who they work for.
+    raise HTTPException(status_code=403, detail=NOT_ON_STAFF)
 
 
 async def _signed_in_as(employee: dict) -> dict:
@@ -315,48 +236,6 @@ async def _signed_in_as(employee: dict) -> dict:
     }
 
 
-@router.get("/departments")
-async def departments(email: str = Query(...), exp: str = Query(...), token: str = Query(...)):
-    """The departments a person not on staff can pick from.
-
-    Needs the verified-email token, so the staff list is never public.
-
-    Args:
-        email: Verified-email token fields, as query parameters.
-        exp: See email.
-        token: See email.
-
-    Returns:
-        {"departments": [...]} as the Staff Directory spells them.
-    """
-    _require_verified(email, exp, token)
-    return {"departments": await held_requests.list_departments()}
-
-
-@router.get("/supervisor-search")
-async def supervisor_search(
-    department: str = Query(...), q: str = Query(""),
-    email: str = Query(...), exp: str = Query(...), token: str = Query(...),
-):
-    """People in a department whose name contains the typed text.
-
-    Anyone in the department, so a newly made supervisor is found too. Only a
-    few names per search, and none until two letters are typed.
-
-    Args:
-        department: The department picked.
-        q: What was typed.
-        email: Verified-email token fields, as query parameters.
-        exp: See email.
-        token: See email.
-
-    Returns:
-        {"people": [{"id", "name"}]}.
-    """
-    _require_verified(email, exp, token)
-    return {"people": await held_requests.search_department(department, q)}
-
-
 @router.get("/request-types")
 async def request_types():
     """Which request types the page may offer right now (#176).
@@ -377,276 +256,6 @@ async def request_types():
         ),
         "today": today.isoformat(),                            # so the page words "opens on" the same way
     }
-
-
-@router.post("/held")
-async def hold(body: HeldRequestBody):
-    """Hold a request from someone not on staff and email their supervisor.
-
-    Args:
-        body: The verified-email token, name, department, supervisor and form.
-
-    Returns:
-        {"status": "held", "supervisor_name", "status_token"}: the token lets
-        the page ask GET /held/status how the request is going.
-
-    Raises:
-        HTTPException: 401 for a bad token; 409 when the address is on staff
-            after all (sign in again); 400 for anything wrong with the form;
-            503 while processing is off.
-    """
-    email = _require_verified(body.verified.email, body.verified.exp, body.verified.token)
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Requests cannot be submitted right now. Try again later.")
-    if await get_employee_by_email(email):
-        # Added since they verified: the normal path works now.
-        raise HTTPException(status_code=409, detail="You are in the Staff Directory now. Start again to sign in.")
-    try:
-        row = await held_requests.hold_request(
-            email, f"{body.first_name} {body.last_name}", body.department,
-            body.supervisor_id, body.request_type, body.form,
-            supervisor_email=body.supervisor_email,
-        )
-    except (held_requests.HoldError, RequestFormError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {
-        "status": "held", "supervisor_name": row.supervisor_name,
-        "status_token": held_requests.held_status_token(row.id),   # the waiting page polls with it
-    }
-
-
-class RepickBody(BaseModel):
-    """Body of POST /held/repick: pick another supervisor after a "not on my team".
-
-    Bound to the verified-email token (so only the person who proved the address
-    may re-route it) and the held request's status token (which names the row).
-    """
-    verified: VerifiedEmail
-    status_token: str
-    supervisor_id: str | None = None
-    supervisor_email: str | None = None
-
-
-@router.post("/held/repick")
-async def held_repick(body: RepickBody):
-    """Pick another supervisor for a held request handed back as "not on my team" (#443).
-
-    Only the person who owns the request (their verified email) may re-pick, only
-    while it is waiting for a new supervisor, and never the one who declined it.
-    The request's dates and form do not change.
-
-    Args:
-        body: The verified-email token, the status token, and the new supervisor.
-
-    Returns:
-        ``{"status": "held", "supervisor_name", "status_token"}``.
-
-    Raises:
-        HTTPException: 401 for a bad verified-email token; 404 for a bad status
-            token; 400 when it is not theirs, not waiting for a re-pick, or the
-            new supervisor cannot be used.
-    """
-    email = _require_verified(body.verified.email, body.verified.exp, body.verified.token)
-    if not settings.PROCESSING_ENABLED:                         # read-only: nothing moves, nobody is emailed
-        raise HTTPException(status_code=503, detail="Requests cannot be changed right now. Try again later.")
-    held_id = held_requests.held_id_from_status_token(body.status_token)
-    if held_id is None:
-        raise HTTPException(status_code=404, detail="Request not found.")
-    try:
-        row = await held_requests.repick_supervisor(
-            held_id, email, body.supervisor_id, body.supervisor_email,
-        )
-    except held_requests.HoldError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {
-        "status": "held", "supervisor_name": row.supervisor_name,
-        "status_token": held_requests.held_status_token(row.id),
-    }
-
-
-def _page(title: str, body_html: str) -> str:
-    """One small standalone HTML page for a "Not on my team" link.
-
-    Args:
-        title: The page title and heading.
-        body_html: The body markup under the heading (already safe).
-
-    Returns:
-        A full HTML document string.
-    """
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{title}</title></head>"
-        "<body style='font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem'>"
-        f"<h1 style='font-size:1.4rem'>{title}</h1>"
-        f"{body_html}"
-        "</body></html>"
-    )
-
-
-def _state_page(state: dict) -> str:
-    """The page a valid "Not on my team" link shows once its request has moved on (#462).
-
-    Args:
-        state: From ``held_requests.not_on_team_link_state``; not "open".
-
-    Returns:
-        A full HTML document saying what really happened; every value is escaped.
-    """
-    name = html.escape(state.get("name") or "This person")
-    if state["state"] == "released":
-        number = html.escape(state.get("request_number") or "")
-        on = f" on {html.escape(state['set_up_on'])}" if state.get("set_up_on") else ""
-        return _page("Already handled", f"<p>{name} was set up{on}. Their request is #{number}.</p>")
-    if state["state"] == "cancelled":
-        return _page("No longer needed", f"<p>{name}'s request was cancelled. Nothing is needed from you.</p>")
-    if state["state"] == "sending":
-        return _page("Already handled", f"<p>{name} is on staff now and their request is being sent.</p>")
-    # "declined": they said not on their team earlier, or it moved off them.
-    return _page("Already done", f"<p>You already let us know {name} is not on your team. "
-                                 "Nothing is needed from you.</p>")
-
-
-@router.get("/held/not-on-team", response_class=HTMLResponse)
-async def held_not_on_team_page(token: str = Query(...)):
-    """Show the "Not on my team" confirmation page from a supervisor's email (#443).
-
-    Public and signed, and read-only: this GET changes nothing. Mail link scanners
-    (Microsoft 365 Safe Links) fetch every link before a person clicks, so acting
-    on the GET would hand back every request automatically. Instead it shows a page
-    with one button that POSTs the same token to do the decline. A forged link gets
-    that same page and learns nothing; a valid link whose request has moved on
-    (declined, set up, cancelled, being sent) says what happened instead (#462).
-
-    Args:
-        token: The signed not-on-team token from the email.
-
-    Returns:
-        A small HTML page with a confirm button that re-POSTs this same URL.
-    """
-    # A valid link whose request has moved on says what happened instead (#462).
-    decoded = held_requests.decode_not_on_team_token(token)
-    if decoded is not None:
-        state = await held_requests.not_on_team_link_state(*decoded)
-        if state is not None and state["state"] != "open":
-            return HTMLResponse(_state_page(state))
-    # The form has no action, so it re-posts this exact URL (token and all); the
-    # token is never written into the HTML, so it cannot be injected.
-    return HTMLResponse(_page(
-        "Not on your team?",
-        "<p>Let us know this person is not on your team and we will ask them to pick "
-        "their supervisor again. You do not need to do anything else.</p>"
-        "<form method='post'>"
-        "<button type='submit' style='font:inherit;padding:.6rem 1rem;border:0;"
-        "border-radius:.4rem;background:#1565c0;color:#fff;cursor:pointer'>"
-        "They are not on my team</button>"
-        "</form>",
-    ))
-
-
-@router.post("/held/not-on-team", response_class=HTMLResponse)
-async def held_not_on_team_submit(token: str = Query(...)):
-    """Hand a held request back to be re-picked, from the confirm page's button (#443).
-
-    Public and signed: the token names one held request and the supervisor it was
-    issued to, so a stale link cannot act once the request has moved on. Hands the
-    request back so the person can pick another supervisor (guarded and
-    idempotent), and shows a short page. A forged link gets the ordinary thanks; a
-    valid link whose request had already moved on says what happened (#462).
-
-    Args:
-        token: The signed not-on-team token, submitted by the confirm page.
-
-    Returns:
-        A small HTML page confirming it was handed back.
-    """
-    if not settings.PROCESSING_ENABLED:                         # read-only: hand nothing back, email nobody
-        return HTMLResponse(_page(
-            "Not right now",
-            "<p>This cannot be done right now. Open the link again later.</p>",
-        ), status_code=503)
-    decoded = held_requests.decode_not_on_team_token(token)
-    if decoded is not None:
-        held_id, supervisor_id = decoded
-        outcome = await held_requests.decline_held_request(held_id, supervisor_id)   # guarded + idempotent
-        if outcome == "already":                                # it had moved on: say what happened (#462)
-            state = await held_requests.not_on_team_link_state(held_id, supervisor_id)
-            if state is not None:
-                return HTMLResponse(_state_page(state))
-    return HTMLResponse(_page(
-        "Thanks for letting us know",
-        "<p>We have asked them to pick their supervisor again. You do not need to do anything else.</p>",
-    ))
-
-
-# One payload shape for a token that names no live request, so the public page
-# shows the "bad link" screen (#483). Every field is present so the client never
-# reads undefined.
-_NOT_ON_TEAM_INVALID = {
-    "state": "invalid", "name": "", "supervisor_name": "",
-    "summary": "", "request_number": "", "set_up_on": "",
-}
-
-
-@router.get("/held/not-on-team/info")
-async def held_not_on_team_info(token: str = Query(...)):
-    """Details for the public "Not on my team" page, as JSON (#483).
-
-    The JSON twin of the HTML GET, for the page at ``#/held/not-on-team``: same
-    signed token and same validation, and read-only. A forged or gone link reads
-    as ``{"state": "invalid"}`` and learns nothing; a valid link whose request has
-    moved on says what happened (released, cancelled, declined, sending), and one
-    still open carries the request summary and the supervisor's name (#462).
-
-    Args:
-        token: The signed not-on-team token from the email link.
-
-    Returns:
-        ``{"state", "name", "supervisor_name", "summary", "request_number",
-        "set_up_on"}``; see ``held_requests.not_on_team_page_info``.
-    """
-    decoded = held_requests.decode_not_on_team_token(token)
-    if decoded is not None:
-        info = await held_requests.not_on_team_page_info(*decoded)   # None for a gone row
-        if info is not None:
-            return info
-    return _NOT_ON_TEAM_INVALID                                # forged or gone: the bad-link screen
-
-
-@router.post("/held/not-on-team/confirm")
-async def held_not_on_team_confirm(token: str = Query(...)):
-    """Hand a held request back from the public page's confirm button, as JSON (#483).
-
-    The JSON twin of the HTML POST: same signed token, same guarded and
-    idempotent ``decline_held_request``, same processing gate. Returns the
-    outcome as a state the page shows: "done" when it was just handed back, else
-    whatever the request has become (released, cancelled, declined, sending) or
-    "invalid" for a forged or gone link.
-
-    Args:
-        token: The signed not-on-team token, submitted by the confirm button.
-
-    Returns:
-        The same payload shape as the info endpoint, with ``state`` set to "done"
-        on a fresh decline.
-
-    Raises:
-        HTTPException: 503 while processing is off (nothing is handed back).
-    """
-    if not settings.PROCESSING_ENABLED:                        # read-only: hand nothing back, email nobody
-        raise HTTPException(status_code=503, detail="This cannot be done right now. Try again later.")
-    decoded = held_requests.decode_not_on_team_token(token)
-    if decoded is None:
-        return _NOT_ON_TEAM_INVALID                            # forged link: learns nothing
-    held_id, supervisor_id = decoded
-    outcome = await held_requests.decline_held_request(held_id, supervisor_id)   # guarded + idempotent
-    info = await held_requests.not_on_team_page_info(held_id, supervisor_id)
-    if info is None:                                           # the row vanished between the two reads
-        return _NOT_ON_TEAM_INVALID
-    if outcome == "declined":                                  # just handed back: the "done" screen
-        return {**info, "state": "done"}
-    return info                                                # already handled / moved on: say what happened
 
 
 @router.get("/cancel/info")
@@ -687,80 +296,6 @@ async def cancel_link_confirm(token: str = Query(...)):
         raise HTTPException(status_code=503, detail="This cannot be done right now. Try again later.")
     from app.services.own_requests import cancel_from_link
     return await cancel_from_link(token)
-
-
-@router.get("/held/status")
-async def held_status(token: str = Query(...)):
-    """How a held request is going, for the page that held it.
-
-    Public, but only for the one request its signed token names: the answer is
-    the status and the supervisor the person already chose, nothing more. The
-    page asks every few seconds, so it says "sent" the moment the supervisor
-    adds the person.
-
-    Args:
-        token: The status_token POST /held returned.
-
-    Returns:
-        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}.
-
-    Raises:
-        HTTPException: 404 for a bad token or a request that no longer exists.
-    """
-    held_id = held_requests.held_id_from_status_token(token)
-    found = await held_requests.held_request_status(held_id) if held_id is not None else None
-    if found is None:
-        raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
-    return found
-
-
-class HeldSignInBody(BaseModel):
-    """Body of POST /held/sign-in: the held status token the waiting page holds."""
-    status_token: str
-
-
-@router.post("/held/sign-in")
-async def held_sign_in(body: HeldSignInBody):
-    """Sign a released new hire in from their waiting page (#482).
-
-    The held status token was only ever given to the device that proved the
-    address, and the supervisor confirmed who the person is when they set them
-    up, so a release is treated as a sign-in for a short window
-    (``RELEASE_SIGN_IN_DAYS``). It answers exactly as a normal staff sign-in does
-    (``_signed_in_as``), plus the released request's status token so the page
-    keeps following it, so a reload after this lands the person on their
-    signed-in pages.
-
-    Args:
-        body: The held status token the waiting page holds.
-
-    Returns:
-        ``{name, department, location, role, uid, token, exp, email,
-        request_status_token}``: the same fields a staff sign-in returns, plus
-        the person's email (so the page can store a complete session) and the
-        request status token (``None`` off the Postgres path).
-
-    Raises:
-        HTTPException: 404 for a forged or gone token, or when the staff record
-            is not found; 409 when the row is not released or was released longer
-            than ``RELEASE_SIGN_IN_DAYS`` ago (sign in with an email code
-            instead).
-    """
-    held_id = held_requests.held_id_from_status_token(body.status_token)
-    if held_id is None:
-        raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
-    target = await held_requests.released_sign_in_target(held_id)
-    if target is None:                                         # not released, or past the short window
-        raise HTTPException(status_code=409, detail="This request can no longer sign you in. Sign in with your email.")
-    employee = await get_employee_by_email(target["email"])    # the staff record the release created or matched
-    if not employee:                                           # added then removed, or never matched
-        raise HTTPException(status_code=404, detail="Your staff record could not be found. Sign in with your email.")
-    answer = await _signed_in_as(employee)                     # the normal staff sign-in answer
-    # Add the person's own email so the page stores a complete session, and the
-    # released request's status token so it keeps following it to the decision.
-    answer["email"] = (employee.get("fields", {}).get("EmailAddress") or target["email"] or "").strip()
-    answer["request_status_token"] = target["request_status_token"]
-    return answer
 
 
 @router.get("/request-status")
@@ -819,10 +354,9 @@ async def refresh_session(body: SessionBody):
     visit; when the person has since become a manager it gets a manager token.
 
     This only ever promotes an employee to manager; it never demotes a manager
-    back to employee (#395). A supervisor opening the add-this-new-hire link
-    before anyone is under them, and an admin's open-as-manager link, keep their
-    manager role (and Add Employee) rather than being dropped to employee just
-    because nobody lists them yet.
+    back to employee (#395). An admin's open-as-manager link keeps its manager
+    role (and Add Employee) rather than being dropped to employee just because
+    nobody lists them yet.
 
     Args:
         body: The token fields the page holds (from the code sign-in or an
