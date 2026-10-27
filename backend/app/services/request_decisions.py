@@ -1230,6 +1230,7 @@ async def _after_decision_followups(
         fields = TypedRequestList(request.kind)._item_shape(request)["fields"]   # the approved row, SharePoint shape
         await notify_requests_blocked_by_approval(
             request.kind, request.item_id, fields, request.employee_email or "",
+            employee_name=request.employee_name,                   # the blocked requests' own thread subject (#520)
         )
     except Exception:  # noqa: BLE001 - a notice failure must never undo the approval
         logger.exception("Blocked-request notice failed after %s #%s", request.kind, request.item_id)
