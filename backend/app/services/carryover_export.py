@@ -14,6 +14,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+from app.services.export_dates import readable_date
+
 TORONTO = ZoneInfo("America/Toronto")
 
 BALANCE_HEADERS = [
@@ -95,10 +97,10 @@ def build_workbook(staff: list[dict], requests: list[dict], window: tuple[date, 
             int(item["id"]) if str(item.get("id", "")).isdigit() else item.get("id"),
             names.get(str(f.get("EmployeeID", "")), ""),       # the request stores the staff record id
             f.get("TypeofRequest", ""), _num(f.get("Days")), f.get("Status", ""),
-            made.isoformat() if made else "",
+            made,                                              # the Toronto day; written as text below
         ])
-    for row in sorted(rows, key=lambda r: r[5], reverse=True):  # newest first
-        listed.append(row)
+    for row in sorted(rows, key=lambda r: r[5] or date.min, reverse=True):  # newest first, undated last
+        listed.append(row[:5] + [readable_date(row[5])])          # "Apr 21, 2026", as the dashboard (#490)
 
     for sheet in (balances, listed):
         for cell in sheet[1]:

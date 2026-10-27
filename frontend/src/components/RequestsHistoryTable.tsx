@@ -7,6 +7,7 @@ import SplitRequestsTable from './admin/SplitRequestsTable';
 import { TableActions } from './admin/RequestsTable';
 import { Row, columnValue, columnsFor, refDate, searchText, toRow } from './admin/requestTable';
 import RejectDialog from './RejectDialog';
+import RequestsExportDialog, { ExportSheet } from './admin/RequestsExportDialog';
 import { LiveScope } from '../api/events';
 import { approveRequest, cancelMyRequest, exportTeamRequests, rejectRequest } from '../api/client';
 
@@ -255,20 +256,10 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
     cancel: mode === 'mine' ? (r) => setCancelRow(r) : undefined,   // asks first, then cancels
   }), [decide, noop, mode]);
 
-  /** Download the shown rows as a team-scoped .xlsx (manager only). */
-  const doExport = useCallback(async () => {
-    try {
-      const res = await exportTeamRequests(shown.map((r) => r.raw));   // format exactly the rows on screen
-      const url = URL.createObjectURL(res.data as Blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `team-requests-${startOfToday().toISOString().slice(0, 10)}.xlsx`;
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      setSnack({ open: true, message: 'The export could not be prepared.' });
-    }
-  }, [shown]);
+  // The export dialog (#488): the manager picks people and columns from the rows on screen.
+  const [exportOpen, setExportOpen] = useState(false);
+  /** Write the dialog's sheets as a team-scoped .xlsx (manager only). */
+  const buildExport = useCallback(async (sheets: ExportSheet[]) => (await exportTeamRequests(sheets)).data as Blob, []);
 
   const empty = mode === 'mine' ? 'No requests yet.' : 'No requests match.';
 
@@ -305,7 +296,7 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
           </Button>
         )}
         {mode === 'team' && (
-          <Button size="small" variant="outlined" color="inherit" onClick={doExport}>Export to Excel</Button>
+          <Button size="small" variant="outlined" color="inherit" onClick={() => setExportOpen(true)}>Export to Excel</Button>
         )}
       </Box>
 
@@ -380,6 +371,14 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
         </DialogActions>
       </Dialog>
 
+      <RequestsExportDialog
+        open={exportOpen}
+        shownRows={shown}
+        build={buildExport}
+        filePrefix="team-requests"
+        onClose={() => setExportOpen(false)}
+        onNotify={(message) => setSnack({ open: true, message })}
+      />
       <Snackbar open={snack.open} autoHideDuration={4000} onClose={() => setSnack((s) => ({ ...s, open: false }))} message={snack.message} />
     </Paper>
   );

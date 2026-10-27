@@ -1024,7 +1024,8 @@ async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str,
     HMAC-signed over the manager and request, and the SMS path checks the sender is
     on the submitter's manager list). This closes that hole on the dashboard: a
     manager may decide only a request whose employee lists them (or one assigned to
-    them, so a #342 stand-in still works), and never their own request. Admins are
+    them, so a #342 stand-in still works). A manager's own request is now allowed
+    on every channel (#455), so that case is permitted here too. Admins are
     unchanged. Postgres only (the preview path); the SharePoint path keeps its
     existing behaviour, as nothing reads SharePoint after the switch.
 
@@ -1034,8 +1035,8 @@ async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str,
         request_id: The item_id being decided.
 
     Raises:
-        HTTPException: 403 when a manager is not on the request's team, or is the
-            request's own employee.
+        HTTPException: 403 when a manager is not on the request's team (their own
+            request is allowed).
     """
     if user.role != "manager":                                 # admins may decide any request
         return
@@ -1055,8 +1056,8 @@ async def _refuse_manager_not_on_request(user: DashboardUser, request_type: str,
         )).scalars().first()
     if record is None:
         return                                                 # gone: the handler returns the "no longer exists" error
-    if str(record.employee_id) == str(user.user_id):           # a manager cannot decide their own request
-        raise HTTPException(status_code=403, detail="You cannot decide your own request.")
+    if str(record.employee_id) == str(user.user_id):           # approving your own request is allowed now (#455)
+        return                                                 # permit it, like every other channel does
     if record.manager_id is not None and str(record.manager_id) == str(user.user_id):
         return                                                 # the assigned manager (or a #342 stand-in)
     employee = await get_employee_by_id(record.employee_id)    # resolve the submitter's managers

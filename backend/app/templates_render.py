@@ -400,6 +400,22 @@ def render_carryover_reset_admin_summary(
     )
 
 
+# --- Daily out-of-office email (#466) ---
+
+def render_out_of_office_daily(day_label: str, people: list[dict]) -> str:
+    """The weekday "on leave starting today" email.
+
+    Args:
+        day_label: Today in words, e.g. "Friday, October 23, 2026".
+        people: One {"name", "returning"} per person whose leave starts today,
+            already sorted by name.
+
+    Returns:
+        The email's content HTML; send_email wraps it in the shared layout.
+    """
+    return _render("out_of_office_daily.html", day_label=day_label, people=people)
+
+
 # --- Add Employee ---
 
 def render_welcome_employee(first_name: str, email: str, site_url: str, tutorial_url: str) -> str:

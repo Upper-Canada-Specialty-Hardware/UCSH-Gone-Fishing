@@ -26,7 +26,7 @@ jobs:
     name: Backend lint (ruff)
     # Skip drafts; always run on the push to master.
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.UCSH_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 5            # normally well under a minute
     defaults:
       run:
@@ -44,7 +44,7 @@ jobs:
   backend-tests:
     name: Backend tests (pytest)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.UCSH_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 15           # install plus the suite runs in a few minutes
     defaults:
       run:
@@ -67,7 +67,7 @@ jobs:
   frontend-build:
     name: Frontend build (tsc + vite)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.UCSH_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 10           # npm install plus the build
     defaults:
       run:
