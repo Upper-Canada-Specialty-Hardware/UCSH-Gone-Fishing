@@ -68,7 +68,7 @@ export default function NewHireConfirmDialog({
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Is this request really from {name}?</DialogTitle>
+      <DialogTitle>{matched ? `${name} is already on staff` : `Is this request really from ${name}?`}</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={1.5}>
           {/* What the person typed on the request page, so the manager can judge it. */}
@@ -80,9 +80,21 @@ export default function NewHireConfirmDialog({
             <Typography variant="caption" color="text.secondary">{askedAgo({ Created: item.created_at })}</Typography>
           </Box>
 
+          {/* A name already on staff: most likely that person on the wrong email.
+              Say so first, so nobody "adds" someone already on the team. */}
+          {matched && (
+            <Alert severity="info">
+              <strong>{name} is already in the Staff Directory.</strong> This request came from {item.email},
+              which is not the email on their record. Most likely they signed in with the wrong email.{' '}
+              <strong>You do not need to add or update them.</strong> Ask them to sign in with their work email
+              and send the request again, then ask an admin to cancel this one.
+            </Alert>
+          )}
+
           {/* The warning: a typed name is not proof of who sent it. */}
           <Alert severity="warning">
-            Anyone can type a name on the request page. Only continue if you are sure this request came from {name}.
+            Anyone can type a name on the request page. Only continue if you are sure this request came from {name}
+            {matched ? ' and their email has really changed' : ''}.
           </Alert>
 
           {/* The required confirmation; both actions stay locked until it is ticked. */}
@@ -123,8 +135,9 @@ export default function NewHireConfirmDialog({
             Not on my team
           </Button>
         )}
+        {/* For a name already on staff the edit is the rare case, so it is the quieter button. */}
         <Button
-          variant="contained"
+          variant={matched ? 'outlined' : 'contained'}
           disabled={!confirmed || !processingEnabled || busy}
           onClick={doAdd}
         >

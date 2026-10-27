@@ -298,6 +298,10 @@ def thread_headers(held_id: int, recipient: str) -> list[dict]:
 def _supervisor_subject(row: HeldRequest) -> str:
     """The stable subject for the supervisor thread about one held request (#443).
 
+    Neutral on purpose: most held requests so far came from staff who signed in
+    with an address not on their record, and "Add <name>" told their manager to
+    add someone already on the team. The body says which case it looks like.
+
     Args:
         row: The held request.
 
@@ -305,7 +309,21 @@ def _supervisor_subject(row: HeldRequest) -> str:
         A subject that does not change between the first email and the reminders,
         so they thread.
     """
-    return f"Add {row.name} to the Staff Directory"
+    return f"Request on hold: {row.name}"
+
+
+async def _nudge_dashboards(supervisor_id: str) -> None:
+    """Make open dashboards re-read their held list, so a new one shows without a reload.
+
+    Reuses the staff-changed signal, which the manager dashboard already answers
+    by re-reading its held new hires. Best effort: a missed signal only delays
+    the panel until the next read.
+
+    Args:
+        supervisor_id: The supervisor now holding the request.
+    """
+    from app.services.event_bus import announce_staff_change   # local: keep the import graph small
+    await announce_staff_change(supervisor_id)                  # never raises
 
 
 # The person's own thread keeps one stable subject across every update.
@@ -469,6 +487,7 @@ async def hold_request(
         await session.commit()
         await session.refresh(row)
 
+    await _nudge_dashboards(row.supervisor_id)                 # their Today panel shows it without a reload
     try:
         await _email_supervisor(row, reminder=False)
     except Exception:  # noqa: BLE001 - the request is kept; the reminder will retry
@@ -508,16 +527,23 @@ def _where(row: HeldRequest) -> str:
     return row.department or row.location or ""
 
 
-def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
-    """HTML for the supervisor: who the new hire is, the request, then two buttons.
+def _render_supervisor_email(row: HeldRequest, reminder: bool, on_staff: bool = False) -> str:
+    """HTML for the supervisor: who sent it, the request, what is going on, then two buttons.
 
-    The buttons (#483) are Add, which opens Add Employee filled in from this
-    request, and Not on my team, which opens the signed public page that hands
-    the request back (#443) so the person picks their supervisor again.
+    The buttons (#483) are Add (or Review), which opens Add Employee filled in
+    from this request, and Not on my team, which opens the signed public page
+    that hands the request back (#443) so the person picks their supervisor again.
+
+    When the typed name is already on staff (``on_staff``), the email says so
+    plainly: most often that person signed in with an address not on their
+    record, and the manager does not need to add anyone. No new action is
+    offered; the manager tells the person, and an admin cancels the held one.
+    The address on the record is never put in the email: anyone can type a name.
 
     Args:
-        row: The held request; names the new hire and the current supervisor.
+        row: The held request; names the person and the current supervisor.
         reminder: True for a re-send, which opens with "Reminder: ".
+        on_staff: True when exactly one active staff record has the typed name.
 
     Returns:
         The email body HTML.
@@ -525,15 +551,34 @@ def _render_supervisor_email(row: HeldRequest, reminder: bool) -> str:
     add_url = add_employee_url(row.supervisor_id, row.name, row.email, row.department or "", row.id)
     not_on_team_url = not_on_team_link(row.id, row.supervisor_id)   # signed for this supervisor only
     lead = "Reminder: " if reminder else ""
+    name = html.escape(row.name)
+    if on_staff:
+        # Already on staff: the likely mistake, what to do, and the impersonation caution.
+        what = (
+            f"<p><b>{name} is already in the Staff Directory.</b> This request came from "
+            f"{html.escape(row.email)}, which is not the email on their record. "
+            f"<b>Most likely {name} signed in with the wrong email. You do not need to add them.</b></p>"
+            f"<p>What to do: ask {name} to sign in with the email on their staff record "
+            "(usually their work email) and send the request again. Then ask an admin to cancel "
+            "this one, which also stops these reminders.</p>"
+            "<p>Anyone can type a name. Only change their profile if you are sure this came from "
+            f"{name} and their email has really changed.</p>"
+        )
+    else:
+        what = (
+            f"<p><b>{name} is not in the Staff Directory yet</b>, so the request is on hold.</p>"
+            "<p>If they are a new hire on your team, add them and the request comes to you "
+            "automatically. If they are not on your team, choose Not on my team and they pick "
+            "another supervisor.</p>"
+        )
     return (
-        f"<p>{lead}{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
+        f"<p>{lead}{name} ({html.escape(row.email)}, {html.escape(_where(row))}) "
         f"picked you as their supervisor and made a {REQUEST_LABELS[row.request_type]} "
         "on the UCSH Out of Office request page.</p>"
         f"<p><b>{html.escape(describe_form(row.request_type, row.form_data))}</b></p>"
-        "<p>They are not in the Staff Directory yet, so the request is on hold. "
-        "Add them and it is submitted to you automatically.</p>"
+        + what
         # the template escapes the name and both links (autoescape)
-        + render_held_supervisor_actions(row.name, add_url, not_on_team_url)
+        + render_held_supervisor_actions(row.name, add_url, not_on_team_url, review=on_staff)
     )
 
 
@@ -542,11 +587,13 @@ async def _email_supervisor(row: HeldRequest, reminder: bool) -> None:
 
     The subject stays the same between the first email and every reminder or
     re-send, and the threading headers point at this supervisor's conversation
-    root, so a mail client groups them as one thread.
+    root, so a mail client groups them as one thread. Each send checks whether
+    the typed name is already on staff, so the body says which case it looks like.
     """
+    on_staff = (await _existing_ids_for([row])).get(row.id) is not None   # exactly one same-name record
     await send_email(
         to=[row.supervisor_email], subject=_supervisor_subject(row),
-        html_body=_render_supervisor_email(row, reminder),
+        html_body=_render_supervisor_email(row, reminder, on_staff),
         headers=thread_headers(row.id, row.supervisor_email),
     )
 
@@ -792,6 +839,7 @@ async def repick_supervisor(
         await session.commit()
         await session.refresh(row)
 
+    await _nudge_dashboards(row.supervisor_id)               # the new supervisor's Today panel shows it at once
     try:
         await _email_supervisor(row, reminder=False)         # first email in the new supervisor's thread
     except Exception:  # noqa: BLE001 - the re-pick stands; a reminder will retry
@@ -823,13 +871,22 @@ async def _email_admins(row: HeldRequest) -> None:
     if not to:
         logger.warning("No admin email found for held request #%s", row.id)
         return
+    on_staff = (await _existing_ids_for([row])).get(row.id) is not None   # exactly one same-name record
+    if on_staff:
+        # The usual case so far: a staff member who signed in with another address.
+        advice = (
+            f"<p><b>{html.escape(row.name)} is already in the Staff Directory.</b> Most likely they "
+            "signed in with an email that is not on their record. Ask them to send the request again "
+            "from the email on their record, then cancel this one in Held Requests.</p>"
+        )
+    else:
+        advice = "<p>Add them from the admin dashboard's Add Employee tab, or see Held Requests.</p>"
     body = (
         f"<p>{html.escape(row.name)} ({html.escape(row.email)}, {html.escape(_where(row))}) "
         f"has had a {REQUEST_LABELS[row.request_type]} on hold since "
-        f"{toronto_date(row.created_at).isoformat()}, waiting for "
-        f"{html.escape(row.supervisor_name)} to add them to the Staff Directory.</p>"
+        f"{toronto_date(row.created_at).isoformat()}, waiting on {html.escape(row.supervisor_name)}.</p>"
         f"<p><b>{html.escape(describe_form(row.request_type, row.form_data))}</b></p>"
-        "<p>Add them from the admin dashboard's Add Employee tab, or see Held Requests.</p>"
+        + advice
     )
     await send_email(to=to, subject=f"Held request waiting: {row.name}", html_body=body)
 

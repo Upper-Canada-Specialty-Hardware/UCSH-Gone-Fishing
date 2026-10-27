@@ -417,7 +417,7 @@ def test_release_continues_both_threads_and_says_who_approves(world, monkeypatch
     assert f"#{numbers[0]}" in person["html"] and "Steve Faith to approve" in person["html"]
 
     steve = next(m for m in world.sent if m["to"] == ["stevef@ucsh.com"])
-    assert steve["subject"] == "Add Lee New to the Staff Directory"
+    assert steve["subject"] == "Request on hold: Lee New"
     assert _root(steve["headers"]) == held_requests.thread_root_id(row.id, "stevef@ucsh.com")
     assert "waits for your approval" in steve["html"]
     assert not any("Your requests were submitted" == m["subject"] for m in world.sent)   # no separate email
@@ -440,7 +440,7 @@ def test_outbox_emails_about_the_released_request_join_its_threads(world, monkey
     subject, headers = asyncio.run(thread(request, email))
     assert subject == held_requests.PERSON_SUBJECT and _root(headers) == held_requests.thread_root_id(row.id, email)
     subject, _ = asyncio.run(thread(request, "SteveF@UCSH.com"))   # case does not matter
-    assert subject == "Add Lee New to the Staff Directory"
+    assert subject == "Request on hold: Lee New"
     assert asyncio.run(thread(request, "someone@ucsh.com")) is None              # anyone else: ordinary email
     other_kind = types.SimpleNamespace(kind="overtime", item_id=numbers[0])
     assert asyncio.run(thread(other_kind, email)) is None                        # same number, other kind
@@ -529,5 +529,5 @@ def test_an_email_sent_while_the_release_is_still_saving_joins_the_thread(world)
             return await held_requests.held_thread_for(session, request, "stevef@ucsh.com")
 
     subject, headers = asyncio.run(check())
-    assert subject == "Add Lee New to the Staff Directory"
+    assert subject == "Request on hold: Lee New"
     assert _root(headers) == held_requests.thread_root_id(row.id, "stevef@ucsh.com")

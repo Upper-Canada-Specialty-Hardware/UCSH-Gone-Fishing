@@ -136,6 +136,31 @@ def test_a_held_request_is_stored_and_the_supervisor_emailed(world):
     assert mail["to"] == ["sam@ucsh.com"] and "Lee New" in mail["subject"]
     assert "add_email=" in mail["html"] and "Vacation, 2026-11-02 to 2026-11-03" in mail["html"]
     assert "add_department=Installation" in mail["html"] and "Installation)" in mail["html"]
+    # A name not on staff: the plain new-hire wording and an Add button.
+    assert "is not in the Staff Directory yet" in mail["html"] and "Add Lee New" in mail["html"]
+
+
+def test_a_name_already_on_staff_says_so_and_that_nobody_needs_adding(world):
+    # Kim is on staff; the request came from another address (the usual mistake).
+    _hold(_email(), name="Kim Worker")
+    [mail] = world.sent
+    assert mail["subject"] == "Request on hold: Kim Worker"            # neutral: not "Add Kim"
+    assert "Kim Worker is already in the Staff Directory" in mail["html"]
+    assert "You do not need to add them" in mail["html"]
+    assert "Review Kim Worker" in mail["html"] and "Add Kim Worker" not in mail["html"]
+    assert "kim@ucsh.com" not in mail["html"]                         # the address on record stays private
+
+
+def test_holding_a_request_nudges_open_dashboards(world, monkeypatch):
+    from app.services import event_bus
+    nudged = []
+
+    async def fake_announce(staff_id):
+        nudged.append(str(staff_id))
+
+    monkeypatch.setattr(event_bus, "announce_staff_change", fake_announce)
+    _hold(_email())
+    assert nudged == ["3"]                                            # Sam's Today panel re-reads its held list
 
 
 def test_the_supervisor_email_offers_add_and_not_on_my_team_as_buttons(world):
@@ -319,7 +344,7 @@ def test_adding_the_person_submits_their_held_request_and_tells_them(world):
     person, supervisor = world.sent
     assert person["to"] == [email] and person["subject"] == held_requests.PERSON_SUBJECT
     assert "#91" in person["html"] and "Vacation" in person["html"]
-    assert supervisor["to"] == ["sam@ucsh.com"] and supervisor["subject"] == "Add Lee New to the Staff Directory"
+    assert supervisor["to"] == ["sam@ucsh.com"] and supervisor["subject"] == "Request on hold: Lee New"
     assert "Nothing is needed from you" in supervisor["html"]
     assert asyncio.run(held_requests.release_held_requests(email)) == []   # nothing left to release
 

@@ -6,7 +6,8 @@
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0 8px;">
   <tr>
     {#- brand green: the action we hope for -#}
-    <td style="padding:0 12px 8px 0;">{{ ui.button(add_url, "Add " ~ name, "#2f5d50", 240) }}</td>
+    {#- "Add <name>", or "Review <name>" when the name is already on staff -#}
+    <td style="padding:0 12px 8px 0;">{{ ui.button(add_url, add_label, "#2f5d50", 240) }}</td>
     {#- outlined red: the way out, quieter than Add -#}
     <td style="padding:0 0 8px 0;">{{ ui.outline_button(not_on_team_url, "Not on my team", "#b91c1c", 200) }}</td>
   </tr>

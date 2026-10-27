@@ -146,9 +146,16 @@ export default function HeldProfileEdit({ held, scope, processingEnabled, locati
 
   return (
     <Stack spacing={2} sx={{ maxWidth: 560 }}>
+      {/* The usual case is the person on the wrong email: say so before the form. */}
+      <Alert severity="info">
+        <strong>{record.name} is already on staff (#{record.employee_id}).</strong> The request came from{' '}
+        {held.email}, which is not on their record. Most likely they signed in with the wrong email.{' '}
+        <strong>You do not need to change anything:</strong> ask them to send it again from their work email,
+        then ask an admin to cancel this one.
+      </Alert>
       <Alert severity="warning">
-        {record.name} is already on staff (#{record.employee_id}). Add employee opened that record instead of
-        making a second one. Nothing changes until you save.
+        Only save if you are sure this came from {record.name} and their email has really changed. Nothing
+        changes until you save.
       </Alert>
       {error && <Alert severity="error">{error}</Alert>}
 

@@ -107,11 +107,11 @@ function TileLink({ label, onClick, children }: { label: string; onClick: () => 
 }
 
 /**
- * The Today tab's "New hires waiting on you" panel (#481): one card per held
- * request-page submission this supervisor still has to act on. Each card offers
- * Add employee (opens the add tab's held-for-add flow) and Not on my team (a
- * two-step confirm, then the backend hands it back). Cards wrap and never scroll
- * sideways on a phone.
+ * The Today tab's held-requests panel (#481), first on the tab: one card per
+ * held request-page submission this supervisor still has to act on. Each card
+ * says in one bold line what it most likely is (a staff member on the wrong
+ * email, or a real new hire) and opens the shared confirm dialog, which offers
+ * add/update and Not on my team. Cards wrap and never scroll sideways on a phone.
  *
  * @param props.items - The held new hires waiting on this manager.
  * @param props.processingEnabled - Writes allowed; the decline is disabled otherwise.
@@ -131,24 +131,56 @@ function NewHiresPanel({ items, processingEnabled, busyId, onAdd, onDecline }: {
   // shared dialog the Team tab uses, so both paths confirm the person the same
   // way before adding or handing the request back (#406).
   const [confirmItem, setConfirmItem] = useState<HeldWaiting | null>(null);
+  const theme = useTheme();
   return (
-    <Panel title="New hires waiting on you" aside={String(items.length)}>
+    // Louder than the other panels: an orange edge, at the top of Today.
+    <Paper sx={{ p: { xs: 2, sm: 2.5 }, display: 'grid', gap: 1.5, border: 2, borderColor: 'warning.main' }}>
+      <Box sx={{ display: 'grid', gap: 0.25 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+          {items.length === 1 ? 'A request is on hold until you act' : `${items.length} requests are on hold until you act`}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          These came from addresses not on any staff record. Nothing reaches your queue until you deal with them.
+        </Typography>
+      </Box>
       <Stack spacing={1.5}>
-        {items.map((item) => (
-          <Box key={item.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, display: 'grid', gap: 0.25 }}>
-            <Typography sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{item.name}</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>{item.email}</Typography>
-            {item.department && <Typography variant="body2" color="text.secondary">{item.department}</Typography>}
-            <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>{item.summary}</Typography>
-            {/* How long it has waited, in the same words the queue uses. */}
-            <Typography variant="caption" color="text.secondary">{askedAgo({ Created: item.created_at })}</Typography>
-            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.75 }}>
-              {/* One button into the shared confirm dialog, which then offers add
-                  and "not on my team" behind the "is it really them?" check. */}
-              <Button size="small" variant="contained" onClick={() => setConfirmItem(item)}>Add employee</Button>
+        {items.map((item) => {
+          const onStaff = !!item.existing_id;              // the typed name is already on staff
+          return (
+            <Box key={item.id} sx={{
+              border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, display: 'grid', gap: 0.5,
+              bgcolor: alpha(theme.palette.warning.main, 0.05),
+            }}>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'baseline' }}>
+                <Typography sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{item.name}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>{item.email}</Typography>
+              </Box>
+              <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>{item.summary}</Typography>
+              {/* What it most likely is, in one bold line. */}
+              {onStaff ? (
+                <Alert severity="warning" sx={{ py: 0.25 }}>
+                  <strong>{item.name} is already on staff.</strong> Most likely they used the wrong email.
+                  You do not need to add them: ask them to send it again from their work email.
+                </Alert>
+              ) : (
+                <Alert severity="info" sx={{ py: 0.25 }}>
+                  <strong>Not on staff yet.</strong> If they are a new hire on your team, add them and the request comes to you.
+                </Alert>
+              )}
+              {/* How long it has waited, in the same words the queue uses. */}
+              <Typography variant="caption" color="text.secondary">
+                {item.department ? `${item.department} · ` : ''}{askedAgo({ Created: item.created_at })}
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
+                {/* One button into the shared confirm dialog, which then offers add
+                    and "not on my team" behind the "is it really them?" check. */}
+                <Button size="small" variant="contained" onClick={() => setConfirmItem(item)}>
+                  {onStaff ? 'Review' : 'Add employee'}
+                </Button>
+              </Box>
             </Box>
-          </Box>
-        ))}
+          );
+        })}
       </Stack>
       <NewHireConfirmDialog
         item={confirmItem}
@@ -159,7 +191,7 @@ function NewHiresPanel({ items, processingEnabled, busyId, onAdd, onDecline }: {
         onDecline={onDecline}
         onClose={() => setConfirmItem(null)}
       />
-    </Panel>
+    </Paper>
   );
 }
 
@@ -634,6 +666,17 @@ export default function ManagerDashboard() {
       <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
+          {/* Requests on hold for this manager (#481) come first: nothing else on
+              Today moves until they act, and most are staff on the wrong email. */}
+          {heldNewHires.length > 0 && (
+            <NewHiresPanel
+              items={heldNewHires}
+              processingEnabled={processingEnabled}
+              busyId={heldActionId}
+              onAdd={addHeldNewHire}
+              onDecline={declineHeldNewHire}
+            />
+          )}
           {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
             <TileLink label="Open the people waiting on you" onClick={() => openTeamFiltered('waiting')}>
@@ -711,17 +754,6 @@ export default function ManagerDashboard() {
               </AnimatePresence>
             </Box>
             <Box sx={{ display: 'grid', gap: 2 }}>
-              {/* New hires from the request page waiting on this manager (#481);
-                  shown only when there are any. */}
-              {heldNewHires.length > 0 && (
-                <NewHiresPanel
-                  items={heldNewHires}
-                  processingEnabled={processingEnabled}
-                  busyId={heldActionId}
-                  onAdd={addHeldNewHire}
-                  onDecline={declineHeldNewHire}
-                />
-              )}
               <Panel title="Next two weeks" aside="dashed = asked">
                 {/* Only people off in the window, at most eight rows; the rest link to the Calendar tab. */}
                 <LeaveTimeline
