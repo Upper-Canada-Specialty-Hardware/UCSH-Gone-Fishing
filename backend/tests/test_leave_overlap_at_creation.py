@@ -13,7 +13,7 @@ Two layers are pinned here:
      accumulate: one request per date, so two part days on one date clash.
   2. ``request_intake.submit_request`` raising ``RequestFormError`` on a clash
      and creating nothing, which is how every in-house path (the request page,
-     the admin New request screen, held-request release) refuses it.
+     the admin New request screen) refuses it.
 
 The list reads are faked, so nothing here touches SharePoint.
 """

@@ -1,8 +1,7 @@
 """One-time email codes for the public request page.
 
 A person proves they own an email address by typing back a 6-digit code sent to
-it. This module issues and checks those codes, and mints the short "verified
-email" token handed to someone whose address is not in the Staff Directory yet.
+it. This module issues and checks those codes.
 
 Split like the rest of the services: pure helpers (no I/O, easy to test) and
 thin async functions that read and write the email_codes table.
@@ -21,7 +20,6 @@ import hashlib
 import hmac
 import logging
 import secrets
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -39,7 +37,6 @@ MAX_ATTEMPTS = 5               # wrong guesses allowed per code
 RATE_WINDOW_MINUTES = 15       # window both send limits are counted over
 MAX_CODES_PER_EMAIL = 3        # codes one address can be sent per window
 MAX_CODES_PER_IP = 10          # codes one caller can request per window
-VERIFIED_EMAIL_TTL_HOURS = 24  # how long an unknown person has to finish the form
 
 
 # ----- pure helpers -----
@@ -105,46 +102,6 @@ def is_expired(created_at: datetime, now: datetime) -> bool:
         True once CODE_TTL_MINUTES have passed.
     """
     return as_utc(now) - as_utc(created_at) > timedelta(minutes=CODE_TTL_MINUTES)
-
-
-def sign_verified_email(email: str, expiry: int | None = None) -> dict:
-    """Mint the token proving an address was verified, for someone not on staff.
-
-    Same HMAC scheme as the dashboard tokens, under its own prefix so it can
-    never be mistaken for a dashboard token.
-
-    Args:
-        email: The normalised, verified address.
-        expiry: Unix expiry; defaults to VERIFIED_EMAIL_TTL_HOURS from now.
-
-    Returns:
-        {"email", "exp", "token"} for the client to send back with the form.
-    """
-    exp = expiry if expiry is not None else int(time.time()) + VERIFIED_EMAIL_TTL_HOURS * 3600
-    message = f"verified-email:{email}:{exp}".encode()
-    token = hmac.new(settings.APPROVAL_LINK_SECRET.encode(), message, hashlib.sha256).hexdigest()
-    return {"email": email, "exp": str(exp), "token": token}
-
-
-def check_verified_email(email: str, expiry: str, token: str) -> bool:
-    """Validate a token from sign_verified_email.
-
-    Args:
-        email: The address the token claims.
-        expiry: Its unix expiry, as sent back by the client.
-        token: The HMAC.
-
-    Returns:
-        True only for an unexpired token minted for exactly this address.
-    """
-    try:
-        exp = int(expiry)
-    except (TypeError, ValueError):
-        return False                                           # malformed expiry
-    if time.time() > exp:
-        return False                                           # past its lifetime
-    expected = sign_verified_email(normalise_email(email), exp)["token"]
-    return hmac.compare_digest(token or "", expected)          # constant-time compare
 
 
 # ----- database-backed -----

@@ -85,7 +85,6 @@ def _build_payload(
     cc: list[str] | None,
     importance: str,
     reply_to: str | None = None,
-    extra_headers: list[dict] | None = None,
 ) -> dict:
     """The JSON body posted to SMTP2GO's send endpoint.
 
@@ -96,8 +95,6 @@ def _build_payload(
         cc: Optional CC addresses; blanks are removed here.
         importance: "High" adds priority headers; "Normal" adds nothing.
         reply_to: Optional Reply-To, sent as a custom header.
-        extra_headers: Any extra raw headers (e.g. Message-ID / References for
-            email threading, #443), each ``{"header", "value"}``; added as-is.
 
     Returns:
         The payload, api_key included. Redacted before it is ever stored.
@@ -113,7 +110,7 @@ def _build_payload(
         valid_cc = [addr for addr in cc if addr]
         if valid_cc:
             payload["cc"] = valid_cc
-    headers: list[dict] = list(extra_headers or [])                 # caller's threading headers first
+    headers: list[dict] = []
     if importance and importance != "Normal":
         headers += [
             {"header": "X-Priority", "value": "1"},
@@ -226,7 +223,6 @@ async def send_email(
     attachments: list[dict] | None = None,
     dashboard_footer: str = "",
     reply_to: str | None = None,
-    headers: list[dict] | None = None,
 ) -> ExchangeSummary:
     """Send one email, routing each recipient to the right service, and log it.
 
@@ -258,12 +254,6 @@ async def send_email(
         reply_to: The person a reply should reach (the manager on an
             employee's email, the employee on a manager's). Falls back to
             ``EMAIL_REPLY_TO``; see ``_resolve_reply_to``.
-        headers: Extra raw email headers (e.g. Message-ID / In-Reply-To /
-            References so a mail client threads every email about one held
-            request, #443), each ``{"header", "value"}``. Applied on the SMTP2GO
-            path only; the UCSH mailer refuses unknown body fields, so internal
-            recipients thread by the stable subject instead. Existing callers
-            pass nothing and are unchanged.
 
     Returns:
         A single ``ExchangeSummary`` covering the whole send (see
@@ -319,7 +309,7 @@ async def send_email(
         try:
             summaries.append(await _send_via_smtp2go(
                 smtp2go["to"], smtp2go["cc"], subject, full_body, importance, raw_to=to,
-                reply_to=reply_smtp2go, extra_headers=headers,
+                reply_to=reply_smtp2go,
             ))
         except Exception as e:                                     # keep going; raise it at the end
             first_error = first_error or e
@@ -360,7 +350,7 @@ async def send_email(
                 try:
                     summaries.append(await _send_via_smtp2go(
                         fallback["to"], fallback["cc"], subject, full_body, importance, raw_to=fallback["to"],
-                        reply_to=reply_smtp2go, extra_headers=headers,
+                        reply_to=reply_smtp2go,
                     ))
                 except Exception as e3:
                     first_error = first_error or e3
@@ -437,7 +427,6 @@ async def _send_via_smtp2go(
     *,
     raw_to: list[str],
     reply_to: str | None = None,
-    extra_headers: list[dict] | None = None,
 ) -> ExchangeSummary:
     """Send one email through SMTP2GO and record the exchange. Fallback mailer.
 
@@ -456,8 +445,6 @@ async def _send_via_smtp2go(
         raw_to: The caller's original ``to`` (blanks included), recorded on the
             not-attempted row so it shows what the code had to work with.
         reply_to: Optional Reply-To header.
-        extra_headers: Extra raw headers (threading, #443), passed straight to
-            the payload's custom_headers.
 
     Returns:
         The ``ExchangeSummary`` read off SMTP2GO's answer, or a not-attempted
@@ -467,7 +454,7 @@ async def _send_via_smtp2go(
         httpx.HTTPStatusError: SMTP2GO answered 4xx/5xx (after the row is written).
         httpx.HTTPError: The request never completed (after the row is written).
     """
-    payload = _build_payload(to, subject, full_body, cc, importance, reply_to, extra_headers)
+    payload = _build_payload(to, subject, full_body, cc, importance, reply_to)
 
     if not to:
         logger.warning("No valid recipients for email: %s", subject)

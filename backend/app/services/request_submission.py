@@ -13,8 +13,7 @@ the same gate the decision path uses). Until then every entry point keeps the ol
 SharePoint flow, which sends directly, byte-for-byte unchanged.
 
 Every entry point funnels here: the request page and the ``/api/forms`` endpoints
-(through ``auto_assign_manager``), a held request released once its submitter is
-on staff (the same path), and a manager logging a sick day (which is approved on
+(through ``auto_assign_manager``), and a manager logging a sick day (which is approved on
 the spot, so it takes only the ``submitted`` event, ``notify`` False). Each write
 carries a ``step_key`` that is unique in its table, so a second call with the
 same keys adds nothing.

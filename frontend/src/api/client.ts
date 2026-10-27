@@ -177,117 +177,6 @@ export const getAdminEmployeeSetup = () => api.get('/admin/employee-setup');
  */
 export const getTeamEmployeeSetup = () => api.get('/team/employee-setup');
 
-/** The record that already has a held request's name, as Add employee shows it (#444). */
-export interface HeldExisting {
-  employee_id: string;
-  name: string;
-  email: string;
-  department: string;
-  salary_hourly: string;
-  location: string;
-  managers: string[];
-  vacation_entitlement: number;
-  sick_entitlement: number;
-  vacation: number;
-  sick: number;
-}
-
-/**
- * What has happened to a held request, for its Add link (#444, #462). "open"
- * means it still waits on the viewer; only then is `existing` filled.
- */
-export interface HeldForAdd {
-  held_id: number;
-  name: string;
-  email: string;
-  department: string;
-  summary: string;
-  supervisor_name: string;
-  state: 'open' | 'declined' | 'released' | 'cancelled' | 'sending';
-  request_number: string;
-  set_up_on: string;
-  note: string;
-  existing: HeldExisting | null;
-  same_name_count: number;
-}
-
-/** The profile edit saved from a held request's Add employee page (#444). */
-export interface HeldProfileSave {
-  changes: Record<string, number>;
-  fields: Record<string, string>;
-  manager_mode: 'replace' | 'alongside';
-  reason: string;
-}
-
-/** What the save answers: what changed and whether the request was released. */
-export interface HeldProfileResult {
-  changed: unknown[];
-  held_status: string;
-  note: string;
-  released: { held_id: number; status: string; detail: string }[];
-}
-
-/**
- * Where a held request stands, and the record with its name when it still waits on the viewer (#444).
- *
- * @param heldId - The held request from the Add link.
- * @param scope - 'team' for the supervisor, 'admin' from the Held Requests list.
- * @returns The axios response with a {@link HeldForAdd}.
- */
-export const getHeldForAdd = (heldId: number, scope: SetupScope) =>
-  api.get<HeldForAdd>(`/${scope}/held/${heldId}`);
-
-/**
- * Save the profile edit of the record that already has the held request's name (#444).
- *
- * @param heldId - The held request the edit comes from.
- * @param scope - 'team' for the supervisor, 'admin' from the Held Requests list.
- * @param body - The edit.
- * @returns The axios response with a {@link HeldProfileResult}.
- */
-export const updateExistingFromHeld = (heldId: number, scope: SetupScope, body: HeldProfileSave) =>
-  api.post<HeldProfileResult>(`/${scope}/held/${heldId}/update-existing`, body);
-
-// Manager — held new hires waiting on the signed-in supervisor (#481). The
-// Today tab's "New hires waiting on you" panel reads these and can hand one back.
-/** One held new hire still waiting on the signed-in supervisor (#481). */
-export interface HeldWaiting {
-  id: number;
-  name: string;
-  email: string;
-  department: string;
-  request_type: string;
-  /** The request in words, e.g. "Vacation, 2026-11-02 to 2026-11-03". */
-  summary: string;
-  /** When it was held (ISO 8601), or null. */
-  created_at: string | null;
-  status: string;
-  /**
-   * The id of the one active staff record that shares this new hire's name, or
-   * null when none or more than one does (#406). Lets the Team tab flag the
-   * member the request may belong to by id, never by matching names on the
-   * client.
-   */
-  existing_id: string | null;
-}
-
-/**
- * The held new hires still waiting on the signed-in supervisor (#481).
- *
- * @returns ``{ held: HeldWaiting[] }``, oldest first.
- */
-export const getTeamHeld = () => api.get<{ held: HeldWaiting[] }>('/team/held');
-
-/**
- * Hand a held new hire back as "not on my team", from the dashboard (#481).
- *
- * @param heldId - The held request to hand back.
- * @returns ``{ status: 'declined' }`` on success.
- * @throws The axios error: 404 gone, 409 no longer waiting on this supervisor, 503 off.
- */
-export const heldNotOnTeam = (heldId: number) =>
-  api.post<{ status: string }>(`/team/held/${heldId}/not-on-team`);
-
 // Manager — create a new employee (Staff Directory record) for their team
 export const createEmployee = (payload: Record<string, unknown>) =>
   api.post('/team/employees', payload);
@@ -383,16 +272,6 @@ export const getAdminEmailLogRecent = (
 // normal send path and get that send's log row back.
 export const sendAdminTestEmail = (payload: { employee_id?: string; address?: string }) =>
   api.post('/admin/email-log/test', payload);
-
-// Admin - Held Requests: request page submissions from people not in the Staff
-// Directory yet, waiting for their supervisor to add them.
-export const getHeldRequests = (includeClosed = false) =>
-  api.get('/admin/held-requests', { params: { include_closed: includeClosed } });
-export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
-// Cancelling now needs a reason, and can be undone (#445).
-export const cancelHeldRequest = (id: number, reason: string) =>
-  api.post(`/admin/held-requests/${id}/cancel`, { reason });
-export const uncancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/uncancel`);
 
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');

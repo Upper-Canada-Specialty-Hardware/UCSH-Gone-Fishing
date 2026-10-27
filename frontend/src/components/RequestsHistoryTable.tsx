@@ -355,6 +355,15 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
         onConfirm={(reason) => { const r = rejectRow; setRejectRow(null); if (r) void decide(r, false, reason); }}
       />
 
+      <RequestsExportDialog
+        open={exportOpen}
+        shownRows={shown}
+        build={buildExport}
+        filePrefix="team-requests"
+        onClose={() => setExportOpen(false)}
+        onNotify={(message) => setSnack({ open: true, message })}
+      />
+
       {/* Cancelling asks first: it cannot be undone from here (#519). */}
       <Dialog open={cancelRow !== null} onClose={() => setCancelRow(null)}>
         <DialogTitle>Cancel request {cancelRow?.id}?</DialogTitle>
@@ -371,14 +380,6 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
         </DialogActions>
       </Dialog>
 
-      <RequestsExportDialog
-        open={exportOpen}
-        shownRows={shown}
-        build={buildExport}
-        filePrefix="team-requests"
-        onClose={() => setExportOpen(false)}
-        onNotify={(message) => setSnack({ open: true, message })}
-      />
       <Snackbar open={snack.open} autoHideDuration={4000} onClose={() => setSnack((s) => ({ ...s, open: false }))} message={snack.message} />
     </Paper>
   );

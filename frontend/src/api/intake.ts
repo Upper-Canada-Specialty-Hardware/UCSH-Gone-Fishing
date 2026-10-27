@@ -37,19 +37,6 @@ export interface SignInChoice {
   exp: string;
 }
 
-/** The token /verify returns for an address on no staff record. */
-export interface VerifiedEmail {
-  email: string;
-  exp: string;
-  token: string;
-}
-
-/** One person a new starter can pick as their supervisor. */
-export interface Person {
-  id: string;
-  name: string;
-}
-
 export type RequestType = 'leave' | 'overtime' | 'carryover-payout';
 
 /** What the page needs to know about carry-over and payout right now. */
@@ -72,7 +59,8 @@ const SESSION_KEY = 'request_page_session';   // localStorage key for the 30-day
 const LINK_KEYS = ['dashboard_token', 'dashboard_role', 'dashboard_uid', 'dashboard_exp'];   // sessionStorage, from an emailed link
 const NOTICE_KEY = 'sign_in_notice';           // sessionStorage: why someone was sent to the landing page
 const AFTER_KEY = 'after_sign_in';             // sessionStorage: the page to open once signed in
-const NEW_HIRE_KEY = 'new_hire_verified';      // sessionStorage: a new hire's verified-email token
+/** sessionStorage flag: this visit came from an old "add this new hire" email link (#525). */
+export const RETIRED_HELD_LINK = 'retired_held_link';
 
 /**
  * Whether a sign-in's expiry (unix seconds) has passed.
@@ -210,8 +198,8 @@ function replaceSessionToken(fresh: { role: string; uid: string; token: string; 
  * asks the server again and, when it hands back a new token, stores it.
  *
  * The server only ever promotes an employee to manager; it never demotes a
- * manager back to employee (#395), so a supervisor opening the add-new-hire
- * link, or an admin's open-as-manager link, keeps My team (and Add Employee)
+ * manager back to employee (#395), so an admin's open-as-manager link keeps
+ * My team (and Add Employee)
  * even with nobody under them. This call just applies whatever the server
  * returns, so it too can only move someone up.
  *
@@ -316,29 +304,6 @@ export const setAfterSignIn = (path: string) => tabSet(AFTER_KEY, path);
 export const takeAfterSignIn = () => tabTake(AFTER_KEY);
 
 /**
- * Keep a new hire's verified-email token for this tab, so /new-hire survives a refresh.
- *
- * @param verified - From verifyCode, or null to forget it.
- */
-export const saveNewHire = (verified: VerifiedEmail | null) =>
-  tabSet(NEW_HIRE_KEY, verified ? JSON.stringify(verified) : null);
-
-/**
- * The new hire's verified-email token for this tab, if it has not expired (24 hours).
- *
- * @returns The token, or null.
- */
-export function loadNewHire(): VerifiedEmail | null {
-  try {
-    const raw = sessionStorage.getItem(NEW_HIRE_KEY);
-    const verified = raw ? (JSON.parse(raw) as VerifiedEmail) : null;
-    return verified && !expired(verified.exp) ? verified : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Ask for a 6-digit code to be emailed. The answer is the same for every address.
  *
  * @param email - The address typed.
@@ -351,214 +316,13 @@ export const requestCode = (email: string) => intake.post('/code', { email });
  *
  * @param email - The same address.
  * @param code - The 6 digits typed.
- * @returns {status: "employee", name, role, uid, token, exp}; {status: "choose", people}
- *   when several staff records share the address; or {status: "unknown", verified}.
- * @throws AxiosError 400 with a readable reason when the code is wrong or expired.
+ * @returns {status: "employee", name, role, uid, token, exp}; or {status: "choose", people}
+ *   when several staff records share the address.
+ * @throws AxiosError 400 with a readable reason when the code is wrong or expired; 403
+ *   for an archived address or one on no staff record (ask your manager, #526).
  */
 export const verifyCode = (email: string, code: string) =>
   intake.post('/verify', { email, code });
-
-/**
- * The departments a new starter can choose from, as the Staff Directory spells them.
- *
- * @param verified - The token from verifyCode.
- * @throws AxiosError 401 when the token expired.
- */
-export const getDepartments = (verified: VerifiedEmail) =>
-  intake.get<{ departments: string[] }>('/departments', { params: verified });
-
-/**
- * People in a department whose name contains the typed text (a few at most).
- *
- * @param verified - The token from verifyCode.
- * @param department - The department picked.
- * @param q - What was typed; nobody comes back for fewer than two letters.
- * @throws AxiosError 401 when the token expired.
- */
-export const searchSupervisors = (verified: VerifiedEmail, department: string, q: string) =>
-  intake.get<{ people: Person[] }>('/supervisor-search', { params: { ...verified, department, q } });
-
-/**
- * Hold a request from someone not on staff until their supervisor adds them.
- *
- * @param body - verified token, name, department, the supervisor (supervisor_id
- *   from the search, or supervisor_email), request_type and form.
- * @throws AxiosError 400 with a reason, 401 expired, 409 already on staff.
- */
-export const holdRequest = (body: {
-  verified: VerifiedEmail;
-  first_name: string;
-  last_name: string;
-  department: string;
-  supervisor_id?: string;
-  supervisor_email?: string;
-  request_type: RequestType;
-  form: Record<string, unknown>;
-}) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held', body);
-
-/**
- * Where a held request stands, as the waiting page shows it. "not_on_team" is a
- * supervisor handing it back, so the person picks another supervisor (#443).
- */
-export type HeldStatus = 'waiting' | 'sent' | 'cancelled' | 'not_on_team' | 'refused';
-
-/** The held-request status, plus the extra fields a "not on my team" row carries (#443). */
-export interface HeldStatusResult {
-  status: HeldStatus;
-  /** The supervisor it waits on, or (for not_on_team) the one who declined it. */
-  supervisor_name: string;
-  /**
-   * Why the request was not sent, present only when status is "refused" (#406):
-   * the release reached the booking rules and one refused the form (a date
-   * clash, the booking limit). The waiting page shows it and the person has been
-   * emailed the same reason.
-   */
-  reason?: string;
-  /** The department to search another supervisor in; present on a not_on_team row. */
-  department?: string;
-  /** The request in words, to show while re-picking; present on a not_on_team row. */
-  summary?: string;
-  /** Who declined it; present on a not_on_team row. */
-  declined_by?: string;
-  /**
-   * Once the held request has been released ("sent"), the status token for the
-   * real request, so the page follows it to the decision (#482). Present only on
-   * the Postgres path; null/absent otherwise.
-   */
-  request_status_token?: string | null;
-}
-
-/**
- * The in-flight held request /verify hands back when the person already has one
- * waiting to be set up, so the page shows its status instead of a new form (#442).
- */
-export interface HeldGate {
-  /** The signed token for getHeldStatus / repick. */
-  status_token: string;
-  /** The supervisor it waits on. */
-  supervisor_name: string;
-  /** "waiting" normally, "not_on_team" when a supervisor handed it back. */
-  state: 'waiting' | 'not_on_team';
-}
-
-/**
- * Ask how a held request is going, so the waiting page can update on its own.
- *
- * @param statusToken - The status_token holdRequest returned.
- * @returns The status and the supervisor it waits on (plus re-pick fields on not_on_team).
- * @throws AxiosError 404 when the token is bad or the request is gone.
- */
-export const getHeldStatus = (statusToken: string) =>
-  intake.get<HeldStatusResult>('/held/status', { params: { token: statusToken } });
-
-/**
- * Pick another supervisor for a held request handed back as "not on my team" (#443).
- *
- * @param body - the verified token, the held request's status_token, and the new
- *   supervisor (supervisor_id from the search, or supervisor_email).
- * @returns The new supervisor and a fresh status_token to keep following it.
- * @throws AxiosError 401 expired, 404 bad token, 400 when it cannot be re-picked.
- */
-export const repick = (body: {
-  verified: VerifiedEmail;
-  status_token: string;
-  supervisor_id?: string;
-  supervisor_email?: string;
-}) => intake.post<{ status: 'held'; supervisor_name: string; status_token: string }>('/held/repick', body);
-
-const HELD_WAITING_KEY = 'held-waiting';         // localStorage: a held request this device is following (#482)
-const HELD_WAITING_MAX_DAYS = 30;                // forget a stale held token after this many days
-
-/**
- * Keep the held status token on this device, so a reload returns to the waiting
- * page instead of the email step (#482).
- *
- * @param statusToken - The held request's status token, or null to forget it.
- */
-export function saveHeldWaiting(statusToken: string | null): void {
-  try {
-    if (!statusToken) localStorage.removeItem(HELD_WAITING_KEY);
-    else localStorage.setItem(HELD_WAITING_KEY, JSON.stringify({ token: statusToken, at: Date.now() }));
-  } catch {
-    /* storage blocked: the page just will not resume after a reload */
-  }
-}
-
-/**
- * The held status token this device is following, if still fresh (#482).
- *
- * @returns The token, or null when there is none, it is over 30 days old, or
- *   storage is blocked.
- */
-export function loadHeldWaiting(): string | null {
-  try {
-    const raw = localStorage.getItem(HELD_WAITING_KEY);
-    if (!raw) return null;
-    const saved = JSON.parse(raw) as { token: string; at: number };
-    if (!saved.token || Date.now() - saved.at > HELD_WAITING_MAX_DAYS * 86400000) {
-      localStorage.removeItem(HELD_WAITING_KEY);               // too old: drop it
-      return null;
-    }
-    return saved.token;
-  } catch {
-    return null;
-  }
-}
-
-/** Forget the followed held request (once signed in or cancelled) (#482). */
-export const clearHeldWaiting = () => saveHeldWaiting(null);
-
-/** What the held sign-in returns: a normal staff session plus the request token (#482). */
-export interface HeldSignInResult extends EmployeeSession {
-  /** The released request's status token, so the page keeps following it; may be null off Postgres. */
-  request_status_token: string | null;
-}
-
-/**
- * Sign a released new hire in from their waiting page (#482).
- *
- * A release is treated as a sign-in for a short window (the supervisor confirmed
- * who they are and this device proved the address), so the page can move the
- * person onto their signed-in pages without a new code.
- *
- * @param statusToken - The held request's status token.
- * @returns The staff session (name/role/uid/token/exp/email) and the request token.
- * @throws AxiosError 404 bad token or record gone, 409 not released or past the window.
- */
-export const heldSignIn = (statusToken: string) =>
-  intake.post<HeldSignInResult>('/held/sign-in', { status_token: statusToken });
-
-/**
- * What the public "Not on my team" page shows (#483). ``state`` drives the
- * screen; ``summary`` and ``supervisor_name`` are filled only while "open".
- */
-export interface NotOnTeamInfo {
-  state: 'open' | 'declined' | 'released' | 'cancelled' | 'sending' | 'done' | 'invalid';
-  name: string;
-  supervisor_name: string;
-  summary: string;
-  request_number: string;
-  set_up_on: string;
-}
-
-/**
- * The details for the public "Not on my team" page (#483).
- *
- * @param token - The signed not-on-team token from the email link.
- * @returns The request's details and current state (read-only).
- */
-export const getNotOnTeamInfo = (token: string) =>
-  intake.get<NotOnTeamInfo>('/held/not-on-team/info', { params: { token } });
-
-/**
- * Hand the held request back from the public page's confirm button (#483).
- *
- * @param token - The signed not-on-team token.
- * @returns The outcome state (``done`` on a fresh decline, else what happened).
- * @throws AxiosError 503 while processing is off.
- */
-export const confirmNotOnTeam = (token: string) =>
-  intake.post<NotOnTeamInfo>('/held/not-on-team/confirm', null, { params: { token } });
 
 /**
  * What the public cancel page shows for a receipt's "cancel this request" link (#519).

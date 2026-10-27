@@ -8,13 +8,14 @@ from app.models.mixins import utcnow
 
 
 class HeldRequest(Base):
-    """A request from someone not in the Staff Directory yet, waiting for them.
+    """History only: a request once held for someone not in the Staff Directory.
 
-    The public request page lets anyone who proves they own an email address
-    fill in a form. When that address is not on any staff record, nothing can
-    route the request (no balances, no manager), so it is kept here and the
-    supervisor they picked is emailed to add them. Adding them releases it:
-    the stored form is submitted as a normal request (services/held_requests.py).
+    The request page used to let someone on no staff record fill in a form,
+    keep it here and email the supervisor they picked to add them. That new
+    hire path was removed (#525): an address on no staff record is now refused
+    and a manager adds people from the manager dashboard. Nothing writes or
+    reads these rows any more; the table is kept so the history stays, and
+    the rows still open then were closed by Alembic 0025.
 
     Auxiliary state, like email_codes. Not a SharePoint list.
     """
@@ -42,19 +43,8 @@ class HeldRequest(Base):
     form_data: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     # "held" (waiting), "released" (submitted as a request), "failed" (release
-    # hit an unexpected SharePoint/DB/network error; retried by an admin),
-    # "refused" (#406 - the release reached submit_request and it refused the form
-    # on a business rule, e.g. a date clash; closed, never retried, the person is
-    # emailed), "not_on_team" (a supervisor said the person is not on their team;
-    # waiting for them to pick another), "cancelled".
+    # tried and SharePoint refused; retried by an admin), "cancelled".
     status: Mapped[str] = mapped_column(String, nullable=False, default="held", index=True)
-
-    # Every supervisor this request has been sent to, in order, each as
-    # {"id", "name", "email", "outcome"}: outcome is null while they hold it,
-    # "not_on_team" once they declined it, "handled" once the person was added.
-    # Drives the "told it moved" emails and the one thread per request per
-    # recipient (#443).
-    supervisors_involved: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
@@ -68,8 +58,3 @@ class HeldRequest(Base):
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sp_item_id: Mapped[str | None] = mapped_column(String, nullable=True)   # the created request
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)     # why a release failed
-
-    # Cancelling needs a reason and can be undone (#445): the reason an admin
-    # gave, and the status to put back if the cancel is reversed.
-    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status_before_cancel: Mapped[str | None] = mapped_column(String, nullable=True)

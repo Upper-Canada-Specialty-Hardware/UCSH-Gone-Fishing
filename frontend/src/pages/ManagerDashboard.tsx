@@ -1,9 +1,9 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
-import { staffCacheKey } from '../api/intake';
+import { RETIRED_HELD_LINK, staffCacheKey } from '../api/intake';
 import {
-  Alert, Box, Button, Paper, Snackbar, Stack, Tab, Tabs, Typography,
+  Alert, Box, Button, Paper, Snackbar, Tab, Tabs, Typography,
 } from '@mui/material';
 import { AnimatePresence, m } from 'motion/react';
 import { alpha, useTheme } from '@mui/material/styles';
@@ -11,8 +11,7 @@ import TeamCalendar from '../components/TeamCalendar';
 import { Kpi, Panel } from '../components/Panels';
 import RequestsHistoryTable, { HistoryFocus } from '../components/RequestsHistoryTable';
 import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
-import AddEmployee, { type AddPrefill } from '../components/AddEmployee';
-import NewHireConfirmDialog from '../components/manager/NewHireConfirmDialog';
+import AddEmployee from '../components/AddEmployee';
 import DecisionCard from '../components/manager/DecisionCard';
 import RejectDialog from '../components/RejectDialog';
 import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
@@ -28,7 +27,7 @@ import {
 import { kindColor, RequestKind } from '../constants/leaveColors';
 import { addDays, dayKey, mondayOf, today } from '../utils/dates';
 import { firstName, teamColors, teamLabeler } from '../utils/personColor';
-import { askedAgo, daysWaiting, requestWhat, requestWho, shortDate } from '../utils/requestText';
+import { daysWaiting, requestWhat, requestWho, shortDate } from '../utils/requestText';
 import {
   getMyBalances,
   getTeamMembers,
@@ -42,9 +41,6 @@ import {
   checkEmployee,
   logSickDay,
   getTeamEmployeeSetup,
-  getTeamHeld,
-  heldNotOnTeam,
-  type HeldWaiting,
 } from '../api/client';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
@@ -53,21 +49,17 @@ import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
 
 /**
- * A new hire's details left by the supervisor's "add this person" email link
- * (see AuthHandler in App.tsx). Read once, then cleared so a refresh does not
- * prefill again.
+ * Whether this visit came from a link in an old "add this new hire" email
+ * (see LinkSignIn in App.tsx). Those emails are no longer used (#525): the link
+ * still signs the manager in, but fills in nothing, and the dashboard says so
+ * once. Read once, then cleared so a refresh does not say it again.
  *
- * @returns The prefill, or null.
+ * @returns True when the visit came from such a link.
  */
-function takeAddEmployeePrefill(): AddPrefill | null {
-  const raw = sessionStorage.getItem('add_employee_prefill');
-  if (!raw) return null;
-  sessionStorage.removeItem('add_employee_prefill');
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+function takeRetiredHeldLink(): boolean {
+  const seen = sessionStorage.getItem(RETIRED_HELD_LINK) === '1';
+  sessionStorage.removeItem(RETIRED_HELD_LINK);       // once only
+  return seen;
 }
 
 /** The tabs, keyed by url segment (#/team/<key>). "add" is reached by its button. */
@@ -106,95 +98,6 @@ function TileLink({ label, onClick, children }: { label: string; onClick: () => 
 }
 
 /**
- * The Today tab's held-requests panel (#481), first on the tab: one card per
- * held request-page submission this supervisor still has to act on. Each card
- * says in one bold line what it most likely is (a staff member on the wrong
- * email, or a real new hire) and opens the shared confirm dialog, which offers
- * add/update and Not on my team. Cards wrap and never scroll sideways on a phone.
- *
- * @param props.items - The held new hires waiting on this manager.
- * @param props.processingEnabled - Writes allowed; the decline is disabled otherwise.
- * @param props.busyId - The id of the row whose decline is in flight, or null.
- * @param props.onAdd - Open Add employee prefilled from a held new hire.
- * @param props.onDecline - Hand a held new hire back as "not on my team".
- * @returns The panel.
- */
-function NewHiresPanel({ items, processingEnabled, busyId, onAdd, onDecline }: {
-  items: HeldWaiting[];
-  processingEnabled: boolean;
-  busyId: number | null;
-  onAdd: (item: HeldWaiting) => void;
-  onDecline: (item: HeldWaiting) => void;
-}) {
-  // The held new hire whose confirm dialog is open, or null when none. The same
-  // shared dialog the Team tab uses, so both paths confirm the person the same
-  // way before adding or handing the request back (#406).
-  const [confirmItem, setConfirmItem] = useState<HeldWaiting | null>(null);
-  const theme = useTheme();
-  return (
-    // Louder than the other panels: an orange edge, at the top of Today.
-    <Paper sx={{ p: { xs: 2, sm: 2.5 }, display: 'grid', gap: 1.5, border: 2, borderColor: 'warning.main' }}>
-      <Box sx={{ display: 'grid', gap: 0.25 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700 }}>
-          {items.length === 1 ? 'A request is on hold until you act' : `${items.length} requests are on hold until you act`}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          These came from addresses not on any staff record. Nothing reaches your queue until you deal with them.
-        </Typography>
-      </Box>
-      <Stack spacing={1.5}>
-        {items.map((item) => {
-          const onStaff = !!item.existing_id;              // the typed name is already on staff
-          return (
-            <Box key={item.id} sx={{
-              border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, display: 'grid', gap: 0.5,
-              bgcolor: alpha(theme.palette.warning.main, 0.05),
-            }}>
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'baseline' }}>
-                <Typography sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{item.name}</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>{item.email}</Typography>
-              </Box>
-              <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>{item.summary}</Typography>
-              {/* What it most likely is, in one bold line. */}
-              {onStaff ? (
-                <Alert severity="warning" sx={{ py: 0.25 }}>
-                  <strong>{item.name} is already on staff.</strong> Most likely they used the wrong email.
-                  You do not need to add them: ask them to send it again from their work email.
-                </Alert>
-              ) : (
-                <Alert severity="info" sx={{ py: 0.25 }}>
-                  <strong>Not on staff yet.</strong> If they are a new hire on your team, add them and the request comes to you.
-                </Alert>
-              )}
-              {/* How long it has waited, in the same words the queue uses. */}
-              <Typography variant="caption" color="text.secondary">
-                {item.department ? `${item.department} · ` : ''}{askedAgo({ Created: item.created_at })}
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
-                {/* One button into the shared confirm dialog, which then offers add
-                    and "not on my team" behind the "is it really them?" check. */}
-                <Button size="small" variant="contained" onClick={() => setConfirmItem(item)}>
-                  {onStaff ? 'Review' : 'Add employee'}
-                </Button>
-              </Box>
-            </Box>
-          );
-        })}
-      </Stack>
-      <NewHireConfirmDialog
-        item={confirmItem}
-        matched={!!confirmItem?.existing_id}
-        processingEnabled={processingEnabled}
-        busy={busyId !== null && busyId === confirmItem?.id}
-        onAdd={onAdd}
-        onDecline={onDecline}
-        onClose={() => setConfirmItem(null)}
-      />
-    </Paper>
-  );
-}
-
-/**
  * The manager dashboard: Today (numbers, the requests waiting on a decision,
  * the next two weeks and a few notes), Calendar (an animated timeline or a
  * month view, and who is in day by day), Team (vacation rings and a card per
@@ -219,9 +122,8 @@ export default function ManagerDashboard() {
   const theme = useTheme();
   const params = useParams();
   const navigate = useNavigate();
-  // The Add employee prefill: from the supervisor's email link at launch, or set
-  // by the "Add employee" button in the new-hires panel (#481).
-  const [prefill, setPrefill] = useState(takeAddEmployeePrefill);
+  // Came from an old held-request email link: a dismissable note, nothing else (#525).
+  const [retiredLink, setRetiredLink] = useState(takeRetiredHeldLink);
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'today';
   /** Open a tab (changes the url). @param k - Tab key. */
   const go = useCallback((k: TabKey) => navigate(`/team/${k}`), [navigate]);
@@ -236,13 +138,6 @@ export default function ManagerDashboard() {
     setHistoryFocus({ ...target });                     // a fresh object so a repeat click re-applies
     go('history');
   }, [go]);
-
-  // Opened from an "add this new hire" email: go straight to Add employee.
-  // Runs on arrival only; later tab changes are the manager's own.
-  const [arrived] = useState(() => !!prefill && tab !== 'add');
-  useEffect(() => {
-    if (arrived) navigate('/team/add', { replace: true });
-  }, [arrived, navigate]);
 
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');
   // The leave bar selected on the Calendar timeline, and the day picked on the
@@ -349,30 +244,18 @@ export default function ManagerDashboard() {
     setupTimer.current = setTimeout(() => { void refreshEmployeeSetup(); }, 1000);
   }, [refreshEmployeeSetup]);
 
-  // Held new hires waiting on this manager (#481): the Today panel reads these.
-  // Refreshed at launch, after an action in the panel, and on a staff change (a
-  // new hire added or a held profile saved releases the row off the panel).
-  const [heldNewHires, setHeldNewHires] = useState<HeldWaiting[]>([]);
-  const [heldActionId, setHeldActionId] = useState<number | null>(null);   // the row being handed back
-  const refreshHeld = useCallback(() => {
-    getTeamHeld()
-      .then((r) => setHeldNewHires(r.data.held || []))
-      .catch(() => { /* leave the panel as it was until the next read */ });
-  }, []);
-
   // A staff record changed (a new hire added, an edit, a balance move): re-read
   // the team cards, debounced so a burst of saves costs one read.
   const staffRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaffChange = useCallback(() => {
     scheduleSetupRefresh();                                // the setup tab follows staff edits too
-    refreshHeld();                                         // a release drops the new hire off the panel (#481)
     if (staffRefresh.current) clearTimeout(staffRefresh.current);
     staffRefresh.current = setTimeout(() => {
       getTeamMembers()
         .then((r) => setMembers((r.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))))
         .catch(() => { /* the cards keep their figures until the next change */ });
     }, 300);
-  }, [scheduleSetupRefresh, refreshHeld]);
+  }, [scheduleSetupRefresh]);
   useLiveRequests({ scope: 'team', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
   useEffect(() => {
@@ -437,10 +320,6 @@ export default function ManagerDashboard() {
   useEffect(() => {
     if (!loading) void refreshEmployeeSetup(true);         // quiet: only the tab's count depends on it
   }, [loading, refreshEmployeeSetup]);
-  // Held new hires waiting on this manager, read once the dashboard is up (#481).
-  useEffect(() => {
-    if (!loading) refreshHeld();
-  }, [loading, refreshHeld]);
   const prevTab = useRef(tab);
   useEffect(() => {
     if (tab === 'setup' && prevTab.current !== 'setup' && !loading) void refreshEmployeeSetup();
@@ -539,43 +418,6 @@ export default function ManagerDashboard() {
   const calFrom = mondayOf(today());                     // the calendar shows four weeks from this Monday
   const dir = useDirection(TABS.indexOf(tab));          // which way a tab change slides
 
-  /**
-   * Open Add employee prefilled from a held new hire, so AddEmployee's
-   * held-for-add flow runs (including the existing-name profile edit) (#481).
-   *
-   * @param item - The held new hire to add.
-   */
-  const addHeldNewHire = useCallback((item: HeldWaiting) => {
-    // The same prefill shape the supervisor's email link gives, so the add tab
-    // asks what happened to the held request and offers the profile edit (#444).
-    setPrefill({ title: item.name, email_address: item.email, department: item.department, held_id: item.id });
-    go('add');
-  }, [go]);
-
-  /**
-   * Hand a held new hire back as "not on my team", then refresh the panel (#481).
-   *
-   * @param item - The held new hire to hand back.
-   */
-  const declineHeldNewHire = useCallback(async (item: HeldWaiting) => {
-    setHeldActionId(item.id);
-    try {
-      await heldNotOnTeam(item.id);
-      setHeldNewHires((prev) => prev.filter((h) => h.id !== item.id));   // drop it from the panel at once
-      setSnack({
-        open: true,
-        message: `${item.name} was handed back; they will be asked to pick another supervisor.`,
-        severity: 'success',
-      });
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Could not hand that request back', severity: 'error' });
-    } finally {
-      setHeldActionId(null);
-      refreshHeld();                                       // reconcile with the server either way
-    }
-  }, [refreshHeld]);
-
   /** Pull the team again after a manager change (balances, add, remove) so the
    *  cards and the waiting count follow it at once (#362, #363). */
   const refreshTeam = useCallback(() => {
@@ -641,6 +483,14 @@ export default function ManagerDashboard() {
         <Alert severity="info">System is in reporting-only mode. Approve/reject actions are disabled.</Alert>
       )}
 
+      {/* An old "add this new hire" email link: it changed nothing (#525). */}
+      {retiredLink && (
+        <Alert severity="info" onClose={() => setRetiredLink(false)}>
+          That email link is no longer used, and opening it changed nothing. To add someone to your team,
+          use Add a new hire.
+        </Alert>
+      )}
+
       <Tabs value={tab === 'add' ? false : tab} onChange={(_, v) => go(v)} variant="scrollable" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider' }}>
         <Tab value="today" label={waiting.length ? <span>Today (<Swap k={waiting.length}>{waiting.length}</Swap>)</span> : 'Today'} />
         <Tab value="calendar" label="Calendar" />
@@ -654,17 +504,6 @@ export default function ManagerDashboard() {
       <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
-          {/* Requests on hold for this manager (#481) come first: nothing else on
-              Today moves until they act, and most are staff on the wrong email. */}
-          {heldNewHires.length > 0 && (
-            <NewHiresPanel
-              items={heldNewHires}
-              processingEnabled={processingEnabled}
-              busyId={heldActionId}
-              onAdd={addHeldNewHire}
-              onDecline={declineHeldNewHire}
-            />
-          )}
           {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
             <TileLink label="Open the people waiting on you" onClick={() => openTeamFiltered('waiting')}>
@@ -893,10 +732,6 @@ export default function ManagerDashboard() {
           onLogSickDay={() => setSickDialogOpen(true)}
           onRefresh={refreshTeam}
           onNotify={(message, severity) => setSnack({ open: true, message, severity })}
-          heldNewHires={heldNewHires}
-          heldBusyId={heldActionId}
-          onAddHeldNewHire={addHeldNewHire}
-          onDeclineHeldNewHire={declineHeldNewHire}
         />
       )}
 
@@ -994,20 +829,9 @@ export default function ManagerDashboard() {
           processingEnabled={processingEnabled}
           submitEmployee={createEmployee}
           checkEmployee={checkEmployee}
-          prefill={prefill}
-          heldScope="team"
-          onCreated={(name) => {
-            setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' });
-            refreshHeld();                               // the added new hire drops off the panel (#481)
-          }}
-          onHeldSaved={(id) => {
-            // A profile edit of an existing record saved: drop that row from the
-            // panel at once, then reconcile with the server (#499). The live
-            // staff-change event fires before the release finishes, so the panel
-            // is only right once this runs after the save returns.
-            setHeldNewHires((prev) => prev.filter((h) => h.id !== id));
-            refreshHeld();
-          }}
+          onCreated={(name) =>
+            setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
+          }
         />
       )}
       </Enter>

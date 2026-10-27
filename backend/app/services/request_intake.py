@@ -7,10 +7,9 @@ the same ``process_new_*`` functions the Microsoft Form path and the
 SharePoint item, gets its days and manager the same way, and is approved
 through the same email, text and dashboard channels.
 
-Two callers:
-* a signed-in employee submitting from the page (routes/self_service.py);
-* a held request being released once its submitter is added to the Staff
-  Directory (services/held_requests.py).
+Callers: a signed-in employee submitting from the page
+(routes/self_service.py), and an admin's New request on the admin dashboard
+(routes/admin_requests.py).
 """
 
 import logging
@@ -68,8 +67,8 @@ async def ensure_request_type_open(request_type: str) -> None:
     """Refuse a request type outside the dates an admin set (#176).
 
     Only carry-over/payout can be closed; leave and overtime are always open.
-    Called by every way staff send a new request (request page, held request,
-    /api/forms), not by approvals or the Microsoft Form, which HR opens and
+    Called by every way staff send a new request (request page, admin New
+    request, /api/forms), not by approvals or the Microsoft Form, which HR opens and
     closes on the bulletin board.
 
     Args:
@@ -185,8 +184,8 @@ REQUEST_FORMS: dict[str, type[BaseModel]] = {
 class PendingClash(RequestFormError):
     """A new leave request shares a day with the person's own PENDING request (#518).
 
-    Still a RequestFormError, so every caller that only knows that (held release,
-    admin New request, /api/forms) refuses it with the plain sentence. The request
+    Still a RequestFormError, so every caller that only knows that (admin New
+    request, /api/forms) refuses it with the plain sentence. The request
     page catches it first and offers to change or cancel the pending request.
 
     Attributes:
@@ -292,8 +291,8 @@ async def submit_request(
         raise RequestFormError("Your staff record has no email address. Ask your manager to fix it.")
     # Booking-limit refusal (#407): a salaried Vacation/part-day request whose last
     # day is past what the person may book is refused before any row is created,
-    # on every path into here (the request page, held-request release, admin New
-    # request, /api/forms). Hourly staff and other leave types are never limited.
+    # on every path into here (the request page, admin New request,
+    # /api/forms). Hourly staff and other leave types are never limited.
     if request_type == "leave":
         refusal = booking_refusal(fields, form.leave_type, form.end_date, toronto_today())
         if refusal:

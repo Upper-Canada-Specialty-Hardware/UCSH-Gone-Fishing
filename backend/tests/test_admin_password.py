@@ -110,9 +110,9 @@ def test_the_requests_screen_router_is_behind_the_guard():
 
 
 def test_admin_calls_are_refused_without_a_session(client):
-    response = client.get("/api/dashboard/admin/held-requests")
+    response = client.get("/api/dashboard/admin/carryover-payout")
     assert response.status_code == 401
-    bad = client.get("/api/dashboard/admin/held-requests", headers=_headers("9999999999.forged"))
+    bad = client.get("/api/dashboard/admin/carryover-payout", headers=_headers("9999999999.forged"))
     assert bad.status_code == 401
 
 
@@ -125,7 +125,7 @@ def test_the_seeded_password_signs_in_and_is_hashed_on_the_way(client):
     assert response.status_code == 200
     stored = run(_row_value())
     assert admin_auth.is_hashed(stored) and "123" not in stored.split("$")[-1]
-    ok = client.get("/api/dashboard/admin/held-requests", headers=_headers(response.json()["token"]))
+    ok = client.get("/api/dashboard/admin/carryover-payout", headers=_headers(response.json()["token"]))
     assert ok.status_code == 200
 
 
@@ -144,14 +144,14 @@ def test_a_deleted_row_locks_the_dashboard_instead_of_going_back_to_123(client):
     token = _sign_in(client, "123").json()["token"]
     run(_set_row(None))
     assert _sign_in(client, "123").status_code == 403
-    assert client.get("/api/dashboard/admin/held-requests", headers=_headers(token)).status_code == 401
+    assert client.get("/api/dashboard/admin/carryover-payout", headers=_headers(token)).status_code == 401
     assert run(_row_value()) is None                                    # nothing re-seeded it
 
 
 def test_a_database_change_signs_everyone_out(client):
     token = _sign_in(client, "123").json()["token"]
     run(_set_row("new-one"))
-    assert client.get("/api/dashboard/admin/held-requests", headers=_headers(token)).status_code == 401
+    assert client.get("/api/dashboard/admin/carryover-payout", headers=_headers(token)).status_code == 401
 
 
 def test_changing_the_password_from_the_dashboard(client):
@@ -162,8 +162,8 @@ def test_changing_the_password_from_the_dashboard(client):
     changed = client.put("/api/dashboard/admin/password", json={"current": "123", "new": "hr-picked"}, headers=_headers(old))
     assert changed.status_code == 200
     fresh = changed.json()["token"]
-    assert client.get("/api/dashboard/admin/held-requests", headers=_headers(fresh)).status_code == 200
-    assert client.get("/api/dashboard/admin/held-requests", headers=_headers(other_device)).status_code == 401
+    assert client.get("/api/dashboard/admin/carryover-payout", headers=_headers(fresh)).status_code == 200
+    assert client.get("/api/dashboard/admin/carryover-payout", headers=_headers(other_device)).status_code == 401
     assert _sign_in(client, "123").status_code == 401
     assert _sign_in(client, "hr-picked").status_code == 200
 

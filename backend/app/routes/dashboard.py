@@ -1189,13 +1189,9 @@ async def team_create_employee(user: AuthUser, body: dict):
             )
         supervisor_ids = [manager_sp_user_id]
 
-    from app.services.employee_creation import EmployeeNameClash, EmployeeValidationError, create_employee
+    from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
         record = await create_employee(body, supervisor_ids)
-    except EmployeeNameClash as e:
-        # The name is already on staff: 409 with the existing id, so the dashboard
-        # can open that person's profile instead of just showing an error (#444).
-        raise HTTPException(status_code=409, detail={"message": str(e), "existing_id": e.existing_id})
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
@@ -1398,13 +1394,9 @@ async def admin_create_employee(body: dict):
         except (TypeError, ValueError):
             continue
 
-    from app.services.employee_creation import EmployeeNameClash, EmployeeValidationError, create_employee
+    from app.services.employee_creation import EmployeeValidationError, create_employee
     try:
         record = await create_employee(body, manager_ids)
-    except EmployeeNameClash as e:
-        # The name is already on staff: 409 with the existing id, so the dashboard
-        # can open that person's profile instead of just showing an error (#444).
-        raise HTTPException(status_code=409, detail={"message": str(e), "existing_id": e.existing_id})
     except EmployeeValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _after_employee_created(record)
@@ -1446,33 +1438,17 @@ async def admin_check_employee(body: dict):
 async def _after_employee_created(record: dict) -> dict:
     """Follow-ups once Add Employee has written a record, on either dashboard.
 
-    Submits any requests the person made on the request page while they were
-    not on staff yet, then sends them the welcome email. Neither undoes or
-    blocks the create: a failure is
-    reported in the response and stays visible on the admin dashboard.
+    Sends the new employee the welcome email. It never undoes or blocks the
+    create: a failure is reported in the response.
 
     Args:
         record: The created record from create_employee.
 
     Returns:
-        The record plus "released": one {"held_id", "status", "detail"} per
-        held request for this email, and "welcome_email": "sent", "skipped"
-        (no address) or "failed".
+        The record plus "welcome_email": "sent", "skipped" (no address) or
+        "failed".
     """
-    from app.services.held_requests import release_held_requests
-    email = record.get("fields", {}).get("EmailAddress", "")      # held rows are keyed by email
-    try:
-        results = await release_held_requests(email)
-        record["released"] = [vars(r) for r in results]
-    except Exception:  # noqa: BLE001 - the employee exists either way
-        logger.exception("Could not release held requests for a new employee")
-        record["released"] = []
-        record.setdefault("notices", []).append(
-            "Their waiting requests could not be submitted; see Held Requests on the admin dashboard."
-        )
-
-    # Welcome email with how to sign in and the staff tutorial (#227). After
-    # the release, so anything they asked for is already on its way.
+    # Welcome email with how to sign in and the staff tutorial (#227).
     from app.services.welcome_email import send_welcome_email
     try:
         record["welcome_email"] = "sent" if await send_welcome_email(record) else "skipped"
@@ -2274,206 +2250,6 @@ async def admin_manager_assignments():
     return {"assignments": assignments}
 
 
-@router.get("/admin/held-requests")
-async def admin_held_requests(include_closed: bool = Query(False)):
-    """Requests from the request page waiting for their submitter to be added.
-
-    Behind the admin password like every other /admin/* route (#228).
-
-    Args:
-        include_closed: Also list released and cancelled ones.
-
-    Returns:
-        {"held": [...]} newest first.
-    """
-    from app.services.held_requests import list_held_requests
-    return {"held": await list_held_requests(include_closed)}
-
-
-@router.post("/admin/held-requests/{held_id}/release")
-async def admin_release_held_request(held_id: int):
-    """Retry submitting one held request whose person is now on staff.
-
-    Args:
-        held_id: The held request's id.
-
-    Returns:
-        {"results": [...]}; empty when the person is still not on staff.
-    """
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    from app.services.held_requests import held_request_email, release_held_requests
-    email = await held_request_email(held_id)
-    if email is None:
-        raise HTTPException(status_code=404, detail="Held request not found")
-    results = await release_held_requests(email, only_id=held_id)
-    if not results:
-        raise HTTPException(status_code=409, detail="They are not in the Staff Directory yet. Add them first.")
-    return {"results": [vars(r) for r in results]}
-
-
-@router.post("/admin/held-requests/{held_id}/cancel")
-async def admin_cancel_held_request(held_id: int, body: dict | None = None):
-    """Cancel one held request with a reason that can be undone (#445).
-
-    Behind the admin password like every other /admin/* route (#228).
-
-    Args:
-        held_id: The held request's id.
-        body: ``{"reason": "..."}``; the reason is required and stored.
-
-    Returns:
-        {"cancelled": true}.
-
-    Raises:
-        HTTPException: 400 when no reason is given; 404 when there is no open
-            held request with that id.
-    """
-    from app.services.held_requests import HoldError, cancel_held_request
-    if not settings.PROCESSING_ENABLED:                        # read-only: no state change, no email
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    reason = ((body or {}).get("reason") or "").strip()
-    try:
-        cancelled = await cancel_held_request(held_id, reason)
-    except HoldError as e:                                     # no reason given
-        raise HTTPException(status_code=400, detail=str(e))
-    if not cancelled:
-        raise HTTPException(status_code=404, detail="No open held request with that id")
-    return {"cancelled": True}
-
-
-@router.post("/admin/held-requests/{held_id}/uncancel")
-async def admin_uncancel_held_request(held_id: int):
-    """Undo a cancel, restoring the status the held request had before (#445).
-
-    Behind the admin password like every other /admin/* route (#228).
-
-    Args:
-        held_id: The held request's id.
-
-    Returns:
-        {"restored": true}.
-
-    Raises:
-        HTTPException: 503 while processing is off; 409 when the person has made
-            another request since; 404 when the request is not cancelled or does
-            not exist.
-    """
-    from app.services.held_requests import HoldError, uncancel_held_request
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    try:
-        restored = await uncancel_held_request(held_id)
-    except HoldError as e:                                     # restoring would give them two at once
-        raise HTTPException(status_code=409, detail=str(e))
-    if not restored:
-        raise HTTPException(status_code=404, detail="No cancelled held request with that id")
-    return {"restored": True}
-
-
-# ----- #444: Add employee on a name already on staff edits that record -----
-
-class HeldProfileBody(BaseModel):
-    """The profile edit saved from a held request's Add employee page (#444).
-
-    Attributes:
-        changes: Entitlement and balance wire keys -> new values.
-        fields: Email, department, pay type and location -> new values.
-        manager_mode: "replace" (the supervisor becomes the only manager) or
-            "alongside" (the supervisor joins the managers on record).
-        reason: Why; required and stored with the history.
-    """
-    changes: dict[str, Any] = {}
-    fields: dict[str, Any] = {}
-    manager_mode: str
-    reason: str
-
-
-async def held_profile_update(held_id: int, body: HeldProfileBody, *, actor_name: str,
-                              supervisor_id: str | None, source: str) -> dict:
-    """Run one held profile edit and turn its errors into HTTP answers (#444).
-
-    Shared by the manager route (team_manage.py) and the admin route below.
-
-    Args:
-        held_id: The held request the edit comes from.
-        body: The edit.
-        actor_name: Who is saving, for the history and the notices.
-        supervisor_id: The manager's staff id (must hold the request), or None for an admin.
-        source: The history channel.
-
-    Returns:
-        The service result (see ``held_profile.update_existing_from_held``).
-
-    Raises:
-        HTTPException: 503 while processing is off or the switch runs; the
-            service's own status for a refused edit; 400 a bad value; 404 the
-            record vanished; 502 the staff write failed.
-    """
-    from app.services import held_profile
-    from app.services.staff_entitlements import StaffWriteError
-    from app.services.switch_pause import SystemPaused
-    if not settings.PROCESSING_ENABLED:                       # a staff write, like every profile edit
-        raise HTTPException(status_code=503, detail="Processing is currently disabled")
-    await _refuse_if_paused()
-    try:
-        return await held_profile.update_existing_from_held(
-            held_id, actor_name=actor_name, supervisor_id=supervisor_id, changes=body.changes,
-            fields=body.fields, manager_mode=body.manager_mode, reason=body.reason, source=source,
-        )
-    except held_profile.HeldProfileError as e:               # refused before anything was written
-        raise HTTPException(status_code=e.status_code, detail=str(e))
-    except LookupError as e:                                 # the record vanished mid-edit
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:                                  # a value the staff service refused
-        raise HTTPException(status_code=400, detail=str(e))
-    except StaffWriteError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except SystemPaused as e:
-        raise HTTPException(status_code=503, detail=e.message)
-
-
-@router.get("/admin/held/{held_id}")
-async def admin_held_for_add(held_id: int):
-    """What Add employee shows for a held request opened from the admin list (#444).
-
-    Behind the admin password like every other /admin/* route (#228). An admin
-    acts for whoever holds the request now.
-
-    Args:
-        held_id: The held request's id.
-
-    Returns:
-        See ``held_profile.held_for_add``.
-
-    Raises:
-        HTTPException: 404 when there is no such request.
-    """
-    from app.services.held_profile import held_for_add
-    found = await held_for_add(held_id, None)
-    if found is None:
-        raise HTTPException(status_code=404, detail="Held request not found")
-    return found
-
-
-@router.post("/admin/held/{held_id}/update-existing")
-async def admin_held_update_existing(held_id: int, body: HeldProfileBody):
-    """Save the profile edit of the record that already has the held request's name (#444).
-
-    Behind the admin password like every other /admin/* route (#228). The
-    supervisor who holds the request becomes (or joins) the person's managers.
-
-    Args:
-        held_id: The held request's id.
-        body: The edit.
-
-    Returns:
-        See ``held_profile.update_existing_from_held``.
-    """
-    return await held_profile_update(held_id, body, actor_name="An admin", supervisor_id=None,
-                                     source="admin_dashboard")
-
-
 @router.get("/admin/request-columns")
 async def admin_request_columns():
     """Report whether SubmitterEmail and RequestSource exist on the request lists.
@@ -2548,7 +2324,7 @@ async def admin_carryover_payout_window():
 async def admin_set_carryover_payout_window(body: CarryoverPayoutWindow):
     """Set or clear the dates carry-over and payout requests are open (#176).
 
-    Only new requests from the request page, held requests and /api/forms
+    Only new requests from the request page and /api/forms
     are affected. Requests already sent keep going through approval, and the
     Microsoft Form stays under HR's control on the bulletin board.
 
