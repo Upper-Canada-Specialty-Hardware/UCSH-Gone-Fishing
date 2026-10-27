@@ -12,6 +12,7 @@ const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 import AdminGate from './components/admin/AdminGate';
 import RequestPage from './pages/RequestPage';
 import HeldNotOnTeam from './pages/HeldNotOnTeam';
+import CancelRequest from './pages/CancelRequest';
 import {
   canSeeTeam, loadSession, refreshSessionRole, saveLinkSession, sessionRoleChecked, setAfterSignIn, setSignInNotice,
 } from './api/intake';
@@ -188,6 +189,7 @@ export default function App() {
           <Route path="/new-hire" element={<RequestPage />} />
           {/* The supervisor's "Not on my team" email link now lands here (#483); public. */}
           <Route path="/held/not-on-team" element={<HeldNotOnTeam />} />
+          <Route path="/cancel" element={<CancelRequest />} />
           <Route path="/my/request" element={<SignedIn><TopBar nav /><Enter><RequestPage /></Enter></SignedIn>} />
           {/* The open tab or screen is part of the url, so it survives a refresh and can be shared. */}
           <Route path="/my/:tab?" element={<SignedIn><Framed><EmployeeDashboard /></Framed></SignedIn>} />

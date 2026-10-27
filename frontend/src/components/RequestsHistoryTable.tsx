@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Button, MenuItem, Paper, Snackbar, TextField } from '@mui/material';
+import {
+  Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, MenuItem, Paper, Snackbar, TextField,
+} from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import SplitRequestsTable from './admin/SplitRequestsTable';
 import { TableActions } from './admin/RequestsTable';
 import { Row, columnValue, columnsFor, refDate, searchText, toRow } from './admin/requestTable';
 import RejectDialog from './RejectDialog';
 import { LiveScope } from '../api/events';
-import { approveRequest, exportTeamRequests, rejectRequest } from '../api/client';
+import { approveRequest, cancelMyRequest, exportTeamRequests, rejectRequest } from '../api/client';
 
 /**
  * The employee History tab (#359) and the manager History tab (#360) share the
@@ -16,8 +18,8 @@ import { approveRequest, exportTeamRequests, rejectRequest } from '../api/client
  * gives it the toolbar those tabs need (search, status pills, a type filter, a
  * date range) and, by mode, the right actions:
  *
- * - mode "mine": read-only. An employee cannot approve, reject, refund, delete
- *   or cancel their own request, so no row carries an action.
+ * - mode "mine": an employee cannot approve, reject, refund or delete, so the
+ *   only action is cancelling their own request while it still waits (#519).
  * - mode "team": a request still waiting on this manager can be approved or
  *   rejected in its row (the existing /team/approve and /team/reject routes);
  *   refund and delete stay admin-only. A team-scoped Excel export is offered.
@@ -35,6 +37,7 @@ const STATUS_VIEWS: [string, string][] = [
   ['Approved', 'Approved'],
   ['Rejected', 'Rejected'],
   ['Refunded', 'Refunded'],
+  ['Cancelled', 'Cancelled'],
 ];
 
 // One shared empty set for the selection/leaving props the table still takes but
@@ -84,6 +87,8 @@ interface Props {
   processingEnabled?: boolean;
   /** Where another tab asked the table to land, or null. */
   focus?: HistoryFocus | null;
+  /** Re-read the requests after a change made here (a cancel, mine only). */
+  onChanged?: () => void;
 }
 
 /**
@@ -92,7 +97,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The toolbar, the status pills and the requests table in a card.
  */
-export default function RequestsHistoryTable({ requests, mode, timelineScope, processingEnabled = false, focus = null }: Props) {
+export default function RequestsHistoryTable({ requests, mode, timelineScope, processingEnabled = false, focus = null, onChanged }: Props) {
   const theme = useTheme();
   const [query, setQuery] = useState('');                                    // the search box text
   const [statusView, setStatusView] = useState('all');                       // the active status pill
@@ -108,6 +113,7 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
   const [busyKey, setBusyKey] = useState<string | null>(null);               // the row a decision is running on
   const [snack, setSnack] = useState({ open: false, message: '' });          // a short confirmation/error
   const [rejectRow, setRejectRow] = useState<Row | null>(null);              // the row awaiting a reject reason (#433)
+  const [cancelRow, setCancelRow] = useState<Row | null>(null);              // the own request awaiting a cancel confirm (#519)
 
   // Every request flattened to the one table row shape; 'history' means no waiting badge.
   const allRows = useMemo<Row[]>(() => requests.map((r) => toRow(r, 'history')), [requests]);
@@ -215,15 +221,39 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
     }
   }, [mode]);
 
-  // The read-only tables still pass a full actions object; only approve/reject
-  // are ever reached (and only in team mode), the rest are never rendered.
+  /**
+   * Cancel one of the employee's own pending requests (#519).
+   *
+   * The server refuses one that is no longer pending (decided in the meantime)
+   * with a reason, shown in the snackbar. On success the rows are re-read.
+   *
+   * @param r - The row, already confirmed.
+   */
+  const cancelMine = useCallback(async (r: Row) => {
+    if (mode !== 'mine') return;                         // only the employee's own table cancels
+    setBusyKey(`${r.request_type}-${r.id}`);             // disable this row's button while it runs
+    try {
+      await cancelMyRequest(r.request_type, r.id);
+      setSnack({ open: true, message: `Request ${r.id} cancelled. Your manager was told.` });
+      onChanged?.();                                     // show it as Cancelled straight away
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;        // e.g. "already approved"
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'The request could not be cancelled.' });
+    } finally {
+      setBusyKey(null);
+    }
+  }, [mode, onChanged]);
+
+  // The tables still pass a full actions object; only approve/reject (team) and
+  // cancel (mine) are ever reached, the rest are never rendered.
   // Rejecting opens the reason dialog first (#433); approving runs at once.
   const noop = useCallback(() => {}, []);
   const actions: TableActions = useMemo(() => ({
     approve: (r) => decide(r, true),
     reject: (r) => setRejectRow(r),
     refund: noop, edit: noop, remind: noop, reprocess: noop, audit: noop, delete: noop,
-  }), [decide, noop]);
+    cancel: mode === 'mine' ? (r) => setCancelRow(r) : undefined,   // asks first, then cancels
+  }), [decide, noop, mode]);
 
   /** Download the shown rows as a team-scoped .xlsx (manager only). */
   const doExport = useCallback(async () => {
@@ -333,6 +363,22 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
         onCancel={() => setRejectRow(null)}
         onConfirm={(reason) => { const r = rejectRow; setRejectRow(null); if (r) void decide(r, false, reason); }}
       />
+
+      {/* Cancelling asks first: it cannot be undone from here (#519). */}
+      <Dialog open={cancelRow !== null} onClose={() => setCancelRow(null)}>
+        <DialogTitle>Cancel request {cancelRow?.id}?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Your manager is told it was cancelled and nothing comes off your balances. To take the time off later, send a new request.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCancelRow(null)}>Keep it</Button>
+          <Button color="error" variant="contained" onClick={() => { const r = cancelRow; setCancelRow(null); if (r) void cancelMine(r); }}>
+            Cancel request
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar open={snack.open} autoHideDuration={4000} onClose={() => setSnack((s) => ({ ...s, open: false }))} message={snack.message} />
     </Paper>

@@ -561,6 +561,93 @@ export const confirmNotOnTeam = (token: string) =>
   intake.post<NotOnTeamInfo>('/held/not-on-team/confirm', null, { params: { token } });
 
 /**
+ * What the public cancel page shows for a receipt's "cancel this request" link (#519).
+ * ``state`` is "open" while it can still be cancelled, "done" right after this
+ * page cancelled it, "invalid" for a bad link, else the request's status now.
+ */
+export interface CancelInfo {
+  state: string;
+  request_number: string;
+  summary: string;
+}
+
+/**
+ * The details for the public cancel page (#519). Read-only.
+ *
+ * @param token - The signed cancel token from the receipt's link.
+ * @returns The request's summary and current state.
+ */
+export const getCancelInfo = (token: string) =>
+  intake.get<CancelInfo>('/cancel/info', { params: { token } });
+
+/**
+ * Cancel the request from the public page's confirm button (#519).
+ *
+ * @param token - The signed cancel token.
+ * @returns The outcome (``done`` on a fresh cancel, else what it is now).
+ * @throws AxiosError 503 while processing is off.
+ */
+export const confirmCancel = (token: string) =>
+  intake.post<CancelInfo>('/cancel/confirm', null, { params: { token } });
+
+/** One of the person's own pending requests that holds the days they asked for (#518). */
+export interface PendingClash {
+  item_id: string;
+  /** The dates in words, e.g. "Nov 2, 2026 to Nov 6, 2026". */
+  when: string;
+  leave_type: string;
+  days: number | null;
+}
+
+/** The 409 body when the new leave lands on days of the person's own pending request (#518). */
+export interface PendingClashDetail {
+  code: 'pending_clash';
+  message: string;
+  pending: PendingClash[];
+}
+
+/**
+ * The pending-clash offer from a failed submit, when that is what it was (#518).
+ *
+ * @param err - What axios threw.
+ * @returns The offer, or null for any other failure.
+ */
+export function pendingClashOf(err: any): PendingClashDetail | null {
+  const detail = err?.response?.data?.detail;                  // FastAPI puts the body under "detail"
+  return err?.response?.status === 409 && detail?.code === 'pending_clash' ? detail : null;
+}
+
+/**
+ * Change the signed-in person's own pending leave to the form they just filled in (#518).
+ *
+ * @param session - The saved sign-in.
+ * @param itemId - The pending leave request to change.
+ * @param form - The leave form, snake_case, as for submitting.
+ * @returns The changed request's number and a fresh status token.
+ * @throws AxiosError 400 bad form or nothing changed, 404 not theirs, 409 no longer pending or clashes, 503 off.
+ */
+export const changeMyLeave = (session: EmployeeSession, itemId: string, form: Record<string, unknown>) =>
+  dashboard.post<{ status: string; request_type: string; item_id: string; status_token: string | null }>(
+    `/me/requests/leave/${itemId}/change`, form, {
+      params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+    });
+
+/**
+ * Cancel the signed-in person's own pending request from the request page (#519).
+ *
+ * @param session - The saved sign-in.
+ * @param type - "leave", "overtime" or "carryover-payout".
+ * @param itemId - The request number.
+ * @returns ``{status: "cancelled", item_id, already}``.
+ * @throws AxiosError 404 not theirs, 409 no longer pending, 503 off.
+ */
+export const cancelMyRequestAs = (session: EmployeeSession, type: string, itemId: string) =>
+  dashboard.post<{ status: string; item_id: string; already: boolean }>(
+    `/me/requests/${type}/${itemId}/cancel`, {}, {
+      params: { token: session.token, role: session.role, uid: session.uid, exp: session.exp },
+    });
+
+/**
  * Submit a request as the signed-in employee.
  *
  * @param session - The saved sign-in; sent as the usual token query parameters.

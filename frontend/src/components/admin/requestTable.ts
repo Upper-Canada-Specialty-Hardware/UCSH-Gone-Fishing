@@ -32,7 +32,7 @@ export interface Row {
   loc: string;
   manager: string;                   // first/primary manager
   managers: string[];                // all managers named
-  status: string;                    // Pending/Approved/Rejected/Refunded/Stuck
+  status: string;                    // Pending/Approved/Rejected/Refunded/Cancelled/Stuck
   stage: string;                     // the live stage words (Postgres mode), or ''
   created: string;                   // ISO date (date part)
   approved: string;                  // ISO date, or ''
@@ -336,7 +336,7 @@ function uniq(values: string[]): string[] {
 export function filterDefs(rows: Row[]): FilterDef[] {
   return [
     { key: 'kind', label: 'Type', options: uniq(rows.map((r) => r.kindLabel)), test: (r, v) => r.kindLabel === v },
-    { key: 'status', label: 'Status', options: ['Pending', 'Approved', 'Rejected', 'Refunded'], test: (r, v) => r.status === v },
+    { key: 'status', label: 'Status', options: ['Pending', 'Approved', 'Rejected', 'Refunded', 'Cancelled'], test: (r, v) => r.status === v },
     { key: 'mgr', label: 'Manager', options: uniq(rows.flatMap((r) => r.managers)), test: (r, v) => r.managers.includes(v) },
     { key: 'dept', label: 'Department', options: uniq(rows.map((r) => r.dept)), test: (r, v) => r.dept === v },
     { key: 'loc', label: 'Location', options: uniq(rows.map((r) => r.loc)), test: (r, v) => r.loc === v },

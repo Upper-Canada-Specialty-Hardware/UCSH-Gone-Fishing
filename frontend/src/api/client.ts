@@ -76,6 +76,16 @@ export const getConfig = () => api.get('/config');
 export const getMyBalances = () => api.get('/me/balances');
 export const getMyRequests = (params?: Record<string, string>) =>
   api.get('/me/requests', { params });
+/**
+ * Cancel one of your own pending requests from History (#519).
+ *
+ * @param type - The url form: "leave", "overtime" or "carryover-payout".
+ * @param id - The request number.
+ * @returns ``{status: "cancelled", item_id, already}``.
+ * @throws AxiosError 404 not yours, 409 no longer pending, 503 processing off.
+ */
+export const cancelMyRequest = (type: string, id: string) =>
+  api.post(`/me/requests/${type}/${id}/cancel`, { from: 'history' });   // "from" records the channel
 
 // Manager
 export const getTeamMembers = () => api.get('/team/members');
