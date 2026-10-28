@@ -1148,7 +1148,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function managerToday() {
     var pend = REQS.filter(function (r) { return r.mgr === ME && r.status === 'Pending'; }).sort(function (a, b) { return b.age - a.age; });
     var offWeek = team().filter(function (p) { for (var i = 0; i < 5; i++) if (offOn(p.name, i).some(function (r) { return r.status === 'Approved'; })) return true; return false; }).length;
-    return '<div class="kpis"><div class="kpi"><small>Waiting on you</small><b>' + pend.length + '</b><span class="trend' + (pend.some(function (r) { return r.age > 7; }) ? ' down' : '') + '">' + (pend.length ? 'oldest ' + pend[0].age + ' days' : 'nothing waiting') + '</span></div>' +
+    // Your team leads, as on the real Today tab: the way into the Team tab (#523).
+    return '<div class="kpis"><div class="kpi"><small>Your team</small><b>' + team().length + '</b><span class="trend">balances, make a request</span></div>' +
+      '<div class="kpi"><small>Waiting on you</small><b>' + pend.length + '</b><span class="trend' + (pend.some(function (r) { return r.age > 7; }) ? ' down' : '') + '">' + (pend.length ? 'oldest ' + pend[0].age + ' days' : 'nothing waiting') + '</span></div>' +
       '<div class="kpi"><small>Off this week</small><b>' + offWeek + '</b><span class="trend">of ' + team().length + ' on the team</span></div>' +
       '<div class="kpi"><small>Average time to approve</small><b>1.4 d</b><span class="trend">last 90 days</span>' + spark([3.1, 2.6, 2.8, 2.2, 1.9, 1.7, 1.4]) + '</div>' +
       '<div class="kpi"><small>Days off taken this year</small><b>38.5</b><span class="trend">approved leave, team total</span>' + spark([2, 4, 7, 9, 11, 15, 25, 31, 34, 38.5]) + '</div></div>' +
@@ -1232,7 +1234,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     });
     var toolbar = '<div class="toolbar"><input class="input" data-search="teamq" placeholder="Start typing a name" value="' + esc(state.filter.teamq || '') + '" aria-label="Search by name">' +
       '<button class="fchip" type="button" data-act="teamview" data-tv="cards" aria-pressed="' + (state.teamView !== 'table') + '">Cards</button><button class="fchip" type="button" data-act="teamview" data-tv="table" aria-pressed="' + (state.teamView === 'table') + '">Table</button>' +
-      '<button class="btn out' + P + '" type="button" data-act="logsick" style="margin-left:auto">Make a request</button></div>';
+      '<button class="btn pri' + P + '" type="button" data-act="logsick" style="margin-left:auto">Make a request</button></div>';
     var card = function (p) {
       var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
       var line = function (k, v, y) { return '<div class="potline"><span class="muted">' + k + '</span>' + meter(v, v, y || 5) + '<span class="v' + (v < 0 ? ' neg' : '') + '">' + v + (y ? ' of ' + y : '') + '</span></div>'; };
