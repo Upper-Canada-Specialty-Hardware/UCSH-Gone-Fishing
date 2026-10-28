@@ -4,6 +4,8 @@ import { ADMIN_SIGNED_OUT, AdminSession, adminSessionToken, clearAdminSession } 
 // Type only (erased at build time, so no runtime import cycle): the manager
 // person view reuses the admin record shape (#372).
 import type { StaffRecord } from './staff';
+// Type only as well: the team Make a request dialog reuses the admin form shapes (#523).
+import type { AdminRequestForm, PreviewResult } from './requestsAdmin';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -91,12 +93,43 @@ export const approveRequest = (type: string, id: string) =>
 export const rejectRequest = (type: string, id: string, reason: string) =>
   api.post(`/team/reject/${type}/${id}`, { reason });
 
-// Manager - log a sick day for a team member; the backend creates the "Sick or
-// Personal Day" request in their name and approves it on the spot. Offered only
-// where GET /team/members reports can_log_sick_days (an enabled province).
-export const logSickDay = (payload: {
-  employee_id: string; start_date: string; end_date?: string; notes?: string;
-}) => api.post('/team/sick-days', payload);
+// Manager - make a request for someone on the team, approved as made (#523).
+// Same form and preview as the admin New request, limited to the manager's team.
+
+/** What the manager's Make a request dialog needs besides the team. */
+export interface TeamRequestOptions {
+  leave_types: string[];
+  /** Whether carry-over and payout may be asked for today (HR's dates). */
+  carryover_payout_open: boolean;
+  /** Why they are closed, worded for the manager; '' while open. */
+  carryover_closed_message: string;
+}
+
+/**
+ * The leave types and today's carry-over state for the Make a request dialog.
+ *
+ * @returns The options.
+ */
+export const getTeamRequestOptions = () => api.get<TeamRequestOptions>('/team/requests/new-options');
+
+/**
+ * What a request would do to a teammate's balances. Saves nothing.
+ *
+ * @param body - request_type, employee_id and the form.
+ * @returns The preview, in the admin preview's shape.
+ */
+export const previewTeamRequest = (body: { request_type: string; employee_id: string; form: AdminRequestForm }) =>
+  api.post<PreviewResult>('/team/requests/preview', body);
+
+/**
+ * Make a request for a teammate and approve it on the spot.
+ *
+ * @param body - request_type, employee_id and the form.
+ * @returns {status: 'approved' | 'pending', request_type, item_id, message?}.
+ * @throws The axios error: 403 not on the team, 409 carry-over closed, 400 a bad form.
+ */
+export const createTeamRequest = (body: { request_type: string; employee_id: string; form: AdminRequestForm }) =>
+  api.post('/team/requests/new', body);
 
 // Admin
 export const getAdminBalances = (params?: Record<string, string>) =>

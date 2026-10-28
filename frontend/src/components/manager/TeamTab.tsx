@@ -4,7 +4,7 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
-import EventBusyIcon from '@mui/icons-material/EventBusy';
+import EventNoteIcon from '@mui/icons-material/EventNote';
 import { AnimatePresence, m } from 'motion/react';
 import KindPill from '../KindPill';
 import PillToggle from '../PillToggle';
@@ -65,8 +65,6 @@ interface Props {
   managerName: string;
   /** Whether writes are on; Save / Add / Remove are disabled when off. */
   processingEnabled: boolean;
-  /** Whether the manager's location may log a sick day (#130); shows the button. */
-  canLogSickDays: boolean;
   /** A filter asked for by a Today tile; applied when its nonce changes. */
   requestedFilter: RequestedTeamFilter | null;
   /** Called once the requested filter has been applied, so the parent can drop
@@ -79,8 +77,8 @@ interface Props {
   onPersonRequested: () => void;
   /** Open the Add-a-new-hire screen (the dashboard's "add" tab). */
   onAddNewHire: () => void;
-  /** Open the sick-day dialog. */
-  onLogSickDay: () => void;
+  /** Open Make a request, for someone on the team (#523). */
+  onMakeRequest: () => void;
   /** Re-pull the team after a change (balances, add, remove) so the cards follow. */
   onRefresh: () => void;
   /** Surface a message on the dashboard snackbar. */
@@ -100,8 +98,8 @@ interface Props {
  */
 export default function TeamTab({
   members, requests, pending, absences, colorOf, labelOf, managerName, processingEnabled,
-  canLogSickDays, requestedFilter, onFilterApplied, requestedPerson, onPersonRequested,
-  onAddNewHire, onLogSickDay, onRefresh, onNotify,
+  requestedFilter, onFilterApplied, requestedPerson, onPersonRequested,
+  onAddNewHire, onMakeRequest, onRefresh, onNotify,
 }: Props) {
   const theme = useTheme();
   const t = theme.tokens;
@@ -419,7 +417,7 @@ export default function TeamTab({
         })}
       </Box>
 
-      {/* Toolbar: search, Cards/Table, and Log sick day (where enabled). */}
+      {/* Toolbar: search, Cards/Table, and Make a request. */}
       <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
         <TextField
           label="Search by name" value={search} onChange={(e) => setSearch(e.target.value)}
@@ -429,11 +427,11 @@ export default function TeamTab({
           name="team-view" label="Team view" value={view} onChange={setView}
           options={[{ key: 'cards', label: 'Cards' }, { key: 'table', label: 'Table' }]}
         />
-        {canLogSickDays && (
-          <Button variant="outlined" startIcon={<EventBusyIcon />} disabled={!processingEnabled} onClick={onLogSickDay} sx={{ ml: { sm: 'auto' } }}>
-            Log sick day
-          </Button>
-        )}
+        {/* Every manager, every province: sick days included (#523, replacing the BC-only Log sick day).
+            Its only entry point, so it is the tab's filled button. */}
+        <Button variant="contained" startIcon={<EventNoteIcon />} disabled={!processingEnabled} onClick={onMakeRequest} sx={{ ml: { sm: 'auto' } }}>
+          Make a request
+        </Button>
       </Box>
 
       {filter && (

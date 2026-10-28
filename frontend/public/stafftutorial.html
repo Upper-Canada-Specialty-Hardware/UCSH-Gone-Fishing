@@ -1148,7 +1148,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function managerToday() {
     var pend = REQS.filter(function (r) { return r.mgr === ME && r.status === 'Pending'; }).sort(function (a, b) { return b.age - a.age; });
     var offWeek = team().filter(function (p) { for (var i = 0; i < 5; i++) if (offOn(p.name, i).some(function (r) { return r.status === 'Approved'; })) return true; return false; }).length;
-    return '<div class="kpis"><div class="kpi"><small>Waiting on you</small><b>' + pend.length + '</b><span class="trend' + (pend.some(function (r) { return r.age > 7; }) ? ' down' : '') + '">' + (pend.length ? 'oldest ' + pend[0].age + ' days' : 'nothing waiting') + '</span></div>' +
+    // Your team leads, as on the real Today tab: the way into the Team tab (#523).
+    return '<div class="kpis"><div class="kpi"><small>Your team</small><b>' + team().length + '</b><span class="trend">balances, make a request</span></div>' +
+      '<div class="kpi"><small>Waiting on you</small><b>' + pend.length + '</b><span class="trend' + (pend.some(function (r) { return r.age > 7; }) ? ' down' : '') + '">' + (pend.length ? 'oldest ' + pend[0].age + ' days' : 'nothing waiting') + '</span></div>' +
       '<div class="kpi"><small>Off this week</small><b>' + offWeek + '</b><span class="trend">of ' + team().length + ' on the team</span></div>' +
       '<div class="kpi"><small>Average time to approve</small><b>1.4 d</b><span class="trend">last 90 days</span>' + spark([3.1, 2.6, 2.8, 2.2, 1.9, 1.7, 1.4]) + '</div>' +
       '<div class="kpi"><small>Days off taken this year</small><b>38.5</b><span class="trend">approved leave, team total</span>' + spark([2, 4, 7, 9, 11, 15, 25, 31, 34, 38.5]) + '</div></div>' +
@@ -1232,7 +1234,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     });
     var toolbar = '<div class="toolbar"><input class="input" data-search="teamq" placeholder="Start typing a name" value="' + esc(state.filter.teamq || '') + '" aria-label="Search by name">' +
       '<button class="fchip" type="button" data-act="teamview" data-tv="cards" aria-pressed="' + (state.teamView !== 'table') + '">Cards</button><button class="fchip" type="button" data-act="teamview" data-tv="table" aria-pressed="' + (state.teamView === 'table') + '">Table</button>' +
-      '<button class="btn out' + P + '" type="button" data-act="logsick" style="margin-left:auto">Log sick day</button></div>';
+      '<button class="btn pri' + P + '" type="button" data-act="logsick" style="margin-left:auto">Make a request</button></div>';
     var card = function (p) {
       var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
       var line = function (k, v, y) { return '<div class="potline"><span class="muted">' + k + '</span>' + meter(v, v, y || 5) + '<span class="v' + (v < 0 ? ' neg' : '') + '">' + v + (y ? ' of ' + y : '') + '</span></div>'; };
@@ -1716,9 +1718,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           todo: 'Under <b>Managers</b>, the × on your own chip removes just you from this person. On the team grid, <b>Add to my team</b> adds any active staff member except yourself.',
           know: 'People can have more than one manager, so adding or removing yourself never touches anyone else. If you are their only manager, removing yourself leaves their requests with nobody until someone adds a manager.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; var a = person('Avery Example'); state.teamPerson = a ? a.id : null; state.teamEdits = null; state.teamRemove = false; } },
-        { title: 'Log a sick day', target: '[data-act="logsick"]',
-          todo: 'For hourly staff in British Columbia, select <b>Log sick day</b> to record one on their behalf.',
-          know: 'It is approved straight away and comes off their sick balance, so a worker who is off sick does not have to send the request themselves.',
+        { title: 'Make a request for someone', target: '[data-act="logsick"]',
+          todo: 'Select <b>Make a request</b> to record leave, a sick day, make-up time, or a carry-over or payout for someone on your team.',
+          know: 'It is approved straight away under your name and moves their balance, so someone who is off sick or away does not have to send the request themselves. Your own requests still go through the request page.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; state.teamPerson = null; state.teamEdits = null; state.teamRemove = false; },
           act: function () { var b = document.querySelector('[data-act="logsick"]'); if (b) b.click(); } },
         { title: 'A new starter names you',
@@ -2352,9 +2354,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           '<button class="btn ghost" type="button" data-act="wzback">Back</button><button class="btn pri" type="button" data-act="wzdone">Done</button>', true);
       case 'checklist': return dialog('What moved where', '<span class="small muted">Every part of today\'s admin dashboard, and where it lives in this design.</span><div class="scroll"><table class="checklist"><thead><tr><th>Today</th><th>Now</th></tr></thead><tbody>' + CHECKLIST.map(function (c) { return '<tr><td>' + c[0] + '</td><td>' + c[1] + '</td></tr>'; }).join('') + '</tbody></table></div>', '', true);
       case 'mgradd': return dialog('Add a new hire', addEmployee(false), '', true);
-      case 'logsick': return dialog('Log a sick day', '<span class="small muted">For hourly staff in British Columbia, a manager can record a sick day on their behalf. It is approved straight away and comes off their sick balance.</span>' +
+      case 'logsick': return dialog('Make a request for someone on your team', '<span class="small muted">Leave (sick days and part days included), make-up time, or carry-over and payout while HR has them open. It is approved straight away, recorded as approved by you, and the request notes that you made it.</span>' +
         '<label class="field">Who<select class="input" id="sickWho">' + team().map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label>' +
-        '<label class="field">Day<input class="input" type="date" value="2026-10-28"></label>', '<button class="btn pri" type="button" data-act="dologsick">Log and approve</button>');
+        '<label class="field">Leave type<select class="input"><option>Sick or Personal Day</option><option>Vacation</option><option>Part day</option></select></label>' +
+        '<label class="field">Day<input class="input" type="date" value="2026-10-28"></label>', '<button class="btn pri" type="button" data-act="dologsick">Make and approve</button>');
       case 'teamadd': var addable = STAFF.filter(function (p) { return p.name !== ME && p.mgrs.indexOf(ME) < 0; });
         return dialog('Add to my team', '<span class="small muted">Pick any active staff member. They can have more than one manager, so this does not remove anyone else.</span>' +
           (addable.length ? '<label class="field">Person<select class="input" id="teamAddPick">' + addable.map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label>' : '<div class="note">Everyone already reports to you.</div>'),
@@ -2576,7 +2579,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'teamadd': state.modal = { kind: 'teamadd', sel: '' }; render(); return;
       case 'doteamadd': { var who3 = ($('teamAddPick') || {}).value || ''; var pp5 = person(who3); if (pp5 && pp5.mgrs.indexOf(ME) < 0) pp5.mgrs.push(ME); state.modal = null; toast((pp5 ? first(pp5.name) : 'They') + ' joined your team (example).'); render(); return; }
       case 'logsick': state.modal = { kind: 'logsick' }; render(); return;
-      case 'dologsick': { var who4 = ($('sickWho') || {}).value || ''; var pp6 = person(who4); state.modal = null; toast('Sick day logged for ' + (pp6 ? first(pp6.name) : 'them') + ' and approved (example).'); render(); return; }
+      case 'dologsick': { var who4 = ($('sickWho') || {}).value || ''; var pp6 = person(who4); state.modal = null; toast('Request made for ' + (pp6 ? first(pp6.name) : 'them') + ' and approved (example).'); render(); return; }
       // ---- Calendar and Trends click-throughs ----
       case 'calsel': { var cid = t.getAttribute('data-cal'); state.calSel = state.calSel === cid ? null : cid; render(); return; }
       case 'pickday': { var d2 = +t.getAttribute('data-day'); state.pickedDay = state.pickedDay === d2 ? null : d2; render(); return; }
