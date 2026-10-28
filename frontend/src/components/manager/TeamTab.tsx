@@ -427,8 +427,9 @@ export default function TeamTab({
           name="team-view" label="Team view" value={view} onChange={setView}
           options={[{ key: 'cards', label: 'Cards' }, { key: 'table', label: 'Table' }]}
         />
-        {/* Every manager, every province: sick days included (#523, replacing the BC-only Log sick day). */}
-        <Button variant="outlined" startIcon={<EventNoteIcon />} disabled={!processingEnabled} onClick={onMakeRequest} sx={{ ml: { sm: 'auto' } }}>
+        {/* Every manager, every province: sick days included (#523, replacing the BC-only Log sick day).
+            Its only entry point, so it is the tab's filled button. */}
+        <Button variant="contained" startIcon={<EventNoteIcon />} disabled={!processingEnabled} onClick={onMakeRequest} sx={{ ml: { sm: 'auto' } }}>
           Make a request
         </Button>
       </Box>

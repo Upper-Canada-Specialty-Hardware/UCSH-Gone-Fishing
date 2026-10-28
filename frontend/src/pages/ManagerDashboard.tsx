@@ -510,9 +510,8 @@ export default function ManagerDashboard() {
             {' '}{members.length} {members.length === 1 ? 'person' : 'people'} on your team.
           </Typography>
         </Box>
+        {/* Make a request lives on the Team tab only (#523): up here it read as the manager's own request. */}
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-          {/* A request for someone on the team, approved as made (#523). */}
-          <Button variant="contained" disabled={!processingEnabled} onClick={openMakeRequest}>Make a request</Button>
           <Button variant="outlined" onClick={() => go('add')}>Add a new hire</Button>
         </Box>
       </Box>
@@ -534,8 +533,13 @@ export default function ManagerDashboard() {
       <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
-          {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab. */}
+          {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab.
+              Today is the home tab, so the first tile is the way into the Team tab itself. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
+            {/* The whole team, unfiltered: where balances are changed and requests made for someone (#523). */}
+            <TileLink label="Open your team" onClick={() => go('team')}>
+              <Kpi label="Your team" value={String(members.length)} note="balances, make a request" />
+            </TileLink>
             <TileLink label="Open the people waiting on you" onClick={() => openTeamFiltered('waiting')}>
               <Kpi label="Waiting on you" value={String(waiting.length)} note={waiting.length ? `oldest ${oldest} day${oldest === 1 ? '' : 's'}` : 'nothing waiting'} warn={oldest > 7} />
             </TileLink>
