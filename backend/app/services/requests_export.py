@@ -1,165 +1,194 @@
-"""The admin requests screen's Excel export (#278).
+"""The requests Excel export (#278, rebuilt for #488).
 
-Builds one workbook from the requests the admin is looking at (the shown rows,
-or the ticked ones), with one sheet per SharePoint list and every column of
-that list on its sheet. Pure: it takes the request items the dashboard already
-read from /admin/requests, so it is tested without SharePoint or Postgres, and
-it follows the shape and styling of services/carryover_export.py.
+The export dialog on the admin requests screen and the manager History tab
+works out every cell itself, with the same words and dates the table shows
+("Apr 21, 2026", "12 vacation", "Sick or personal"), and posts the sheets it
+previewed. This module only writes them: a bold, frozen, filtered header, real
+numbers in number columns with an optional totals row, wrapped long text, sized
+columns, and no text that Excel could run as a formula. Pure: it reads no live
+data, so it is tested without SharePoint or Postgres.
 """
 
+import re
 from datetime import date
 from io import BytesIO
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
-
-# One sheet per list, in this order. Each entry: (request_type, sheet title).
-SHEETS = [
-    ("leave", "Leave Requests"),
-    ("overtime", "Overtime Requests Data"),
-    ("carryover-payout", "CarryOver_Payout_Data"),
-]
-
-# The columns shown first on each sheet, in this order: (header, item key).
-# Any other field present on a row is appended after these, so nothing is lost.
-COMMON_COLUMNS = [
-    ("Request #", "id"),
-    ("Employee", "employee_name"),
-    ("Manager", "managers"),
-    ("Status", "Status"),
-    ("Created", "Created"),
-    ("Approved date", "ApprovedDate"),
-]
-TYPE_COLUMNS = {
-    "leave": [
-        ("Leave type", "LeaveType"), ("Start date", "StartDate"),
-        ("End date", "EndDate"), ("Days", "Days"), ("Title", "Title"),
-    ],
-    "overtime": [
-        ("Date", "StartDate"), ("Hours", "Hours"), ("Details", "Title"),
-    ],
-    "carryover-payout": [
-        ("Type", "TypeofRequest"), ("Days", "Days"),
-        ("New balance", "NewBalance"), ("System state", "SystemState"),
-    ],
-}
-
-# Keys never shown as their own column: the request_type routing field, the
-# backend's resolved helpers already given a header above, and Graph's own
-# odata annotations.
-_SKIP_KEYS = {"request_type", "employee_name", "managers"}
-
-
-def _is_shown_key(key: str) -> bool:
-    """Whether a field key becomes a column (not routing noise or an odata hint)."""
-    return key not in _SKIP_KEYS and "@" not in key and not key.startswith("odata")
-
-
-def _columns_for(request_type: str, rows: list[dict]) -> list[tuple[str, str]]:
-    """The ordered (header, key) columns for one list's sheet.
-
-    Args:
-        request_type: Which list this sheet is for.
-        rows: The request items going on this sheet.
-
-    Returns:
-        The common columns, then the list's own columns, then any extra field
-        seen on a row that none of those already covers, so every column shows.
-    """
-    columns = COMMON_COLUMNS + TYPE_COLUMNS.get(request_type, [])
-    taken = {key for _, key in columns}                        # keys already given a header
-    extras: list[str] = []
-    for row in rows:
-        for key in row:                                        # preserve first-seen order across rows
-            if key not in taken and key not in extras and _is_shown_key(key):
-                extras.append(key)
-    return columns + [(key, key) for key in extras]            # extra header = its raw field name
-
+from pydantic import BaseModel, Field
 
 # Characters that make Excel/Sheets read a cell as a live formula if they lead
 # it. openpyxl writes a string starting with "=" as a real formula, so a field
 # typed on a form (e.g. "=HYPERLINK(...)") would run when the export is opened.
 _FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
 
+# Characters Excel refuses in a sheet name, and its name length limit.
+_BAD_TITLE = re.compile(r"[\[\]:*?/\\]")
+_TITLE_MAX = 31
+
+
+class ExportColumn(BaseModel):
+    """One column of a sheet, as the dialog chose it."""
+
+    header: str = Field(max_length=80)
+    number: bool = False                     # a real number: right-aligned, may be totalled
+    total: bool = False                      # sum it in the totals row (number columns only)
+    wrap: bool = False                       # long free text: wrapped and kept narrow
+
+
+class ExportSheet(BaseModel):
+    """One sheet: its title, columns and the rows the dialog previewed."""
+
+    title: str = Field(max_length=80)
+    columns: list[ExportColumn] = Field(min_length=1, max_length=60)
+    rows: list[list[str | float | int | None]] = Field(max_length=50000)
+    # Which rows the totals row adds, one flag per row (#516: approved only);
+    # None adds every row, as the summary sheet's counts need.
+    counted: list[bool] | None = Field(default=None, max_length=50000)
+    total_label: str = Field(default="Total", max_length=40)   # the totals row's first cell
+
+
+class RequestsExportBody(BaseModel):
+    """What the export dialog posts: the finished sheets, in order."""
+
+    sheets: list[ExportSheet] = Field(min_length=1, max_length=10)
+
+
+# Excel holds at most this many characters in one cell; a longer value makes
+# Excel report the file as damaged. A field that only grows (a request's "Taken
+# from" text, an audit trail) is cut here instead, with a note saying so.
+_CELL_MAX = 32767
+_CUT_NOTE = " ... (cut: too long for one Excel cell, see the dashboard)"
+
 
 def _sanitize_cell_text(text: str) -> str:
-    """Make a leading-formula string safe by keeping it as text (#294 S1).
+    """Make a cell's text safe to write: never a formula, never over Excel's limit (#294 S1).
 
     Args:
         text: A cell's string value.
 
     Returns:
         The text with a single quote in front when it starts with a formula
-        trigger, which Excel treats as plain text; the text unchanged otherwise.
+        trigger, which Excel treats as plain text, and cut to Excel's cell
+        limit with a note when it is longer; the text unchanged otherwise.
     """
     if text.startswith(_FORMULA_TRIGGERS):                     # would otherwise be read as a formula
-        return "'" + text                                      # quote prefix: Excel keeps it as text
+        text = "'" + text                                      # quote prefix: Excel keeps it as text
+    if len(text) > _CELL_MAX:                                  # past what one cell can hold
+        text = text[:_CELL_MAX - len(_CUT_NOTE)] + _CUT_NOTE   # keep the start, say it was cut
     return text
 
 
-def _cell(value):
-    """A request field as a spreadsheet cell: a list of names joined, else as is.
-
-    Any string value is run through _sanitize_cell_text so a field cannot smuggle
-    a formula into the workbook (#294 S1).
-    """
-    if isinstance(value, list):                                # e.g. AllManagers lookup entries
-        result = ", ".join(
-            str(v.get("LookupValue", v)) if isinstance(v, dict) else str(v) for v in value
-        )
-    elif isinstance(value, dict):                              # a lone lookup object
-        result = value.get("LookupValue", str(value))
-    else:
-        result = value
-    if isinstance(result, str):                                # sanitize only text cells
-        return _sanitize_cell_text(result)
-    return result                                              # numbers, dates, None pass through
-
-
-def _autosize(sheet) -> None:
-    """Widen each column to its longest value, within reason (as carryover_export)."""
-    for i, column in enumerate(sheet.columns, start=1):
-        longest = max((len(str(c.value)) for c in column if c.value is not None), default=8)
-        sheet.column_dimensions[get_column_letter(i)].width = min(max(longest + 2, 10), 45)
-
-
-def build_requests_workbook(requests: list[dict]) -> bytes:
-    """Build the requests export as .xlsx bytes.
+def _cell(value, number: bool):
+    """One posted value as the cell to write.
 
     Args:
-        requests: Request items as /admin/requests returns them: each a flat
-            dict of its SharePoint fields plus "id", "request_type",
-            "employee_name" and "managers".
+        value: Text, a number, or None.
+        number: Whether the column holds numbers.
 
     Returns:
-        The workbook file's bytes, one sheet per list that has any requests
-        (an empty export still gives one sheet, so the file always opens).
+        A float for a readable number in a number column (so Excel sums it),
+        None for a blank, otherwise sanitized text.
     """
-    by_type: dict[str, list[dict]] = {key: [] for key, _ in SHEETS}
-    for item in requests:
-        kind = item.get("request_type")
-        if kind in by_type:
-            by_type[kind].append(item)
+    if value is None or value == "":
+        return None                                            # an empty cell, not ""
+    if number:
+        try:
+            return float(value)                                # Excel sums real numbers only
+        except (TypeError, ValueError):
+            pass                                               # not a number after all: keep as text
+    return _sanitize_cell_text(str(value))                     # text never runs as a formula
 
+
+def _safe_title(title: str, taken: set[str]) -> str:
+    """A sheet name Excel accepts, unique within the workbook.
+
+    Args:
+        title: The name the dialog asked for.
+        taken: Names already used (lower case; Excel ignores case).
+
+    Returns:
+        The name without forbidden characters, cut to 31, numbered if repeated.
+    """
+    base = _BAD_TITLE.sub(" ", title).strip()[:_TITLE_MAX] or "Requests"
+    name, n = base, 2
+    while name.lower() in taken:                               # Excel refuses two sheets of one name
+        suffix = f" ({n})"
+        name = base[:_TITLE_MAX - len(suffix)] + suffix
+        n += 1
+    taken.add(name.lower())
+    return name
+
+
+def _autosize(sheet, wrap_cols: set[int]) -> None:
+    """Widen each column to its longest value, within reason.
+
+    Args:
+        sheet: The worksheet to size.
+        wrap_cols: 1-based indexes of wrapped columns, capped narrower.
+    """
+    for i, column in enumerate(sheet.columns, start=1):
+        longest = max((len(str(c.value)) for c in column if c.value is not None), default=8)
+        cap = 40 if i in wrap_cols else 45                     # wrapped columns stay narrower
+        sheet.column_dimensions[get_column_letter(i)].width = min(max(longest + 2, 10), cap)
+
+
+def build_requests_workbook(sheets: list[ExportSheet]) -> bytes:
+    """Write the dialog's sheets as .xlsx bytes.
+
+    Args:
+        sheets: The sheets in order, each with its columns and rows.
+
+    Returns:
+        The workbook file's bytes.
+    """
     book = Workbook()
-    book.remove(book.active)                                   # drop the default sheet; add our own below
-    for request_type, title in SHEETS:
-        rows = by_type[request_type]
-        if not rows and any(by_type.values()):
-            continue                                           # skip an empty list when others have rows
-        sheet = book.create_sheet(title)
-        columns = _columns_for(request_type, rows)
-        sheet.append([header for header, _ in columns])
-        for item in rows:
-            sheet.append([_cell(item.get(key)) for _, key in columns])
-        for cell in sheet[1]:
-            cell.font = Font(bold=True)                        # header row
-        sheet.freeze_panes = "A2"                              # header stays put when scrolling
-        _autosize(sheet)
+    book.remove(book.active)                                   # drop the default sheet; add our own
+    taken: set[str] = set()
+    bold = Font(bold=True)
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for spec in sheets:
+        sheet = book.create_sheet(_safe_title(spec.title, taken))
+        cols = spec.columns
+        width = len(cols)
+        sheet.append([_sanitize_cell_text(c.header) for c in cols])   # header row
+        for row in spec.rows:
+            padded = (list(row) + [None] * width)[:width]      # exactly one value per column
+            sheet.append([_cell(v, c.number) for v, c in zip(padded, cols)])
+        data_rows = len(spec.rows)
 
-    if not book.sheetnames:                                    # nothing at all: one empty Leave sheet
-        book.create_sheet("Leave Requests").append([h for h, _ in COMMON_COLUMNS])
+        # A totals row under the columns the dialog asked to sum, when there are rows.
+        totalled = [i for i, c in enumerate(cols) if c.number and c.total]
+        if totalled and data_rows:
+            total_row: list = [None] * width
+            total_row[0] = _sanitize_cell_text(spec.total_label)
+            # The data rows the total adds: the flagged ones, or all when none are flagged.
+            counted = spec.counted or []
+            adds = [r + 2 for r in range(data_rows) if spec.counted is None or (r < len(counted) and counted[r])]
+            for i in totalled:
+                total_row[i] = sum(
+                    v for v in (sheet.cell(row=r, column=i + 1).value for r in adds)
+                    if isinstance(v, (int, float))
+                )
+            sheet.append(total_row)
+            for cell in sheet[sheet.max_row]:
+                cell.font = bold                               # the totals row stands out
+
+        for cell in sheet[1]:
+            cell.font = bold                                   # header row
+        sheet.freeze_panes = "A2"                              # header stays put when scrolling
+        # Filter the header and the data only, so a sort never moves the totals row.
+        sheet.auto_filter.ref = f"A1:{get_column_letter(width)}{data_rows + 1}"
+        wrap_cols = {i + 1 for i, c in enumerate(cols) if c.wrap}
+        for col_index in wrap_cols:                            # long free text wraps
+            for (cell,) in sheet.iter_rows(min_col=col_index, max_col=col_index, min_row=2):
+                cell.alignment = wrap
+        for i, c in enumerate(cols, start=1):
+            if c.number:                                       # numbers line up on the right
+                for (cell,) in sheet.iter_rows(min_col=i, max_col=i, min_row=2):
+                    cell.alignment = Alignment(horizontal="right")
+        _autosize(sheet, wrap_cols)
 
     out = BytesIO()
     book.save(out)

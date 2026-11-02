@@ -119,6 +119,7 @@ async def update_employee_managers(
     employee_id: int, manager_sp_user_ids: list[int],
     history_source: str = "system",
     history_reason: str = "Updated from the manager assignment screen.",
+    history_actor: str | None = None,
 ) -> dict:
     """Update the AllManagers field on a single Staff Directory record.
 
@@ -135,6 +136,8 @@ async def update_employee_managers(
             ``"manager_dashboard"`` when a manager adds or removes themselves (#363).
         history_reason: The reason stored with that history row, naming who made the
             change for a manager-dashboard edit.
+        history_actor: Who made the change (the manager's name for a manager-dashboard
+            edit); None leaves the reader to fall back to ``history_source`` (#447).
 
     Returns:
         ``{"id", "name", "managers"}`` with the managers resolved to names.
@@ -162,6 +165,7 @@ async def update_employee_managers(
         links=links,
         history_source=history_source,                   # "system", or a manager's own team (#363)
         history_reason=history_reason,
+        history_actor=history_actor,                     # the manager's name for a team edit (#447)
     )
     logger.info("Updated AllManagers for employee %s: %s", employee_id, manager_sp_user_ids)
 
@@ -242,7 +246,12 @@ async def execute_bulk_operation(operation: str, params: dict) -> dict:
     results = []
     for emp in affected:
         try:
-            await update_employee_managers(int(emp["id"]), emp["new_manager_ids"])
+            # The bulk screen is an admin-dashboard action: record each change as
+            # HR under the admin channel, not the automatic "system" default (#447).
+            await update_employee_managers(
+                int(emp["id"]), emp["new_manager_ids"],
+                history_source="admin_dashboard", history_actor="HR",
+            )
             results.append({"id": emp["id"], "name": emp["name"], "status": "success"})
         except Exception as e:
             logger.exception("Failed to update managers for employee %s", emp["id"])

@@ -39,7 +39,7 @@ def test_requests_name_the_employee_and_keep_only_the_window():
     assert len(every) == 3                                             # header + both requests
     window = (date(2026, 11, 1), date(2026, 11, 30))
     inside = list(_open(build_workbook(STAFF, REQUESTS, window))["Requests"].iter_rows(values_only=True))
-    assert inside[1:] == [(301, "Pat Staff", "Payout", 2, "Approved", "2026-11-05")]
+    assert inside[1:] == [(301, "Pat Staff", "Payout", 2, "Approved", "Nov 5, 2026")]
 
 
 def test_the_file_name_is_dated():

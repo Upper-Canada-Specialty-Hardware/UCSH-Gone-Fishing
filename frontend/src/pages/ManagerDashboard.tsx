@@ -1,7 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { readLaunchCache, writeLaunchCache } from '../api/launchCache';
-import { staffCacheKey } from '../api/intake';
+import { RETIRED_HELD_LINK, loadSession, staffCacheKey } from '../api/intake';
 import {
   Alert, Box, Button, Paper, Snackbar, Tab, Tabs, Typography,
 } from '@mui/material';
@@ -14,7 +14,9 @@ import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
 import AddEmployee from '../components/AddEmployee';
 import DecisionCard from '../components/manager/DecisionCard';
 import RejectDialog from '../components/RejectDialog';
-import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
+import DecisionRefusedDialog from '../components/DecisionRefusedDialog';
+import NewRequestDialog from '../components/admin/NewRequestDialog';
+import { StaffOption } from '../api/requestsAdmin';
 import {
   AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, staggerChildren, useDirection,
 } from '../components/Motion';
@@ -39,8 +41,9 @@ import {
   rejectRequest,
   createEmployee,
   checkEmployee,
-  logSickDay,
   getTeamEmployeeSetup,
+  getTeamRequestOptions,
+  TeamRequestOptions,
 } from '../api/client';
 import EmployeeValidation from '../components/EmployeeValidation';
 import { EmployeeSetupSummary } from '../components/EmployeeSetupList';
@@ -49,21 +52,17 @@ import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
 
 /**
- * A new hire's details left by the supervisor's "add this person" email link
- * (see AuthHandler in App.tsx). Read once, then cleared so a refresh does not
- * prefill again.
+ * Whether this visit came from a link in an old "add this new hire" email
+ * (see LinkSignIn in App.tsx). Those emails are no longer used (#525): the link
+ * still signs the manager in, but fills in nothing, and the dashboard says so
+ * once. Read once, then cleared so a refresh does not say it again.
  *
- * @returns The prefill, or null.
+ * @returns True when the visit came from such a link.
  */
-function takeAddEmployeePrefill(): { title: string; email_address: string; department?: string; location?: string } | null {
-  const raw = sessionStorage.getItem('add_employee_prefill');
-  if (!raw) return null;
-  sessionStorage.removeItem('add_employee_prefill');
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+function takeRetiredHeldLink(): boolean {
+  const seen = sessionStorage.getItem(RETIRED_HELD_LINK) === '1';
+  sessionStorage.removeItem(RETIRED_HELD_LINK);       // once only
+  return seen;
 }
 
 /** The tabs, keyed by url segment (#/team/<key>). "add" is reached by its button. */
@@ -115,7 +114,6 @@ function TileLink({ label, onClick, children }: { label: string; onClick: () => 
 interface ManagerSnapshot {
   manager_name: string;
   members: any[];
-  can_log_sick_days: boolean;
   pending: any[];
   requests: any[];
   calendar: any[];
@@ -126,7 +124,8 @@ export default function ManagerDashboard() {
   const theme = useTheme();
   const params = useParams();
   const navigate = useNavigate();
-  const [prefill] = useState(takeAddEmployeePrefill);
+  // Came from an old held-request email link: a dismissable note, nothing else (#525).
+  const [retiredLink, setRetiredLink] = useState(takeRetiredHeldLink);
   const tab: TabKey = TABS.includes(params.tab as TabKey) ? (params.tab as TabKey) : 'today';
   /** Open a tab (changes the url). @param k - Tab key. */
   const go = useCallback((k: TabKey) => navigate(`/team/${k}`), [navigate]);
@@ -141,13 +140,6 @@ export default function ManagerDashboard() {
     setHistoryFocus({ ...target });                     // a fresh object so a repeat click re-applies
     go('history');
   }, [go]);
-
-  // Opened from an "add this new hire" email: go straight to Add employee.
-  // Runs on arrival only; later tab changes are the manager's own.
-  const [arrived] = useState(() => !!prefill && tab !== 'add');
-  useEffect(() => {
-    if (arrived) navigate('/team/add', { replace: true });
-  }, [arrived, navigate]);
 
   const [calendarView, setCalendarView] = useState<'timeline' | 'month'>('timeline');
   // The leave bar selected on the Calendar timeline, and the day picked on the
@@ -169,16 +161,22 @@ export default function ManagerDashboard() {
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [managerName, setManagerName] = useState('');
   const [processingEnabled, setProcessingEnabled] = useState(false);
-  // Whether this manager's location is enabled for logging a sick day on an
-  // employee's behalf (decided server-side from the Staff Directory, BC for now).
-  const [canLogSickDays, setCanLogSickDays] = useState(false);
-  const [sickDialogOpen, setSickDialogOpen] = useState(false);
+  // Make a request for someone on the team (#523): the dialog's open state and
+  // the leave types and carry-over dates it needs, read when it opens.
+  const [makeRequestOpen, setMakeRequestOpen] = useState(false);
+  const [requestOptions, setRequestOptions] = useState<TeamRequestOptions | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  // Which way the in-flight decision goes, so the busy button reads "Approving..."
+  // or "Rejecting..." rather than a neutral word (#455); null when nothing runs.
+  const [decidingYes, setDecidingYes] = useState<boolean | null>(null);
   // Decided cards showing their outcome before they leave: key to true (approved) or false (rejected).
   const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+  // An approve or reject the backend refused (#486): shown as a centred dialog, not
+  // a snackbar, with the backend's reason; null when there is nothing to show.
+  const [refusal, setRefusal] = useState<{ approving: boolean; message: string } | null>(null);
   // The request awaiting a reject reason (#433), with an optional follow-up to
   // run once the reject is sent (e.g. closing the calendar's absence card).
   const [rejectTarget, setRejectTarget] = useState<
@@ -277,7 +275,6 @@ export default function ManagerDashboard() {
     const show = (s: ManagerSnapshot) => {
       setManagerName(s.manager_name);
       setMembers(s.members);
-      setCanLogSickDays(s.can_log_sick_days);
       setPending(s.pending);
       setRequests(s.requests);
       setCalendarEvents(s.calendar);
@@ -305,7 +302,6 @@ export default function ManagerDashboard() {
         const fresh: ManagerSnapshot = {
           manager_name: profileRes.data.employee?.name || '',
           members: (membersRes.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')),
-          can_log_sick_days: Boolean(membersRes.data.can_log_sick_days),
           pending: pendingRes.data.pending || [],
           requests: reqRes.data.requests || [],
           calendar: calRes.data.events || [],
@@ -348,6 +344,7 @@ export default function ManagerDashboard() {
    */
   const decide = useCallback(async (type: string, id: string, yes: boolean, reason = '') => {
     setActionLoading(`${type}-${id}`);
+    setDecidingYes(yes);                                             // drives the busy label's verb (#455)
     try {
       await (yes ? approveRequest(type, id) : rejectRequest(type, id, reason));
       const key = `${type}-${id}`;
@@ -358,40 +355,69 @@ export default function ManagerDashboard() {
       }, leaveDelay());                                               // 0 when less motion is asked for
       setSnack({ open: true, message: yes ? 'Request approved' : 'Request rejected', severity: 'success' });
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setSnack({ open: true, message: typeof detail === 'string' ? detail : yes ? 'Approval failed' : 'Rejection failed', severity: 'error' });
+      const detail = err.response?.data?.detail;                     // the backend's readable refusal
+      // A refused decision is shown centred (#486), not as a corner snackbar, so the
+      // reason (an overlap conflict, not ready, needs attention, processing off) is
+      // not missed. The card stays in the queue; its buttons re-enable in finally.
+      setRefusal({ approving: yes, message: typeof detail === 'string' ? detail : yes ? 'The request could not be approved.' : 'The request could not be rejected.' });
     } finally {
       setActionLoading(null);
+      setDecidingYes(null);                                          // clear the in-flight verb
     }
   }, []);
 
   /**
-   * After a sick day is approved the employee's sick balance, the request
-   * history and the calendar have all changed, so toast the result and pull
-   * those three endpoints again.
-   *
-   * @param result - What the backend returned for the logged sick day.
+   * Open Make a request (#523), reading the leave types and whether carry-over
+   * is open first, so the dialog shows HR's dates as they are today.
    */
-  const handleSickDayLogged = useCallback(async (result: SickDayResult) => {
-    const dayWord = result.days === 1 ? 'day' : 'days';         // match the day count
+  const openMakeRequest = useCallback(async () => {
+    try {
+      const res = await getTeamRequestOptions();
+      setRequestOptions(res.data);
+      setMakeRequestOpen(true);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setSnack({ open: true, message: typeof detail === 'string' ? detail : 'Could not open Make a request', severity: 'error' });
+    }
+  }, []);
+
+  /**
+   * After a request is made for a teammate: toast the outcome and pull the
+   * views it changed (balances, history, calendar, and the waiting list when it
+   * fell back to pending).
+   *
+   * @param result - What POST /team/requests/new answered.
+   */
+  const handleRequestMade = useCallback(async (result: { status: string; message?: string }) => {
+    setMakeRequestOpen(false);
+    const approved = result.status === 'approved';
     setSnack({
       open: true,
-      message: `Sick day logged and approved for ${result.employee_name} (${result.days} ${dayWord}).`,
-      severity: 'success',
+      message: approved ? 'Request made and approved' : result.message || 'Request saved as pending',
+      severity: approved ? 'success' : 'error',
     });
     try {
-      // The three views the sick day changed: balances, history and calendar.
-      const [membersRes, reqRes, calRes] = await Promise.all([
-        getTeamMembers(), getTeamRequests(), getTeamCalendar(),
+      const [membersRes, reqRes, calRes, pendingRes] = await Promise.all([
+        getTeamMembers(), getTeamRequests(), getTeamCalendar(), getTeamPending(),
       ]);
       setMembers((membersRes.data.members || []).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
       setRequests(reqRes.data.requests || []);
       setCalendarEvents(calRes.data.events || []);
+      setPending(pendingRes.data.pending || []);
     } catch {
-      // The sick day is already approved; a failed refresh only leaves stale
-      // numbers on screen until the next reload.
+      // The request is already saved; a failed refresh only leaves stale
+      // numbers on screen until the next live update or reload.
     }
   }, []);
+
+  // The people Make a request offers: the team, never the manager themselves
+  // (their own requests go through the request page, to their own manager).
+  const requestStaff = useMemo<StaffOption[]>(() => {
+    const me = loadSession()?.uid;
+    return members
+      .filter((m) => String(m.id) !== String(me))
+      .map((m) => ({ id: String(m.id), name: m.name, department: m.department || '', location: m.location || '', email: m.email || '', managers: '' }));
+  }, [members]);
 
   // Everything the tabs draw, worked out once per data change.
   const names = useMemo(() => members.map((m) => m.name), [members]);
@@ -486,11 +512,22 @@ export default function ManagerDashboard() {
             {' '}{members.length} {members.length === 1 ? 'person' : 'people'} on your team.
           </Typography>
         </Box>
-        <Button variant="outlined" onClick={() => go('add')}>Add a new hire</Button>
+        {/* Make a request lives on the Team tab only (#523): up here it read as the manager's own request. */}
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          <Button variant="outlined" onClick={() => go('add')}>Add a new hire</Button>
+        </Box>
       </Box>
 
       {!processingEnabled && (
         <Alert severity="info">System is in reporting-only mode. Approve/reject actions are disabled.</Alert>
+      )}
+
+      {/* An old "add this new hire" email link: it changed nothing (#525). */}
+      {retiredLink && (
+        <Alert severity="info" onClose={() => setRetiredLink(false)}>
+          That email link is no longer used, and opening it changed nothing. To add someone to your team,
+          use Add a new hire.
+        </Alert>
       )}
 
       <Tabs value={tab === 'add' ? false : tab} onChange={(_, v) => go(v)} variant="scrollable" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider' }}>
@@ -506,8 +543,13 @@ export default function ManagerDashboard() {
       <Enter key={tab} dir={dir} sx={{ display: 'grid', gap: 2.5, minWidth: 0 }}>
       {tab === 'today' && (
         <>
-          {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab. */}
+          {/* Each tile opens what it counts: the people on the Team tab, or the Trends tab.
+              Today is the home tab, so the first tile is the way into the Team tab itself. */}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', ...staggerChildren({ step: 40 }) }}>
+            {/* The whole team, unfiltered: where balances are changed and requests made for someone (#523). */}
+            <TileLink label="Open your team" onClick={() => go('team')}>
+              <Kpi label="Your team" value={String(members.length)} note="balances, make a request" />
+            </TileLink>
             <TileLink label="Open the people waiting on you" onClick={() => openTeamFiltered('waiting')}>
               <Kpi label="Waiting on you" value={String(waiting.length)} note={waiting.length ? `oldest ${oldest} day${oldest === 1 ? '' : 's'}` : 'nothing waiting'} warn={oldest > 7} />
             </TileLink>
@@ -553,6 +595,7 @@ export default function ManagerDashboard() {
                         clashes={clashesFor(item, absences, labelOf)}
                         processingEnabled={processingEnabled}
                         busy={actionLoading === key}
+                        busyYes={actionLoading === key ? decidingYes : null}
                         onApprove={() => decide(item.request_type, String(item.id), true)}
                         onReject={() => setRejectTarget({ type: item.request_type, id: String(item.id), name: requestWho(item), label: requestWhat(item) })}
                         colorOf={colorOf}
@@ -725,13 +768,12 @@ export default function ManagerDashboard() {
           labelOf={labelOf}
           managerName={managerName}
           processingEnabled={processingEnabled}
-          canLogSickDays={canLogSickDays}
           requestedFilter={teamFilterReq}
           onFilterApplied={() => setTeamFilterReq(null)}
           requestedPerson={teamPersonReq}
           onPersonRequested={() => setTeamPersonReq(null)}
           onAddNewHire={() => go('add')}
-          onLogSickDay={() => setSickDialogOpen(true)}
+          onMakeRequest={openMakeRequest}
           onRefresh={refreshTeam}
           onNotify={(message, severity) => setSnack({ open: true, message, severity })}
         />
@@ -831,7 +873,6 @@ export default function ManagerDashboard() {
           processingEnabled={processingEnabled}
           submitEmployee={createEmployee}
           checkEmployee={checkEmployee}
-          prefill={prefill}
           onCreated={(name) =>
             setSnack({ open: true, message: `${name} added to your team.`, severity: 'success' })
           }
@@ -839,14 +880,17 @@ export default function ManagerDashboard() {
       )}
       </Enter>
 
-      {/* Mounted only where the manager's location is enabled; it picks from the team. */}
-      {canLogSickDays && (
-        <LogSickDayDialog
-          open={sickDialogOpen}
-          members={members}
-          onClose={() => setSickDialogOpen(false)}
-          submitSickDay={logSickDay}
-          onLogged={handleSickDayLogged}
+      {/* Make a request (#523): the admin New request dialog, limited to this team. */}
+      {requestOptions && (
+        <NewRequestDialog
+          open={makeRequestOpen}
+          onClose={() => setMakeRequestOpen(false)}
+          defaultSrc="leave"
+          options={{ staff: requestStaff, leave_types: requestOptions.leave_types }}
+          processingEnabled={processingEnabled}
+          team={requestOptions}
+          onDone={handleRequestMade}
+          onError={(message) => setSnack({ open: true, message, severity: 'error' })}
         />
       )}
 
@@ -871,6 +915,14 @@ export default function ManagerDashboard() {
         autoHideDuration={4000}
         onClose={() => setSnack((s) => ({ ...s, open: false }))}
         message={snack.message}
+      />
+
+      {/* A refused approve or reject is shown centred, with the backend's reason (#486). */}
+      <DecisionRefusedDialog
+        open={refusal !== null}
+        approving={refusal?.approving ?? true}
+        message={refusal?.message ?? ''}
+        onClose={() => setRefusal(null)}
       />
     </Box>
   );

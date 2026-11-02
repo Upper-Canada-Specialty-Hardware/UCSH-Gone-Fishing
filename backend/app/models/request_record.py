@@ -46,6 +46,7 @@ class RequestRecord(Base):
         # Closed value sets, mirrored from request_vocab so code and table agree.
         CheckConstraint(vocab.in_clause("kind", vocab.KINDS), name="ck_requests_kind"),
         CheckConstraint(vocab.in_clause("status", vocab.STATUSES), name="ck_requests_status"),
+        CheckConstraint(vocab.in_clause("state", vocab.STATES), name="ck_requests_state"),
         CheckConstraint(
             vocab.in_clause("balance_state", vocab.BALANCE_STATES), name="ck_requests_balance_state"
         ),
@@ -96,7 +97,11 @@ class RequestRecord(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)                        # leave / overtime / carryover_payout
     item_id: Mapped[int] = mapped_column(Integer, nullable=False)                    # the number people and links use
     sp_item_id: Mapped[str | None] = mapped_column(String, nullable=True)            # source SharePoint item, if imported
-    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")   # lifecycle state, stored lower case
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")   # lifecycle status, stored lower case
+    # The explicit state-machine position (#455): the backend owns it, the frontend
+    # renders it. Defaults to getting_ready so a brand-new row is "being prepared"
+    # until submit (or a decision) moves it on. See services/request_states.py.
+    state: Mapped[str] = mapped_column(String, nullable=False, default="getting_ready")
     stage: Mapped[str | None] = mapped_column(Text, nullable=True)                   # latest stage in words, kept in step with events
 
     # --- people ---

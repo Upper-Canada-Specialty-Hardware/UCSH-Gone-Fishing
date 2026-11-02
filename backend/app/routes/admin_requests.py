@@ -65,7 +65,7 @@ from app.services.overtime_requests import (
 from app.services.request_intake import RequestFormError, parse_request_form, submit_request
 from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_ADMIN
-from app.services.requests_export import build_requests_workbook, requests_export_filename
+from app.services.requests_export import RequestsExportBody, build_requests_workbook, requests_export_filename
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
@@ -143,12 +143,6 @@ class SettleBody(BaseModel):
     pieces: dict[str, float] | None = None   # "hand" leave only: {pot: days taken}
 
 
-class ExportBody(BaseModel):
-    """What the Export command posts: the request items currently on screen."""
-
-    requests: list[dict]
-
-
 @router.post("/admin/requests/new")
 async def admin_new_request(body: NewRequestBody):
     """Create a request on behalf of an employee from the admin dashboard.
@@ -218,7 +212,7 @@ async def admin_new_request(body: NewRequestBody):
 
     # Approved: run the request through the real approval handler as the admin.
     item_id = item.get("id")
-    result = await _approve_admin_request(body.request_type, item_id)
+    result = await approve_new_request(body.request_type, item_id)
 
     # Only a genuine "approved" result counts: approve_carryover_payout can also
     # return {"status": "system_override_rejected"}, which must not read as a
@@ -248,17 +242,22 @@ async def admin_new_request(body: NewRequestBody):
     }
 
 
-async def _approve_admin_request(request_type: str, item_id) -> dict:
-    """Approve an admin-created request as the admin, with one extra guard.
+async def approve_new_request(
+    request_type: str, item_id, approver_id: str = ADMIN_ID, channel: str = "admin_dashboard",
+) -> dict:
+    """Approve a request made on someone's behalf, with one extra guard.
 
     process_new_leave_request logs and swallows a day-calculation failure, so a
     day-costing leave (vacation, sick, half day) could reach approval with no
     days worked out and be approved costing nothing. Re-read the item and refuse
     that, so it falls into the S3 fallback and the manager is asked instead (#294 S4).
+    Used by the admin's New request and by a manager's request for a teammate (#523).
 
     Args:
         request_type: "leave", "overtime" or "carryover-payout".
         item_id: The created item's id.
+        approver_id: Who approves: "admin", or the manager's staff id.
+        channel: The decision channel: "admin_dashboard" or "manager_dashboard".
 
     Returns:
         The approval handler's result, or an {"error": ...} refusal that the
@@ -269,8 +268,8 @@ async def _approve_admin_request(request_type: str, item_id) -> dict:
         ff = fresh["fields"] if fresh else {}                  # the item as created, with its days
         if ff.get("LeaveType") in DAY_COSTING_LEAVE_TYPES and float(ff.get("Days", 0) or 0) <= 0:
             return {"error": "The number of days could not be worked out, so this was not approved."}
-    # channel="admin_dashboard"; admin creates and approves in one step here.
-    return await APPROVE_HANDLERS[request_type](item_id, ADMIN_ID, "admin_dashboard")
+    # Created and approved in one step, under the caller's id and channel.
+    return await APPROVE_HANDLERS[request_type](item_id, approver_id, channel)
 
 
 @router.post("/admin/requests/preview")
@@ -475,19 +474,20 @@ async def admin_settle_request(request_type: str, request_id: str, body: SettleB
 
 
 @router.post("/admin/requests/export")
-async def admin_export_requests(body: ExportBody):
-    """An .xlsx of the requests the admin is viewing, one sheet per list (#278).
+async def admin_export_requests(body: RequestsExportBody):
+    """An .xlsx of the requests the admin chose in the export dialog (#278, #488).
 
-    Formats the request items the dashboard already holds (the shown rows, or
-    the ticked ones), so it reads no live data and works at any time.
+    The dialog works out every cell from the rows the dashboard already holds
+    (the shown or ticked requests, of the people left ticked) and posts the
+    finished sheets, so this reads no live data and works at any time.
 
     Args:
-        body: requests - the items as /admin/requests returns them.
+        body: sheets - each with its title, columns and rows, as previewed.
 
     Returns:
         The workbook as an attachment.
     """
-    data = build_requests_workbook(body.requests)
+    data = build_requests_workbook(body.sheets)
     filename = requests_export_filename(date.today())
     return Response(
         content=data,
@@ -520,7 +520,16 @@ async def admin_new_request_options():
             "managers": _resolve_managers(item),               # "A, B" from AllManagers, or ""
         })
     staff.sort(key=lambda s: s["name"].lower())
-    # Known types first, then any other allowed type (so a new one still shows).
+    return {"staff": staff, "leave_types": leave_type_options()}
+
+
+def leave_type_options() -> list[str]:
+    """The leave types a new-request dialog offers, admin's or manager's (#523).
+
+    Returns:
+        Known types in a stable order first, then any other allowed type, so a
+        new one still shows.
+    """
     leave_types = [t for t in _LEAVE_TYPE_ORDER if t in ALLOWED_LEAVE_TYPES]
     leave_types += sorted(t for t in ALLOWED_LEAVE_TYPES if t not in leave_types)
-    return {"staff": staff, "leave_types": leave_types}
+    return leave_types

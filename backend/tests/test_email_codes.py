@@ -3,8 +3,9 @@
 A person proves they own an address by typing back a code sent to it. What is
 covered: the code works once, for 10 minutes, for 5 tries; sending is limited
 per address and per caller; the answer to "send me a code" never reveals who
-is on staff; and a verified employee gets the same signed dashboard token the
-emailed links carry, while anyone else gets a separate verified-email token.
+is on staff; a verified employee gets the same signed dashboard token the
+emailed links carry, while an address on no staff record is told to ask their
+manager (#526).
 """
 
 import asyncio
@@ -60,10 +61,6 @@ def client(monkeypatch):
     async def fake_send_email(to, subject, html_body, **kwargs):
         test_client.sent.append({"to": to, "subject": subject, "html": html_body})
 
-    async def fake_get_employee_by_email(email):
-        found = test_client.staff.get(email.strip().lower())
-        return found[0] if isinstance(found, list) else found
-
     async def fake_get_employees_by_email(email):
         found = test_client.staff.get(email.strip().lower())   # a record, a list of records, or nothing
         return found if isinstance(found, list) else ([found] if found else [])
@@ -72,7 +69,6 @@ def client(monkeypatch):
     async def fake_is_manager(name):
         return name in test_client.managers
 
-    monkeypatch.setattr(intake, "get_employee_by_email", fake_get_employee_by_email)
     monkeypatch.setattr(intake, "get_employees_by_email", fake_get_employees_by_email)
     monkeypatch.setattr(intake, "is_manager", fake_is_manager)
     return test_client
@@ -108,18 +104,6 @@ def test_codes_are_six_digits_and_keep_leading_zeros():
 
 def test_a_hash_is_bound_to_its_address():
     assert email_codes.hash_code("a@x.com", "123456") != email_codes.hash_code("b@x.com", "123456")
-
-
-def test_verified_email_token_round_trips_and_rejects_tampering():
-    signed = email_codes.sign_verified_email("new@x.com")
-    assert email_codes.check_verified_email("new@x.com", signed["exp"], signed["token"])
-    assert not email_codes.check_verified_email("other@x.com", signed["exp"], signed["token"])
-    assert not email_codes.check_verified_email("new@x.com", str(int(signed["exp"]) + 1), signed["token"])
-
-
-def test_verified_email_token_expires():
-    signed = email_codes.sign_verified_email("new@x.com", expiry=int(time.time()) - 1)
-    assert not email_codes.check_verified_email("new@x.com", signed["exp"], signed["token"])
 
 
 def test_a_code_expires_after_ten_minutes():
@@ -236,20 +220,21 @@ def test_a_shared_mailbox_is_asked_which_person_is_signing_in(client, fixed_code
         assert validate_dashboard_token(p["role"], p["uid"], p["token"], p["exp"]) == (True, "")
 
 
-def test_an_unknown_address_gets_a_verified_email_token(client, fixed_code):
+def test_an_unknown_address_is_told_to_ask_their_manager(client, fixed_code):
     email = _unique("newhire")
     _ask(client, email)
 
-    body = _verify(client, email, fixed_code).json()
+    response = _verify(client, email, fixed_code)
 
-    assert body["status"] == "unknown"
-    v = body["verified"]
-    assert v["email"] == email
-    assert email_codes.check_verified_email(email, v["exp"], v["token"])
+    assert response.status_code == 403                         # refused: no self setup (#526)
+    detail = response.json()["detail"]
+    assert detail == intake.NOT_ON_STAFF
+    assert "Ask your manager" in detail and "verified" not in response.json()   # nothing to carry on with
 
 
 def test_the_address_is_matched_whatever_its_case(client, fixed_code):
     email = _unique("case")
+    client.staff[email] = {"id": "7", "fields": {"Title": "Pat Staff"}}   # on staff, so a right code signs in
     _ask(client, email.upper())
 
     assert _verify(client, f"  {email.upper()} ", fixed_code).status_code == 200
@@ -257,6 +242,7 @@ def test_the_address_is_matched_whatever_its_case(client, fixed_code):
 
 def test_a_code_works_only_once(client, fixed_code):
     email = _unique("once")
+    client.staff[email] = {"id": "7", "fields": {"Title": "Pat Staff"}}   # on staff, so a right code signs in
     _ask(client, email)
 
     assert _verify(client, email, fixed_code).status_code == 200
@@ -323,6 +309,7 @@ def test_two_parallel_right_answers_use_the_code_once(client, fixed_code):
 
 def test_asking_again_retires_the_older_code(client, monkeypatch):
     email = _unique("again")
+    client.staff[email] = {"id": "7", "fields": {"Title": "Pat Staff"}}   # on staff, so a right code signs in
     codes = iter(["111111", "222222"])
     monkeypatch.setattr(email_codes, "generate_code", lambda: next(codes))
     _ask(client, email)
@@ -354,3 +341,11 @@ def test_an_expired_code_is_refused(client, fixed_code):
 def test_no_code_requested_is_refused(client):
     response = _verify(client, _unique("never"), "123456")
     assert response.status_code == 400
+
+
+def test_the_new_hire_routes_are_gone(client):
+    # #525: nothing on the request page holds a request or searches for a supervisor any more.
+    assert client.post("/api/intake/held", json={}).status_code == 404
+    assert client.get("/api/intake/held/status", params={"token": "x"}).status_code == 404
+    assert client.get("/api/intake/departments").status_code == 404
+    assert client.get("/api/intake/supervisor-search").status_code == 404

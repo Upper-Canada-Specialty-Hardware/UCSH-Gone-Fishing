@@ -6,11 +6,12 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { exportStaff } from '../../api/staff';
+import ExportPeoplePicker from './ExportPeoplePicker';
 
 /*
- * The staff export preview (#277). HR picks the people, a column set or single
- * columns, and the extra sheets, sees a live preview of the first rows, then
- * downloads the .xlsx the backend builds. The preview never scrolls sideways:
+ * The staff export preview (#277). HR picks the people (unticking any of the
+ * shown ones, #489), a column set or single columns, and the extra sheets, sees
+ * a live preview of the first rows, then downloads the .xlsx the backend builds. The preview never scrolls sideways:
  * cells wrap and only the first few chosen columns show, with "and N more".
  */
 
@@ -115,8 +116,22 @@ export default function StaffExportDialog({ open, shownPeople, allPeople, onClos
   const [includeHistory, setIncludeHistory] = useState(false);
   const [tab, setTab] = useState('Staff');
   const [downloading, setDownloading] = useState(false);
+  // The shown people HR unticked (#489); kept as exclusions so anyone new starts ticked.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
 
-  const people = who === 'shown' ? shownPeople : allPeople;
+  // Each time the dialog opens it starts with everyone shown ticked again.
+  useEffect(() => { if (open) setExcluded(new Set()); }, [open]);
+
+  // The people the file lists: the shown ones still ticked, or everyone.
+  const people = useMemo(
+    () => (who === 'shown' ? shownPeople.filter((p) => !excluded.has(p.id)) : allPeople),
+    [who, shownPeople, allPeople, excluded],
+  );
+  // The shown people as the picker lists them: name, then department and location.
+  const pickList = useMemo(
+    () => shownPeople.map((p) => ({ key: p.id, name: p.name, detail: [p.department, p.location].filter(Boolean).join(' · ') })),
+    [shownPeople],
+  );
   // The chosen columns in canonical order, name always first-in.
   const chosen = useMemo(() => {
     const set = new Set([LOCKED, ...columns]);
@@ -193,6 +208,8 @@ export default function StaffExportDialog({ open, shownPeople, allPeople, onClos
               <ToggleButton value="shown">The {shownPeople.length} shown</ToggleButton>
               <ToggleButton value="all">Everyone ({allPeople.length})</ToggleButton>
             </ToggleButtonGroup>
+            {/* Untick anyone the search brought in by accident (#489). */}
+            {who === 'shown' && <ExportPeoplePicker people={pickList} excluded={excluded} onChange={setExcluded} />}
 
             <Typography variant="overline" color="text.secondary">Columns</Typography>
             <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">

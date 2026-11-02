@@ -6,15 +6,9 @@ Two unauthenticated endpoints, mounted at /api/intake:
                  every address, so the page never reveals who is on staff.
 * POST /verify - check the code. A Staff Directory employee gets a 30-day
                  employee dashboard token (the same signed token the emailed
-                 links carry). Anyone else gets a short "verified email" token
-                 to carry into the new-hire path.
-* GET /departments, GET /supervisor-search, POST /held - the new-hire
-                 path, all needing that verified-email token: the departments
-                 to pick from, a typed search for the supervisor in one, then
-                 hold a request until the supervisor adds the person
-                 (services/held_requests.py).
-* GET /held/status - how one held request is going, for the page that held
-                 it; needs the signed status token POST /held returned.
+                 links carry). An address on no active staff record is refused:
+                 setting yourself up is not done here, a manager adds people
+                 from the manager dashboard (#526).
 * POST /session/refresh - re-check a signed-in person's role on each visit, so
                  someone made a manager after signing in gets My team (#376).
 
@@ -31,19 +25,17 @@ from pydantic import BaseModel
 from app.config import settings
 
 from app.graph.email import send_email
-from app.services import email_codes, held_requests, request_status
+from app.services import email_codes, request_status
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
 from app.services.dashboard_tokens import generate_dashboard_token, validate_dashboard_token
 from app.services.employee import (
     email_belongs_to_archived,
-    get_employee_by_email,
     get_employee_by_id,
     get_employees_by_email,
     is_manager,
 )
 from app.services.manager_match import manager_name_of  # who manages whom, by id or name (#376)
 from app.repositories.postgres.staff import is_archived  # tells an archived record apart (#119)
-from app.services.request_intake import RequestFormError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,6 +46,14 @@ _CODE_SENT = {
     "status": "sent",
     "detail": "If that address can receive email, a 6-digit code is on its way. It works for 10 minutes.",
 }
+
+
+# The refusal for an address on no staff record (#526): what to do next, and
+# nothing about who is on staff or who their manager is.
+NOT_ON_STAFF = (
+    "This email is not on a staff record, so it cannot be used to sign in. "
+    "Ask your manager: they can add you, or make the request for you."
+)
 
 
 class CodeRequest(BaseModel):
@@ -73,48 +73,6 @@ class SessionBody(BaseModel):
     role: str
     uid: str
     exp: str
-
-
-class VerifiedEmail(BaseModel):
-    """The token /verify hands to someone not on staff."""
-    email: str
-    exp: str
-    token: str
-
-
-class HeldRequestBody(BaseModel):
-    """Body of POST /held: who they are, who supervises them, and the form.
-
-    The supervisor is supervisor_id (picked from the search) or
-    supervisor_email (typed when the search did not find them), not both.
-    """
-    verified: VerifiedEmail
-    first_name: str
-    last_name: str
-    department: str
-    supervisor_id: str | None = None
-    supervisor_email: str | None = None
-    request_type: str
-    form: dict
-
-
-def _require_verified(email: str, exp: str, token: str) -> str:
-    """Check a verified-email token and return its normalised address.
-
-    Args:
-        email: The address the token claims.
-        exp: Its expiry.
-        token: The signature.
-
-    Returns:
-        The normalised address.
-
-    Raises:
-        HTTPException: 401 when the token is wrong or expired.
-    """
-    if not email_codes.check_verified_email(email, exp, token):
-        raise HTTPException(status_code=401, detail="Your email check has expired. Start again.")
-    return email_codes.normalise_email(email)
 
 
 def _client_ip(request: Request) -> str:
@@ -217,12 +175,12 @@ async def verify_code(body: VerifyRequest):
         pages), otherwise "employee". When more than one Staff Directory record
         carries the address (a shared mailbox): {"status": "choose", "people":
         [one employee answer per record, plus "department" and "location"]}, so
-        the page asks which person is signing in. For anyone else:
-        {"status": "unknown", "verified": {email, exp, token}}.
+        the page asks which person is signing in.
 
     Raises:
         HTTPException: 400 with a readable reason when the code is wrong,
-            expired, used up or missing.
+            expired, used up or missing; 403 for an archived address or one on
+            no staff record (ask your manager).
     """
     email = email_codes.normalise_email(body.email)
     result = await email_codes.check_code(email, body.code)
@@ -241,16 +199,18 @@ async def verify_code(body: VerifyRequest):
         return {"status": "employee", **await _signed_in_as(people[0])}
 
     # No active record. If an archived one carries this address, the person has
-    # left: refuse with a plain message rather than send them down the new-hire
-    # path (#119). An archived person cannot make a request.
+    # left: refuse with a plain message (#119). An archived person cannot make
+    # a request.
     if await email_belongs_to_archived(email):
         raise HTTPException(
             status_code=403,
-            detail="This account has been archived. Contact HR if you think this is a mistake.",
+            detail="This account has been archived. Ask your manager if you think this is a mistake.",
         )
 
-    # Not on staff yet: prove the address was verified for the new-hire path.
-    return {"status": "unknown", "verified": email_codes.sign_verified_email(email)}
+    # On no staff record: refused, never set up from here (#526). The manager
+    # adds them, or makes the request for them, from the manager dashboard. No
+    # manager is named: the address alone says nothing about who they work for.
+    raise HTTPException(status_code=403, detail=NOT_ON_STAFF)
 
 
 async def _signed_in_as(employee: dict) -> dict:
@@ -276,48 +236,6 @@ async def _signed_in_as(employee: dict) -> dict:
     }
 
 
-@router.get("/departments")
-async def departments(email: str = Query(...), exp: str = Query(...), token: str = Query(...)):
-    """The departments a person not on staff can pick from.
-
-    Needs the verified-email token, so the staff list is never public.
-
-    Args:
-        email: Verified-email token fields, as query parameters.
-        exp: See email.
-        token: See email.
-
-    Returns:
-        {"departments": [...]} as the Staff Directory spells them.
-    """
-    _require_verified(email, exp, token)
-    return {"departments": await held_requests.list_departments()}
-
-
-@router.get("/supervisor-search")
-async def supervisor_search(
-    department: str = Query(...), q: str = Query(""),
-    email: str = Query(...), exp: str = Query(...), token: str = Query(...),
-):
-    """People in a department whose name contains the typed text.
-
-    Anyone in the department, so a newly made supervisor is found too. Only a
-    few names per search, and none until two letters are typed.
-
-    Args:
-        department: The department picked.
-        q: What was typed.
-        email: Verified-email token fields, as query parameters.
-        exp: See email.
-        token: See email.
-
-    Returns:
-        {"people": [{"id", "name"}]}.
-    """
-    _require_verified(email, exp, token)
-    return {"people": await held_requests.search_department(department, q)}
-
-
 @router.get("/request-types")
 async def request_types():
     """Which request types the page may offer right now (#176).
@@ -340,65 +258,44 @@ async def request_types():
     }
 
 
-@router.post("/held")
-async def hold(body: HeldRequestBody):
-    """Hold a request from someone not on staff and email their supervisor.
+@router.get("/cancel/info")
+async def cancel_link_info(token: str = Query(...)):
+    """What the public cancel page shows for a receipt's cancel link (#519).
+
+    Read-only and public, but only for the one request its signed token names. A
+    forged or gone link reads as ``{"state": "invalid"}`` and learns nothing.
 
     Args:
-        body: The verified-email token, name, department, supervisor and form.
+        token: The signed token from the receipt's link.
 
     Returns:
-        {"status": "held", "supervisor_name", "status_token"}: the token lets
-        the page ask GET /held/status how the request is going.
-
-    Raises:
-        HTTPException: 401 for a bad token; 409 when the address is on staff
-            after all (sign in again); 400 for anything wrong with the form;
-            503 while processing is off.
+        ``{"state", "request_number", "summary"}``; see ``own_requests.cancel_page_info``.
     """
-    email = _require_verified(body.verified.email, body.verified.exp, body.verified.token)
-    if not settings.PROCESSING_ENABLED:
-        raise HTTPException(status_code=503, detail="Requests cannot be submitted right now. Try again later.")
-    if await get_employee_by_email(email):
-        # Added since they verified: the normal path works now.
-        raise HTTPException(status_code=409, detail="You are in the Staff Directory now. Start again to sign in.")
-    try:
-        row = await held_requests.hold_request(
-            email, f"{body.first_name} {body.last_name}", body.department,
-            body.supervisor_id, body.request_type, body.form,
-            supervisor_email=body.supervisor_email,
-        )
-    except (held_requests.HoldError, RequestFormError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {
-        "status": "held", "supervisor_name": row.supervisor_name,
-        "status_token": held_requests.held_status_token(row.id),   # the waiting page polls with it
-    }
+    from app.services.own_requests import cancel_page_info
+    return await cancel_page_info(token)
 
 
-@router.get("/held/status")
-async def held_status(token: str = Query(...)):
-    """How a held request is going, for the page that held it.
+@router.post("/cancel/confirm")
+async def cancel_link_confirm(token: str = Query(...)):
+    """Cancel the request a receipt's link names, from the page's confirm button (#519).
 
-    Public, but only for the one request its signed token names: the answer is
-    the status and the supervisor the person already chose, nothing more. The
-    page asks every few seconds, so it says "sent" the moment the supervisor
-    adds the person.
+    A POST, sent only by the button, so a mail scanner opening the link cancels
+    nothing. Guarded and idempotent: a second click, or a request decided in the
+    meantime, just says what it is now.
 
     Args:
-        token: The status_token POST /held returned.
+        token: The signed token from the receipt's link.
 
     Returns:
-        {"status": "waiting" | "sent" | "cancelled", "supervisor_name"}.
+        The info shape, with ``state`` "done" when this click cancelled it.
 
     Raises:
-        HTTPException: 404 for a bad token or a request that no longer exists.
+        HTTPException: 503 while processing is off (nothing is cancelled).
     """
-    held_id = held_requests.held_id_from_status_token(token)
-    found = await held_requests.held_request_status(held_id) if held_id is not None else None
-    if found is None:
-        raise HTTPException(status_code=404, detail="Request not found.")   # same answer for forged and gone
-    return found
+    if not settings.PROCESSING_ENABLED:                        # read-only: cancel nothing, email nobody
+        raise HTTPException(status_code=503, detail="This cannot be done right now. Try again later.")
+    from app.services.own_requests import cancel_from_link
+    return await cancel_from_link(token)
 
 
 @router.get("/request-status")
@@ -457,10 +354,9 @@ async def refresh_session(body: SessionBody):
     visit; when the person has since become a manager it gets a manager token.
 
     This only ever promotes an employee to manager; it never demotes a manager
-    back to employee (#395). A supervisor opening the add-this-new-hire link
-    before anyone is under them, and an admin's open-as-manager link, keep their
-    manager role (and Add Employee) rather than being dropped to employee just
-    because nobody lists them yet.
+    back to employee (#395). An admin's open-as-manager link keeps its manager
+    role (and Add Employee) rather than being dropped to employee just because
+    nobody lists them yet.
 
     Args:
         body: The token fields the page holds (from the code sign-in or an

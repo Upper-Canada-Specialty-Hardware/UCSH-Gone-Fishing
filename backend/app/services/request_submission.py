@@ -13,8 +13,7 @@ the same gate the decision path uses). Until then every entry point keeps the ol
 SharePoint flow, which sends directly, byte-for-byte unchanged.
 
 Every entry point funnels here: the request page and the ``/api/forms`` endpoints
-(through ``auto_assign_manager``), a held request released once its submitter is
-on staff (the same path), and a manager logging a sick day (which is approved on
+(through ``auto_assign_manager``), and a manager logging a sick day (which is approved on
 the spot, so it takes only the ``submitted`` event, ``notify`` False). Each write
 carries a ``step_key`` that is unique in its table, so a second call with the
 same keys adds nothing.
@@ -50,7 +49,11 @@ from app.services.employment import (
 )
 from app.services.request_decisions import _wake_sender, decisions_active
 from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
+from app.services.request_states import can_decide, move
 from app.services.request_submitter import resolve_request_submitter
+from app.services.request_threads import stamp_thread_subject  # one email subject per request (#520)
+from app.services.cancel_links import cancel_link_html  # the receipt's own cancel link (#519)
+from app.services.concurrency import lock_manager  # one employee's request changes, one at a time
 from app.services.vacation_cover import choose_available_manager, today_toronto
 from app import templates_render as tr
 
@@ -67,6 +70,14 @@ SOURCE_TO_CHANNEL = {
 }
 # A carry-over/payout option stored on the row -> the word the emails and SMS use.
 OPTION_WORD = {"carry_over": "Carry Over", "payout": "Payout"}
+
+# The line a reminder email opens with. Reminders keep the request's one subject
+# so they thread with the first ask (#520), so the body has to say it.
+REMINDER_NOTE = (
+    '<p style="font-family:\'Segoe UI\',Arial,sans-serif;font-size:14px;line-height:1.5;'
+    'color:#b45309;font-weight:bold;margin:0 0 12px;">'
+    "Reminder: this request is still waiting for your decision.</p>"
+)
 
 
 async def submission_active() -> bool:
@@ -210,14 +221,15 @@ async def _record_reroute(session, record: RequestRecord, chosen: dict | None,
 
 
 async def _enqueue_notifications(session, record, employee, managers, *, event, suffix=None,
-                                 include_receipt=True, reask_suffix=None) -> None:
+                                 include_receipt=True, reask_suffix=None,
+                                 manager_note: str = "", receipt_note: str = "") -> None:
     """Queue the manager approval email and text and (optionally) the employee receipt.
 
     One manager email (and a text when they have a cell) per manager, then one
     receipt to the employee. With a ``suffix`` (a date) and the reminder step the
-    same rows become a once-a-day reminder instead, email only, its subject
-    prefixed "Reminder: " (#422). An admin edit asks the manager again with fresh
-    links but sends no receipt (``include_receipt`` False). A ``reask_suffix``
+    same rows become a once-a-day reminder instead, email only, opening with a
+    reminder line (#422) under the request's one subject (#520). An admin edit
+    asks the manager again with fresh links but sends no receipt (``include_receipt`` False). A ``reask_suffix``
     makes a fresh manager ask (a reprocess) key-unique so every press sends and
     both channels go out (#421). Each row carries a step_key that is unique in the
     outbox, so a repeat queues nothing again.
@@ -233,6 +245,9 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         include_receipt: False skips the employee receipt (an edit re-ask only).
         reask_suffix: A tag that makes a non-reminder manager ask key-unique, so
             an admin reprocess sends every press; None for the once-per-version ask.
+        manager_note: HTML put at the top of the manager's email, e.g. what a
+            staff member's change was (#518); "" for none.
+        receipt_note: HTML put at the top of the employee's receipt; "" for none.
     """
     emp_fields = employee.get("fields", {})
     fields = TypedRequestList(record.kind)._item_shape(record)["fields"]   # SharePoint shape the templates read
@@ -254,7 +269,10 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         mgr_email = (mgr_fields.get("EmailAddress") or "").strip()
         subject, html, sms_body = built(manager_id)                # links are per manager
         if is_reminder:
-            subject = f"Reminder: {subject}"                       # match the SharePoint path's reminder subject (#422)
+            # The subject stays the request's one subject (#520), so the
+            # reminder joins the ask's thread; the body says it is a reminder.
+            html = REMINDER_NOTE + html
+        html = manager_note + html                                 # a change says what changed first (#518)
         if mgr_email:
             await enqueue_message(
                 session, record, event, message_type, "email", mgr_email, subject, html,
@@ -272,6 +290,8 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
     email = record.employee_email
     if email:                                                      # the employee's "received" receipt
         receipt_subject, receipt_html = _build_receipt_content(record, emp_fields, fields)
+        # The receipt opens with any note and ends with the person's own cancel link (#519).
+        receipt_html = receipt_note + receipt_html + cancel_link_html(record.kind, record.item_id, record.employee_id)
         receipt_step = step_key(record.kind, record.item_id, "receipt_sent", version)
         await enqueue_message(
             session, record, event, "receipt", "email", email, receipt_subject, receipt_html,
@@ -584,6 +604,7 @@ def _mark_auto_rejected(record: RequestRecord) -> None:
     """
     from app.models.mixins import utcnow
     record.status = "rejected"                                    # terminal: no manager is asked
+    move(record, "rejected", reason="auto-rejected at submit")    # getting_ready -> rejected (#455)
     record.decided_at = utcnow()
     record.decided_by = "system"
     record.decided_channel = record.submitted_channel or "system"
@@ -692,6 +713,9 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     )
     assigned = chosen or (managers[0] if managers else None)
     _set_identity(record, employee, assigned, channel or _channel_from_source(record))
+    # Fix the request's one email subject now the name is on the row, so every
+    # email about it threads, whatever is changed later (#520).
+    stamp_thread_subject(record)
 
     version = record.approval_version
     submitted_key = step_key(kind, record.item_id, "submitted", version)
@@ -711,7 +735,13 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     await _queue_bereavement_alert(session, record, employee, alert_fields, event)
 
     if not notify:
-        return True                                               # a sick day approved on the spot: event only
+        # A sick day or admin-created request approved on the spot: the request is
+        # prepared (identity and manager stamped above), so it is decidable now and
+        # the caller approves it in the same request handler, with no race gap. An
+        # unresolved submitter stays getting_ready, so it cannot be decided (#455).
+        if employee is not None:
+            move(record, "waiting_on_approval", reason="submitted, approved on the spot")
+        return True
     if record.status != "pending":
         return True                                               # already decided (a rerun or a parallel action)
 
@@ -743,6 +773,12 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
                 session, record, event, "receipt", "email", record.employee_email, subject, html,
                 f"{step_key(kind, record.item_id, 'receipt_sent', version)}:email:{record.employee_email}",
             )
+    if employee is not None:
+        # Submit finished and the request is complete (a manager was asked, or none
+        # was found but the request is otherwise whole): it is now decidable (#455).
+        # An unresolved submitter leaves the row getting_ready, so it cannot be
+        # decided and the stuck list surfaces it.
+        move(record, "waiting_on_approval", reason="submit finished")
     return True
 
 
@@ -863,9 +899,18 @@ async def _reprocess_request(session, kind, item_id, reason, actor, channel) -> 
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to re-ask
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
-    managers = await get_all_managers_for_employee(employee) if employee else []
-    if not employee or not managers:
-        return False                                              # cannot resolve: nobody to ask
+    if employee is None:
+        return False                                              # submitter cannot be resolved: nobody to ask
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
+        # A resolved submitter with no manager at all: mirror _do_submit, which
+        # makes such a request waiting_on_approval (decidable, carried on the admin
+        # cover list) rather than leaving it stuck. No manager exists to email, so
+        # nothing is sent, but the state is finished: needs_attention /
+        # getting_ready -> waiting_on_approval (#455); an already-waiting row is
+        # unchanged. Returning True lets the admin reprocess resolve a stuck row.
+        move(record, "waiting_on_approval", reason="reprocessed, no manager to ask")
+        return True
     # Route to the first available manager, the same rule reminders use (#369).
     chosen, skipped = await choose_available_manager(session, managers, today_toronto())
     if chosen is None:
@@ -887,6 +932,9 @@ async def _reprocess_request(session, kind, item_id, reason, actor, channel) -> 
     await _enqueue_notifications(
         session, record, employee, [chosen], event=event, include_receipt=False, reask_suffix=press,
     )
+    # Processing again makes a stuck request decidable: needs_attention or
+    # getting_ready -> waiting_on_approval (#455). Already-waiting rows are unchanged.
+    move(record, "waiting_on_approval", reason="reprocessed")
     log_step(record, "sent_to_manager", reprocess=True, actor=actor)
     return True                                                   # reminder_count / last_reminder_at untouched
 
@@ -896,6 +944,8 @@ async def _queue_reminder(session, kind, item_id, today) -> bool:
     record = await _load(session, kind, item_id)
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to remind
+    if not can_decide(record):
+        return False                                              # getting_ready / needs_attention: never remind (#455)
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
     # An archived submitter (#119) is off every approval route: no manager is
     # reminded, and the request simply stays pending and visible to admins (#368).
@@ -1094,6 +1144,8 @@ async def _first_ask(session, record: RequestRecord, today: date) -> bool:
         leaving the request on the admin cover list.
     """
     from app.models.mixins import utcnow
+    if not can_decide(record):
+        return False                                              # getting_ready / needs_attention: never ask (#455)
     employee = await _resolve_employee(record, TypedRequestList(record.kind)._item_shape(record)["fields"])
     # An archived submitter (#119) is off every approval route: never ask a manager.
     if employee is not None and is_archived(employee.get("fields", {})):
@@ -1145,6 +1197,12 @@ async def queue_due_reminders() -> int:
         )).scalars().all()
         queued = 0
         for record in pending:
+            # Only a request a manager can actually decide is reminded (#455): a
+            # getting_ready or needs_attention row is skipped here, so the manager
+            # is never emailed or texted about something they cannot act on. Those
+            # rows surface on the admin stuck list instead.
+            if not can_decide(record):
+                continue
             # A Postgres request gets an approval-version-state row once it is
             # edited; honour its reminders_closed flag the way reminders.py does.
             state = await session.get(
@@ -1241,7 +1299,8 @@ async def _sync_version_state(session, kind, item_id, version, before, after) ->
 
 
 async def apply_admin_edit(kind, item_id, before, after, reason, *,
-                           actor="admin", channel="admin_dashboard") -> dict:
+                           actor="admin", channel="admin_dashboard", employee_id=None,
+                           manager_note: str = "", receipt_note: str | None = None) -> dict:
     """Apply an admin's edit to a pending request and ask the manager again (#324).
 
     In one transaction it writes the edited fields onto the typed row, bumps the
@@ -1260,48 +1319,90 @@ async def apply_admin_edit(kind, item_id, before, after, reason, *,
         reason: Why the admin edited it, recorded on each change and the event.
         actor: Who edited, for the change rows and the event.
         channel: Where the edit came from (a request_vocab channel).
+        employee_id: When set, the edit is the person's own change (#518): the
+            request must be theirs, or it is treated as gone.
+        manager_note: HTML put at the top of the manager's new ask, saying what
+            changed; "" for none.
+        receipt_note: When given, the employee also gets a fresh receipt that
+            opens with this HTML (a staff member's own change); None sends none,
+            as an admin edit always has.
 
     Returns:
         ``{"status": "saved", "new_version", "fields"}`` on success, or
         ``{"error": ...}`` when the request is gone or no longer pending.
     """
-    from app.models.mixins import utcnow
     async with async_session() as session:
         record = await _load(session, kind, item_id)
-        if record is None:
-            return {"error": "This request no longer exists."}
-        if record.status != "pending":                           # a decided request cannot be edited
-            return {"error": f"Request is not Pending (current status: {record.status.capitalize()})"}
-
-        adapter = TypedRequestList(kind)
-        employee = await _resolve_employee(record, adapter._item_shape(record)["fields"])
-        managers = await get_all_managers_for_employee(employee) if employee else []
-        # Re-ask only the first available manager, so an edit routes past off
-        # managers the same way a submission does (#369).
-        chosen, skipped = (
-            await choose_available_manager(session, managers, today_toronto()) if managers else (None, [])
-        )
-        _assign_manager(record, chosen)                          # the edit's re-ask follows whoever is asked
-
-        await adapter._resolve_people(record, after)             # keep names in step in production (no-op in tests)
-        adapter._apply_fields(record, after)                     # write the edited values onto the typed columns
-        new_version = (record.approval_version or 1) + 1
-        record.approval_version = new_version                    # fresh links; the old ones go stale
-        record.updated_at = utcnow()
-        await session.flush()                                    # enforce the CHECK constraints before recording
-
-        for col, new_val in after.items():                       # one change row per edited field, with the reason
-            record_change(session, record, col, before.get(col), new_val, actor, channel, reason)
-        await _sync_version_state(session, kind, record.item_id, new_version, before, after)
-
-        edited_key = step_key(kind, record.item_id, "edited", new_version)
-        event = await append_event(session, record, "edited", channel, actor, {"reason": reason}, edited_key)
-        if employee is not None and managers:                    # ask the manager again with the new links, no receipt
-            await _enqueue_notifications(
-                session, record, employee, [chosen] if chosen else [], event=event, include_receipt=False,
+        if record is None or (employee_id is not None and record.employee_id != str(employee_id)):
+            return {"error": "This request no longer exists."}  # someone else's reads as gone
+        # One employee's decisions run one at a time (the approve path holds the
+        # same lock): lock the row and re-read it, so an approval committed a
+        # moment ago is seen and the edit is refused instead of overwriting it.
+        async with lock_manager.lock(record.employee_id):
+            await session.refresh(record, with_for_update=True)
+            if record.status != "pending":                       # a decided request cannot be edited
+                return {"error": f"Request is not Pending (current status: {record.status.capitalize()})"}
+            return await _apply_edit_locked(
+                session, record, kind, before, after, reason, actor, channel, manager_note, receipt_note,
             )
-            await _record_reroute(session, record, chosen, skipped, channel, f"edit:v{new_version}")
-        log_step(record, "edited", actor=actor, version=new_version)
-        await session.commit()
+
+
+async def _apply_edit_locked(session, record, kind, before, after, reason, actor, channel,
+                             manager_note, receipt_note) -> dict:
+    """The body of ``apply_admin_edit``, run with the employee's lock held.
+
+    Args:
+        session: The open session; committed here.
+        record: The pending request row, locked.
+        kind: The request kind.
+        before: The field values before the edit.
+        after: The field values after the edit.
+        reason: Why it was edited.
+        actor: Who edited.
+        channel: Where the edit came from.
+        manager_note: HTML for the top of the manager's new ask.
+        receipt_note: HTML for the top of a fresh employee receipt, or None for no receipt.
+
+    Returns:
+        ``{"status": "saved", "new_version", "fields"}``.
+    """
+    from app.models.mixins import utcnow
+    adapter = TypedRequestList(kind)
+    employee = await _resolve_employee(record, adapter._item_shape(record)["fields"])
+    managers = await get_all_managers_for_employee(employee) if employee else []
+    # Re-ask only the first available manager, so an edit routes past off
+    # managers the same way a submission does (#369).
+    chosen, skipped = (
+        await choose_available_manager(session, managers, today_toronto()) if managers else (None, [])
+    )
+    _assign_manager(record, chosen)                          # the edit's re-ask follows whoever is asked
+
+    await adapter._resolve_people(record, after)             # keep names in step in production (no-op in tests)
+    adapter._apply_fields(record, after)                     # write the edited values onto the typed columns
+    new_version = (record.approval_version or 1) + 1
+    record.approval_version = new_version                    # fresh links; the old ones go stale
+    record.updated_at = utcnow()
+    # An edit re-asks the manager, so the request is decidable again under its
+    # new version: it stays (or returns to) waiting_on_approval (#455).
+    move(record, "waiting_on_approval", reason="admin edit")
+    await session.flush()                                    # enforce the CHECK constraints before recording
+
+    for col, new_val in after.items():                       # one change row per edited field, with the reason
+        record_change(session, record, col, before.get(col), new_val, actor, channel, reason)
+    await _sync_version_state(session, kind, record.item_id, new_version, before, after)
+
+    edited_key = step_key(kind, record.item_id, "edited", new_version)
+    event = await append_event(session, record, "edited", channel, actor, {"reason": reason}, edited_key)
+    if employee is not None and managers:                    # ask the manager again with the new links
+        # An admin edit sends no receipt; a staff member's own change (#518) gets
+        # a fresh one that says what changed, and both notes lead their emails.
+        await _enqueue_notifications(
+            session, record, employee, [chosen] if chosen else [], event=event,
+            include_receipt=receipt_note is not None,
+            manager_note=manager_note, receipt_note=receipt_note or "",
+        )
+        await _record_reroute(session, record, chosen, skipped, channel, f"edit:v{new_version}")
+    log_step(record, "edited", actor=actor, version=new_version)
+    await session.commit()
     _wake_sender()                                               # deliver the new manager links without waiting
     return {"status": "saved", "new_version": new_version, "fields": after}

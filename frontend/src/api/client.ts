@@ -4,6 +4,8 @@ import { ADMIN_SIGNED_OUT, AdminSession, adminSessionToken, clearAdminSession } 
 // Type only (erased at build time, so no runtime import cycle): the manager
 // person view reuses the admin record shape (#372).
 import type { StaffRecord } from './staff';
+// Type only as well: the team Make a request dialog reuses the admin form shapes (#523).
+import type { AdminRequestForm, PreviewResult } from './requestsAdmin';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -76,6 +78,16 @@ export const getConfig = () => api.get('/config');
 export const getMyBalances = () => api.get('/me/balances');
 export const getMyRequests = (params?: Record<string, string>) =>
   api.get('/me/requests', { params });
+/**
+ * Cancel one of your own pending requests from History (#519).
+ *
+ * @param type - The url form: "leave", "overtime" or "carryover-payout".
+ * @param id - The request number.
+ * @returns ``{status: "cancelled", item_id, already}``.
+ * @throws AxiosError 404 not yours, 409 no longer pending, 503 processing off.
+ */
+export const cancelMyRequest = (type: string, id: string) =>
+  api.post(`/me/requests/${type}/${id}/cancel`, { from: 'history' });   // "from" records the channel
 
 // Manager
 export const getTeamMembers = () => api.get('/team/members');
@@ -91,12 +103,43 @@ export const approveRequest = (type: string, id: string) =>
 export const rejectRequest = (type: string, id: string, reason: string) =>
   api.post(`/team/reject/${type}/${id}`, { reason });
 
-// Manager - log a sick day for a team member; the backend creates the "Sick or
-// Personal Day" request in their name and approves it on the spot. Offered only
-// where GET /team/members reports can_log_sick_days (an enabled province).
-export const logSickDay = (payload: {
-  employee_id: string; start_date: string; end_date?: string; notes?: string;
-}) => api.post('/team/sick-days', payload);
+// Manager - make a request for someone on the team, approved as made (#523).
+// Same form and preview as the admin New request, limited to the manager's team.
+
+/** What the manager's Make a request dialog needs besides the team. */
+export interface TeamRequestOptions {
+  leave_types: string[];
+  /** Whether carry-over and payout may be asked for today (HR's dates). */
+  carryover_payout_open: boolean;
+  /** Why they are closed, worded for the manager; '' while open. */
+  carryover_closed_message: string;
+}
+
+/**
+ * The leave types and today's carry-over state for the Make a request dialog.
+ *
+ * @returns The options.
+ */
+export const getTeamRequestOptions = () => api.get<TeamRequestOptions>('/team/requests/new-options');
+
+/**
+ * What a request would do to a teammate's balances. Saves nothing.
+ *
+ * @param body - request_type, employee_id and the form.
+ * @returns The preview, in the admin preview's shape.
+ */
+export const previewTeamRequest = (body: { request_type: string; employee_id: string; form: AdminRequestForm }) =>
+  api.post<PreviewResult>('/team/requests/preview', body);
+
+/**
+ * Make a request for a teammate and approve it on the spot.
+ *
+ * @param body - request_type, employee_id and the form.
+ * @returns {status: 'approved' | 'pending', request_type, item_id, message?}.
+ * @throws The axios error: 403 not on the team, 409 carry-over closed, 400 a bad form.
+ */
+export const createTeamRequest = (body: { request_type: string; employee_id: string; form: AdminRequestForm }) =>
+  api.post('/team/requests/new', body);
 
 // Admin
 export const getAdminBalances = (params?: Record<string, string>) =>
@@ -283,13 +326,6 @@ export const getAdminSmsLogRecent = (
 export const sendAdminTestSms = (payload: { employee_id?: string; number?: string }) =>
   api.post('/admin/sms-log/test', payload);
 
-// Admin - Held Requests: request page submissions from people not in the Staff
-// Directory yet, waiting for their supervisor to add them.
-export const getHeldRequests = (includeClosed = false) =>
-  api.get('/admin/held-requests', { params: { include_closed: includeClosed } });
-export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
-export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/cancel`);
-
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
 export const addRequestColumns = () => api.post('/admin/request-columns');
@@ -298,6 +334,10 @@ export const addRequestColumns = () => api.post('/admin/request-columns');
 export const getStorageStatus = () => api.get('/admin/storage');
 /** Run the final sync and switch requests (and staff) to Postgres. One-way. */
 export const flipStorageToPostgres = () => api.post('/admin/storage/flip');
+/** The staff version-history backfill's progress and result (#448). */
+export const getStaffHistoryImport = () => api.get('/admin/staff-history/import');
+/** Start the one-off staff version-history backfill in the background (#448). */
+export const startStaffHistoryImport = () => api.post('/admin/staff-history/import');
 /** The dates carry-over and payout requests are accepted between (Toronto dates, both ends included). */
 export interface CarryoverWindow {
   start: string | null;   // YYYY-MM-DD, or null when no dates are set
@@ -317,13 +357,13 @@ export const exportCarryoverPayout = () =>
 // interceptor above) authorises it; it is scoped to the manager's team by the
 // data the client sends, which only ever comes from /team/requests.
 /**
- * Download the team requests the manager is viewing as an .xlsx (one sheet per list).
+ * Write the sheets the export dialog built as an .xlsx (#488).
  *
- * @param requests - The request items as /team/requests returns them.
+ * @param sheets - Each sheet's title, columns and rows, as previewed.
  * @returns The axios response, with a Blob body.
  */
-export const exportTeamRequests = (requests: any[]) =>
-  api.post<Blob>('/team/requests/export', { requests }, { responseType: 'blob' });
+export const exportTeamRequests = (sheets: unknown[]) =>
+  api.post<Blob>('/team/requests/export', { sheets }, { responseType: 'blob' });
 // Admin - #370: pending requests whose managers are all on vacation, so nobody
 // can approve them until a manager is back. The admin approves/rejects them here
 // with the usual admin approve/reject calls above.

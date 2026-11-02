@@ -149,3 +149,60 @@ export function formatDayRange(start?: string | null, end?: string | null): stri
   const first = sameYear ? `${MONTHS[a.getMonth()]} ${a.getDate()}` : label(a);   // "Jun 12" or "Dec 29, 2026"
   return `${first} to ${label(b)}`;        // the end always carries its year
 }
+
+// Toronto's wall clock, for exports that must show the day the office saw (#490).
+const TORONTO_PARTS = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Toronto', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hourCycle: 'h23',
+});
+
+/**
+ * A stored value's Toronto day and time, or its plain day when it has no time.
+ *
+ * A bare "YYYY-MM-DD" is a calendar date, read as written. A timestamp at exactly
+ * UTC midnight is also a day saved as such. Any other timestamp is a moment and
+ * is moved to Toronto, so a SharePoint date column saved as Toronto midnight
+ * (04:00Z or 05:00Z) lands on its own day. Mirrors backend services/export_dates.py.
+ *
+ * @param iso - A date or ISO timestamp.
+ * @returns The day (local Date at noon) and, for a moment, its Toronto hour and minute; null when unreadable.
+ */
+function torontoParts(iso?: string | null): { day: Date; hour: number | null; minute: number } | null {
+  if (!iso) return null;                                       // nothing stored
+  if (!iso.includes('T') || /T00:00:00(\.0+)?(Z|\+00:00)$/.test(iso)) {
+    const d = parseDay(iso);                                   // a day: read the date part as written
+    return d ? { day: d, hour: null, minute: 0 } : null;
+  }
+  const moment = new Date(iso);                                // a real instant
+  if (Number.isNaN(moment.getTime())) return null;             // unreadable
+  const parts = Object.fromEntries(TORONTO_PARTS.formatToParts(moment).map((p) => [p.type, p.value]));
+  return {
+    day: new Date(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 12),   // noon: no shift
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+/**
+ * A stored date or timestamp as its Toronto day, "Apr 21, 2026".
+ *
+ * @param iso - A date or ISO timestamp.
+ * @returns The day, or '' when missing or unreadable.
+ */
+export function formatTorontoDay(iso?: string | null): string {
+  const t = torontoParts(iso);
+  return t ? label(t.day) : '';
+}
+
+/**
+ * A stored timestamp as Toronto day and time, "Apr 21, 2026, 6:32 AM"; a plain day reads as the day alone.
+ *
+ * @param iso - A date or ISO timestamp.
+ * @returns The moment, the day, or '' when missing or unreadable.
+ */
+export function formatTorontoMoment(iso?: string | null): string {
+  const t = torontoParts(iso);
+  if (!t) return '';
+  if (t.hour === null) return label(t.day);                    // no time to show
+  const h12 = t.hour % 12 || 12;                               // 12-hour clock, 0 reads 12
+  return `${label(t.day)}, ${h12}:${String(t.minute).padStart(2, '0')} ${t.hour < 12 ? 'AM' : 'PM'}`;
+}

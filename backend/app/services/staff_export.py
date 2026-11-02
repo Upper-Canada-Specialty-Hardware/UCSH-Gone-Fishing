@@ -11,15 +11,13 @@ real numbers (so Excel sums and pivots them) and a below-zero balance is shown
 in red, matching the carry-over export's conventions.
 """
 
-from datetime import datetime
 from io import BytesIO
-from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-TORONTO = ZoneInfo("America/Toronto")
+from app.services.export_dates import readable_date, readable_datetime  # dates as the dashboard shows them (#490)
 
 # Leading characters that make Excel treat a text cell as a formula on open; a
 # Staff Directory value that begins with one of these is stored as literal text
@@ -72,19 +70,6 @@ def _text(value) -> str:
     return "" if value is None else str(value)
 
 
-def _day(value) -> str:
-    """A date/dateTime column as its YYYY-MM-DD day, dropping any stored time.
-
-    Args:
-        value: A date column value (e.g. "1990-03-03T00:00:00Z") or None.
-
-    Returns:
-        The calendar day ("1990-03-03"), or "" when blank.
-    """
-    text = _text(value).strip()                           # the stored value as text
-    return text[:10] if text else ""                     # keep the day, drop the time
-
-
 def _managers_text(row: dict) -> str:
     """The row's manager names joined for a single cell."""
     return ", ".join(row.get("managers") or [])
@@ -122,7 +107,7 @@ COLUMNS: dict[str, dict] = {
     "extension": {"header": "Extension", "group": "Contact",
                   "get": lambda r: _text(r["fields"].get("Extension"))},
     "birthday": {"header": "Birthday", "group": "Contact",
-                 "get": lambda r: _day(r["fields"].get("Birthday"))},
+                 "get": lambda r: readable_date(r["fields"].get("Birthday"))},
     "location": {"header": "Location", "group": "Placement",
                  "get": lambda r: _text(r["fields"].get("Location"))},
     "department": {"header": "Department", "group": "Placement",
@@ -151,11 +136,11 @@ COLUMNS: dict[str, dict] = {
     "system_check": {"header": "System check", "group": "Status",
                      "get": lambda r: _text(r["fields"].get("SystemCheck"))},
     "request_allow_date": {"header": "Can book vacation until", "group": "Status",
-                          "get": lambda r: _day(r["fields"].get("RequestAllowDate"))},
+                          "get": lambda r: readable_date(r["fields"].get("RequestAllowDate"))},
     "comments": {"header": "Comments", "group": "Record",
                  "get": lambda r: _text(r["fields"].get("Comments"))},
     "modified": {"header": "Last modified", "group": "Record",
-                 "get": lambda r: _text(r["fields"].get("Modified"))},
+                 "get": lambda r: readable_datetime(r["fields"].get("Modified"))},
 }
 
 # The order columns are written in, whatever order the picker sent them.
@@ -191,17 +176,6 @@ def _autosize(sheet, wrap_cols: set[int] | None = None) -> None:
         longest = max((len(str(c.value)) for c in column if c.value is not None), default=8)
         cap = 32 if i in wrap_cols else 45               # wrapped columns stay narrow
         sheet.column_dimensions[get_column_letter(i)].width = min(max(longest + 2, 10), cap)
-
-
-def _toronto_date(iso: str) -> str:
-    """An ISO UTC timestamp as a plain Toronto date, blank when unreadable."""
-    try:
-        moment = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
-    except ValueError:
-        return ""
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=ZoneInfo("UTC"))  # stored times are UTC
-    return moment.astimezone(TORONTO).date().isoformat()
 
 
 def _history_value(value) -> object:
@@ -299,7 +273,7 @@ def build_workbook(
         hist.append(["Date", "Name", "Field", "Before", "After", "Reason"])
         for row in history:
             hist.append([
-                _toronto_date(row.get("changed_at", "")),
+                readable_date(row.get("changed_at")),                 # "Apr 21, 2026", Toronto day (#490)
                 _text(row.get("employee_name")),
                 HISTORY_FIELD_LABELS.get(row.get("field", ""), _text(row.get("field"))),
                 _history_value(row.get("old_value")),

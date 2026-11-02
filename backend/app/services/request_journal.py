@@ -25,6 +25,7 @@ from app.models.request_change import RequestChange
 from app.models.request_counter import RequestCounter
 from app.models.request_event import RequestEvent
 from app.models.request_record import RequestRecord
+from app.services.request_threads import thread_subject  # one email subject per request (#520)
 
 logger = logging.getLogger(__name__)
 
@@ -276,10 +277,15 @@ async def enqueue_message(
         subject: The email subject, or None for an SMS.
         body: The rendered message; stored, never returned by an API.
         key: The idempotency key, usually ``{event key}:{channel}:{recipient}``.
+            An email about a request is always sent under that request's one
+            subject (#520), whatever ``subject`` the caller built, so every
+            email about it stays in one thread.
 
     Returns:
         The inserted Outbox row, or None when the key already existed.
     """
+    if channel == "email" and request is not None:
+        subject = thread_subject(request)                        # one subject per request, so Outlook threads it
     row = Outbox(
         request_id=request.id if request is not None else None,
         event_id=event.id if event is not None else None,

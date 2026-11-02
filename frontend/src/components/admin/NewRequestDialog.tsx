@@ -8,6 +8,7 @@ import PillToggle from '../PillToggle';
 import {
   AdminRequestForm, PreviewResult, StaffOption, createAdminRequest, previewAdminRequest,
 } from '../../api/requestsAdmin';
+import { createTeamRequest, previewTeamRequest } from '../../api/client';
 import { belowZeroSentence } from '../../utils/employment';
 import { Src } from './requestTable';
 
@@ -37,6 +38,12 @@ interface Props {
   /** Told the new request's summary once it is saved; the screen reloads and toasts. */
   onDone: (result: { status: string; item_id: string; request_type: string; message?: string }) => void;
   onError: (message: string) => void;
+  /**
+   * Set when a manager makes a request for someone on their team (#523): it is
+   * always approved as made, the team routes are used, and carry-over and payout
+   * follow HR's dates. Absent on the admin requests screen.
+   */
+  team?: { carryover_payout_open: boolean; carryover_closed_message: string };
 }
 
 /** Today's date as YYYY-MM-DD in the browser's own time zone (not UTC). */
@@ -54,11 +61,17 @@ function todayIso(): string {
  * Pending asks the manager to approve as usual; Approved applies it at once and
  * does not ask the manager.
  *
+ * With `team` set it is the manager's Make a request (#523): the people are
+ * their team, there is no status choice (approved as made, under their name),
+ * and carry-over and payout are refused outside HR's dates, as for staff.
+ *
  * @param props - See {@link Props}.
  * @returns The dialog.
  */
-export default function NewRequestDialog({ open, onClose, defaultSrc, options, processingEnabled, onDone, onError }: Props) {
+export default function NewRequestDialog({ open, onClose, defaultSrc, options, processingEnabled, onDone, onError, team }: Props) {
   const theme = useTheme();
+  const forTeam = !!team;                                    // a manager's request for a teammate
+  const coClosed = !!team && !team.carryover_payout_open;    // carry-over outside HR's dates
   const [src, setSrc] = useState<Src>(defaultSrc === 'co' ? 'co' : defaultSrc);
   const [employeeId, setEmployeeId] = useState('');
   const [status, setStatus] = useState<'Pending' | 'Approved'>('Pending');
@@ -83,13 +96,13 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
   useEffect(() => {
     if (!open) return;
     setSrc(defaultSrc);
-    setEmployeeId(''); setStatus('Pending');
+    setEmployeeId(''); setStatus(forTeam ? 'Approved' : 'Pending');   // a manager's is always approved
     setLeaveType(options.leave_types[0] || 'Vacation');
     setStart(todayIso()); setEnd(todayIso()); setPartialHours(''); setNotes('');
     setOtDate(todayIso()); setOtHours(''); setOtDesc('');
     setCoType('Carry Over'); setCoDays('');
     setPreview(null);
-  }, [open, defaultSrc, options.leave_types]);
+  }, [open, defaultSrc, options.leave_types, forTeam]);
 
   const chosen = options.staff.find((s) => s.id === employeeId) || null;
 
@@ -107,6 +120,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
   /** Whether the form is complete enough to save (mirrors the backend checks). */
   const valid = useMemo(() => {
     if (!employeeId) return false;
+    if (src === 'co' && coClosed) return false;             // closed: nothing to save
     if (src === 'leave') {
       if (!start) return false;
       if (leaveType === PARTIAL) { const h = Number(partialHours); return h > 0 && h < 8 && h % 0.5 === 0; }
@@ -114,7 +128,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
     }
     if (src === 'mu') { const h = Number(otHours); return !!otDate && !!otDesc.trim() && h > 0 && h % 0.5 === 0; }
     const d = Number(coDays); return d > 0 && d % 0.5 === 0;
-  }, [src, employeeId, start, end, leaveType, partialHours, otDate, otHours, otDesc, coDays]);
+  }, [src, employeeId, start, end, leaveType, partialHours, otDate, otHours, otDesc, coDays, coClosed]);
 
   // Ask the server what the request would do to balances, a short wait after
   // the last change, whenever the form is complete. Read-only, so it runs even
@@ -125,18 +139,22 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
     if (!open || !valid || !employeeId) return;
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      previewAdminRequest({ request_type: TYPE_OF[src], employee_id: employeeId, form })
+      const ask = forTeam ? previewTeamRequest : previewAdminRequest;   // a manager uses the team's own route
+      ask({ request_type: TYPE_OF[src], employee_id: employeeId, form })
         .then((r) => setPreview(r.data))
         .catch(() => setPreview(null));                  // a refused preview just shows nothing
     }, 350);
     return () => clearTimeout(timer.current);
-  }, [open, valid, employeeId, src, form]);
+  }, [open, valid, employeeId, src, form, forTeam]);
 
   /** Save the request, then hand the result back for the screen to reload and toast. */
   const save = async () => {
     setSaving(true);
     try {
-      const res = await createAdminRequest({ request_type: TYPE_OF[src], employee_id: employeeId, status, form });
+      const body = { request_type: TYPE_OF[src], employee_id: employeeId, form };
+      const res = forTeam
+        ? await createTeamRequest(body)                      // made and approved as this manager
+        : await createAdminRequest({ ...body, status });
       onDone({ ...res.data, request_type: TYPE_OF[src] });
     } catch (e: any) {
       const detail = e.response?.data?.detail;
@@ -152,7 +170,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>New request</DialogTitle>
+      <DialogTitle>{forTeam ? 'Make a request for someone on your team' : 'New request'}</DialogTitle>
       <DialogContent dividers sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1.4fr 1fr' }, gap: 2.5 }}>
         {/* Left: the form. */}
         <Box sx={{ display: 'grid', gap: 2, alignContent: 'start', minWidth: 0 }}>
@@ -166,7 +184,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
           <TextField
             select required label="Employee" value={employeeId}
             onChange={(e) => setEmployeeId(e.target.value)}
-            helperText={chosen ? `Manager: ${chosen.managers || 'none on record'}` : 'From the Staff Directory'}
+            helperText={forTeam ? 'Someone on your team' : chosen ? `Manager: ${chosen.managers || 'none on record'}` : 'From the Staff Directory'}
           >
             <MenuItem value=""><em>Choose a person</em></MenuItem>
             {options.staff.map((s) => (
@@ -195,7 +213,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
                   <TextField required type="date" label="End date" value={end} onChange={(e) => setEnd(e.target.value)} inputProps={{ min: start }} InputLabelProps={{ shrink: true }} />
                 </Box>
               )}
-              <TextField label="Title" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Share some details" />
+              <TextField label={forTeam ? 'Note (optional)' : 'Title'} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Share some details" />
             </>
           )}
 
@@ -221,16 +239,21 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
                   <PillToggle name="co-type" label="Carry over or payout" value={coType} onChange={setCoType} options={[{ key: 'Carry Over', label: 'Carry Over' }, { key: 'Payout', label: 'Payout' }]} />
                 </Box>
               </Box>
-              <TextField required type="number" label="Days" value={coDays} onChange={(e) => setCoDays(e.target.value)} inputProps={{ step: 0.5, min: 0.5 }} helperText="Moved out of Vacation. Allowed any time (HR's own tool)." />
+              <TextField required type="number" label="Days" value={coDays} onChange={(e) => setCoDays(e.target.value)} inputProps={{ step: 0.5, min: 0.5 }} helperText={forTeam ? 'Moved out of Vacation.' : "Moved out of Vacation. Allowed any time (HR's own tool)."} />
+              {/* Outside HR's dates a manager cannot ask for it either, as for staff. */}
+              {coClosed && <Alert severity="info">{team?.carryover_closed_message}</Alert>}
             </>
           )}
 
-          <Box>
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Status</Typography>
-            <Box sx={{ mt: 0.5 }}>
-              <PillToggle name="new-status" label="Status" value={status} onChange={setStatus} options={[{ key: 'Pending', label: 'Pending' }, { key: 'Approved', label: 'Approved' }]} />
+          {/* A manager's request is always approved as made, so no choice is shown. */}
+          {!forTeam && (
+            <Box>
+              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Status</Typography>
+              <Box sx={{ mt: 0.5 }}>
+                <PillToggle name="new-status" label="Status" value={status} onChange={setStatus} options={[{ key: 'Pending', label: 'Pending' }, { key: 'Approved', label: 'Approved' }]} />
+              </Box>
             </Box>
-          </Box>
+          )}
         </Box>
 
         {/* Right: what saving will do, in plain words, with the balance effect. */}
@@ -241,7 +264,9 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
           ) : (
             <>
               <Typography variant="body2">
-                {status === 'Pending'
+                {forTeam
+                  ? `It is approved now, recorded as approved by you, and ${chosen?.name || 'the employee'} is emailed. The request notes that you made it.`
+                  : status === 'Pending'
                   ? `${chosen?.managers || 'The manager'} is emailed to approve it, like any other request.`
                   : `It is approved now, recorded as approved by an admin, and ${chosen?.name || 'the employee'} is emailed. The manager is not asked.`}
               </Typography>
@@ -277,7 +302,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         <Button variant="contained" disabled={!valid || saving || !processingEnabled} onClick={save}>
-          {status === 'Approved' ? 'Create and approve' : 'Create'}
+          {forTeam ? 'Make and approve' : status === 'Approved' ? 'Create and approve' : 'Create'}
         </Button>
       </DialogActions>
     </Dialog>
