@@ -7,6 +7,7 @@ from app.models.request_approval_state import RequestApprovalState
 from app.models.dashboard_link_state import DashboardLinkState
 from app.models.staff_setup_nudge import StaffSetupNudge
 from app.models.email_api_log import EmailApiLog, EmailApiLogRecipient
+from app.models.sms_api_log import SmsApiLog, SmsReplyLog
 from app.models.email_code import EmailCode
 from app.models.held_request import HeldRequest
 from app.models.app_setting import AppSetting
@@ -56,6 +57,8 @@ __all__ = [
     "StaffSetupNudge",
     "EmailApiLog",
     "EmailApiLogRecipient",
+    "SmsApiLog",
+    "SmsReplyLog",
     "EmailCode",
     "HeldRequest",
     "AppSetting",

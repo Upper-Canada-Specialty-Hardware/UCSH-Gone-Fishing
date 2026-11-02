@@ -241,7 +241,7 @@ def test_the_sender_marks_sent_to_manager_and_receipt_sent(monkeypatch, sp):
     async def fake_email(recipients, subject, body):
         return None
 
-    async def fake_sms(to, body):
+    async def fake_sms(to, body, **kwargs):       # **kwargs: send_sms now takes text-log context (#494)
         return {"sid": "SM-1"}
 
     monkeypatch.setattr("app.graph.email.send_email", fake_email)
