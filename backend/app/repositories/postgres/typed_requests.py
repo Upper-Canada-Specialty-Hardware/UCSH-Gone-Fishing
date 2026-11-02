@@ -32,6 +32,7 @@ from app.models.request_record import RequestRecord
 from app.repositories.postgres.requests import _iso, _not_found, _stored, _to_int
 from app.services.request_descriptions import compose_leave_title, split_leave_title
 from app.services.request_journal import next_item_id, record_change
+from app.services.request_states import INITIAL_STATE, STATUS_TO_STATE
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,11 @@ class TypedRequestList:
             record.updated_at = modified_at or created_at or now
             await self._resolve_people(record, stored)          # name/email first, so the Title split sees them
             self._apply_fields(record, stored)
+            # The state-machine position a brand-new row starts in (#455): a decided
+            # status maps straight across (an imported Approved/Rejected row keeps its
+            # state), and a fresh pending request begins getting_ready until submit
+            # moves it on. The importer overrides this with its fuller signal set.
+            record.state = STATUS_TO_STATE.get(record.status, INITIAL_STATE)
             session.add(record)
             await session.flush()                               # assign id and enforce the CHECK constraints
             for col, value in stored.items():                   # a field write is a change, even on create
@@ -549,6 +555,9 @@ class TypedRequestList:
         fields = dict(record.extra or {})                       # unknown columns first, typed columns override
         if record.status:
             fields["Status"] = record.status.capitalize()      # title case on the wire
+        # The state-machine position (#455), snake_case, so the dashboards render
+        # it. Absent on the SharePoint path, where the frontend keeps today's look.
+        fields["state"] = record.state
         if record.leave_type is not None:
             fields["LeaveType"] = record.leave_type
         if record.start_date is not None:

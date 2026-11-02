@@ -363,7 +363,6 @@ export default function RequestsHistoryTable({ requests, mode, timelineScope, pr
         onClose={() => setExportOpen(false)}
         onNotify={(message) => setSnack({ open: true, message })}
       />
-
       {/* Cancelling asks first: it cannot be undone from here (#519). */}
       <Dialog open={cancelRow !== null} onClose={() => setCancelRow(null)}>
         <DialogTitle>Cancel request {cancelRow?.id}?</DialogTitle>

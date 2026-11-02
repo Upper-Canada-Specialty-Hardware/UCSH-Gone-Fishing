@@ -786,7 +786,7 @@ class PostgresStaffList:
     async def update_list_item_fields(
         self, list_id: str, item_id, fields: dict, *,
         links: dict | None = None, history_source: str | None = None,
-        history_reason: str | None = None,
+        history_reason: str | None = None, history_actor: str | None = None,
     ) -> dict:
         """Merge fields into a staff row and return its fields.
 
@@ -803,6 +803,9 @@ class PostgresStaffList:
                 nothing and the save is never logged twice.
             history_reason: The reason stored on those rows; required when
                 ``history_source`` is given.
+            history_actor: Who made the change ("HR", a manager's name, "system"),
+                stored on those rows; None leaves the reader to fall back to
+                ``history_source`` (#447).
 
         Returns:
             The row's SharePoint fields after the change.
@@ -834,6 +837,7 @@ class PostgresStaffList:
                         new_value=new,
                         reason=history_reason or "Changed by the system.",
                         source=history_source,
+                        actor=history_actor,               # who made it; None -> reader uses source (#447)
                     ))
             await session.commit()
         await _announce(item_id)                          # open dashboards show the change

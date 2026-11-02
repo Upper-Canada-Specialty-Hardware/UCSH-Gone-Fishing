@@ -21,8 +21,8 @@ class GraphClient:
             "Content-Type": "application/json",
         }
 
-    async def get(self, path: str, params: dict | None = None) -> dict:
-        resp = await self._request("GET", path, params=params)
+    async def get(self, path: str, params: dict | None = None, *, allow_after_switch: bool = False) -> dict:
+        resp = await self._request("GET", path, params=params, allow_after_switch=allow_after_switch)
         return resp.json()
 
     async def post(self, path: str, json: dict | None = None) -> dict:
@@ -40,17 +40,28 @@ class GraphClient:
     async def delete(self, path: str) -> None:
         await self._request("DELETE", path)
 
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def _request(self, method: str, path: str, *, allow_after_switch: bool = False, **kwargs) -> httpx.Response:
         """Send one Graph call, refusing it once the switch to Postgres has run.
 
         Every SharePoint read and write passes through here, so this one check
-        keeps the whole app off SharePoint after the switch (no fallbacks).
+        keeps the whole app off SharePoint after the switch (no fallbacks). The
+        one exception is the staff-history import (#448): with
+        ``allow_after_switch`` set, a GET the import is allowed to make (a Staff
+        Directory versions read, or the site-id lookup it needs) skips the gate;
+        every other call, and every write, is still refused.
+
+        Args:
+            method: HTTP method.
+            path: Graph path (relative, or an absolute ``@odata.nextLink``).
+            allow_after_switch: Opt-in for the staff-history import's reads only.
+            **kwargs: Passed through to the HTTP send (params/json).
 
         Raises:
             SharePointCutOff: After the switch; no token is fetched, nothing is sent.
         """
-        from app.services.sharepoint_cutoff import refuse_if_cut_off   # lazy: avoid an import cycle
-        await refuse_if_cut_off(method, path)                  # before the token, so nothing leaves the app
+        from app.services.sharepoint_cutoff import refuse_if_cut_off, is_staff_history_read  # lazy: avoid a cycle
+        if not (allow_after_switch and is_staff_history_read(method, path)):   # only the import's own reads skip the gate
+            await refuse_if_cut_off(method, path)              # before the token, so nothing leaves the app
         headers = await self._headers()
         resp = await self._http.request(method, path, headers=headers, **kwargs)
 

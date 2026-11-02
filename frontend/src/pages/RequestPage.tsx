@@ -696,7 +696,8 @@ export default function RequestPage() {
                 ) : (
                   // Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407).
                   <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
-                    <BusyLabel busy={busy}>Send request</BusyLabel>
+                    {/* While the request is being created the label says so, beside the spinner (#455). */}
+                    <BusyLabel busy={busy}>{busy ? 'Creating request...' : 'Send request'}</BusyLabel>
                   </Button>
                 )}
               </>

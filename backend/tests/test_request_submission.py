@@ -123,6 +123,7 @@ async def _leave_record(**fields) -> RequestRecord:
     """Insert one pending leave request already linked to Alice, and return it."""
     base = dict(
         kind="leave", item_id=next(_item_ids), status="pending",
+        state="waiting_on_approval",                               # a pending request the manager can decide (#455)
         employee_id="10", employee_email="alice@ucsh.com",
         leave_type="Sick or Personal Day", start_date=date(2026, 11, 2), end_date=date(2026, 11, 2),
         days=2.0, approval_version=1, balance_state="not_applied",
@@ -436,3 +437,37 @@ def test_imported_requests_keep_their_old_reminder_cadence(sp, monkeypatch):
     assert recent.item_id not in offered                           # not restarted from the submission date
     assert fresh.item_id not in offered                            # first reminder still 30 days from the email
     assert unseen.item_id not in offered                           # never emailed before, so never reminded now
+
+
+# ----- reminders skip a request a manager cannot decide (#455) -----
+
+
+def test_reminders_skip_requests_that_are_not_waiting_on_approval(sp, monkeypatch):
+    """The daily sweep never reminds a getting_ready or needs_attention request.
+
+    Only a waiting_on_approval request is something a manager can act on, so a
+    getting_ready or needs_attention row is left for the admin stuck list instead
+    and no manager is emailed or texted about it.
+    """
+    from app.models.mixins import utcnow
+
+    due_at = utcnow() - timedelta(days=40)                         # old enough to be due
+    waiting = run(_leave_record(item_id=90_000_301, created_at=due_at))   # default state is waiting
+    run(_mark_asked(waiting))                                      # asked at submit: on the reminder cadence
+    getting = run(_leave_record(item_id=90_000_302, created_at=due_at, state="getting_ready"))
+    run(_mark_asked(getting))
+    attention = run(_leave_record(item_id=90_000_303, created_at=due_at, state="needs_attention"))
+    run(_mark_asked(attention))
+
+    offered: list = []
+
+    async def fake_queue(session, kind, item_id, today):
+        offered.append(item_id)                                    # who was actually offered a reminder
+        return True
+
+    monkeypatch.setattr(rs, "_queue_reminder", fake_queue)
+    run(rs.queue_due_reminders())
+
+    assert waiting.item_id in offered                              # the decidable one is reminded
+    assert getting.item_id not in offered                         # still getting ready: skipped
+    assert attention.item_id not in offered                       # needs an admin: skipped

@@ -14,10 +14,16 @@ export interface StaffChange {
   old_value: unknown;
   /** Value after the change. */
   new_value: unknown;
-  /** Why HR made the change. */
-  reason: string;
-  /** Where it came from ("admin_dashboard"). */
+  /** Why the change was made; null when nothing explains it. */
+  reason: string | null;
+  /** Where it came from ("admin_dashboard", "manager_dashboard", "system", "sharepoint"). */
   source: string;
+  /** Who or what made it ("HR", a manager's name, "system", a SharePoint editor); null on older rows. */
+  actor?: string | null;
+  /** The SharePoint version label an imported row came from (e.g. "1.0"); null for an app edit. */
+  version?: string | null;
+  /** True on a starting-value row: the oldest imported SharePoint version seeded it (#448). */
+  is_start?: boolean;
   /** When it happened, an ISO 8601 UTC string. */
   changed_at: string;
 }

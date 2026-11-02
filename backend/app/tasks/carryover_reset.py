@@ -125,6 +125,7 @@ async def _reset_single_employee(emp_info: dict):
             {"CarryOver": 0},
             history_source="system",
             history_reason="Annual carry-over reset on April 1.",
+            history_actor="system",                    # automatic reset -> the system (#447)
         )
         await recalculate_request_allow_date(
             emp_id,

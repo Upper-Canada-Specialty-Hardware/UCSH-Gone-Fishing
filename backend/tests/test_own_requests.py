@@ -105,6 +105,7 @@ async def _leave(**overrides) -> RequestRecord:
         employee_id="7", employee_email="casey@ucsh.com", employee_name="Casey Demo",
         leave_type="Vacation", start_date=date(2026, 11, 2), end_date=date(2026, 11, 6), days=5,
         manager_id="5", manager_name="Morgan Boss", approval_version=1, balance_state="not_applied",
+        state="waiting_on_approval",                          # sent to the manager (#455)
     )
     values.update(overrides)
     async with async_session() as session:
@@ -176,6 +177,23 @@ def test_an_approved_request_is_refunded_by_an_admin_not_cancelled():
     with pytest.raises(OwnRequestError) as exc:
         run(cancel_own_request("leave", record.item_id, "7", channel="request_page"))
     assert exc.value.status_code == 409 and "ask an admin for a refund" in str(exc.value)
+
+
+def test_a_request_still_being_set_up_cannot_be_cancelled_yet():
+    # It has not reached a manager, and #455 allows no move to cancelled from there.
+    record = run(_leave(state="getting_ready"))
+    with pytest.raises(OwnRequestError) as exc:
+        run(cancel_own_request("leave", record.item_id, "7", channel="request_page"))
+    assert exc.value.status_code == 409 and "still being set up" in str(exc.value)
+    row, outbox, _, _ = run(_read(record.id))
+    assert row.status == "pending" and outbox == []          # nothing changed, nobody told
+
+
+def test_cancel_moves_the_state_to_cancelled():
+    record = run(_leave())
+    run(cancel_own_request("leave", record.item_id, "7", channel="request_page"))
+    row, _, _, _ = run(_read(record.id))
+    assert row.state == "cancelled"                           # the lifecycle state follows (#455)
 
 
 def test_overtime_can_be_cancelled_too():

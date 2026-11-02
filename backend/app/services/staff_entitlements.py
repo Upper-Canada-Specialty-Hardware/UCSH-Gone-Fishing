@@ -565,7 +565,7 @@ def _link_payload(field_changes: list[dict], fields_in: dict) -> dict | None:
 
 async def apply_entitlement_changes(
     employee_id: str, requested: dict, reason: str, fields: dict | None = None,
-    source: str = "admin_dashboard",
+    source: str = "admin_dashboard", actor: str | None = None,
 ) -> dict:
     """Apply balance/entitlement and Staff Directory field changes, with a reason.
 
@@ -587,6 +587,10 @@ async def apply_entitlement_changes(
             dashboard by default, ``"manager_dashboard"`` when a manager edits
             their own teammate (#362). Kept within the ``StaffChange.source``
             column's 24-character limit by the caller.
+        actor: Who made the change, stored on each history row ("HR" for the
+            admin dashboard, the manager's name for a team edit); None leaves the
+            reader to fall back to ``source`` (#447). The automatic
+            request-allow-date row is always recorded as the system.
 
     Returns:
         ``{"employee_id", "name", "changed": [...], "history_recorded": bool}``,
@@ -674,6 +678,7 @@ async def apply_entitlement_changes(
                 [(c["column"], c["before"], c["after"]) for c in changes],
                 reason,
                 source=source,                        # admin, or a manager's own team (#362)
+                actor=actor,                          # "HR" / the manager's name (#447)
             )
         except Exception:                            # history must not undo the save
             logger.exception(                        # keep the detail in the logs
@@ -722,6 +727,7 @@ async def apply_entitlement_changes(
                     [("RequestAllowDate", rad_moved[0], rad_moved[1])],
                     "Recomputed automatically after a balance change.",
                     source=source,                    # same channel as the edit that caused it
+                    actor=staff_changes.SYSTEM_ACTOR,  # automatic -> the system, not the editor (#447)
                 )
             except Exception:                         # best-effort, like the main log
                 logger.exception(

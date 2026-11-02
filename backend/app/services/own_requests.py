@@ -42,6 +42,7 @@ from app.services.request_decisions import _wake_sender
 from app.services.request_descriptions import compose_leave_title
 from app.services.request_intake import PendingClash, RequestFormError, refuse_leave_clashes
 from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
+from app.services.request_states import can_decide, move
 from app.services.request_submission import _load, apply_admin_edit
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ HOURS_PER_DAY = 8.0
 KIND_FROM_URL = {"leave": "leave", "overtime": "overtime", "carryover-payout": "carryover_payout"}
 
 GONE_MESSAGE = "That request could not be found."
+
+
+# A pending request still being set up (not yet sent to a manager) cannot be cancelled yet (#455).
+NOT_READY_MESSAGE = "This request is still being set up. Try again in a minute."
 
 
 class OwnRequestError(Exception):
@@ -283,6 +288,8 @@ async def cancel_own_request(kind: str, item_id, staff_id, *, channel: str) -> d
                 return {"status": "cancelled", "item_id": str(record.item_id), "already": True}
             if record.status != "pending":
                 raise OwnRequestError(_not_pending_message(record), 409)
+            if not can_decide(record):                         # still being set up: it has not reached a manager (#455)
+                raise OwnRequestError(NOT_READY_MESSAGE, 409)
             await _cancel_locked(session, record, channel)
             await session.commit()
     _wake_sender()                                             # deliver the notices without waiting
@@ -299,6 +306,7 @@ async def _cancel_locked(session, record: RequestRecord, channel: str) -> None:
     """
     name = record.employee_name or "The employee"
     record.status = "cancelled"                                # terminal: no manager can act on it now
+    move(record, "cancelled", reason="cancelled by the employee")   # the lifecycle state follows (#455)
     record.updated_at = utcnow()
     record_change(session, record, "Status", "Pending", "Cancelled", name, channel, "Cancelled by the employee")
     key = step_key(record.kind, record.item_id, "cancelled", record.approval_version)
