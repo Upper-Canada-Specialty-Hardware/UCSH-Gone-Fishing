@@ -17,7 +17,6 @@ from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.out_of_office_email import start_out_of_office_email_task  # weekday 7:00 am "on leave starting today" email (#466)
 from app.tasks.reminders import start_reminder_task
-from app.tasks.held_request_reminders import start_held_request_reminder_task
 from app.tasks.sync_tasks import start_shadow_sync_task
 from app.tasks.outbox_worker import start_outbox_worker  # drains queued result emails/texts (#326)
 
@@ -72,7 +71,6 @@ async def lifespan(app: FastAPI):
     carryover_reset_task = None
     out_of_office_task = None
     reminder_task = None
-    held_request_task = None
     shadow_sync_task = None
     from app.services.sharepoint_cutoff import sharepoint_cut_off
     try:
@@ -85,8 +83,6 @@ async def lifespan(app: FastAPI):
         carryover_reset_task = start_carryover_reset_task()
         out_of_office_task = start_out_of_office_email_task()  # weekday 7:00 am "on leave starting today" email
         reminder_task = start_reminder_task()
-        held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
-
         # Deferred so the server is already answering /health: a deploy that
         # overlapped an in-flight decision can leave a request's state behind its
         # status (#455). This idempotent pass realigns decided rows and finishes
@@ -117,7 +113,6 @@ async def lifespan(app: FastAPI):
             carryover_reset_task = start_carryover_reset_task()
             out_of_office_task = start_out_of_office_email_task()  # weekday 7:00 am "on leave starting today" email
             reminder_task = start_reminder_task()
-            held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
             # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
             # until the switch (#334); it stops itself once requests are in Postgres.
             shadow_sync_task = start_shadow_sync_task()
@@ -160,8 +155,6 @@ async def lifespan(app: FastAPI):
         out_of_office_task.cancel()
     if reminder_task:
         reminder_task.cancel()
-    if held_request_task:
-        held_request_task.cancel()
     if shadow_sync_task:
         shadow_sync_task.cancel()
     from app.services.event_bus import event_bus

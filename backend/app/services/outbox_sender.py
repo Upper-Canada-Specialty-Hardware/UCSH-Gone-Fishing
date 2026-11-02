@@ -55,6 +55,9 @@ _SENT_EVENT_FOR_TYPE = {
     "result": "result_sent",
     "rejection": "result_sent",
     "bereavement_alert": None,
+    # A cancel notice (#519) follows the "cancelled" event already on the
+    # timeline; delivering it must not move the stage back to "Result sent".
+    "cancel_notice": None,
 }
 
 

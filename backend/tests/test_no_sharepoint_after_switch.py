@@ -355,12 +355,9 @@ def test_the_carryover_reset_never_touches_sharepoint(switched, monkeypatch):
     assert switched == []
 
 
-def test_the_setup_check_and_held_request_sweeps_never_touch_sharepoint(switched):
+def test_the_setup_check_never_touches_sharepoint(switched):
     from app.services.employee_validation import validate_all_employee_setups
     run(validate_all_employee_setups())                      # what the admin setup tab runs
-    from app.services.held_requests import remind_held_requests, retry_waiting_site
-    run(remind_held_requests())                              # the hourly held-request loop's two steps
-    run(retry_waiting_site())
     assert switched == []
 
 

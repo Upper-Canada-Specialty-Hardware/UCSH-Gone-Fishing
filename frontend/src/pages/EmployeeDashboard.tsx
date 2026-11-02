@@ -242,6 +242,16 @@ export default function EmployeeDashboard() {
   }, []);
   useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
 
+  /** Re-read the requests and balances after a change made on this page (a cancel, #519). */
+  const reloadRequests = useCallback(() => {
+    Promise.all([getMyBalances(), getMyRequests()])
+      .then(([balRes, reqRes]) => {
+        setBalances(balRes.data.balances);
+        setRequests(reqRes.data.requests || []);
+      })
+      .catch(() => { /* the live stream still brings the change */ });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const cacheKey = staffCacheKey('me');               // "me:<role>:<id>", or null when signed out
@@ -459,7 +469,7 @@ export default function EmployeeDashboard() {
         // table (RequestsHistoryTable) is the admin requests table in read-only
         // "mine" mode and keeps itself inside the card, never widening the page.
         <Box sx={{ minWidth: 0 }}>
-          <RequestsHistoryTable requests={requests} mode="mine" timelineScope="me" />
+          <RequestsHistoryTable requests={requests} mode="mine" timelineScope="me" onChanged={reloadRequests} />
         </Box>
       )}
       </Enter>

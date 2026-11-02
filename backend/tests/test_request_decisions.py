@@ -589,7 +589,7 @@ def test_approve_recalcs_the_allow_date_and_sends_the_blocked_notice(monkeypatch
         recalc_calls.append((str(employee_id), vacation, carryover))
         return None
 
-    async def fake_blocked(kind, item_id, fields, email):
+    async def fake_blocked(kind, item_id, fields, email, employee_name=None):
         blocked_calls.append((kind, item_id, email))
         return 0
 
