@@ -50,6 +50,25 @@ from app.services.request_decisions import _load as _load_request  # whose reque
 from app.services.manager_assignments import _extract_all_managers, update_employee_managers
 from app.services.staff_entitlements import StaffWriteError, apply_entitlement_changes, get_staff_record
 from app.services.switch_pause import SystemPaused  # the mid-switch write refusal -> 503
+# A request made for a teammate (#523) goes through the admin New request's own
+# pieces, so the form checks, the preview and the approval are the same ones.
+from app.routes.admin_requests import (
+    RECOVER_HANDLERS,
+    PreviewBody,
+    admin_preview_request,
+    approve_new_request,
+    leave_type_options,
+)
+from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
+from app.services.request_intake import (
+    RequestFormError,
+    RequestTypeClosed,
+    carryover_closed_message,
+    ensure_request_type_open,
+    parse_request_form,
+    submit_request,
+)
+from app.services.request_submitter import SOURCE_MANAGER
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -682,3 +701,188 @@ async def team_settle_request(user: AuthUser, request_type: str, request_id: str
         raise HTTPException(status_code=e.status_code, detail=str(e))
     logger.info("Manager %s settled %s request #%s: %s", user.user_id, request_type, request_id, result["outcome"])
     return result
+
+
+# ============================
+# #523 - make a request for a teammate, approved as made
+# ============================
+
+class TeamNewRequestBody(BaseModel):
+    """What the manager's Make a request dialog posts (#523).
+
+    Attributes:
+        request_type: "leave", "overtime" or "carryover-payout".
+        employee_id: Staff Directory id of the teammate it is for.
+        form: The request form, snake_case, the same fields the request page
+            and the admin New request send (see services/request_intake.py).
+    """
+    request_type: str
+    employee_id: str
+    form: dict
+
+
+async def _require_request_target(user: DashboardUser, employee_id: str, manager_name: str) -> dict:
+    """The teammate a manager makes a request for, or an error.
+
+    Args:
+        user: The signed-in manager or admin.
+        employee_id: Staff Directory id of the person the request is for.
+        manager_name: The calling manager's display name.
+
+    Returns:
+        The teammate's ``{"id", "fields"}`` staff item.
+
+    Raises:
+        HTTPException: 403 for the manager themselves (their own requests go
+            through the request page, to their own manager) or a non-teammate;
+            404 when the person is gone.
+    """
+    if str(employee_id) == str(user.user_id):            # never for themselves
+        raise HTTPException(status_code=403, detail="Use the request page for your own requests.")
+    return await _require_teammate(employee_id, manager_name)   # 403 unless on my team, not archived
+
+
+def _with_maker(request_type: str, form: dict, manager_title: str) -> dict:
+    """The form with "Made by <manager>" leading its text, so the origin shows.
+
+    The leave note and the overtime details become the request's description,
+    which the emails, the history and the audit view all show, as the old
+    "Logged by" sick days did.
+
+    Args:
+        request_type: "leave", "overtime" or "carryover-payout".
+        form: The form as posted.
+        manager_title: The manager's display name.
+
+    Returns:
+        A copy of the form; carry-over and payout have no text, so they are unchanged.
+    """
+    made = f"Made by {manager_title}" if manager_title else "Made by your manager"
+    out = dict(form or {})                                # never change the caller's dict
+    if request_type == "leave":
+        notes = str(out.get("notes") or "").strip()       # the optional note
+        out["notes"] = f"{made}: {notes}" if notes else made
+    elif request_type == "overtime":
+        details = str(out.get("description") or "").strip()   # required; left blank the form refuses it
+        if details:
+            out["description"] = f"{made}: {details}"
+    return out
+
+
+@router.get("/team/requests/new-options")
+async def team_new_request_options(user: AuthUser):
+    """What the Make a request dialog needs besides the team (#523).
+
+    Args:
+        user: The signed-in manager or admin.
+
+    Returns:
+        ``{"leave_types", "carryover_payout_open", "carryover_closed_message"}``:
+        the leave types in the admin dialog's order, and whether carry-over and
+        payout may be asked for today (the same dates staff are held to).
+    """
+    _require_role(user, "manager", "admin")
+    window, today = await carryover_payout_window(), toronto_today()
+    is_open = window_is_open(window, today)
+    return {
+        "leave_types": leave_type_options(),
+        "carryover_payout_open": is_open,
+        "carryover_closed_message": "" if is_open else carryover_closed_message(window, today),
+    }
+
+
+@router.post("/team/requests/preview")
+async def team_preview_request(user: AuthUser, body: TeamNewRequestBody):
+    """What a request would do to a teammate's balances. Saves nothing (#523).
+
+    The admin preview's twin, limited to the manager's own team.
+
+    Args:
+        user: The signed-in manager or admin.
+        body: request_type, employee_id and the form.
+
+    Returns:
+        The admin preview's answer: days, current and projected balances, notes.
+
+    Raises:
+        HTTPException: 403 for themselves or a non-teammate, 400 for a form
+            that cannot become a request, 404 when the person is gone.
+    """
+    _manager, manager_name = await _signed_in_manager(user)
+    await _require_request_target(user, body.employee_id, manager_name)
+    return await admin_preview_request(
+        PreviewBody(request_type=body.request_type, employee_id=body.employee_id, form=body.form),
+    )
+
+
+@router.post("/team/requests/new")
+async def team_new_request(user: AuthUser, body: TeamNewRequestBody):
+    """Make a request for a teammate and approve it on the spot (#523).
+
+    For staff who cannot make it themselves (away, no email that works, or the
+    sick call the manager took). It is created exactly as the admin's New
+    request creates one, in the teammate's name, from the manager dashboard,
+    with the manager email skipped; then it is approved through the same
+    handler as the Approve button, as this manager, so the balance move, the
+    audit trail and the teammate's approval email are the usual ones.
+
+    Leave covers every type, half days and sick days included, in every
+    province (this replaces the BC-only "Log sick day"). Carry-over and payout
+    follow the dates HR set, as they do for staff.
+
+    Args:
+        user: The signed-in manager or admin.
+        body: request_type, employee_id and the form.
+
+    Returns:
+        ``{"status": "approved", "request_type", "item_id"}``, or
+        ``{"status": "pending", ..., "message"}`` when it was saved but could
+        not be approved, and was sent for approval the normal way instead.
+
+    Raises:
+        HTTPException: 403 for themselves or a non-teammate, 404 when the
+            person is gone, 503 while processing is off or the system is
+            paused, 400 for a form the request page would also refuse, 409
+            when carry-over and payout are closed, 502 when the write failed.
+    """
+    manager, manager_name = await _signed_in_manager(user)
+    employee = await _require_request_target(user, body.employee_id, manager_name)
+    if not settings.PROCESSING_ENABLED:                   # same gate as every other write
+        raise HTTPException(status_code=503, detail="Processing is currently disabled")
+    await _refuse_if_paused()                             # same 503 as the other write routes mid-switch
+
+    manager_title = (manager.get("fields", {}).get("Title") or "").strip()
+    try:
+        form = parse_request_form(body.request_type, _with_maker(body.request_type, body.form, manager_title))
+        await ensure_request_type_open(body.request_type)     # carry-over and payout only inside HR's dates
+    except RequestTypeClosed as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RequestFormError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        # notify=False: the manager is making it, so nobody is asked to approve it.
+        item = await submit_request(body.request_type, form, employee, SOURCE_MANAGER, notify=False)
+    except RequestFormError as e:                         # e.g. past the vacation booking limit
+        raise HTTPException(status_code=400, detail=str(e))
+    except SystemPaused as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:  # noqa: BLE001 - a write failure is reported, not a crash
+        logger.exception("Team new request: could not create a %s request", body.request_type)
+        raise HTTPException(status_code=502, detail="The request could not be saved. Try again shortly.")
+
+    item_id = item.get("id")
+    result = await approve_new_request(body.request_type, item_id, approver_id=str(user.user_id), channel=MANAGER_CHANNEL)
+    if result.get("status") == "approved":                # only a real approval counts (#294 S2)
+        logger.info("Manager %s made and approved %s request #%s", user.user_id, body.request_type, item_id)
+        return {"status": "approved", "request_type": body.request_type, "item_id": item_id}
+
+    # Not approved (a clash, a refusal, days that could not be worked out): hand
+    # it to its manager the normal way so it is not left without an email (#294 S3).
+    reason = result.get("error") or "It could not be approved."
+    asked = await RECOVER_HANDLERS[body.request_type](item_id)
+    message = (
+        f"Saved, but not approved: {reason} It now waits for approval like any request."
+        if asked else f"This could not be approved: {reason}"
+    )
+    return {"status": "pending", "request_type": body.request_type, "item_id": item_id, "message": message}
