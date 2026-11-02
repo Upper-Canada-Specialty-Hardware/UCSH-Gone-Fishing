@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # on the spot. British Columbia only to start; add "ON" once HR agrees.
     SICK_DAY_ON_BEHALF_PROVINCES: str = "BC"
 
+    # Daily out-of-office email (#466): whose approved leave starts today, sent at
+    # 7:00 am Toronto time on weekdays. The group's address; blank = never sent.
+    OUT_OF_OFFICE_EMAIL_TO: str = ""
+    # Comma-separated province codes whose staff are listed. Ontario only: the
+    # group is Ontario management and staff, so BC staff are left out.
+    OUT_OF_OFFICE_EMAIL_PROVINCES: str = "ON"
+
     # Public request page (#131)
     # Write SubmitterEmail and RequestSource on new request items. Off until
     # those columns exist on the three request lists: writing a column that is

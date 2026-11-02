@@ -23,35 +23,28 @@ from datetime import date
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from pydantic import BaseModel
 
 # AuthUser validates the signed dashboard token; _require_role gates the role.
 # Both live in the dashboard router and are imported by name, exactly as
 # routes/admin_requests.py imports that module's helpers.
 from app.routes.dashboard import AuthUser, _require_role
-from app.services.requests_export import build_requests_workbook, requests_export_filename
+from app.services.requests_export import RequestsExportBody, build_requests_workbook, requests_export_filename
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-class TeamExportBody(BaseModel):
-    """What the manager History tab's Export posts: the request items on screen."""
-
-    requests: list[dict]
-
-
 @router.post("/team/requests/export")
-async def team_export_requests(user: AuthUser, body: TeamExportBody):
-    """An .xlsx of the team requests the manager is viewing, one sheet per list (#360).
+async def team_export_requests(user: AuthUser, body: RequestsExportBody):
+    """An .xlsx of the team requests the manager chose in the export dialog (#360, #488).
 
-    Formats the request items the manager dashboard already holds (the rows on
-    screen), so it reads no live data. The rows are this manager's team's
-    because they come from /team/requests; the route only reformats them.
+    The dialog builds the sheets from the rows the manager dashboard already
+    holds, so this reads no live data. The rows are this manager's team's
+    because they come from /team/requests; the route only writes them.
 
     Args:
         user: The signed-in dashboard user; must be a manager or admin.
-        body: requests - the items as /team/requests returns them.
+        body: sheets - each with its title, columns and rows, as previewed.
 
     Returns:
         The workbook as an attachment.
@@ -61,7 +54,7 @@ async def team_export_requests(user: AuthUser, body: TeamExportBody):
             the role is not manager or admin.
     """
     _require_role(user, "manager", "admin")              # employees cannot export the team's requests
-    data = build_requests_workbook(body.requests)        # the same builder the admin export uses
+    data = build_requests_workbook(body.sheets)          # the same writer the admin export uses
     filename = requests_export_filename(date.today())    # dated, so repeated exports do not collide
     return Response(
         content=data,

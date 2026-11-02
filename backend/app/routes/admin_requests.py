@@ -65,7 +65,7 @@ from app.services.overtime_requests import (
 from app.services.request_intake import RequestFormError, parse_request_form, submit_request
 from app.services.request_preview import preview_request
 from app.services.request_submitter import SOURCE_ADMIN
-from app.services.requests_export import build_requests_workbook, requests_export_filename
+from app.services.requests_export import RequestsExportBody, build_requests_workbook, requests_export_filename
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
@@ -141,12 +141,6 @@ class SettleBody(BaseModel):
     outcome: str                      # "now", "hand" or "none"
     reason: str                       # required, never blank
     pieces: dict[str, float] | None = None   # "hand" leave only: {pot: days taken}
-
-
-class ExportBody(BaseModel):
-    """What the Export command posts: the request items currently on screen."""
-
-    requests: list[dict]
 
 
 @router.post("/admin/requests/new")
@@ -475,19 +469,20 @@ async def admin_settle_request(request_type: str, request_id: str, body: SettleB
 
 
 @router.post("/admin/requests/export")
-async def admin_export_requests(body: ExportBody):
-    """An .xlsx of the requests the admin is viewing, one sheet per list (#278).
+async def admin_export_requests(body: RequestsExportBody):
+    """An .xlsx of the requests the admin chose in the export dialog (#278, #488).
 
-    Formats the request items the dashboard already holds (the shown rows, or
-    the ticked ones), so it reads no live data and works at any time.
+    The dialog works out every cell from the rows the dashboard already holds
+    (the shown or ticked requests, of the people left ticked) and posts the
+    finished sheets, so this reads no live data and works at any time.
 
     Args:
-        body: requests - the items as /admin/requests returns them.
+        body: sheets - each with its title, columns and rows, as previewed.
 
     Returns:
         The workbook as an attachment.
     """
-    data = build_requests_workbook(body.requests)
+    data = build_requests_workbook(body.sheets)
     filename = requests_export_filename(date.today())
     return Response(
         content=data,

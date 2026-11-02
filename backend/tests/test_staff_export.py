@@ -100,6 +100,7 @@ def test_history_sheet_present_only_when_rows_given():
     assert [c.value for c in ws[1]] == ["Date", "Name", "Field", "Before", "After", "Reason"]
     assert ws["C2"].value == "Vacation"                    # column name -> friendly label
     assert ws["B2"].value == "Avery Example"
+    assert ws["A2"].value == "Oct 14, 2026"                # the Toronto day, as the dashboard (#490)
 
 
 def test_header_is_frozen_and_filtered():
@@ -109,15 +110,15 @@ def test_header_is_frozen_and_filtered():
     assert ws.auto_filter.ref is not None                  # Excel filters enabled
 
 
-def test_date_columns_are_written_as_the_day_only():
-    """Birthday and the can-book date drop any stored time, keeping the day."""
+def test_date_columns_are_written_as_the_dashboard_shows_them():
+    """Birthday and the can-book date read as their own day, "Mar 3, 1990" (#490)."""
     rows = _rows()
     rows[0]["fields"]["Birthday"] = "1990-03-03T00:00:00Z"
     rows[0]["fields"]["RequestAllowDate"] = "2026-12-31T05:00:00Z"
     data = sx.build_workbook(rows, ["name", "birthday", "request_allow_date"], False, [])
     ws = _open(data)[sx.STAFF_SHEET]
-    assert ws["B2"].value == "1990-03-03"                  # day only, no timestamp
-    assert ws["C2"].value == "2026-12-31"
+    assert ws["B2"].value == "Mar 3, 1990"                 # a day saved at UTC midnight keeps its day
+    assert ws["C2"].value == "Dec 31, 2026"                # Toronto midnight (05:00Z) is that day
 
 
 def test_formula_like_text_is_stored_as_plain_text():
