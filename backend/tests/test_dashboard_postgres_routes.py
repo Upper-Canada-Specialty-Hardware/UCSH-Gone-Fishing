@@ -48,9 +48,10 @@ def test_team_create_uses_the_manager_staff_id_on_postgres(app_client, monkeypat
     async def boom(_email):
         raise AssertionError("the SharePoint user list must not be resolved on Postgres")
 
-    async def fake_create(form_data, supervisor_ids):
+    async def fake_create(form_data, supervisor_ids, *, history_source="admin_dashboard", history_actor="HR"):
         seen["ids"] = supervisor_ids
         seen["form"] = form_data
+        seen["history"] = (history_source, history_actor)           # how the supervisor assignment is recorded (#447)
         return {"id": "900", "fields": {"Title": form_data.get("title")}}
 
     async def fake_after(record):
@@ -69,6 +70,9 @@ def test_team_create_uses_the_manager_staff_id_on_postgres(app_client, monkeypat
 
     assert resp.status_code == 200, resp.text
     assert seen["ids"] == [42]                                  # the manager's own staff id, as an int
+    # A manager-created hire records the first supervisor under the manager's own
+    # name on the manager channel, not the automatic "system" default (#447).
+    assert seen["history"] == ("manager_dashboard", "Steve Faith")
     app.dependency_overrides.clear()
 
 

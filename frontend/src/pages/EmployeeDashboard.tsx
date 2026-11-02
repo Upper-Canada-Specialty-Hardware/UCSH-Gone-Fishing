@@ -12,6 +12,7 @@ import { MonthlyBars } from '../components/manager/Charts';
 import { approveSummary, daysOffByMonth } from '../components/manager/teamStats';
 import { daysToCarryReset, myKindRows, myYear } from '../components/employee/myStats';
 import { STATUS_COLOR } from '../components/dataGridDefaults';
+import { canDecide, stateDisplay } from '../requestState';
 import { getMyBalances, getMyRequests } from '../api/client';
 import { useLiveRequests } from '../hooks/useLiveRequests';
 import { LiveEvent } from '../api/events';
@@ -123,14 +124,23 @@ function Section({ title, rows, empty }: { title: string; rows: any[]; empty: st
         <Typography variant="body2" color="text.secondary" sx={{ px: 2.25, pb: 1.5 }}>{empty}</Typography>
       ) : rows.map((r, i) => {
         const waited = r.Status === 'Pending' ? daysWaiting(r) : null;
+        // A pending row that has not reached "waiting on approval" yet (getting
+        // ready / needs attention) shows that state instead of a waiting count,
+        // so the employee sees it is still being set up (#455). SharePoint rows
+        // carry no state, so they keep the waiting count.
+        const notReady = r.Status === 'Pending' && !canDecide(r.state) ? stateDisplay(r.state) : null;
         // A waiting request says how long it has waited; the rest show their status.
-        const label = r.Status === 'Pending' ? (waited === 0 ? 'Sent today' : `Waiting ${waited} day${waited === 1 ? '' : 's'}`) : r.Status || 'Pending';
+        const label = notReady ? notReady.label
+          : r.Status === 'Pending' ? (waited === 0 ? 'Sent today' : `Waiting ${waited} day${waited === 1 ? '' : 's'}`)
+          : r.Status || 'Pending';
+        // The chip colour follows the state when not ready, else the status map.
+        const chipColor = notReady ? notReady.color : (STATUS_COLOR[r.Status] || 'default');
         return (
           <Box key={`${r.request_type}-${r.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 2.25, py: 1.25, borderTop: 1, borderColor: 'divider', flexWrap: 'wrap', ...riseAt(i, { delay: 120, dur: 340 }) }}>
             <KindPill kind={requestKind(r)} label={requestWhat(r)} />
             <Typography variant="body2" sx={{ flex: 1, minWidth: 120 }}>{requestWhen(r)}</Typography>
             {/* The one thing still open breathes twice, then rests. */}
-            <Chip size="small" label={label} color={STATUS_COLOR[r.Status] || 'default'}
+            <Chip size="small" label={label} color={chipColor}
               sx={{ animation: r.Status === 'Pending' ? `${KF.pulse} 1.4s ease-in-out .7s 2` : 'none' }} />
             {/* Which balances this request's days came from, on its own line under the request. */}
             {r.taken_from && <Box sx={{ flexBasis: '100%' }}><TakenFrom value={r.taken_from} compact /></Box>}
@@ -231,6 +241,16 @@ export default function EmployeeDashboard() {
       .catch(() => { /* the figures stay until the next change */ });
   }, []);
   useLiveRequests({ scope: 'me', setRows: setRequests, enabled: !loading, onEvent: onLiveEvent, onStaffChange });
+
+  /** Re-read the requests and balances after a change made on this page (a cancel, #519). */
+  const reloadRequests = useCallback(() => {
+    Promise.all([getMyBalances(), getMyRequests()])
+      .then(([balRes, reqRes]) => {
+        setBalances(balRes.data.balances);
+        setRequests(reqRes.data.requests || []);
+      })
+      .catch(() => { /* the live stream still brings the change */ });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -449,7 +469,7 @@ export default function EmployeeDashboard() {
         // table (RequestsHistoryTable) is the admin requests table in read-only
         // "mine" mode and keeps itself inside the card, never widening the page.
         <Box sx={{ minWidth: 0 }}>
-          <RequestsHistoryTable requests={requests} mode="mine" timelineScope="me" />
+          <RequestsHistoryTable requests={requests} mode="mine" timelineScope="me" onChanged={reloadRequests} />
         </Box>
       )}
       </Enter>

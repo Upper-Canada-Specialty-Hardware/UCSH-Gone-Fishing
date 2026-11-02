@@ -78,6 +78,16 @@ export const getConfig = () => api.get('/config');
 export const getMyBalances = () => api.get('/me/balances');
 export const getMyRequests = (params?: Record<string, string>) =>
   api.get('/me/requests', { params });
+/**
+ * Cancel one of your own pending requests from History (#519).
+ *
+ * @param type - The url form: "leave", "overtime" or "carryover-payout".
+ * @param id - The request number.
+ * @returns ``{status: "cancelled", item_id, already}``.
+ * @throws AxiosError 404 not yours, 409 no longer pending, 503 processing off.
+ */
+export const cancelMyRequest = (type: string, id: string) =>
+  api.post(`/me/requests/${type}/${id}/cancel`, { from: 'history' });   // "from" records the channel
 
 // Manager
 export const getTeamMembers = () => api.get('/team/members');
@@ -296,13 +306,6 @@ export const getAdminEmailLogRecent = (
 export const sendAdminTestEmail = (payload: { employee_id?: string; address?: string }) =>
   api.post('/admin/email-log/test', payload);
 
-// Admin - Held Requests: request page submissions from people not in the Staff
-// Directory yet, waiting for their supervisor to add them.
-export const getHeldRequests = (includeClosed = false) =>
-  api.get('/admin/held-requests', { params: { include_closed: includeClosed } });
-export const releaseHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/release`);
-export const cancelHeldRequest = (id: number) => api.post(`/admin/held-requests/${id}/cancel`);
-
 // Admin - the SubmitterEmail and RequestSource columns the request page writes.
 export const getRequestColumns = () => api.get('/admin/request-columns');
 export const addRequestColumns = () => api.post('/admin/request-columns');
@@ -311,6 +314,10 @@ export const addRequestColumns = () => api.post('/admin/request-columns');
 export const getStorageStatus = () => api.get('/admin/storage');
 /** Run the final sync and switch requests (and staff) to Postgres. One-way. */
 export const flipStorageToPostgres = () => api.post('/admin/storage/flip');
+/** The staff version-history backfill's progress and result (#448). */
+export const getStaffHistoryImport = () => api.get('/admin/staff-history/import');
+/** Start the one-off staff version-history backfill in the background (#448). */
+export const startStaffHistoryImport = () => api.post('/admin/staff-history/import');
 /** The dates carry-over and payout requests are accepted between (Toronto dates, both ends included). */
 export interface CarryoverWindow {
   start: string | null;   // YYYY-MM-DD, or null when no dates are set

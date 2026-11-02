@@ -3,7 +3,7 @@ import { Box, Button, Paper, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { VacationCoverRequest } from '../../api/client';
 import RejectDialog from '../RejectDialog';
-import { riseAt } from '../Motion';
+import { riseAt, Swap } from '../Motion';
 
 interface Props {
   /** The pending requests whose managers are all off (from the vacation-cover endpoint). */
@@ -12,6 +12,8 @@ interface Props {
   processingEnabled: boolean;
   /** The `${type}-${id}` key of a request whose action is running, or null. */
   actionLoading: string | null;
+  /** The in-flight decision's direction (#485): true approving, false rejecting, null idle; applies to the busy row. */
+  decidingYes?: boolean | null;
   /** Approve a request. @param type - leave/overtime/carryover-payout. @param id - The request id. */
   onApprove: (type: string, id: string) => void;
   /** Reject a request with a reason (#433). @param type - leave/overtime/carryover-payout. @param id - The request id. @param reason - Why it was turned down. */
@@ -29,7 +31,7 @@ interface Props {
  * @param props - See {@link Props}.
  * @returns The screen.
  */
-export default function ManagersOnVacation({ requests, processingEnabled, actionLoading, onApprove, onReject }: Props) {
+export default function ManagersOnVacation({ requests, processingEnabled, actionLoading, decidingYes = null, onApprove, onReject }: Props) {
   const theme = useTheme();
   const [rejectTarget, setRejectTarget] = useState<VacationCoverRequest | null>(null);   // the card awaiting a reason (#433)
 
@@ -85,14 +87,20 @@ export default function ManagersOnVacation({ requests, processingEnabled, action
                   disabled={busy || !processingEnabled}
                   onClick={() => onApprove(r.request_type, r.id)}
                 >
-                  Approve
+                  {/* While this request's approval runs the label reads "Approving..." (#485). */}
+                  <Swap k={busy && decidingYes === true ? 'busy' : 'idle'}>
+                    {busy && decidingYes === true ? 'Approving...' : 'Approve'}
+                  </Swap>
                 </Button>
                 <Button
                   size="small" variant="outlined" color="error"
                   disabled={busy || !processingEnabled}
                   onClick={() => setRejectTarget(r)}
                 >
-                  Reject
+                  {/* While this request's rejection runs the label reads "Rejecting..." (#485). */}
+                  <Swap k={busy && decidingYes === false ? 'busy' : 'idle'}>
+                    {busy && decidingYes === false ? 'Rejecting...' : 'Reject'}
+                  </Swap>
                 </Button>
               </Box>
             </Box>

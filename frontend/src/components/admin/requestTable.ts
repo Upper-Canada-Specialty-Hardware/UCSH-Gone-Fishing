@@ -27,12 +27,15 @@ export interface Row {
   source: RowSource;
   kind: RequestKind | null;
   kindLabel: string;
+  // The state-machine position (#455): 'getting_ready', 'waiting_on_approval',
+  // 'needs_attention', ... or '' on the SharePoint path, which carries no state.
+  state: string;
   person: string;
   dept: string;
   loc: string;
   manager: string;                   // first/primary manager
   managers: string[];                // all managers named
-  status: string;                    // Pending/Approved/Rejected/Refunded/Stuck
+  status: string;                    // Pending/Approved/Rejected/Refunded/Cancelled/Stuck
   stage: string;                     // the live stage words (Postgres mode), or ''
   created: string;                   // ISO date (date part)
   approved: string;                  // ISO date, or ''
@@ -117,6 +120,7 @@ export function toRow(raw: any, source: RowSource): Row {
     source,
     kind: kindOf(type, type === 'carryover-payout' ? item.TypeofRequest : item.LeaveType),
     kindLabel: kindLabelOf(item),
+    state: item.state || '',               // present in Postgres mode, blank in SharePoint mode (#455)
     person: item.employee_name || (item.Title || '').split(' /// ')[0] || 'Unknown',
     dept: choiceText(item.StaffDepartment || item.Department),   // a lookup object shows its name
     loc: choiceText(item.StaffLocation || item.Location),
@@ -336,7 +340,7 @@ function uniq(values: string[]): string[] {
 export function filterDefs(rows: Row[]): FilterDef[] {
   return [
     { key: 'kind', label: 'Type', options: uniq(rows.map((r) => r.kindLabel)), test: (r, v) => r.kindLabel === v },
-    { key: 'status', label: 'Status', options: ['Pending', 'Approved', 'Rejected', 'Refunded'], test: (r, v) => r.status === v },
+    { key: 'status', label: 'Status', options: ['Pending', 'Approved', 'Rejected', 'Refunded', 'Cancelled'], test: (r, v) => r.status === v },
     { key: 'mgr', label: 'Manager', options: uniq(rows.flatMap((r) => r.managers)), test: (r, v) => r.managers.includes(v) },
     { key: 'dept', label: 'Department', options: uniq(rows.map((r) => r.dept)), test: (r, v) => r.dept === v },
     { key: 'loc', label: 'Location', options: uniq(rows.map((r) => r.loc)), test: (r, v) => r.loc === v },

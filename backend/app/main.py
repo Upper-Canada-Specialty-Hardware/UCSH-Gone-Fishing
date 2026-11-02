@@ -17,7 +17,6 @@ from app.tasks.subscription_manager import start_subscription_renewal_task
 from app.tasks.carryover_reset import start_carryover_reset_task
 from app.tasks.out_of_office_email import start_out_of_office_email_task  # weekday 7:00 am "on leave starting today" email (#466)
 from app.tasks.reminders import start_reminder_task
-from app.tasks.held_request_reminders import start_held_request_reminder_task
 from app.tasks.sync_tasks import start_shadow_sync_task
 from app.tasks.outbox_worker import start_outbox_worker  # drains queued result emails/texts (#326)
 
@@ -72,7 +71,6 @@ async def lifespan(app: FastAPI):
     carryover_reset_task = None
     out_of_office_task = None
     reminder_task = None
-    held_request_task = None
     shadow_sync_task = None
     from app.services.sharepoint_cutoff import sharepoint_cut_off
     try:
@@ -85,7 +83,16 @@ async def lifespan(app: FastAPI):
         carryover_reset_task = start_carryover_reset_task()
         out_of_office_task = start_out_of_office_email_task()  # weekday 7:00 am "on leave starting today" email
         reminder_task = start_reminder_task()
-        held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
+        # Deferred so the server is already answering /health: a deploy that
+        # overlapped an in-flight decision can leave a request's state behind its
+        # status (#455). This idempotent pass realigns decided rows and finishes
+        # the submit move for getting_ready rows that were really submitted. It
+        # never raises into startup.
+        async def _deferred_state_reconcile():
+            from app.services.request_states import reconcile_request_states
+            await reconcile_request_states()
+
+        asyncio.create_task(_deferred_state_reconcile())
     else:                                                      # still on SharePoint: connect as before
         try:
             await token_manager.get_token()
@@ -106,7 +113,6 @@ async def lifespan(app: FastAPI):
             carryover_reset_task = start_carryover_reset_task()
             out_of_office_task = start_out_of_office_email_task()  # weekday 7:00 am "on leave starting today" email
             reminder_task = start_reminder_task()
-            held_request_task = start_held_request_reminder_task()  # request page: new hire reminders
             # Postgres migration: shadow-sync SharePoint into Postgres every 5 minutes
             # until the switch (#334); it stops itself once requests are in Postgres.
             shadow_sync_task = start_shadow_sync_task()
@@ -149,8 +155,6 @@ async def lifespan(app: FastAPI):
         out_of_office_task.cancel()
     if reminder_task:
         reminder_task.cancel()
-    if held_request_task:
-        held_request_task.cancel()
     if shadow_sync_task:
         shadow_sync_task.cancel()
     from app.services.event_bus import event_bus
@@ -221,6 +225,7 @@ from app.routes.admin_auth import public_router as admin_sign_in_router, router 
 from app.routes.admin_legacy import router as admin_legacy_router
 from app.routes.admin_archive import router as admin_archive_router
 from app.routes.admin_vacation_cover import router as admin_vacation_cover_router
+from app.routes.admin_staff_history import router as admin_staff_history_router
 from app.services.admin_auth import admin_guard
 
 # Every /api/dashboard/admin/* call needs an admin session (#228). The guard
@@ -269,6 +274,9 @@ app.include_router(admin_archive_router, prefix="/api/dashboard", tags=["dashboa
 # The pending requests whose managers are all on vacation (#370): same prefix and
 # admin password as the other admin screens.
 app.include_router(admin_vacation_cover_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
+# The one-off Staff Directory version-history backfill (#448): same prefix and
+# admin password as the other admin tools.
+app.include_router(admin_staff_history_router, prefix="/api/dashboard", tags=["dashboard"], dependencies=ADMIN_GUARD)
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(twilio_router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(approval_router, prefix="/api", tags=["approval"])
