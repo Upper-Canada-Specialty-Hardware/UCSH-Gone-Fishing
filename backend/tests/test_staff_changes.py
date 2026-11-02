@@ -46,6 +46,17 @@ async def _insert_at(employee_id, field, changed_at):
         await session.commit()
 
 
+async def _insert_sp(employee_id, field, old_value, new_value, version, changed_at):
+    """Insert one imported (sharepoint) row carrying a version, to test is_start."""
+    async with async_session() as session:
+        session.add(StaffChange(
+            employee_id=str(employee_id), employee_name="Test Person", field=field,
+            old_value=old_value, new_value=new_value, reason=None,
+            source="sharepoint", version=version, changed_at=changed_at,
+        ))
+        await session.commit()
+
+
 @pytest.fixture(autouse=True)
 def clean():
     """Empty the table before and after every test."""
@@ -159,3 +170,31 @@ def test_a_failing_insert_writes_nothing():
             reason="all or nothing",
         ))
     assert run(_count("7")) == 0                                # the valid row rolled back with the bad one
+
+
+# ----- is_start marks the oldest imported version's seed rows (#448) -----
+
+
+def test_is_start_marks_only_the_oldest_imported_version_rows():
+    """is_start flags the oldest imported version's seeds, not a later blank->value row."""
+    base = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    # Oldest kept version 2.0 seeds two fields (no "before") -> start rows.
+    run(_insert_sp("7", "CurrentVacationBalance", None, 10, "2.0", base))
+    run(_insert_sp("7", "SalaryHourly", None, "Salary", "2.0", base))
+    # A later version 5.0: a field that was blank gains a value (old value null
+    # too), which must NOT read as a start row, and a real before->after change.
+    run(_insert_sp("7", "CarryOver", None, 3, "5.0", base.replace(hour=14)))
+    run(_insert_sp("7", "CurrentVacationBalance", 10, 7, "5.0", base.replace(hour=14)))
+
+    by = {(r["field"], r["version"]): r for r in run(staff_changes.list_changes("7"))}
+    assert by[("CurrentVacationBalance", "2.0")]["is_start"] is True       # oldest version seed
+    assert by[("SalaryHourly", "2.0")]["is_start"] is True                 # oldest version seed
+    assert by[("CarryOver", "5.0")]["is_start"] is False                   # null old, but a later version
+    assert by[("CurrentVacationBalance", "5.0")]["is_start"] is False      # a real change
+
+
+def test_an_app_edit_is_never_a_start_row():
+    """An app edit (no version, source admin_dashboard) is never a start row, null old or not."""
+    run(staff_changes.record_changes("7", "Dana Lee", [("CurrentVacationBalance", None, 5)], "set it"))
+    row = run(staff_changes.list_changes("7"))[0]
+    assert row["is_start"] is False                                        # null old, but an app edit

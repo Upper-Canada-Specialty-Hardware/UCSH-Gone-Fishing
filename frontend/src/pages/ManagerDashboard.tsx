@@ -14,6 +14,7 @@ import TeamTab, { RequestedTeamFilter } from '../components/manager/TeamTab';
 import AddEmployee from '../components/AddEmployee';
 import DecisionCard from '../components/manager/DecisionCard';
 import RejectDialog from '../components/RejectDialog';
+import DecisionRefusedDialog from '../components/DecisionRefusedDialog';
 import LogSickDayDialog, { SickDayResult } from '../components/manager/LogSickDayDialog';
 import {
   AutoHeight, CountUp, DrawnTick, EXIT, Enter, KF, SPRING, Seen, Swap, leaveDelay, staggerChildren, useDirection,
@@ -176,9 +177,15 @@ export default function ManagerDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  // Which way the in-flight decision goes, so the busy button reads "Approving..."
+  // or "Rejecting..." rather than a neutral word (#455); null when nothing runs.
+  const [decidingYes, setDecidingYes] = useState<boolean | null>(null);
   // Decided cards showing their outcome before they leave: key to true (approved) or false (rejected).
   const [decided, setDecided] = useState<Map<string, boolean>>(new Map());
   const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+  // An approve or reject the backend refused (#486): shown as a centred dialog, not
+  // a snackbar, with the backend's reason; null when there is nothing to show.
+  const [refusal, setRefusal] = useState<{ approving: boolean; message: string } | null>(null);
   // The request awaiting a reject reason (#433), with an optional follow-up to
   // run once the reject is sent (e.g. closing the calendar's absence card).
   const [rejectTarget, setRejectTarget] = useState<
@@ -348,6 +355,7 @@ export default function ManagerDashboard() {
    */
   const decide = useCallback(async (type: string, id: string, yes: boolean, reason = '') => {
     setActionLoading(`${type}-${id}`);
+    setDecidingYes(yes);                                             // drives the busy label's verb (#455)
     try {
       await (yes ? approveRequest(type, id) : rejectRequest(type, id, reason));
       const key = `${type}-${id}`;
@@ -358,10 +366,14 @@ export default function ManagerDashboard() {
       }, leaveDelay());                                               // 0 when less motion is asked for
       setSnack({ open: true, message: yes ? 'Request approved' : 'Request rejected', severity: 'success' });
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setSnack({ open: true, message: typeof detail === 'string' ? detail : yes ? 'Approval failed' : 'Rejection failed', severity: 'error' });
+      const detail = err.response?.data?.detail;                     // the backend's readable refusal
+      // A refused decision is shown centred (#486), not as a corner snackbar, so the
+      // reason (an overlap conflict, not ready, needs attention, processing off) is
+      // not missed. The card stays in the queue; its buttons re-enable in finally.
+      setRefusal({ approving: yes, message: typeof detail === 'string' ? detail : yes ? 'The request could not be approved.' : 'The request could not be rejected.' });
     } finally {
       setActionLoading(null);
+      setDecidingYes(null);                                          // clear the in-flight verb
     }
   }, []);
 
@@ -553,6 +565,7 @@ export default function ManagerDashboard() {
                         clashes={clashesFor(item, absences, labelOf)}
                         processingEnabled={processingEnabled}
                         busy={actionLoading === key}
+                        busyYes={actionLoading === key ? decidingYes : null}
                         onApprove={() => decide(item.request_type, String(item.id), true)}
                         onReject={() => setRejectTarget({ type: item.request_type, id: String(item.id), name: requestWho(item), label: requestWhat(item) })}
                         colorOf={colorOf}
@@ -871,6 +884,14 @@ export default function ManagerDashboard() {
         autoHideDuration={4000}
         onClose={() => setSnack((s) => ({ ...s, open: false }))}
         message={snack.message}
+      />
+
+      {/* A refused approve or reject is shown centred, with the backend's reason (#486). */}
+      <DecisionRefusedDialog
+        open={refusal !== null}
+        approving={refusal?.approving ?? true}
+        message={refusal?.message ?? ''}
+        onClose={() => setRefusal(null)}
       />
     </Box>
   );

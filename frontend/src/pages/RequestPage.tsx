@@ -678,7 +678,8 @@ export default function RequestPage() {
                 <BalancePreview session={session} type={type} body={formReady ? buildRequestBody(type, values) : null} vacationTaken={myBalances?.vacation_taken ?? null} onBookingLimit={setBookingLimit} />
                 {/* Send is blocked when the dates run past the booking limit; the reason is shown in red in the preview above (#407). */}
                 <Button variant="contained" size="large" sx={big} disabled={!formReady || busy || !!bookingLimit?.refused} onClick={submitAsEmployee}>
-                  <BusyLabel busy={busy}>Send request</BusyLabel>
+                  {/* While the request is being created the label says so, beside the spinner (#455). */}
+                  <BusyLabel busy={busy}>{busy ? 'Creating request...' : 'Send request'}</BusyLabel>
                 </Button>
               </>
             )}
@@ -719,7 +720,8 @@ export default function RequestPage() {
                   </AnimatePresence>
                 </AutoHeight>
                 <Button variant="contained" size="large" sx={big} disabled={!newHireReady || busy} onClick={submitAsNewHire}>
-                  <BusyLabel busy={busy}>Send request</BusyLabel>
+                  {/* While the request is being created the label says so, beside the spinner (#455). */}
+                  <BusyLabel busy={busy}>{busy ? 'Creating request...' : 'Send request'}</BusyLabel>
                 </Button>
               </>
             )}

@@ -177,7 +177,10 @@ async def find_directory_clashes(name: str, email: str) -> dict:
     return found
 
 
-async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> dict:
+async def create_employee(
+    form_data: dict, manager_sp_user_ids: list[int],
+    *, history_source: str = "admin_dashboard", history_actor: str | None = "HR",
+) -> dict:
     """Create a fully set-up Staff Directory record and return it.
 
     Args:
@@ -185,6 +188,12 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
         manager_sp_user_ids: SharePoint user ids of the supervisor(s) to record
             in AllManagers. The manager dashboard passes the creating manager;
             the admin dashboard passes whoever the admin picked.
+        history_source: The channel to record the supervisor assignment under in
+            the new person's history; the admin dashboard by default, or
+            "manager_dashboard" when a manager adds the hire (#447). Both are human
+            actions, so neither is the automatic "system" default.
+        history_actor: Who created the record: "HR" for the shared admin dashboard,
+            the manager's own name when a manager adds the hire.
 
     Returns:
         The created record in the {"id", "fields"} shape, plus "notices": a
@@ -228,8 +237,15 @@ async def create_employee(form_data: dict, manager_sp_user_ids: list[int]) -> di
     logger.info("Created Staff Directory record #%s (%s)", employee_id, fields["Title"])
 
     # Supervisors are a Person/Group field, written separately in the lookup-id
-    # shape Graph requires — the same path update_employee_managers uses.
-    await update_employee_managers(int(employee_id), manager_sp_user_ids)
+    # shape Graph requires, the same path update_employee_managers uses. Record
+    # who added the hire (HR, or the manager) rather than the "system" default,
+    # so the person's history names a human for their first supervisor (#447).
+    await update_employee_managers(
+        int(employee_id), manager_sp_user_ids,
+        history_source=history_source,
+        history_reason="Supervisor set when the record was created.",
+        history_actor=history_actor,
+    )
 
     # Request Allow Date is derived from the opening vacation and carry-over,
     # by the one function that already owns that rule.

@@ -50,6 +50,7 @@ from app.services.employment import (
 )
 from app.services.request_decisions import _wake_sender, decisions_active
 from app.services.request_journal import append_event, enqueue_message, log_step, record_change, step_key
+from app.services.request_states import can_decide, move
 from app.services.request_submitter import resolve_request_submitter
 from app.services.vacation_cover import choose_available_manager, today_toronto
 from app import templates_render as tr
@@ -584,6 +585,7 @@ def _mark_auto_rejected(record: RequestRecord) -> None:
     """
     from app.models.mixins import utcnow
     record.status = "rejected"                                    # terminal: no manager is asked
+    move(record, "rejected", reason="auto-rejected at submit")    # getting_ready -> rejected (#455)
     record.decided_at = utcnow()
     record.decided_by = "system"
     record.decided_channel = record.submitted_channel or "system"
@@ -711,7 +713,13 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
     await _queue_bereavement_alert(session, record, employee, alert_fields, event)
 
     if not notify:
-        return True                                               # a sick day approved on the spot: event only
+        # A sick day or admin-created request approved on the spot: the request is
+        # prepared (identity and manager stamped above), so it is decidable now and
+        # the caller approves it in the same request handler, with no race gap. An
+        # unresolved submitter stays getting_ready, so it cannot be decided (#455).
+        if employee is not None:
+            move(record, "waiting_on_approval", reason="submitted, approved on the spot")
+        return True
     if record.status != "pending":
         return True                                               # already decided (a rerun or a parallel action)
 
@@ -743,6 +751,12 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
                 session, record, event, "receipt", "email", record.employee_email, subject, html,
                 f"{step_key(kind, record.item_id, 'receipt_sent', version)}:email:{record.employee_email}",
             )
+    if employee is not None:
+        # Submit finished and the request is complete (a manager was asked, or none
+        # was found but the request is otherwise whole): it is now decidable (#455).
+        # An unresolved submitter leaves the row getting_ready, so it cannot be
+        # decided and the stuck list surfaces it.
+        move(record, "waiting_on_approval", reason="submit finished")
     return True
 
 
@@ -863,9 +877,18 @@ async def _reprocess_request(session, kind, item_id, reason, actor, channel) -> 
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to re-ask
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
-    managers = await get_all_managers_for_employee(employee) if employee else []
-    if not employee or not managers:
-        return False                                              # cannot resolve: nobody to ask
+    if employee is None:
+        return False                                              # submitter cannot be resolved: nobody to ask
+    managers = await get_all_managers_for_employee(employee)
+    if not managers:
+        # A resolved submitter with no manager at all: mirror _do_submit, which
+        # makes such a request waiting_on_approval (decidable, carried on the admin
+        # cover list) rather than leaving it stuck. No manager exists to email, so
+        # nothing is sent, but the state is finished: needs_attention /
+        # getting_ready -> waiting_on_approval (#455); an already-waiting row is
+        # unchanged. Returning True lets the admin reprocess resolve a stuck row.
+        move(record, "waiting_on_approval", reason="reprocessed, no manager to ask")
+        return True
     # Route to the first available manager, the same rule reminders use (#369).
     chosen, skipped = await choose_available_manager(session, managers, today_toronto())
     if chosen is None:
@@ -887,6 +910,9 @@ async def _reprocess_request(session, kind, item_id, reason, actor, channel) -> 
     await _enqueue_notifications(
         session, record, employee, [chosen], event=event, include_receipt=False, reask_suffix=press,
     )
+    # Processing again makes a stuck request decidable: needs_attention or
+    # getting_ready -> waiting_on_approval (#455). Already-waiting rows are unchanged.
+    move(record, "waiting_on_approval", reason="reprocessed")
     log_step(record, "sent_to_manager", reprocess=True, actor=actor)
     return True                                                   # reminder_count / last_reminder_at untouched
 
@@ -896,6 +922,8 @@ async def _queue_reminder(session, kind, item_id, today) -> bool:
     record = await _load(session, kind, item_id)
     if record is None or record.status != "pending":
         return False                                              # gone or already decided: nothing to remind
+    if not can_decide(record):
+        return False                                              # getting_ready / needs_attention: never remind (#455)
     employee = await _resolve_employee(record, TypedRequestList(kind)._item_shape(record)["fields"])
     # An archived submitter (#119) is off every approval route: no manager is
     # reminded, and the request simply stays pending and visible to admins (#368).
@@ -1094,6 +1122,8 @@ async def _first_ask(session, record: RequestRecord, today: date) -> bool:
         leaving the request on the admin cover list.
     """
     from app.models.mixins import utcnow
+    if not can_decide(record):
+        return False                                              # getting_ready / needs_attention: never ask (#455)
     employee = await _resolve_employee(record, TypedRequestList(record.kind)._item_shape(record)["fields"])
     # An archived submitter (#119) is off every approval route: never ask a manager.
     if employee is not None and is_archived(employee.get("fields", {})):
@@ -1145,6 +1175,12 @@ async def queue_due_reminders() -> int:
         )).scalars().all()
         queued = 0
         for record in pending:
+            # Only a request a manager can actually decide is reminded (#455): a
+            # getting_ready or needs_attention row is skipped here, so the manager
+            # is never emailed or texted about something they cannot act on. Those
+            # rows surface on the admin stuck list instead.
+            if not can_decide(record):
+                continue
             # A Postgres request gets an approval-version-state row once it is
             # edited; honour its reminders_closed flag the way reminders.py does.
             state = await session.get(
@@ -1288,6 +1324,9 @@ async def apply_admin_edit(kind, item_id, before, after, reason, *,
         new_version = (record.approval_version or 1) + 1
         record.approval_version = new_version                    # fresh links; the old ones go stale
         record.updated_at = utcnow()
+        # An edit re-asks the manager, so the request is decidable again under its
+        # new version: it stays (or returns to) waiting_on_approval (#455).
+        move(record, "waiting_on_approval", reason="admin edit")
         await session.flush()                                    # enforce the CHECK constraints before recording
 
         for col, new_val in after.items():                       # one change row per edited field, with the reason

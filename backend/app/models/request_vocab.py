@@ -15,6 +15,22 @@ KINDS = ("leave", "overtime", "carryover_payout")
 # it title case on the wire (Pending, Approved, ...).
 STATUSES = ("pending", "approved", "rejected", "cancelled", "refunded")
 
+# A request's position in the explicit state machine (requests.state), stored
+# lower snake case (#455). The backend owns this; the frontend only renders it.
+# "status" above is kept untouched for compatibility; this is the authoritative
+# lifecycle position. Only "waiting_on_approval" can be decided.
+STATES_MACHINE = (
+    "getting_ready",        # row saved, the backend is still working out days, manager and checks
+    "waiting_on_approval",  # submit finished, manager asked (or none found but the request is complete)
+    "approved",             # as today's status
+    "rejected",             # as today's status
+    "refunded",             # as today's status
+    "cancelled",            # as today's status
+    "needs_attention",      # getting ready failed, or a pending row the old pipeline never finished
+)
+# A short alias used by the state-machine module and the model CHECK.
+STATES = STATES_MACHINE
+
 # Every event that can land on a request's timeline (request_events.type).
 EVENT_TYPES = (
     "submitted",         # the request was created

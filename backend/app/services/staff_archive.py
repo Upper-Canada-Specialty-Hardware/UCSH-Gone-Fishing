@@ -225,6 +225,7 @@ async def _record(employee_id, name: str, before: str, after: str, reason: str) 
     try:
         await staff_changes.record_changes(
             str(employee_id), name, [(ARCHIVE_FIELD, before, after)], reason, source=ARCHIVE_SOURCE,
+            actor=staff_changes.ADMIN_ACTOR,                   # an archive/restore is an admin action (#447)
         )
     except Exception:  # noqa: BLE001 - history must not undo the archive write
         logger.exception("Could not record archive history for %s", employee_id)

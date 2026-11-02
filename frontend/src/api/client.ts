@@ -278,6 +278,10 @@ export const addRequestColumns = () => api.post('/admin/request-columns');
 export const getStorageStatus = () => api.get('/admin/storage');
 /** Run the final sync and switch requests (and staff) to Postgres. One-way. */
 export const flipStorageToPostgres = () => api.post('/admin/storage/flip');
+/** The staff version-history backfill's progress and result (#448). */
+export const getStaffHistoryImport = () => api.get('/admin/staff-history/import');
+/** Start the one-off staff version-history backfill in the background (#448). */
+export const startStaffHistoryImport = () => api.post('/admin/staff-history/import');
 /** The dates carry-over and payout requests are accepted between (Toronto dates, both ends included). */
 export interface CarryoverWindow {
   start: string | null;   // YYYY-MM-DD, or null when no dates are set
