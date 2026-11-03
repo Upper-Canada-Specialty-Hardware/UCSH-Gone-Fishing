@@ -422,12 +422,6 @@ pre.resp { background: var(--chip); border-radius: 8px; padding: 10px; font-size
 .type[aria-pressed="true"] .ico { background: var(--primary); color: var(--primary-ink); }
 .type.off { opacity: .55; cursor: not-allowed; background: var(--hover); }
 .type.off .ico { opacity: .7; }
-.supresults { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
-.supresults button { border: 1.5px solid var(--line2); background: var(--paper); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
-.supresults button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); }
-.deptchips { display: flex; flex-wrap: wrap; gap: 8px; }
-.deptchips button { border: 1.5px solid var(--line2); background: var(--paper); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
-.deptchips button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); }
 .lchips { display: flex; flex-wrap: wrap; gap: 8px; }
 .lchips button { border: 1.5px solid var(--line2); background: var(--paper); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
 .lchips button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); }
@@ -743,7 +737,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     { id: 1444, who: 'Morgan Placeholder', type: 'Carry Over', kind: 'Carry Over', when: '3 days into next year', days: 3, desc: '', mgr: 'Pat Manager', status: 'Pending', age: 9, cur: { Vacation: 12, 'Carry Over': 3 }, next: { Vacation: 9, 'Carry Over': 6 } },
     { id: 1436, who: 'Casey Demo', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1, 2026', days: 1, desc: '', mgr: '', status: 'Stuck', age: 6, issues: ['No Managers (Staff Dir)'] },
     { id: 1437, who: 'Drew Stub', type: 'Leave', kind: 'Vacation', from: ['Oct', 20], when: 'Oct 20, 2026', days: 0, desc: '', mgr: 'Lee Lead', status: 'Stuck', age: 5, issues: ['Days Not Calculated', 'Approval Email Never Sent'] },
-    { id: 0, who: 'Riley Newhire', email: 'riley.newhire@gmail.com', dept: 'Installation', type: 'Leave', kind: 'Vacation', when: 'Dec 22 to Dec 24, 2026', days: 3, desc: 'Holidays', mgr: 'Sam Supervisor', status: 'Held', age: 3, why: 'Not on staff yet' },
     { id: 1388, who: 'Avery Example', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1, 2026', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
     { id: 1395, who: 'Taylor Mock', type: 'Leave', kind: 'Vacation', from: ['Nov', 16], to: ['Nov', 20], when: 'Nov 16 to Nov 20, 2026', days: 5, desc: 'Trip', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '5 days go back to Vacation' },
     { id: 1429, who: 'Robin Sample', type: 'Leave', kind: 'Sick', from: ['Oct', 27], when: 'Oct 27, 2026', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
@@ -767,14 +760,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     ['Oct 9 14:00', 'New leave request to approve', 'sam.supervisor@ucsh.com', '', 200, 1, 0, 'Accepted', '<a1b1@ucsh.com>', 'UCSH mailer', true, '{"status": "sent", "recipients": 1, "messages": [{"messageId": "<a1b1@ucsh.com>"}]}'],
     ['Oct 9 9:12', 'Your request was received', 'avery.example@ucsh.com', '', 200, 1, 0, 'Accepted', '<9f0a@ucsh.com>', 'UCSH mailer', false, '{"status": "sent", "recipients": 1, "messages": [{"messageId": "<9f0a@ucsh.com>"}]}'],
     ['Oct 9 9:12', 'New leave request to approve', 'sam.supervisor@ucsh.com', 'hr@ucsh.com', 200, 2, 0, 'Accepted', '<9f0b@ucsh.com>', 'UCSH mailer', false, '{"status": "sent", "recipients": 2, "messages": [{"messageId": "<9f0b@ucsh.com>"}]}'],
-    ['Oct 8 16:40', 'Your sign-in code', 'riley.newhire@gmail.com', '', 200, 1, 0, 'Accepted', 'em_1f71', 'SMTP2GO', false, '{"data": {"succeeded": 1, "failed": 0, "email_id": "em_1f71"}}'],
+    ['Oct 8 16:40', 'Your UCSH Out of Office code', 'avery.example@ucsh.com', '', 200, 1, 0, 'Accepted', '<c0d3@ucsh.com>', 'UCSH mailer', false, '{"status": "sent", "recipients": 1, "messages": [{"messageId": "<c0d3@ucsh.com>"}]}'],
     ['Oct 8 8:02', 'Reminder: request waiting', 'lee.lead@ucsh.com', '', 401, null, null, 'HTTP error', '', 'SMTP2GO', false, '{"data": {"error": "invalid api key"}}']
   ];
   var STATS = { leave: 1284, overtime: 412, co: 96 };
-  var CHIP = { Pending: 'warn', Stuck: 'err', Held: 'info', Approved: 'ok', Rejected: 'err', Refunded: 'info' };
+  var CHIP = { Pending: 'warn', Stuck: 'err', Approved: 'ok', Rejected: 'err', Refunded: 'info' };
 
   var FLOWS = {
-    newhire: { role: 'admin', screen: 'held', hint: 'Riley asked for time off on the request page before being on staff. Click <b>Add employee</b>: the form opens filled in, and adding them sends the request to their supervisor.' },
     approve: { role: 'admin', screen: 'pending', hint: '<b>Approve</b> or <b>Reject</b> right on the row, or click the row to open it in place: every column, a <b>Taken from</b> column of which balances the days come from, what approving would do, Edit and a reminder. Tick a few rows and the toolbar becomes a command bar to approve, reject, export or delete them together.' },
     setup: { role: 'admin', screen: 'setup', hint: 'Same list as today\'s Employee Setup tab. <b>Open</b> a person to fix their supervisor, then <b>Check</b> the row, or check anyone with the picker below.' },
     stuck: { role: 'admin', screen: 'stuck', hint: 'Stuck requests sit in the quieter block at the bottom of the sidebar. Casey has no manager: set one from Staff, then <b>Reprocess</b> with a reason.' },
@@ -785,7 +777,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   };
 
   var state = { role: 'admin', authed: true, coDates: { first: '2026-11-01', last: '2026-12-31' }, tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, reqChecked: [], reqmode: 'table', reqlist: 'all', ptab: 'Balances', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
-    rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', name: '', first: '', last: '', dept: '', sup: 'Sam Supervisor', supq: '', supmode: 'name', supemail: '', loc: 'British Columbia', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
+    rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', loc: 'British Columbia', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
   try { var ss = localStorage.getItem('proto-skin2'); if (ss) state.skin = ss; var sm = localStorage.getItem('proto-mode'); if (sm) state.mode = sm; } catch (e) {}
   try { var sa = localStorage.getItem('ucshoo-anim'); if (sa === 'on' || sa === 'auto') state.animMode = sa; } catch (e) {}   // remembered Animations choice
 
@@ -840,7 +832,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
   // One request's "Taken from" cell: projected for pending, recorded for decided, struck through for refunded.
   function takenCell(r) {
-    if (r.status === 'Stuck' || r.status === 'Held') return '<span class="small muted">-</span>';   // never processed
+    if (r.status === 'Stuck') return '<span class="small muted">-</span>';   // never processed
     return tfPills(segsForReq(r), r.status === 'Refunded');
   }
   // An employee-history row's chips, by kind (the row shape has no cur/next). Rejected takes nothing.
@@ -900,15 +892,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function first(n) { return n.split(' ')[0]; }
   // The admin home greeting by the time of day, like AdminHome.tsx.
   function hoursGreeting() { var h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; }
-  // Plausible departments a new starter picks from, each with people they might name as supervisor.
-  var DEPTS = ['Installation', 'Service', 'Office', 'Warehouse', 'Estimating'];
-  var DEPT_PEOPLE = {
-    Installation: ['Sam Supervisor', 'Dana Fieldston', 'Marco Reyes', 'Priya Nandakumar'],
-    Service: ['Lee Lead', 'Chris Bennett', 'Omar Haddad'],
-    Office: ['Pat Manager', 'Robin Clerke', 'Nina Alvarez'],
-    Warehouse: ['Gail Warden', 'Tomas Novak', 'Hassan Ali'],
-    Estimating: ['Erin Takahashi', 'Victor Ilmanov']
-  };
   var P = ' needs-processing';
 
   // HR's daily work at the top; troubleshooting below a plain divider, smaller, no heading.
@@ -916,7 +899,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     return {
       main: [
         [null, [['home', 'Home']]],
-        ['Approvals', [['pending', 'Pending approvals', count('Pending'), 'warm'], ['mgrsonvac', 'Managers on vacation', stuckOnVacation().length, 'warm'], ['held', 'Held for new hires', count('Held'), '']]],
+        ['Approvals', [['pending', 'Pending approvals', count('Pending'), 'warm'], ['mgrsonvac', 'Managers on vacation', stuckOnVacation().length, 'warm']]],
         ['People', [['staff', 'Staff'], ['setup', 'Employee setup', SETUP.length, 'warm'], ['add', 'Add employee']]],
         ['Requests', [['requests', 'All requests']]],
         ['Calendar', [['holidays', 'Company holidays']]]
@@ -943,7 +926,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var k = ' data-req="' + r.id + '|' + esc(r.who) + '|' + r.status + '"';
     if (r.status === 'Pending') return '<button class="btn ok' + P + '" type="button" data-act="approve"' + k + '>Approve</button><button class="btn err' + P + '" type="button" data-act="reject"' + k + '>Reject</button>';
     if (r.status === 'Stuck') return '<button class="btn out' + P + '" type="button" data-act="reprocess"' + k + '>Reprocess</button>';
-    if (r.status === 'Held') return '<button class="btn out' + P + '" type="button" data-act="addheld"' + k + '>Add employee</button><button class="btn ghost' + P + '" type="button" data-act="retryheld"' + k + '>Retry</button><button class="btn ghost' + P + '" type="button" data-act="cancelheld"' + k + '>Cancel</button>';
     if (r.status === 'Approved') return '<button class="btn ghost' + P + '" type="button" data-act="refund"' + k + '>Refund</button>';
     return '';
   }
@@ -1012,9 +994,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div style="padding:0 16px 10px;display:flex;gap:6px;flex-wrap:wrap">' + legend + '</div>' +
       '<div style="padding:0 16px 16px"><div class="calgrid">' + days + cells + '</div></div>';
   }
-  // One requests table; Pending, Held, Stuck and All are views of it.
+  // One requests table; Pending, Stuck and All are views of it.
   function requestsView(view) {
-    var VIEWS = [['pending', 'Pending', 'Pending'], ['held', 'Held for new hires', 'Held'], ['stuck', 'Stuck', 'Stuck'], ['all', 'All', null]];
+    var VIEWS = [['pending', 'Pending', 'Pending'], ['stuck', 'Stuck', 'Stuck'], ['all', 'All', null]];
     var q = (state.filter.reqq || '').toLowerCase();
     var ls = state.reqlist || 'all';
     // The list switch mirrors the app: one of the three lists, or all three together.
@@ -1023,10 +1005,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var match = function (r) { return (!q || (r.who + ' #' + r.id + ' ' + r.kind + ' ' + r.desc).toLowerCase().indexOf(q) >= 0) && listOk(r); };
     var cur = VIEWS.filter(function (v) { return v[0] === view; })[0];
     var rows = REQS.filter(function (r) { return (!cur[2] || r.status === cur[2]) && match(r); }).sort(function (a, b) { return b.age - a.age; });
-    var titles = { pending: 'Pending approvals', held: 'Held for new hires', stuck: 'Stuck requests', all: 'All requests' };
-    var desc = { pending: 'Waiting on a manager, oldest first. Approve or reject right on the row, tick several to act together, or open a request in place for its balances, edit and a reminder.', held: 'Made on the request page by people not in the Staff Directory yet. Adding the person sends their requests on. Their supervisor is reminded after 2 business days; admins are emailed after 5.', stuck: 'Requests the system could not finish on its own. Fix the cause, then reprocess.', all: 'The three lists in one table: switch lists, open a request in place, or show leave on a calendar. ' + STATS.leave.toLocaleString() + ' leave, ' + STATS.overtime + ' overtime and ' + STATS.co + ' carry over or payout requests in total.' };
-    var empties = { pending: 'No pending requests.', held: 'Nothing is waiting.', stuck: 'No stuck requests found.', all: 'No requests match.' };
-    // The view chips (Pending, Held, Stuck, All) sit in their own toolbar, always visible.
+    var titles = { pending: 'Pending approvals', stuck: 'Stuck requests', all: 'All requests' };
+    var desc = { pending: 'Waiting on a manager, oldest first. Approve or reject right on the row, tick several to act together, or open a request in place for its balances, edit and a reminder.', stuck: 'Requests the system could not finish on its own. Fix the cause, then reprocess.', all: 'The three lists in one table: switch lists, open a request in place, or show leave on a calendar. ' + STATS.leave.toLocaleString() + ' leave, ' + STATS.overtime + ' overtime and ' + STATS.co + ' carry over or payout requests in total.' };
+    var empties = { pending: 'No pending requests.', stuck: 'No stuck requests found.', all: 'No requests match.' };
+    // The view chips (Pending, Stuck, All) sit in their own toolbar, always visible.
     var tabs = VIEWS.map(function (v) {
       var n = REQS.filter(function (r) { return (!v[2] || r.status === v[2]) && match(r); }).length;
       return '<button class="fchip" type="button" data-view="' + v[0] + '" aria-pressed="' + (v[0] === view) + '">' + v[1] + ' <span class="c">' + n + '</span></button>';
@@ -1069,10 +1051,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     home: function () {
       var pend = REQS.filter(function (r) { return r.status === 'Pending'; }).sort(function (a, b) { return b.age - a.age; });
       var maxWait = pend.length ? pend[0].age : null;
-      // The four things HR checks, each one click from its screen, with a line saying why it matters now.
+      // The three things HR checks, each one click from its screen, with a line saying why it matters now.
       var tiles = [
         ['pending', 'Waiting on a manager', pend.length, maxWait !== null ? 'oldest waiting ' + maxWait + ' day' + (maxWait === 1 ? '' : 's') : 'nothing waiting'],
-        ['held', 'New hires to add', count('Held'), count('Held') ? 'their requests wait until they are added' : 'nobody waiting'],
         ['setup', 'Setup problems', SETUP.length, SETUP.length ? 'these would stop a request reaching a manager' : 'every record checks out'],
         ['stuck', 'Stuck requests', count('Stuck'), count('Stuck') ? 'not fully processed' : 'none']
       ];
@@ -1084,7 +1065,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         (pend.length ? '<ul class="list">' + pend.slice(0, 6).map(function (r) { return '<li>' + av(r.who) + '<b>' + esc(r.who) + '</b><span class="muted">' + what(r) + '</span><span class="r">' + (r.age > 7 ? '<span class="age old">' + r.age + ' d</span>' : r.age === 0 ? '<span class="age">today</span>' : '<span class="age">' + r.age + ' d</span>') + '</span></li>'; }).join('') + '</ul>' : '<div class="pad muted small" style="padding-top:4px">No requests are waiting.</div>') + '</div>';
     },
     pending: function () { return requestsView('pending'); },
-    held: function () { return requestsView('held'); },
     // Pending requests whose managers are all on approved leave (#358). HR can
     // decide them in the managers' place so the person is not left waiting.
     mgrsonvac: function () {
@@ -1209,18 +1189,18 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   // Add Employee: the same fields and wording as the real form (AddEmployee.tsx).
   function addEmployee(isAdmin) {
     var pf = state.prefill || {};
-    var intro = 'Creates a new staff record set up so their leave and overtime requests work.' + (isAdmin ? ' Choose their supervisor(s) below.' : ' The new hire is added to your team.') + ' They can use the request page right away; any requests they already made there are sent once they are added.';
+    var intro = 'Creates a new staff record set up so their leave and overtime requests work.' + (isAdmin ? ' Choose their supervisor(s) below.' : ' The new hire is added to your team.') + ' They can use the request page right away.';
     if (state.created) {
       var c = state.created;
-      return head('Add employee', intro) + '<div class="paper pad" style="display:grid;gap:12px;max-width:780px"><div class="okbox"><b>' + esc(c.name) + '</b> was added.' + (c.released ? ' ' + c.released + ' waiting request was sent to ' + esc(c.mgr) + ' for approval.' : '') + '</div>' +
-        '<div class="acts" style="justify-content:flex-start">' + (c.released ? '<button class="btn pri" type="button" data-go="pending">See it in Pending</button>' : '') + '<button class="btn out" type="button" data-act="openperson" data-who="' + esc(c.name) + '">Open their record</button><button class="btn ghost" type="button" data-act="another">Add another</button></div></div>';
+      return head('Add employee', intro) + '<div class="paper pad" style="display:grid;gap:12px;max-width:780px"><div class="okbox"><b>' + esc(c.name) + '</b> was added.</div>' +
+        '<div class="acts" style="justify-content:flex-start"><button class="btn out" type="button" data-act="openperson" data-who="' + esc(c.name) + '">Open their record</button><button class="btn ghost" type="button" data-act="another">Add another</button></div></div>';
     }
     // Review step (#378): the typed details are cleaned, the setup check is run,
     // and the confirm panel shows before -> after plus any blocks or warnings.
     if (state.addReview) return addConfirm(isAdmin);
     var sup = pf.mgrs || [];
     return (isAdmin ? head('Add employee', intro) : '<p class="muted" style="margin:0">' + intro + '</p>') +
-      '<div class="' + (isAdmin ? 'paper' : '') + '">' + (pf.name ? '<div class="pad" style="padding-bottom:0"><div class="note">Filled in from <b>' + esc(pf.name) + '</b>\'s held request. Adding them sends that request to ' + esc(sup[0] || 'their supervisor') + '.</div></div>' : '') +
+      '<div class="' + (isAdmin ? 'paper' : '') + '">' +
       '<div class="form"' + (isAdmin ? '' : ' style="padding:4px 0"') + '><div class="row2"><label><span class="req">Full name (as in Microsoft 365)</span><input class="input" data-ae="name" value="' + esc(pf.name || '') + '"><span class="help">Must match their Microsoft 365 display name exactly.</span></label>' +
       '<label><span class="req">Email address</span><input class="input" type="email" data-ae="email" value="' + esc(pf.email || '') + '"></label></div>' +
       '<div class="row2"><label><span class="req">Location</span><select class="input">' + LOCATIONS.map(function (l) { return '<option' + (l === pf.loc ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></label><label><span class="req">Department</span><input class="input" value="' + esc(pf.dept || '') + '"></label></div>' +
@@ -1455,7 +1435,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div class="dfoot">' + rowActions(r) + '</div></article>';
   }
   function manager() {
-    var mine = REQS.filter(function (r) { return r.mgr === ME && r.status !== 'Held'; });
+    var mine = REQS.filter(function (r) { return r.mgr === ME; });
     var pend = mine.filter(function (r) { return r.status === 'Pending'; }).sort(function (a, b) { return b.age - a.age; });
     var offWeek = team().filter(function (p) { for (var i = 0; i < 5; i++) if (offOn(p.name, i).some(function (r) { return r.status === 'Approved'; })) return true; return false; }).length;
     var tabs = [['today', 'Today' + (pend.length ? ' (' + pend.length + ')' : '')], ['calendar', 'Calendar'], ['team', 'Team'], ['trends', 'Trends'], ['history', 'History']];
@@ -1662,13 +1642,14 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     REQS.unshift(r);
   }
   var SIGNED = { step: 'form', session: 'Avery Example', email: 'avery.example@ucsh.com' };
-  var NEWHIRE = { step: 'about', session: null, email: 'jordan.sample@gmail.com', first: 'Jordan', last: 'Sample', name: 'Jordan Sample', dept: 'Installation', sup: 'Sam Supervisor', supq: 'Sam', supmode: 'name', supemail: '' };
+  // The real refusal for an address on no staff record (intake.py): shown after the code, nothing saved, nobody emailed.
+  var NOT_ON_STAFF = 'This email is not on a staff record, so it cannot be used to sign in. Ask your manager: they can add you, or make the request for you.';
   function mix() { var o = {}; Array.prototype.forEach.call(arguments, function (a) { for (var k in a) o[k] = a[k]; }); return o; }
   var CASES = [
     ['Signing in', [
       ['Email', 'First screen. A returning device skips straight to the form.', {}],
       ['Code', 'Six boxes; typing or pasting fills them and moves on. Resend unlocks after 60 seconds.', { step: 'code', email: 'avery.example@ucsh.com' }]]],
-    ['On staff: leave', [
+    ['Leave', [
       ['Vacation', 'Spends Make-Up first, then Vacation.', mix(SIGNED, { leave: 'Vacation', notes: 'Family visit' })],
       ['Sick or Personal Day', 'Spends Sick, then Make-Up, Carry Over, Vacation.', mix(SIGNED, { leave: 'Sick or Personal Day', start: '2026-11-23', end: '2026-11-23' })],
       ['Half Day or Partial Day Off', 'One date and the hours away; 8 hours is a day.', mix(SIGNED, { leave: 'Half Day or Partial Day Off', hours: '4' })],
@@ -1676,17 +1657,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       ['Vacation next year', 'Next year\'s requests use Make-Up, then Carry Over only.', mix(SIGNED, { leave: 'Vacation', start: '2027-01-11', end: '2027-01-13' })],
       ['Bereavement', 'Uses no balance.', mix(SIGNED, { leave: 'Bereavement' })],
       ['Jury Duty', 'Uses no balance.', mix(SIGNED, { leave: 'Jury Duty', start: '2026-12-01', end: '2026-12-02' })]]],
-    ['On staff: overtime, carry-over, payout', [
+    ['Overtime, carry-over, payout', [
       ['Overtime', 'Entered in hours, added to Make-Up as days.', mix(SIGNED, { type: 'overtime', start: '2026-10-24', hours: '6', notes: 'Inventory count' })],
       ['Carry over to next year', 'Moves days out of Vacation into Carry Over.', mix(SIGNED, { type: 'carryover-payout', co: 'Carry over to next year', hours: '2' })],
       ['Pay out', 'Moves days out of Vacation to be paid.', mix(SIGNED, { type: 'carryover-payout', co: 'Pay out', hours: '1' })],
       ['Pay out more than the balance', 'Allowed to send; the system rejects it.', mix(SIGNED, { type: 'carryover-payout', co: 'Pay out', hours: '6' })]]],
-    ['New hire (not on the staff list yet)', [
-      ['New hire: leave', 'Says who they are and picks a supervisor. No balance preview: there is no record yet.', NEWHIRE],
-      ['New hire: overtime', 'Same details, any request kind.', mix(NEWHIRE, { type: 'overtime', start: '2026-10-24', hours: '3', notes: 'Training' })]]],
     ['Finished', [
-      ['Sent (on staff)', 'Goes to their manager now.', mix(SIGNED, { step: 'done' })],
-      ['Saved (new hire)', 'Held until the supervisor adds them, then sent automatically.', mix(NEWHIRE, { step: 'done' })]]],
+      ['Sent', 'Goes to their manager now.', mix(SIGNED, { step: 'done' })]]],
     ['Problems', [
       ['Not a full email', '', { email: 'avery.example', err: 'Enter a full email address.' }],
       ['Wrong code', 'Five tries, then a new code is needed.', { step: 'code', email: 'avery.example@ucsh.com', err: 'That code is not right. 4 tries left.' }],
@@ -1696,9 +1673,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       ['Part day on a holiday', 'Allowed to send; the system rejects it.', mix(SIGNED, { leave: 'Half Day or Partial Day Off', start: '2026-11-11', hours: '4' })],
       ['Sign-in ran out', 'After 30 days, or if the sign-in is no longer valid.', { err: 'Your sign-in has expired. Enter your email to get a new code.' }],
       ['Last day before the first', '', mix(SIGNED, { end: '2026-11-20', err: 'The last day away is before the first.' })],
-      ['New hire with no name', '', mix(NEWHIRE, { name: '', err: 'Enter your first and last name.' })],
-      ['Supervisor list did not load', '', mix(NEWHIRE, { err: 'The supervisor list could not be loaded. Refresh the page and start again.' })],
-      ['Added to staff in the meantime', 'Their supervisor added them first; signing in again sends it normally.', { email: 'jordan.new@gmail.com', err: 'You are in the Staff Directory now. Start again to sign in.' }],
+      ['Not on a staff record', 'Refused after the code. Nothing is saved and nobody is emailed.', { step: 'code', email: 'rowan.trial@ucsh.com', err: NOT_ON_STAFF }],
       ['Requests paused', 'While processing is switched off.', mix(SIGNED, { err: 'Requests cannot be submitted right now. Try again later.' })],
       ['Not on the SharePoint site yet', 'Only while the email columns setting is off.', mix(SIGNED, { err: 'Your account is not linked to the SharePoint site yet, so this request cannot reach your manager. Ask your manager to submit it for you, or try again in a few days.' })]]]
   ];
@@ -1776,6 +1751,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     state.rp = JSON.parse(RP_BASE);
   }
 
+  // The example person the People track adds: a ucsh.com address not yet on a staff record.
+  var ADD_EXAMPLE = { name: 'Rowan Trial', email: 'rowan.trial@ucsh.com', dept: 'Warehouse', loc: 'British Columbia', mgrs: ['Sam Supervisor'] };
   // The approved per-step copy, mapped onto the real screens.
   var TRACKS2 = {
     daily: {
@@ -1788,7 +1765,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           signal: function () { return state.authed === true; },
           act: function () { var pw = document.getElementById('adminPw'); if (pw) pw.value = '123'; var b = document.querySelector('[data-act="adminsignin"]'); if (b) b.click(); } },
         { title: 'Your home page', target: '.queues',
-          todo: 'The four tiles are what HR checks each day: requests waiting on a manager, new hires to add, setup problems, and stuck requests. Select <b>Waiting on a manager</b> to open the list.',
+          todo: 'The three tiles are what HR checks each day: requests waiting on a manager, setup problems, and stuck requests. Select <b>Waiting on a manager</b> to open the list.',
           know: 'Each tile is one click to its screen. Below them, Waiting longest lists the requests that have waited the most days.',
           enter: function () { adminAt('home'); },
           signal: function () { return state.screen === 'pending'; },
@@ -1853,37 +1830,26 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     people: {
       label: 'People',
       steps: [
-        { title: 'Held for new hires', target: '.paper .scroll table',
-          todo: 'People who used the request page before they were in the Staff Directory land here. Their request waits until they are added.',
-          know: 'Their supervisor is reminded after 2 business days, and the office admins are emailed after 5.',
-          enter: function () { adminAt('held'); } },
-        { title: 'Their supervisor is asked',
-          mail: { to: 'sam.supervisor@ucsh.com', subject: 'Add Riley Newhire to the Staff Directory', kind: 'decision', lines: ['Riley Newhire (riley.newhire@gmail.com, Installation) picked you as their supervisor and made a leave request on the UCSH Out of Office request page.', 'Vacation, Dec 22 to Dec 24, 2026, 3 days.', 'They are not in the Staff Directory yet, so the request is on hold. Add them and it is submitted to you automatically.'], button: { label: 'Add Riley Newhire', cls: 'pri' }, foot: 'If you are not their supervisor, reply to HR so it can be redirected.' },
-          todo: 'The supervisor gets this email with one button to add the person.',
-          know: 'If nobody acts, the admins get their own email after 5 business days, naming who is still waiting to be added.',
-          enter: function () { adminAt('held'); } },
-        { title: 'Add them from the list', target: '[data-act="addheld"][data-req="0|Riley Newhire|Held"]',
-          todo: 'You can add the person yourself. Select <b>Add employee</b> on their row.',
-          know: 'The form opens already filled in with the name, email and department from their held request.',
-          enter: function () { adminAt('held'); },
-          signal: function () { return state.screen === 'add'; },
-          act: function () { var b = document.querySelector('[data-act="addheld"][data-req="0|Riley Newhire|Held"]'); if (b) b.click(); } },
+        { title: 'Add an employee', target: '.form [data-ae="name"]',
+          todo: 'Everyone who makes requests needs a staff record first. Under People, <b>Add employee</b> opens this form: their full name and work email exactly as in Microsoft 365, location, department and supervisor.',
+          know: 'The request page signs in only an address on a staff record. Anyone else is told to ask their manager, who can add them or make the request for them; nothing is saved and nobody is emailed. Managers can add someone to their own team too.',
+          enter: function () { adminAt('add'); state.prefill = mix(ADD_EXAMPLE, { mgrs: ADD_EXAMPLE.mgrs.slice() }); } },
         { title: 'Review the details', target: '.form [data-act="review"]',
           todo: 'Check the record, set the yearly entitlements, supervisor and Salary or Hourly, then <b>Review</b> instead of adding straight away. Hourly staff only have sick days taken from a balance.',
           know: 'Review tidies what you typed (it trims stray spaces and lower-cases the email) and runs the setup check before anything is saved.',
-          enter: function () { adminAt('add'); var held = REQS.filter(function (x) { return x.id === 0; })[0]; state.prefill = { name: 'Riley Newhire', email: 'riley.newhire@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'], held: held }; },
+          enter: function () { adminAt('add'); state.prefill = mix(ADD_EXAMPLE, { mgrs: ADD_EXAMPLE.mgrs.slice() }); },
           signal: function () { return !!state.addReview; },
           act: function () { var b = document.querySelector('.form [data-act="review"]'); if (b) b.click(); } },
         { title: 'Confirm and add', target: '.form [data-act="create"]',
           todo: 'The confirm panel shows what was tidied, a before and after, and any problems. Select <b>Add employee</b>.',
-          know: 'Blocks in red, such as a matching name, a matching email, or no supervisor, must be fixed first. Warnings in amber, like a supervisor not linked to Microsoft 365 or no holidays for their location, just ask you to check. Adding Riley sends their held request straight to Sam Supervisor; it does not touch a balance until the manager approves.',
-          enter: function () { adminAt('add'); var held = REQS.filter(function (x) { return x.id === 0; })[0]; state.prefill = { name: 'Riley Newhire', email: 'riley.newhire@gmail.com', dept: 'Installation', mgrs: ['Sam Supervisor'], held: held }; state.addReview = { rawName: 'Riley Newhire', name: 'Riley Newhire', rawEmail: 'riley.newhire@gmail.com', email: 'riley.newhire@gmail.com', sup: ['Sam Supervisor'], blocks: [], warns: ['Sam Supervisor is not linked to Microsoft 365, so approval texts may not reach them.'] }; },
+          know: 'Blocks in red, such as a matching name, a matching email, or no supervisor, must be fixed first. Warnings in amber, like a supervisor not linked to Microsoft 365 or no holidays for their location, just ask you to check. Adding Rowan does not touch any balance; their requests go to Sam Supervisor.',
+          enter: function () { adminAt('add'); state.prefill = mix(ADD_EXAMPLE, { mgrs: ADD_EXAMPLE.mgrs.slice() }); state.addReview = { rawName: ADD_EXAMPLE.name, name: ADD_EXAMPLE.name, rawEmail: ADD_EXAMPLE.email, email: ADD_EXAMPLE.email, sup: ['Sam Supervisor'], blocks: [], warns: ['Sam Supervisor is not linked to Microsoft 365, so approval texts may not reach them.'] }; },
           signal: function () { return !!state.created; },
           act: function () { var b = document.querySelector('.form [data-act="create"]'); if (b) b.click(); } },
-        { title: 'Added, and request sent', target: '.okbox',
-          todo: 'Riley is in the Staff Directory, and their waiting request went to Sam Supervisor for approval.',
-          know: 'From here you can open their record or add another person. Their request now shows in Pending like any other. Riley is also emailed a welcome with a link to this tutorial.',
-          enter: function () { adminAt('add'); var held = REQS.filter(function (x) { return x.id === 0; })[0]; if (held) { held.status = 'Pending'; held.id = 1450; held.age = 0; held.why = ''; held.cur = { Vacation: 0 }; held.next = { Vacation: -3 }; } if (!person('Riley Newhire')) { STAFF.push({ id: 8, name: 'Riley Newhire', email: 'riley.newhire@gmail.com', dept: 'Installation', loc: 'British Columbia', mgrs: ['Sam Supervisor'], vac: 0, sick: 0, mu: 0, co: 0, vacY: 10, sickY: 5 }); } state.created = { name: 'Riley Newhire', released: 1, mgr: 'Sam Supervisor' }; } },
+        { title: 'Added to the Staff Directory', target: '.okbox',
+          todo: 'Rowan is in the Staff Directory and can sign in on the request page right away with rowan.trial@ucsh.com.',
+          know: 'From here you can open their record or add another person. Rowan is also emailed a welcome with how to sign in and a link to the staff tutorial.',
+          enter: function () { adminAt('add'); if (!person(ADD_EXAMPLE.name)) { STAFF.push({ id: 8, name: ADD_EXAMPLE.name, email: ADD_EXAMPLE.email, dept: ADD_EXAMPLE.dept, loc: ADD_EXAMPLE.loc, mgrs: ADD_EXAMPLE.mgrs.slice(), vac: 0, sick: 0, mu: 0, co: 0, vacY: 10, sickY: 5 }); } state.created = { name: ADD_EXAMPLE.name }; } },
         { title: 'Employee setup', target: '.paper .scroll table',
           todo: 'Before a request can reach a manager, the person\'s Staff Directory record has to be right. Anyone listed here would stall a request.',
           know: 'The problems are the real ones: no supervisor, not linked to Microsoft 365, or a balance out of the expected range.',
@@ -1922,7 +1888,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       label: 'Records and checks',
       steps: [
         { title: 'All requests', target: 'tr[data-rsel="1395|Taylor Mock|Approved"]',
-          todo: 'Every request across the company. The chips switch between Pending, Held, Stuck and All; the type menu and search box narrow it. Select the approved request for Taylor Mock to open it.',
+          todo: 'Every request across the company. The chips switch between Pending, Stuck and All; the type menu and search box narrow it. Select the approved request for Taylor Mock to open it.',
           know: 'This is where you find any one request by person, number or description, whatever state it is in.',
           enter: function () { adminAt('requests'); },
           signal: function () { return !!state.reqSel; },
@@ -2137,7 +2103,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function trackBtn(k, desc, seen) {
     return '<button class="ttrack" type="button" data-ttrack="' + k + '"><b>' + esc(TRACKS2[k].label) + (seen.indexOf(k) >= 0 ? ' <span class="tdone">done</span>' : '') + '</b><span>' + esc(desc) + '</span></button>';
   }
-  var TRACK_DESC = { daily: 'the daily queue: approvals, managers on vacation, emails and stuck requests', people: 'new hires, setup checks, staff profiles, archiving and manager assignments', records: 'all requests, holidays, the email log, data checks and the Postgres switch' };
+  var TRACK_DESC = { daily: 'the daily queue: approvals, managers on vacation, emails and stuck requests', people: 'adding employees, setup checks, staff profiles, archiving and manager assignments', records: 'all requests, holidays, the email log, data checks and the Postgres switch' };
 
   function openWelcome() {
     TV.mode = 'welcome'; stopLoop();
@@ -2147,8 +2113,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div class="tpractice">PRACTICE TOUR. This is not the real admin dashboard.</div>' +   // first thing read: practice, not live
       '<div class="tbrand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' +
       '<h2>Practice tour of the admin dashboard</h2>' +
-      '<p><b>Nothing done on this page is real.</b> Approvals, new hires, balance changes and holidays here are not sent or saved. Pick a path and a short tour points at the buttons as you go: approvals, new hires, staff and balances, holidays, the email log and the data checks.</p>' +
-      '<p style="font-size:12.5px;margin-top:-2px">The real dashboard opens from your own HR bookmark and asks for the admin password. Keep the password inside HR. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Riley Newhire).</p>' +
+      '<p><b>Nothing done on this page is real.</b> Approvals, added employees, balance changes and holidays here are not sent or saved. Pick a path and a short tour points at the buttons as you go: approvals, adding employees, staff and balances, holidays, the email log and the data checks.</p>' +
+      '<p style="font-size:12.5px;margin-top:-2px">The real dashboard opens from your own HR bookmark and asks for the admin password. Keep the password inside HR. The names, dates and numbers here are examples (Avery Example, Sam Supervisor, Rowan Trial).</p>' +
       '<a class="tgoreal" href="https://ucshoutofoffice.up.railway.app/" target="_blank" rel="noopener">Go to the real site</a>' +
       '<div class="ttracks">' + trackBtn('daily', TRACK_DESC.daily, seen) + trackBtn('people', TRACK_DESC.people, seen) + trackBtn('records', TRACK_DESC.records, seen) + '</div>' +
       '<div class="tfoot"><button class="ghost" type="button" data-texplore="1">Just explore</button></div>' +
@@ -2223,7 +2189,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       return;
     }
     if (state.role === 'manager' && !p.isMgr) { state.role = 'employee'; toast('My team is for people with direct reports.'); }
-    if (state.role === 'request' && ['email', 'code', 'newhire'].indexOf(state.rp.step) >= 0) state.role = 'employee';
+    if (state.role === 'request' && ['email', 'code'].indexOf(state.rp.step) >= 0) state.role = 'employee';
   }
   // The address for what is on screen.
   function hashNow() {
@@ -2231,7 +2197,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (state.role === 'manager') return '#/team' + (state.mtab && state.mtab !== 'today' ? '/' + state.mtab : '');
     if (state.role === 'employee') return '#/my' + (state.etab && state.etab !== 'overview' ? '/' + state.etab : '');
     if (state.rp.session) return '#/my/request';
-    return state.rp.step === 'about' || state.rp.step === 'newhire' || state.rp.step === 'done' ? '#/new-hire' : '#/';
+    return '#/';
   }
   // App bar tabs by role, who is signed in, and the practice bar's state.
   function chrome() {
@@ -2244,7 +2210,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }
     $('navtabs').innerHTML = tabs;
     $('who').innerHTML = state.role === 'admin' ? '<span class="adminpill">Admin</span>' : p ? av(s) + '<span>' + esc(s) + '</span><button class="signout" type="button" data-act="rpsignout">Sign out</button>' : '';
-    var v = state.role === 'admin' && !p ? 'admin' : s === 'Avery Example' ? 'avery' : s === 'Sam Supervisor' ? 'sam' : !s && (state.rp.step === 'about' || state.rp.step === 'newhire' || state.rp.step === 'done') ? 'jordan' : 'out';
+    var v = state.role === 'admin' && !p ? 'admin' : s === 'Avery Example' ? 'avery' : s === 'Sam Supervisor' ? 'sam' : 'out';
     document.querySelectorAll('[data-visit]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-visit') === v)); });
     $('addr').innerHTML = 'ucshoutofoffice.up.railway.app<b>/' + hashNow() + '</b>';
   }
@@ -2254,7 +2220,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     state.flow = null; state.modal = null; state.created = null; state.sel = null; state.reqSel = null; state.after = null;
     if (v === 'out') { state.rp = base; state.role = 'request'; }
     if (v === 'avery' || v === 'sam') { var n = v === 'avery' ? 'Avery Example' : 'Sam Supervisor'; state.rp = mix(base, { session: n, email: person(n).email, step: 'form' }); state.role = 'employee'; state.etab = 'overview'; }
-    if (v === 'jordan') { state.rp = mix(base, NEWHIRE); state.role = 'request'; }
     if (v === 'admin') { state.rp = base; state.role = 'admin'; state.screen = 'home'; }
     render(); window.scrollTo(0, 0);
   }
@@ -2268,8 +2233,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
   function requestPage() {
     var s = state.rp, step = s.step, mood = moodOf(s), words = MOODS[mood] !== undefined ? MOODS[mood] : ['Time off, without the paperwork.', 'Leave, overtime, or a carry-over or payout. No Microsoft sign-in needed.'];
-    var order = (step === 'about' || step === 'newhire') ? ['email', 'code', 'about', 'newhire', 'done'] : ['email', 'code', 'form', 'done'];
-    var labels = { email: 'Your email', code: 'The code we email you', form: 'Your request', about: 'About you', newhire: 'Your request', done: 'Sent' };
+    var order = ['email', 'code', 'form', 'done'];
+    var labels = { email: 'Your email', code: 'The code we email you', form: 'Your request', done: 'Sent' };
     var at = order.indexOf(step);
     var side = '<aside class="rp-side"><div><div class="rp-brand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' + (words[0] ? '<h1>' + words[0] + '</h1>' : '') + (words[1] ? '<p>' + words[1] + '</p>' : '') + '</div>' +
       '<ol class="rp-steps">' + order.map(function (k, i) { return '<li class="' + (i === at ? 'on' : i < at ? 'done' : '') + '"><span class="dot">' + (i < at ? '✓' : i + 1) + '</span>' + labels[k] + '</li>'; }).join('') + '</ol></aside>';
@@ -2277,10 +2242,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var body;
     if (step === 'email') {
       body = (s.notice ? '<div class="note">' + esc(s.notice) + '</div>' : '') + '<h2>Sign in</h2><p class="lead">We email you a 6-digit code to confirm it is you. You then stay signed in on this device for 30 days.</p>' + err +
-        '<label class="field">Your email<input class="input big" type="email" id="rpEmail" autocomplete="email" placeholder="you@ucsh.com or your personal email" value="' + esc(s.email) + '"></label>' +
+        '<label class="field">Your email<input class="input big" type="email" id="rpEmail" autocomplete="email" placeholder="you@ucsh.com" value="' + esc(s.email) + '"></label>' +
         '<button class="btn pri lg" type="button" data-act="rpsend">Email me a code</button>' +
-        '<p class="small muted" style="margin:0">New and no work email yet? Use your personal email. Your supervisor is asked to add you.</p>' +
-        '<p class="small muted" style="margin:0">Practice copy: type any email, or use the <b>Practise as</b> buttons at the top.</p>';
+        '<p class="small muted" style="margin:0">Use the email on your staff record. Not on staff yet, or your email does not work? Ask your manager: they can add you, or make the request for you.</p>' +
+        '<p class="small muted" style="margin:0">Practice copy: type an example staff email such as avery.example@ucsh.com, or use the <b>Practise as</b> buttons at the top.</p>';
     } else if (step === 'code') {
       body = '<h2>Check your email</h2><p class="lead">If <b>' + esc(s.email) + '</b> can receive email, a 6-digit code is on its way. It works for 10 minutes. Check your junk folder if it is not there.</p>' + err +
         '<div class="digits" role="group" aria-label="6-digit code">' + [0, 1, 2, 3, 4, 5].map(function (i) { return '<input inputmode="numeric" maxlength="1" data-dig="' + i + '" aria-label="Digit ' + (i + 1) + '">'; }).join('') + '</div>' +
@@ -2289,42 +2254,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<p class="small muted" style="margin:0">Practice copy: enter any 6 digits to continue.</p>';
     } else if (step === 'form') {
       body = err + rpForm(true) + '<button class="btn pri lg" type="button" data-act="rpsubmit">Send request (practice)</button>';
-    } else if (step === 'about') {
-      // The new-hire's own details, their own screen before the request itself.
-      var supGiven = s.supmode === 'email' ? /@/.test(s.supemail || '') : !!s.sup;                 // supervisor counts as given either way
-      var ready = !!(s.first && s.first.trim() && s.last && s.last.trim() && s.dept && supGiven);   // Continue unlocks only when all four are set
-      var deptChips = DEPTS.map(function (d) { return '<button type="button" data-about-dept="' + esc(d) + '" aria-pressed="' + (d === s.dept) + '">' + esc(d) + '</button>'; }).join('');
-      var supBlock = '';
-      if (s.dept) {                                                                                 // supervisor picker appears once a department is chosen
-        if (s.supmode === 'email') {                                                                // email fallback for a supervisor not in the list
-          supBlock = '<label class="field">Supervisor\'s work email<input class="input big" type="email" data-about="supemail" value="' + esc(s.supemail || '') + '" placeholder="name@ucsh.com"></label>' +
-            '<button class="linkbtn" type="button" data-about-supmode="name">Search by name instead</button>';
-        } else {
-          var q = (s.supq || '').trim().toLowerCase();                                              // search over everyone in the department, 2+ letters
-          var matches = q.length >= 2 ? (DEPT_PEOPLE[s.dept] || []).filter(function (n) { return n.toLowerCase().indexOf(q) >= 0; }) : [];
-          var results = q.length < 2 ? '<p class="small muted" style="margin:0">Type two or more letters to find your supervisor.</p>'
-            : (matches.length ? '<div class="supresults" role="group" aria-label="Matching people">' + matches.map(function (n) { return '<button type="button" data-about-sup="' + esc(n) + '" aria-pressed="' + (n === s.sup) + '">' + esc(n) + '</button>'; }).join('') + '</div>' : '<p class="small muted" style="margin:0">Nobody in ' + esc(s.dept) + ' matches that.</p>');
-          supBlock = '<label class="field">Your supervisor<input class="input big" data-about="supq" value="' + esc(s.supq || '') + '" placeholder="Search ' + esc(s.dept) + '"></label>' + results +
-            '<button class="linkbtn" type="button" data-about-supmode="email">Can\'t find them? Use their work email</button>';
-        }
-      }
-      body = '<h2>Tell us who you are</h2><div class="note">' + esc(s.email) + ' is not in the Staff Directory yet. Tell us who you are and who your supervisor is; they will be asked to add you, and your request goes to them once they do.</div>' + err +
-        '<div class="row2"><label class="field">First name<input class="input big" data-about="first" value="' + esc(s.first || '') + '"></label><label class="field">Last name<input class="input big" data-about="last" value="' + esc(s.last || '') + '"></label></div>' +
-        '<div class="field">Your department<div class="deptchips" role="group" aria-label="Department">' + deptChips + '</div></div>' +
-        (s.dept ? supBlock : '<p class="small muted" style="margin:0">Pick your department to find your supervisor.</p>') +
-        '<button class="btn pri lg" type="button" data-act="rpcontinue"' + (ready ? '' : ' disabled') + '>Continue to your request</button>';
-    } else if (step === 'newhire') {
-      // The request itself, with a one-line summary of who you said you are and a way back.
-      var supLabel = s.supmode === 'email' ? (s.supemail || 'your supervisor') : (s.sup || 'your supervisor');
-      body = '<h2>Your request</h2><div class="note" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>' + esc(s.name || 'You') + ' · ' + esc(s.dept || '') + ' · supervisor ' + esc(supLabel) + '</span><button class="linkbtn" type="button" data-act="rpchange" style="margin-left:auto">Change</button></div>' + err +
-        rpForm(false) +
-        '<button class="btn pri lg" type="button" data-act="rpsubmit">Send request (practice)</button>';
     } else {
-      var held = !s.session;
-      body = '<span class="success">✓</span><h2>' + (held ? 'Request saved' : 'Request sent') + '</h2><p class="lead">' + (held ? 'You are not in the Staff Directory yet, so we asked ' + esc(s.sup) + ' to add you. Your request is sent to them automatically as soon as they do, and you will get an email.' : 'Your request was sent to your manager. You will get an email when it is approved or rejected.') + '</p>' +
-        '<ol class="next">' + (held ? [['done', 'Saved', 'Just now'], ['', esc(s.sup) + ' adds you to the staff list', 'They got an email with a link'], ['', 'Your request goes to them', 'Automatically'], ['', 'You get an email with the decision', '']] : [['done', 'Sent to your manager', 'Just now'], ['', 'They approve or reject', 'From the email, a text reply or their dashboard'], ['', 'You get an email', 'Your balance changes when it is approved']]).map(function (x, i) { return '<li class="' + x[0] + '"><span class="dot">' + (x[0] ? '✓' : i + 1) + '</span><div><b>' + x[1] + '</b>' + (x[2] ? '<div class="small muted">' + x[2] + '</div>' : '') + '</div></li>'; }).join('') + '</ol>' +
+      body = '<span class="success">✓</span><h2>Request sent</h2><p class="lead">Your request was sent to your manager. You will get an email when it is approved or rejected.</p>' +
+        '<ol class="next">' + [['done', 'Sent to your manager', 'Just now'], ['', 'They approve or reject', 'From the email, a text reply or their dashboard'], ['', 'You get an email', 'Your balance changes when it is approved']].map(function (x, i) { return '<li class="' + x[0] + '"><span class="dot">' + (x[0] ? '✓' : i + 1) + '</span><div><b>' + x[1] + '</b>' + (x[2] ? '<div class="small muted">' + x[2] + '</div>' : '') + '</div></li>'; }).join('') + '</ol>' +
         '<div class="pbnote">This was practice. Nothing was sent. To send a real request, use the real site: <a href="https://ucshoutofoffice.up.railway.app/" target="_blank" rel="noopener">ucshoutofoffice.up.railway.app</a></div>' +   // practice confirmation (#300)
-        '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn pri" type="button" data-act="rpanother">Make another request</button>' + (held ? '' : '<button class="btn out" type="button" data-act="rpdash">See my requests</button>') + '</div>';
+        '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn pri" type="button" data-act="rpanother">Make another request</button><button class="btn out" type="button" data-act="rpdash">See my requests</button></div>';
     }
     return '<div class="rp"' + (mood ? ' data-mood="' + mood + '"' : '') + '>' + side + '<main class="rp-main"><div class="rp-card' + (state.rpFresh ? ' rp-anim' : '') + '">' + body + '</div></main></div>';
   }
@@ -2404,9 +2338,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   // Who an email goes to, where a reply lands, and which service carries it.
   function mailMeta(m) {
     return {
-      to: m.newhire ? 'riley.newhire@gmail.com' : MAIL_TO[m.who],
+      to: MAIL_TO[m.who],
       reply: m.reply ? (m.who === 'manager' ? 'avery.example@ucsh.com, the employee who asked' : 'sam.supervisor@ucsh.com, the manager who decided') : 'the EMAIL_REPLY_TO address, if one is set',
-      via: m.newhire ? 'SMTP2GO: a personal address (Clerk once it is switched on)' : 'UCSH mailer (Microsoft HVE), as notifications@ucsh.com'
+      via: 'UCSH mailer (Microsoft HVE), as notifications@ucsh.com'
     };
   }
   function attr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
@@ -2414,7 +2348,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var i = state.mail || 0, m = MAILS[i], meta = mailMeta(m), w = state.mailw || 'desktop';
     var changes = [
       ['Sent from UCSH', 'Staff emails go through the UCSH mailer (Microsoft HVE) from notifications@ucsh.com instead of SMTP2GO. Off until MAILER_ENABLED is turned on after the merge.'],
-      ['Only ucsh.com is internal', 'ucaccess.com and personal addresses, like a new hire\'s, stay on SMTP2GO, or Clerk once it is switched on.'],
+      ['Only ucsh.com is internal', 'ucaccess.com and personal addresses stay on SMTP2GO, or Clerk once it is switched on.'],
       ['Replies reach a person', 'An approval email replies to the employee who asked; a decision email replies to the manager who decided. The sending account has no inbox.'],
       ['Built for Outlook', 'Table layout, one 600px column, fonts on every cell and buttons classic Outlook draws as buttons (#187). Still to be checked in real Outlook.']
     ];
@@ -2455,7 +2389,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     ['Add Employee', 'People, Add employee: same fields and wording.'],
     ['Stuck (n): issues, Reprocess with a reason', 'Lower block, Stuck requests (n): same issue names, Reprocess asks for a reason.'],
     ['Email Log: employee filter, details with the response body', 'Lower block, Email log: All recent and By employee modes, the service column, ok/failed counts, the duplicate mark, a text filter and Details with the response body.'],
-    ['Held Requests (request page change)', 'Approvals, Held for new hires (n). Its Add the columns check moves to Data checks.'],
     ['Holidays (holidays change): editor, compare, copy', 'Company, Holidays for the editor; compare and copy in Data checks.']
   ];
   function renderModal() {
@@ -2466,7 +2399,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'reject': return dialog('Reject this request?', '<div><b>' + esc(r.who) + '</b>, ' + what(r) + '</div><div class="small muted">' + first(r.who) + ' is emailed that it was rejected. This cannot be undone; they would need to send a new request.</div>', '<button class="btn err" type="button" data-act="doreject">Reject</button>');
       case 'refund': return dialog('Refund this request?', '<div><b>' + esc(r.who) + '</b>, ' + what(r) + '</div><div class="note">' + esc(r.back || 'The days go back to the pot they came from') + '. The request is marked Refunded.</div>', '<button class="btn pri" type="button" data-act="dorefund">Refund</button>');
       case 'reprocess': return dialog('Reprocess #' + r.id, '<div>' + (r.issues || []).map(function (i) { return chip(i, 'err'); }).join(' ') + '</div><div class="small muted">Fix the cause first, then reprocess. The reason is saved with the request.</div><label class="field">Reason<input class="input" id="reasonIn" placeholder="Supervisor set in the Staff Directory"></label>', '<button class="btn pri" type="button" data-act="doreprocess">Reprocess</button>');
-      case 'cancelheld': return dialog('Cancel this held request?', '<div><b>' + esc(r.who) + '</b>, ' + what(r) + '</div><div class="small muted">Use this when they will not be joining. Nothing is sent to anyone.</div>', '<button class="btn err" type="button" data-act="docancelheld">Cancel request</button>');
       case 'edit': return dialog('Edit Leave Request #' + r.id, '<label class="field">Leave Type<select class="input">' + ['Vacation', 'Sick or Personal Day', 'Half Day or Partial Day Off', 'Bereavement', 'Jury Duty'].map(function (t) { return '<option' + (t === (r.kind === 'Sick' ? 'Sick or Personal Day' : r.kind === 'Half day' ? 'Half Day or Partial Day Off' : 'Vacation') ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></label><div class="row2"><label class="field">Start Date<input class="input" value="' + esc(r.from ? r.from[0] + ' ' + r.from[1] : '') + '"></label><label class="field">End Date<input class="input" value="' + esc(r.to ? r.to[0] + ' ' + r.to[1] : '') + '"></label></div><label class="field">Days<input class="input" type="number" value="' + (r.days || 0) + '"></label><label class="field">Reason for edit (required)<input class="input" id="editReason" placeholder="Recorded in the request audit log"></label><div class="small muted">Saving will send a fresh approval email and invalidate any previous one.</div>', '<button class="btn pri" type="button" data-act="saveedit">Save &amp; Re-send Email</button>');
       case 'audit': return dialog('Audit trail', '<pre class="resp">2026-10-07 09:12  created\n2026-10-07 09:12  days worked out: ' + (r.days || 0) + '\n2026-10-07 09:12  approval email sent to ' + esc(r.mgr || 'nobody') + (r.status === 'Approved' ? '\n2026-10-08 10:30  approved from the dashboard\n2026-10-08 10:30  balance moved' : '') + '</pre>');
       case 'mail':
@@ -2549,7 +2481,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }
     if (state.role === 'admin' && !SCREENS[state.screen]) state.screen = 'home';
     if (state.screen !== 'staff') state.sel = null;
-    if (['pending', 'held', 'stuck', 'requests'].indexOf(state.screen) < 0) { state.reqSel = null; state.reqChecked = []; }   // leaving the lists drops any open row and selection
+    if (['pending', 'stuck', 'requests'].indexOf(state.screen) < 0) { state.reqSel = null; state.reqChecked = []; }   // leaving the lists drops any open row and selection
     renderSide();
     var flow = state.flow ? '<div class="flowbar"><span><b>Flow:</b> ' + FLOWS[state.flow].hint + '</span><button class="x" type="button" data-act="endflow" aria-label="End flow">×</button></div>' : '';
     var ro = state.readonly ? '<div class="banner">System is in reporting-only mode. Approve/reject actions are disabled.</div>' : '';
@@ -2605,7 +2537,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (t.hasAttribute('data-role')) { if (t.getAttribute('data-role') === 'request' && state.role !== 'request') state.rp = JSON.parse(RP_BASE); state.role = t.getAttribute('data-role'); state.flow = null; state.created = null; state.modal = null; render(); return; }
     if (t.hasAttribute('data-go')) { go(t.getAttribute('data-go')); return; }
     if (t.hasAttribute('data-filter')) { var f = t.getAttribute('data-filter').split('|'); state.filter[f[0]] = f[1]; render(); return; }
-    if (t.hasAttribute('data-view')) { var v = t.getAttribute('data-view'); state.filter.reqview = v; go({ pending: 'pending', stuck: 'stuck', held: 'held', all: 'requests' }[v]); return; }
+    if (t.hasAttribute('data-view')) { var v = t.getAttribute('data-view'); state.filter.reqview = v; go({ pending: 'pending', stuck: 'stuck', all: 'requests' }[v]); return; }
     if (t.hasAttribute('data-rlist')) { state.reqlist = t.getAttribute('data-rlist'); state.reqChecked = []; state.reqSel = null; render(); return; }   // switch which list the table shows
     if (t.hasAttribute('data-rmode')) { state.reqmode = t.getAttribute('data-rmode'); render(); return; }   // table or calendar
     if (t.hasAttribute('data-calday')) { state.modal = { kind: 'calday', day: +t.getAttribute('data-calday') }; render(); return; }   // open a busy day
@@ -2625,9 +2557,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     if (t.hasAttribute('data-try')) { var flat = []; CASES.forEach(function (g) { flat = flat.concat(g[1]); }); state.rp = mix(JSON.parse(RP_BASE), flat[+t.getAttribute('data-try')][2]); state.role = 'request'; render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute('data-rpt')) { state.rp.type = t.getAttribute('data-rpt'); state.rp.err = ''; if (!rpRepaint()) render(); return; }   // mood fades, panel stays
     if (t.hasAttribute('data-rpl')) { state.rp.leave = t.getAttribute('data-rpl'); if (!rpRepaint()) render(); return; }
-    if (t.hasAttribute('data-about-dept')) { var nd = t.getAttribute('data-about-dept'); if (nd !== state.rp.dept) { state.rp.dept = nd; state.rp.sup = ''; state.rp.supq = ''; state.rp.supmode = 'name'; state.rp.supemail = ''; } render(); return; }   // a new department clears the supervisor pick
-    if (t.hasAttribute('data-about-sup')) { state.rp.sup = t.getAttribute('data-about-sup'); state.rp.supq = state.rp.sup; render(); return; }   // choose a supervisor from the results
-    if (t.hasAttribute('data-about-supmode')) { state.rp.supmode = t.getAttribute('data-about-supmode'); render(); return; }   // swap between name search and work email
     if (t.id === 'menuBtn') { var o = !$('side').classList.contains('open'); $('side').classList.toggle('open', o); $('scrim').classList.toggle('open', o); t.setAttribute('aria-expanded', String(o)); return; }
     var act = t.getAttribute('data-act');
     if (!act) return;
@@ -2635,7 +2564,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var m = state.modal;
     switch (act) {
       case 'approve': slideAway(t.closest('.dcard'), function () { r.status = 'Approved'; r.age = 0; state.reqSel = null; toast('Approved. ' + (r.cur ? Object.keys(r.cur).map(function (k) { return k + ' ' + r.cur[k] + ' → ' + r.next[k]; }).join(', ') + '. ' : '') + first(r.who) + ' is emailed (example).'); render(); }); return;
-      case 'reject': case 'refund': case 'reprocess': case 'cancelheld': case 'edit': case 'audit': state.modal = { kind: act, req: r }; render(); return;
+      case 'reject': case 'refund': case 'reprocess': case 'edit': case 'audit': state.modal = { kind: act, req: r }; render(); return;
       case 'closemodal': if (t.getAttribute('data-msg')) toast(t.getAttribute('data-msg')); state.modal = null; render(); return;
       case 'saveedit': state.modal = null; toast('Saved. A fresh approval email is on its way; the old link stops working (example).'); render(); return;
       case 'adminsignin': state.authed = true; state.screen = 'home'; render(); window.scrollTo(0, 0); return;   // the password gate
@@ -2655,7 +2584,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if ((m.req.issues || []).indexOf('No Managers (Staff Dir)') >= 0 && !who.mgrs.length) { state.modal = null; toast('Still no manager on record for ' + m.req.who + '. Set one from Staff first, then reprocess.'); render(); return; }
         m.req.status = 'Pending'; m.req.issues = null; m.req.mgr = m.req.mgr || who.mgrs[0]; m.req.days = m.req.days || 1; m.req.cur = { Vacation: who.vac }; m.req.next = { Vacation: who.vac - m.req.days };
         state.modal = null; state.reqSel = null; toast('Reprocessed #' + m.req.id + '; it is now with ' + m.req.mgr + ' (example).'); render(); return;
-      case 'docancelheld': m.req.status = 'Rejected'; m.req.why = 'Cancelled'; m.req.age = 0; state.modal = null; state.reqSel = null; toast('Held request cancelled (example).'); render(); return;
       case 'mgrs': var p = person(t.getAttribute('data-who')); state.modal = { kind: 'mgrs', who: p.name, sel: p.mgrs.slice() }; render(); return;
       case 'savemgrs':
         var pp = person(m.who); pp.mgrs = m.sel.slice();
@@ -2665,16 +2593,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       case 'wzpreview': m.from = $('wzFrom').value; m.to = $('wzTo') ? $('wzTo').value : null; m.step = 2; render(); return;
       case 'wzback': m.step = 1; render(); return;
       case 'wzdone': state.modal = null; toast('Assignments updated (example, nothing saved).'); render(); return;
-      case 'addheld': state.prefill = { name: r.who, email: r.email, dept: r.dept, mgrs: [r.mgr], held: r }; state.created = null; state.reqSel = null; state.screen = 'add'; render(); window.scrollTo(0, 0); return;
       case 'create':
         var R = state.addReview;                                 // the reviewed, cleaned details (#378)
         if (R && R.blocks.length) { toast('Fix the blocked items first.'); return; }
-        var pf = state.prefill || {};
-        var name = R ? R.name : (((t.closest('.form') || document).querySelector('input') || {}).value || 'New employee'), released = 0, mgr = R ? R.sup[0] : (pf.mgrs || [])[0];
-        if (pf.held) { pf.held.status = 'Pending'; pf.held.id = 1450; pf.held.age = 0; pf.held.why = ''; pf.held.cur = { Vacation: 0 }; pf.held.next = { Vacation: -3 }; released = 1; STAFF.push({ id: 8, name: pf.name, email: pf.email, dept: pf.dept || 'Warehouse', loc: pf.loc || 'British Columbia', mgrs: pf.mgrs, vac: 0, sick: 0, mu: 0, co: 0, vacY: 10, sickY: 5 }); }
+        var name = R ? R.name : (((t.closest('.form') || document).querySelector('input') || {}).value || 'New employee');
         state.addReview = null;
         if (state.modal) { state.modal = null; toast(name + ' was added to your team (example).'); render(); return; }
-        state.created = { name: name, released: released, mgr: mgr }; state.prefill = null; render(); window.scrollTo(0, 0); return;
+        state.created = { name: name }; state.prefill = null; render(); window.scrollTo(0, 0); return;
       case 'another': state.created = null; state.prefill = null; state.addReview = null; render(); return;
       // ---- Add employee: Review then confirm (#378) ----
       case 'review': {
@@ -2749,25 +2674,20 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (code.length < 6) { state.rp.err = 'Enter all 6 digits.'; render(); return; }
         if (code === '000000') { state.rp.tries--; state.rp.err = 'That code is not right. ' + state.rp.tries + ' tries left.'; render(); return; }
         var st = STAFF.filter(function (p) { return p.email && p.email.toLowerCase() === state.rp.email.toLowerCase(); })[0];
-        state.rp.err = ''; state.rp.notice = ''; state.rp.session = st ? st.name : null; state.rp.step = st ? 'form' : 'about'; if (st) { state.role = state.after || 'employee'; state.after = null; } render(); window.scrollTo(0, 0); return;
+        if (!st) { state.rp.err = NOT_ON_STAFF; render(); return; }   // on no staff record: refused, nothing saved, nobody emailed
+        state.rp.err = ''; state.rp.notice = ''; state.rp.session = st.name; state.rp.step = 'form'; state.role = state.after || 'employee'; state.after = null; render(); window.scrollTo(0, 0); return;
       case 'rpremember': state.rp.email = 'avery.example@ucsh.com'; state.rp.session = 'Avery Example'; state.rp.step = 'form'; state.rp.err = ''; render(); return;
       case 'rpsignout': state.rp = mix(JSON.parse(RP_BASE), { notice: 'Signed out. This browser no longer remembers you.' }); state.role = 'request'; state.after = null; state.flow = null; render(); window.scrollTo(0, 0); return;
       case 'rpas': var who2 = t.getAttribute('data-who'); state.rp.email = person(who2).email; state.rp.session = who2; state.rp.step = 'form'; state.rp.err = ''; state.rp.notice = ''; state.role = state.after || 'employee'; state.after = null; render(); window.scrollTo(0, 0); return;
       case 'godash': state.role = t.getAttribute('data-r'); if (state.role === 'admin') state.screen = 'home'; render(); window.scrollTo(0, 0); return;
-      case 'rpcontinue':
-        // Combine the two name fields and move from "About you" to the request itself.
-        state.rp.name = ((state.rp.first || '') + ' ' + (state.rp.last || '')).trim();
-        state.rp.step = 'newhire'; state.rp.err = ''; render(); window.scrollTo(0, 0); return;
-      case 'rpchange': state.rp.step = 'about'; state.rp.err = ''; render(); window.scrollTo(0, 0); return;   // the "Change" link back to About you
       case 'rpsubmit':
-        if (state.rp.step === 'newhire' && !state.rp.name.trim()) { state.rp.err = 'Enter your first and last name.'; render(); return; }
         if (state.rp.type === 'leave' && state.rp.leave !== 'Half Day or Partial Day Off' && state.rp.end < state.rp.start) { state.rp.err = 'The last day away is before the first.'; render(); return; }
         state.rp.err = ''; if (state.rp.session) submitRequest(state.rp); state.rp.step = 'done'; render(); window.scrollTo(0, 0); return;
       case 'rpanother': state.rp.step = state.rp.session ? 'form' : 'email'; state.rp.notes = ''; render(); return;
       case 'rpdash': state.role = 'employee'; render(); window.scrollTo(0, 0); return;
       case 'request': state.rp = mix(JSON.parse(RP_BASE), state.rp.session ? { step: 'form', session: state.rp.session, email: state.rp.email } : SIGNED, { via: 'dash' }); state.role = 'request'; render(); window.scrollTo(0, 0); return;
     }
-    var msgs = { remind: 'Reminder sent to the manager (example)', link: 'Link action (example)', editholiday: 'Edit holiday (example)', addholiday: 'Add holiday (example)', delholiday: 'Delete asks first (example)', request: 'Opens the request page (example)', parity: 'Compared: in step (example)', copyhol: 'Copied 12 holidays (example)', retryheld: 'Sent on. The held request was submitted to the manager (example)', copyreq: 'Copied 91 requests from SharePoint into Postgres (example)', addcols: 'Added SubmitterEmail and RequestSource to the request lists (example)' };
+    var msgs = { remind: 'Reminder sent to the manager (example)', link: 'Link action (example)', editholiday: 'Edit holiday (example)', addholiday: 'Add holiday (example)', delholiday: 'Delete asks first (example)', request: 'Opens the request page (example)', parity: 'Compared: in step (example)', copyhol: 'Copied 12 holidays (example)', copyreq: 'Copied 91 requests from SharePoint into Postgres (example)', addcols: 'Added SubmitterEmail and RequestSource to the request lists (example)' };
     if (msgs[act]) toast(msgs[act]);
   });
   document.addEventListener('change', function (e) {
@@ -2796,17 +2716,6 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       state.rp[rk] = e.target.value;
       // Dates change the preview; re-render only then so typing in text boxes keeps focus.
       if (e.target.type === 'date') render();
-      return;
-    }
-    // "About you" fields re-render live (name enables Continue, search filters the list), then focus is restored.
-    var ab = e.target.getAttribute && e.target.getAttribute('data-about');
-    if (ab) {
-      state.rp[ab] = e.target.value;
-      if (ab === 'first' || ab === 'last') state.rp.name = ((state.rp.first || '') + ' ' + (state.rp.last || '')).trim();
-      var apos = e.target.selectionStart;
-      render();
-      var ag = document.querySelector('[data-about="' + ab + '"]');
-      if (ag) { ag.focus(); try { ag.setSelectionRange(apos, apos); } catch (er) {} }
       return;
     }
     var dg = e.target.getAttribute && e.target.getAttribute('data-dig');
