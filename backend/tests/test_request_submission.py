@@ -121,11 +121,12 @@ async def _wipe():
 
 async def _leave_record(**fields) -> RequestRecord:
     """Insert one pending leave request already linked to Alice, and return it."""
+    soon = date.today() + timedelta(days=30)                       # a month ahead: never past its start, on any day the suite runs (#537)
     base = dict(
         kind="leave", item_id=next(_item_ids), status="pending",
         state="waiting_on_approval",                               # a pending request the manager can decide (#455)
         employee_id="10", employee_email="alice@ucsh.com",
-        leave_type="Sick or Personal Day", start_date=date(2026, 11, 2), end_date=date(2026, 11, 2),
+        leave_type="Sick or Personal Day", start_date=soon, end_date=soon,
         days=2.0, approval_version=1, balance_state="not_applied",
         extra={"RequestSource": "Request page"},
     )
@@ -202,7 +203,7 @@ def test_a_work_from_home_submission_is_recorded_and_routed_to_the_manager(sp):
     # Work from home is a full-day leave type that costs no balance (#388); a
     # submission still records the request, asks the manager and sends the receipt,
     # and moves no balance (balance moves only on approval, and WFH moves none then).
-    record = run(_leave_record(leave_type="Work from Home", days=1.0, end_date=date(2026, 11, 2)))
+    record = run(_leave_record(leave_type="Work from Home", days=1.0))   # one day, on the default date
 
     recorded = run(rs.submit("leave", record.item_id, channel="request_page"))
 
