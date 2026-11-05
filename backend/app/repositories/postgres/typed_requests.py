@@ -594,6 +594,10 @@ class TypedRequestList:
         title = self._compose_title(record)
         if title:
             fields["Title"] = title
+        if record.rules_on is not None:
+            # The date which pot pays is judged from, when an edit moved it. Read-only
+            # here: it is set by the edit paths and never written back from these fields.
+            fields["RulesOn"] = record.rules_on.isoformat()
         created = _iso(record.created_at)
         modified = _iso(record.updated_at)
         fields.update({"id": str(record.item_id), "Created": created, "Modified": modified})

@@ -809,7 +809,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }
     if (r.type === 'Overtime') return [{ cls: 'ot', amt: '+' + tfNum((r.hours || 0) / 8), label: 'added to Make-Up' }];   // hours / 8 banked
     if (r.cur && r.next) {                                        // leave with a known split: each pot that dropped, cascade order
-      var ORDER = [['Sick', 'sick', 'sick'], ['Make-Up', 'ot', 'Make-Up'], ['Carry Over', 'co', (TF_YEAR - 1) + ' carry-over'], ['Vacation', 'vac', 'vacation'], ['Payout', 'pay', TF_YEAR + ' payout']];
+      var ORDER = [['Sick', 'sick', 'sick'], ['Make-Up', 'ot', 'Make-Up'], ['Carry Over', 'co', TF_YEAR + ' carry-over'], ['Vacation', 'vac', 'vacation'], ['Payout', 'pay', TF_YEAR + ' payout']];
       var out = [];
       ORDER.forEach(function (o) {
         var b = r.cur[o[0]], a = r.next[o[0]];                   // before and after for this pot
@@ -1538,17 +1538,20 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         }
       } else if (employee) {
         var wd = workdays(s.start, partial ? s.start : s.end, me.loc), n = partial ? (+s.hours || 0) / 8 : wd.n;
-        // Next year's requests only touch Make-Up and Carry Over (cascade_next_year); this year's run the full chain.
-        var nextYear = s.start.slice(0, 4) === '2027' || (!partial && s.end.slice(0, 4) === '2027');
-        var order = s.leave === 'Sick or Personal Day' ? (nextYear ? ['sick'] : ['sick', 'mu', 'co', 'vac']) : s.leave === 'Vacation' || partial ? (nextYear ? ['mu', 'co'] : ['mu', 'co', 'vac']) : [];
+        // One chain for every date; carry-over only pays for the days dated inside its period.
+        var order = s.leave === 'Sick or Personal Day' ? ['sick', 'mu', 'co', 'vac'] : s.leave === 'Vacation' || partial ? ['mu', 'co', 'vac'] : [];
+        var dayFit = leaveSplit(s, me, partial, n), refusal = leaveRefusal(me, s.leave, partial, dayFit);
         var notes = [];
         if (!order.length) notes.push('Bereavement and jury duty do not use any balance.');
         if (!partial && wd.skipped.length) notes.push(wd.skipped.join(', ') + ' is a company holiday and is not counted.');
-        if (nextYear && order.length) notes.push('Next year: uses Make-Up, then Carry Over. Next year\'s vacation is not touched.');
+        // Worded like the real preview: only worth saying when the person has carry-over.
+        if (order.length && me.co > 0 && n > 0 && dayFit.co === 0) notes.push('Carry-over can only pay for leave dated Jan 1 to Mar 31, 2027, so it is not used for these dates.');
+        if (order.length && me.co > 0 && dayFit.co > 0 && dayFit.co < n) notes.push('Carry-over can pay for at most ' + num(dayFit.co) + ' of these days, the ones dated Jan 1 to Mar 31, 2027.');
         var warn = partial && wd.skipped.length ? 'This date is the company holiday ' + wd.skipped[0] + '. A part day on a holiday is rejected automatically.' : partial && (+s.hours || 0) >= 8 ? 'A partial day is less than 8 hours; choose a full-day leave type instead.' : '';
-        var potRows = order.length ? spend(me, n, order) : [];   // each pot [label, before, after], cascade order
+        if (refusal) warn = refusal;                             // nothing can pay for these dates: Send is blocked below
+        var potRows = order.length ? spend(me, n, order, dayFit.co) : [];   // each pot [label, before, after], cascade order
         // Taken from: one chip per pot that dropped, worded like TakenFrom.tsx (carry-over names last year).
-        var POT_TF = { Vacation: ['vac', 'vacation'], Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'], 'Carry Over': ['co', (TF_YEAR - 1) + ' carry-over'] };
+        var POT_TF = { Vacation: ['vac', 'vacation'], Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'], 'Carry Over': ['co', TF_YEAR + ' carry-over'] };
         var leaveSegs = potRows.filter(function (x) { return x[2] < x[1]; }).map(function (x) { var m = POT_TF[x[0]] || ['', x[0]]; return { cls: m[0], amt: tfNum(x[1] - x[2]), label: m[1] }; });
         // The backstop pot (last in the cascade, usually Vacation) may go below zero; show it in red (#300).
         var lastPot = potRows.length ? potRows[potRows.length - 1] : null, leaveRed = null;
@@ -1586,16 +1589,67 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }).join('') + '</div></div>' + f;
   }
   // Spend n days down the balance engine's chain; the last pot is the backstop and may go negative.
-  function spend(me, n, order) {
+  // coDays caps carry-over at the days dated inside its period.
+  function spend(me, n, order, coDays) {
     var names = { vac: 'Vacation', sick: 'Sick', mu: 'Make-Up', co: 'Carry Over' }, left = n, out = [];
     order.forEach(function (k, i) {
       var have = me[k], take = i === order.length - 1 ? left : Math.min(Math.max(have, 0), left);
+      if (k === 'co' && coDays !== undefined) take = Math.min(take, coDays);   // carry-over pays only inside its dates
       if (take > 0 || (i === order.length - 1 && left > 0)) out.push([names[k], have, +(have - take).toFixed(2)]);
       left -= take;
     });
     return out;
   }
   function num(v) { return +(+v).toFixed(2); }
+  // The practice copy's today is in Nov 2026, so carry-over pays for Jan 1 to Mar 31, 2027,
+  // vacation pays for 2026 dates, and Apr 1, 2027 on cannot be booked yet. Mirrors leave_day_split.
+  var CO_FROM = '2027-01-01', CO_TO = '2027-03-31', BOOK_FROM = '2027-04-01';
+  /**
+   * How a request's days fall against what each pot can pay for.
+   * @param {Object} s - The request page's state (start, end).
+   * @param {Object} me - The signed-in person, for their holidays.
+   * @param {boolean} partial - Whether this is a part day (one date).
+   * @param {number} n - The days the request costs.
+   * @returns {{co: number, beyond: number}} Days inside the carry-over period, and days nothing can pay for yet.
+   */
+  function leaveSplit(s, me, partial, n) {
+    var last = partial ? s.start : s.end;                        // a part day has one date
+    function daysIn(low, high) {
+      var a = s.start > low ? s.start : low, b = last < high ? last : high;   // the overlap, as ISO strings
+      if (a > b) return 0;                                       // none of the request is in this range
+      if (a === s.start && b === last) return n;                 // all of it is: its own days, no counting
+      return Math.min(workdays(a, b, me.loc).n, n);              // part of it: count working days, capped
+    }
+    var co = daysIn(CO_FROM, CO_TO);
+    return { co: co, beyond: Math.min(daysIn(BOOK_FROM, '9999-12-31'), n - co) };
+  }
+  /**
+   * The refusal for a salaried vacation or part day nothing can pay for. Mirrors booking_refusal.
+   * @param {Object} me - The signed-in person, for their balances.
+   * @param {string} leave - The leave type.
+   * @param {boolean} partial - Whether this is a part day.
+   * @param {{co: number, beyond: number}} split - From leaveSplit.
+   * @returns {string} The sentence to show, or '' when the request is allowed.
+   */
+  function leaveRefusal(me, leave, partial, split) {
+    if (leave !== 'Vacation' && !partial) return '';             // sick days are never refused
+    if (split.beyond > 0) return 'Leave on these dates can be booked from January 1, 2027.';
+    var have = Math.max(me.mu, 0) + Math.max(me.co, 0);          // a negative counts as nothing
+    if (split.co <= have) return '';                             // Make-Up and carry-over cover them
+    return 'These dates need ' + num(split.co) + (split.co === 1 ? ' day' : ' days') + ' of carry-over or Make-Up and you have ' + num(have) + '. Vacation can only be used for this year\'s dates.';
+  }
+  /**
+   * Whether the practice request page must block Send, as the real page does.
+   * @param {Object} s - The request page's state.
+   * @returns {boolean} True when nothing can pay for this leave's dates.
+   */
+  function rpRefused(s) {
+    var me = s.session ? person(s.session) : null;
+    if (!me || isBC(me) || s.type !== 'leave') return false;     // only salaried leave is refused
+    var partial = s.leave === 'Half Day or Partial Day Off';
+    var n = partial ? (+s.hours || 0) / 8 : workdays(s.start, s.end, me.loc).n;
+    return !!leaveRefusal(me, s.leave, partial, leaveSplit(s, me, partial, n));
+  }
   // ``segs`` adds a "Taken from" line of chips (the split, same wording as the real request page); ``refused`` shows the auto-refusal note; ``redNote`` is a red "below zero" line (#300).
   function preview(me, facts, pots, note, warn, segs, refused, redNote) {
     var takenRow = segs
@@ -1628,7 +1682,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (s.leave === 'Sick or Personal Day' || partial) { var sdN = partial ? 1 : workdays(s.start, s.end, me.loc).n; r.days = sdN; r.cur = { Sick: me.sick }; r.next = { Sick: me.sick - sdN }; }
       } else {
         var order = s.leave === 'Sick or Personal Day' ? ['sick', 'mu', 'co', 'vac'] : s.leave === 'Vacation' || partial ? ['mu', 'co', 'vac'] : [];
-        var rows = order.length ? spend(me, n, order) : [];
+        var rows = order.length ? spend(me, n, order, leaveSplit(s, me, partial, n).co) : [];
         if (rows.length) { r.cur = toObj(rows, 1); r.next = toObj(rows, 2); }
       }
     } else if (s.type === 'overtime') {
@@ -1651,10 +1705,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       ['Code', 'Six boxes; typing or pasting fills them and moves on. Resend unlocks after 60 seconds.', { step: 'code', email: 'avery.example@ucsh.com' }]]],
     ['Leave', [
       ['Vacation', 'Spends Make-Up first, then Vacation.', mix(SIGNED, { leave: 'Vacation', notes: 'Family visit' })],
-      ['Sick or Personal Day', 'Spends Sick, then Make-Up, Carry Over, Vacation.', mix(SIGNED, { leave: 'Sick or Personal Day', start: '2026-11-23', end: '2026-11-23' })],
+      ['Sick or Personal Day', 'Spends Sick, then Make-Up, then Vacation. Carry Over only pays for Jan 1 to Mar 31, 2027.', mix(SIGNED, { leave: 'Sick or Personal Day', start: '2026-11-23', end: '2026-11-23' })],
       ['Half Day or Partial Day Off', 'One date and the hours away; 8 hours is a day.', mix(SIGNED, { leave: 'Half Day or Partial Day Off', hours: '4' })],
       ['Vacation over a holiday', 'Remembrance Day (a British Columbia holiday) is not counted.', mix(SIGNED, { leave: 'Vacation', start: '2026-11-09', end: '2026-11-13' })],
-      ['Vacation next year', 'Next year\'s requests use Make-Up, then Carry Over only.', mix(SIGNED, { leave: 'Vacation', start: '2027-01-11', end: '2027-01-13' })],
+      ['Vacation next year', 'Jan 1 to Mar 31, 2027 can only use Make-Up or Carry Over. Short of that, it is refused. Apr 1, 2027 on can be booked from Jan 1, 2027.', mix(SIGNED, { leave: 'Vacation', start: '2027-01-11', end: '2027-01-13' })],
       ['Bereavement', 'Uses no balance.', mix(SIGNED, { leave: 'Bereavement' })],
       ['Jury Duty', 'Uses no balance.', mix(SIGNED, { leave: 'Jury Duty', start: '2026-12-01', end: '2026-12-02' })]]],
     ['Overtime, carry-over, payout', [
@@ -2253,7 +2307,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div style="display:flex;gap:16px;flex-wrap:wrap"><button class="linkbtn" type="button" data-act="rpback">Use a different email</button><button class="linkbtn" type="button" id="rpResend" data-act="rpresend" disabled>Send a new code (60s)</button></div>' +
         '<p class="small muted" style="margin:0">Practice copy: enter any 6 digits to continue.</p>';
     } else if (step === 'form') {
-      body = err + rpForm(true) + '<button class="btn pri lg" type="button" data-act="rpsubmit">Send request (practice)</button>';
+      body = err + rpForm(true) + '<button class="btn pri lg" type="button" data-act="rpsubmit"' + (rpRefused(state.rp) ? ' disabled' : '') + '>Send request (practice)</button>';
     } else {
       body = '<span class="success">✓</span><h2>Request sent</h2><p class="lead">Your request was sent to your manager. You will get an email when it is approved or rejected.</p>' +
         '<ol class="next">' + [['done', 'Sent to your manager', 'Just now'], ['', 'They approve or reject', 'From the email, a text reply or their dashboard'], ['', 'You get an email', 'Your balance changes when it is approved']].map(function (x, i) { return '<li class="' + x[0] + '"><span class="dot">' + (x[0] ? '✓' : i + 1) + '</span><div><b>' + x[1] + '</b>' + (x[2] ? '<div class="small muted">' + x[2] + '</div>' : '') + '</div></li>'; }).join('') + '</ol>' +

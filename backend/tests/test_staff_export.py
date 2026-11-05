@@ -111,14 +111,17 @@ def test_header_is_frozen_and_filtered():
 
 
 def test_date_columns_are_written_as_the_dashboard_shows_them():
-    """Birthday and the can-book date read as their own day, "Mar 3, 1990" (#490)."""
+    """Birthday reads as its own day, "Mar 3, 1990" (#490)."""
     rows = _rows()
     rows[0]["fields"]["Birthday"] = "1990-03-03T00:00:00Z"
-    rows[0]["fields"]["RequestAllowDate"] = "2026-12-31T05:00:00Z"
-    data = sx.build_workbook(rows, ["name", "birthday", "request_allow_date"], False, [])
+    data = sx.build_workbook(rows, ["name", "birthday"], False, [])
     ws = _open(data)[sx.STAFF_SHEET]
     assert ws["B2"].value == "Mar 3, 1990"                 # a day saved at UTC midnight keeps its day
-    assert ws["C2"].value == "Dec 31, 2026"                # Toronto midnight (05:00Z) is that day
+
+
+def test_the_booking_date_is_no_longer_an_export_column():
+    """Nothing is stored per person for booking, so there is no column to export."""
+    assert "request_allow_date" not in sx.COLUMNS
 
 
 def test_formula_like_text_is_stored_as_plain_text():

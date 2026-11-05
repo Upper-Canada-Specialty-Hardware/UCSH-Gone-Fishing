@@ -18,10 +18,11 @@ from pydantic import BaseModel
 from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
     LEAVE_BOOKING_TYPES,
-    booking_limit,
-    booking_limit_message,
-    carryover_available_for,
+    bookable_until,
+    booking_refusal,
+    carryover_period,
     is_next_year_request,
+    leave_day_split,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -131,27 +132,29 @@ def build_preview(
         next_year = is_next_year_request(form.start_date, form.end_date)
         bc = is_hourly(emp_fields)                      # hourly: sick only, no cascade
         last_day = form.end_date                        # set for both a part day and a range
-        carryover_avail = carryover_available_for(last_day, today)   # carry-over expired for these dates? (#407)
-        projected = simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
-        # Only salaried vacation and part days are held to the booking limit;
-        # carry the limit and whether these dates are past it to the page (#407).
+        # A new request's rule date is today, so its carry-over has not expired.
+        split = leave_day_split(form.start_date, last_day, days, today, holidays, season)
+        projected = simulate_leave_impact(emp_fields, leave_type, days, split.carryover_days)
+        # Only salaried vacation and part days can be refused for their dates; carry
+        # the last bookable day and any refusal to the page.
         if not bc and leave_type in LEAVE_BOOKING_TYPES:
-            limit = booking_limit(
-                float(emp_fields.get("CurrentVacationBalance", 0) or 0),
-                float(emp_fields.get("CarryOver", 0) or 0),
-                today,
-            )
-            refused = last_day is not None and last_day > limit
+            refusal = booking_refusal(emp_fields, leave_type, split, today)
             booking_limit_info = {
-                "date": limit.isoformat(),
-                "refused": refused,
-                "message": booking_limit_message(limit) if refused else "",
+                "date": bookable_until(emp_fields, today).isoformat(),
+                "refused": refusal is not None,
+                "message": refusal or "",
             }
-        # Carry-over that cannot be used for these dates is worth saying when the
-        # person actually has some (#407).
-        if (not bc and not carryover_avail
+        # Carry-over that cannot pay for all of these dates is worth saying when the
+        # person actually has some. Leave that costs nothing never reaches it.
+        if (not bc and days > 0 and leave_type not in NO_COST_LEAVE
                 and float(emp_fields.get("CarryOver", 0) or 0) > 0):
-            notes.append("Carry-over cannot be used for these dates, so Make-Up then Vacation are used.")
+            _, period_end = carryover_period(today)
+            period = f"Jan 1 to Mar 31, {period_end.year}"      # from the rule, never hardcoded
+            if split.carryover_days == 0:                       # none of these days are in its dates
+                notes.append(f"Carry-over can only pay for leave dated {period}, so it is not used for these dates.")
+            elif split.carryover_days < days:                   # some are, so say how many
+                count = f"{split.carryover_days:g}"
+                notes.append(f"Carry-over can pay for at most {count} of these days, the ones dated {period}.")
         if bc and leave_type == PART_DAY_LEAVE:
             notes.append("A part day uses one whole sick day.")
     elif request_type == "overtime":
@@ -195,7 +198,7 @@ def build_preview(
         "warning": warning,
         "next_year": next_year,
         "below_zero": floor_warning(emp_fields, projected),   # red, never a block
-        "booking_limit": booking_limit_info,                  # the vacation booking limit (#407)
+        "booking_limit": booking_limit_info,                  # how far they can book, and any refusal
     }
 
 

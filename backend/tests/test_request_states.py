@@ -325,6 +325,44 @@ def test_an_admin_edit_keeps_the_request_waiting_on_approval(monkeypatch):
     assert rec.state == "waiting_on_approval" and rec.approval_version == 2
 
 
+def _read_leave(item_id):
+    """Read one leave row back."""
+    async def read():
+        async with async_session() as session:
+            return (await session.execute(
+                select(RequestRecord).where(RequestRecord.kind == "leave", RequestRecord.item_id == item_id)
+            )).scalars().first()
+
+    return run(read())
+
+
+def test_an_edit_to_the_dates_or_days_moves_the_rule_date(monkeypatch):
+    """Which pot pays reads from the edit date once the dates or days change."""
+    async def _no_employee(record, fields):
+        return None
+
+    monkeypatch.setattr(rs, "_resolve_employee", _no_employee)
+    monkeypatch.setattr(rs, "today_toronto", lambda: date(2027, 1, 6))
+    item_id = run(_seed(state="waiting_on_approval"))
+    assert _read_leave(item_id).rules_on is None                   # a new row reads from its created date
+    run(rs.apply_admin_edit("leave", item_id, before={"Days": 1}, after={"Days": 2}, reason="fix the days"))
+    assert _read_leave(item_id).rules_on == date(2027, 1, 6)
+
+
+def test_an_edit_to_anything_else_leaves_the_rule_date(monkeypatch):
+    """A new leave type on the same dates and days is judged from the same date."""
+    async def _no_employee(record, fields):
+        return None
+
+    monkeypatch.setattr(rs, "_resolve_employee", _no_employee)
+    item_id = run(_seed(state="waiting_on_approval"))
+    run(rs.apply_admin_edit(
+        "leave", item_id, before={"LeaveType": "Vacation"}, after={"LeaveType": "Sick or Personal Day"},
+        reason="wrong type",
+    ))
+    assert _read_leave(item_id).rules_on is None
+
+
 # ----- reprocessing a needs_attention request -----
 
 def test_reprocessing_a_needs_attention_request_makes_it_waiting(monkeypatch):

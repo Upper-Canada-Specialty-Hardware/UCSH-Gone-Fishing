@@ -189,9 +189,6 @@ def _patch(monkeypatch, *, name_exists=False, email_exists=False):
         calls["managers"] = (emp_id, ids)
         calls["manager_history"] = (history_source, history_actor)   # who/where the assignment was recorded (#447)
 
-    async def _rad(emp_id, vacation, carryover):
-        calls["rad"] = (emp_id, vacation, carryover)
-
     async def _get_item(list_id, item_id):
         return {"id": str(item_id), "fields": calls["created"] or {}}
 
@@ -201,23 +198,20 @@ def _patch(monkeypatch, *, name_exists=False, email_exists=False):
     monkeypatch.setattr(sharepoint_module.sp_client, "create_list_item", _create)
     monkeypatch.setattr(sharepoint_module.sp_client, "get_list_item", _get_item)
     monkeypatch.setattr(ec, "update_employee_managers", _update_managers)
-    monkeypatch.setattr(ec, "recalculate_request_allow_date", _rad)
     return calls
 
 
-def test_creating_writes_the_record_then_the_manager_and_the_allow_date(monkeypatch):
+def test_creating_writes_the_record_then_the_manager(monkeypatch):
     calls = _patch(monkeypatch)
 
     asyncio.run(create_employee(GOOD, [501]))
 
-    # The row is written first, then the supervisor as a Person field, then the
-    # allow date is derived from the opening vacation and carry-over.
+    # The row is written first, then the supervisor as a Person field.
     assert calls["created"]["Title"] == "New Hire"
     assert calls["managers"] == (777, [501])
     # The admin create records the first supervisor as HR on the admin channel,
     # not the automatic "system" default (#447).
     assert calls["manager_history"] == ("admin_dashboard", "HR")
-    assert calls["rad"] == ("777", 0, 0)
 
 
 def test_a_duplicate_name_is_refused_before_anything_is_written(monkeypatch):

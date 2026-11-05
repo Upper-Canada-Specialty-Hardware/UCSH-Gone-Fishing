@@ -65,7 +65,10 @@ from app.services.holidays import get_holidays_for_province, get_half_friday_sea
 from app.services.business_days import calculate_business_days
 from app.services.balance import (
     LEAVE_BOOKING_TYPES,
-    booking_limit,
+    booking_refusal,
+    carryover_period,
+    leave_day_split,
+    rule_date_from_fields,
     simulate_leave_impact,
     simulate_overtime_impact,
     simulate_carryover_payout_impact,
@@ -305,7 +308,7 @@ def build_validation_report(
         sample_end: Last day of that range.
         today: The date the report is being run, used to decide which automatic
             rejections are still recent enough to matter.
-        toronto_day: Today in Toronto, used only for the booking-limit check so it
+        toronto_day: Today in Toronto, used only for the refused-at-approval check so it
             matches submission/approval/preview (which all read ``toronto_today``);
             defaults to ``toronto_today()`` when not supplied. ``today`` is left
             on the server clock so the auto-rejection window is unchanged (#407).
@@ -477,11 +480,11 @@ def build_validation_report(
 
     # --- Per-leave-type dry runs (carry-over available) ---
     for code, leave_type, days in LEAVE_TYPE_CASES:
-        checks.append(_simulate_leave_case(code, leave_type, employee_fields, days, carryover_available=True))
+        checks.append(_simulate_leave_case(code, leave_type, employee_fields, days))
 
-    # --- Carry-over-expired branch (a Vacation request dated past the expiry, #407) ---
+    # --- A Vacation request carry-over cannot pay for, dated outside its period ---
     checks.append(_simulate_leave_case(
-        "sim_next_year_vacation", "Vacation", employee_fields, SAMPLE_LEAVE_DAYS, carryover_available=False,
+        "sim_next_year_vacation", "Vacation", employee_fields, SAMPLE_LEAVE_DAYS, carryover_days=0,
     ))
 
     # --- Business-day calculation over the sample range ---
@@ -632,32 +635,26 @@ def build_validation_report(
         bad_status="warn",
     ))
 
-    # Pending vacation/part-day requests already past the booking limit (#407).
-    # These will be refused at approval, so flag them before a manager tries.
-    # Hourly staff are never limited, so the check is skipped for them.
-    vacation_now = _as_float(employee_fields.get("CurrentVacationBalance"))
-    carry_now = _as_float(employee_fields.get("CarryOver"))
-    # The booking limit reads the Toronto day, like submission/approval/preview, so
-    # the setup screen flags exactly what approval would refuse (UTC on Railway can
-    # be a day ahead) (#407). Falls back to today's Toronto date when not passed.
+    # Pending vacation/part-day requests nothing can pay for, each judged from its own
+    # rule date. These will be refused at approval, so flag them before a manager tries.
+    # Reads the Toronto day like approval does (UTC on Railway can be a day ahead), and
+    # falls back to today's Toronto date when not passed. Hourly staff are never refused.
     booking_today = toronto_day if toronto_day is not None else toronto_today()
-    limit = booking_limit(vacation_now, carry_now, booking_today)  # the person's current booking limit
     past_limit = []
     if not is_hourly(employee_fields):
         for r in pending:
             if r["kind"] != "leave" or r.get("leave_type", "") not in LEAVE_BOOKING_TYPES:
                 continue                                           # only vacation and part days are booked
-            last_day = r.get("end_date") or r.get("start_date") or ""   # "YYYY-MM-DD", or "" when undated
-            if last_day and last_day > limit.isoformat():          # ISO strings compare chronologically
+            if _pending_refused_at_approval(r, employee_fields, holidays, booking_today):
                 past_limit.append(r)
     checks.append(_measured(
         "pending_over_booking_limit", "requests",
-        label="Pending vacation requests past the booking limit",
+        label="Pending vacation requests these dates cannot pay for",
         actual=len(past_limit), expected=0, comparison="equals",
-        ok_detail="No pending vacation request runs past what they can book.",
+        ok_detail="Every pending vacation request can be paid for on its dates.",
         bad_detail=(
-            f"Pending vacation request(s) dated past {limit:%b} {limit.day}, {limit.year}, "
-            "which will be refused at approval: " + _describe_requests(past_limit)
+            "Pending vacation request(s) nothing can pay for on their dates, which will "
+            "be refused at approval: " + _describe_requests(past_limit)
         ),
         bad_status="warn",
     ))
@@ -786,7 +783,9 @@ def summarise_request(kind: str, item: dict, notified: bool | None = None) -> di
         "kind": kind,
         "item_id": str(item.get("id", "")),
         "status": status,
-        "leave_type": f.get("LeaveType") or "",                 # for the booking-limit check (#407); "" for non-leave
+        "leave_type": f.get("LeaveType") or "",                 # for the refused-at-approval check; "" for non-leave
+        "days": amount,                                         # the same check compares the days
+        "rule_fields": {"RulesOn": f.get("RulesOn"), "Created": item.get("createdDateTime")},   # and its rule date
         "has_amount": amount > 0,
         "has_manager": bool(f.get("ManagerLookupId") or f.get("ManagerID")),   # SharePoint lookup id, or the staff id on Postgres
         "notified": notified,
@@ -822,7 +821,36 @@ def _describe_requests(items: list[dict], with_reason: bool = False) -> str:
     return ", ".join(parts)
 
 
-def _simulate_leave_case(code, leave_type, fields, days, carryover_available=True) -> dict:
+def _pending_refused_at_approval(
+    request: dict, fields: dict, holidays: list[dict], today: date,
+) -> bool:
+    """Whether approval would refuse this pending vacation, by the same rule.
+
+    Args:
+        request: The summary from ``summarise_request``.
+        fields: The person's current Staff Directory values.
+        holidays: Their province's holiday rows.
+        today: Today in Toronto.
+
+    Returns:
+        True when nothing can pay for its dates. Undated rows, and rows whose
+        carry-over has expired, are never refused.
+    """
+    try:
+        first = date.fromisoformat(request.get("start_date") or request.get("end_date") or "")
+        last = date.fromisoformat(request.get("end_date") or request.get("start_date") or "")
+    except ValueError:                                         # undated: nothing to compare
+        return False
+    on = rule_date_from_fields(request.get("rule_fields") or {}, today)
+    if carryover_period(on)[1] < today:                        # expired: approval does not refuse these
+        return False
+    split = leave_day_split(
+        first, last, float(request.get("days") or 0), on, holidays, get_half_friday_season(holidays),
+    )
+    return booking_refusal(fields, request.get("leave_type", ""), split, on) is not None
+
+
+def _simulate_leave_case(code, leave_type, fields, days, carryover_days=None) -> dict:
     """Dry-run one leave type and check the arithmetic, not just that it ran.
 
     Which pot a day comes out of depends on the balances, because spending
@@ -838,15 +866,15 @@ def _simulate_leave_case(code, leave_type, fields, days, carryover_available=Tru
         leave_type: SharePoint leave type being simulated.
         fields: The employee's current Staff Directory values.
         days: How many days to simulate.
-        carryover_available: False dry-runs a request past the carry-over expiry,
-            which skips carry-over in the cascade (#407).
+        carryover_days: The most carry-over may pay; 0 dry-runs a request dated
+            outside its period, None means no cap.
 
     Returns:
         One report row carrying the days actually deducted.
     """
-    label = f"{leave_type}{'' if carryover_available else ' (carry-over expired)'}"
+    label = f"{leave_type}{'' if carryover_days is None else ' (carry-over not usable for these dates)'}"
     try:
-        projected = simulate_leave_impact(fields, leave_type, days, carryover_available)
+        projected = simulate_leave_impact(fields, leave_type, days, carryover_days)
     except Exception as e:  # noqa: BLE001
         return _check(code, "simulation", "fail", f"{leave_type} simulation raised: {e}")
 

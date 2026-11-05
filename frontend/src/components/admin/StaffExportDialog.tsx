@@ -60,7 +60,6 @@ const COLUMNS: ColDef[] = [
   { key: 'carry_over', label: 'Carry-over', group: 'Entitlements and balances', number: true, get: (p) => p.balances?.carryover ?? 0 },
   { key: 'payout', label: 'Payout', group: 'Entitlements and balances', number: true, get: (p) => p.balances?.payout ?? 0 },
   { key: 'system_check', label: 'System check', group: 'Status', get: (p) => p.system_check || '' },
-  { key: 'request_allow_date', label: 'Can book vacation until', group: 'Status', get: () => '' },
   { key: 'comments', label: 'Comments', group: 'Record', get: () => '' },
   { key: 'modified', label: 'Last modified', group: 'Record', get: () => '' },
 ];
@@ -70,7 +69,7 @@ const GROUPS = ['Identity', 'Contact', 'Placement', 'Entitlements and balances',
 /** Column presets, matching the mockup. */
 const PRESETS: [string, string[]][] = [
   ['Everything', COLUMNS.map((c) => c.key)],
-  ['Balances', ['name', 'department', 'managers', 'vacation_entitlement', 'vacation', 'sick_entitlement', 'sick', 'make_up_days', 'make_up_hours', 'carry_over', 'payout', 'request_allow_date']],
+  ['Balances', ['name', 'department', 'managers', 'vacation_entitlement', 'vacation', 'sick_entitlement', 'sick', 'make_up_days', 'make_up_hours', 'carry_over', 'payout']],
   ['Contact list', ['name', 'email', 'cell', 'extension', 'location', 'department']],
   ['Setup check', ['id', 'name', 'email', 'managers', 'salary_hourly', 'system_check', 'modified']],
 ];

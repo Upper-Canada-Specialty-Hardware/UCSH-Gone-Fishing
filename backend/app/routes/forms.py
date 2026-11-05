@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator
 
 from app.config import settings
 from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
-from app.services.balance import booking_refusal  # the vacation booking limit (#407)
+from app.services.balance import booking_refusal_for  # refused for its dates, same as the request page
 from app.services.employee import get_employee_by_email
 from app.services.leave_requests import process_new_leave_request
 from app.services.overtime_requests import process_new_overtime_request
@@ -97,10 +97,13 @@ async def _leave_booking_refusal(data: "LeaveFormData") -> str | None:
         return None                                              # unknown: process_new refuses it later
     last_str = data.end_date or data.start_date                  # the last day: end for a range, start for a part day
     try:
+        first_day = date.fromisoformat((data.start_date or "")[:10])
         last_day = date.fromisoformat((last_str or "")[:10])
     except (ValueError, TypeError):
         return None                                              # bad date: let the create path report it
-    return booking_refusal(employee["fields"], data.leave_type, last_day, toronto_today())
+    return await booking_refusal_for(
+        employee["fields"], data.leave_type, first_day, last_day, data.partial_hours, toronto_today(),
+    )
 
 
 @router.post("/leave")

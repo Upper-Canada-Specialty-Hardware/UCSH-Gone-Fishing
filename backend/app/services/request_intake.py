@@ -19,7 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from app.services.app_settings import carryover_payout_window, toronto_today, window_is_open
-from app.services.balance import booking_refusal  # the vacation booking limit, refused at submission (#407)
+from app.services.balance import booking_refusal_for  # refused for its dates, at submission (#407)
 from app.services.carryover_payout import process_new_carryover_payout
 from app.services.leave_requests import ALLOWED_LEAVE_TYPES, process_new_leave_request
 from app.services.overlap_detection import check_new_leave_clashes, clash_for_page, new_leave_clash_refusal
@@ -289,12 +289,13 @@ async def submit_request(
     email = (fields.get("EmailAddress") or "").strip()
     if not email:
         raise RequestFormError("Your staff record has no email address. Ask your manager to fix it.")
-    # Booking-limit refusal (#407): a salaried Vacation/part-day request whose last
-    # day is past what the person may book is refused before any row is created,
-    # on every path into here (the request page, admin New request,
-    # /api/forms). Hourly staff and other leave types are never limited.
+    # A salaried Vacation/part-day request nothing can pay for is refused before any
+    # row is created, on every path into here (the request page, admin New request,
+    # /api/forms). Hourly staff and other leave types are never refused.
     if request_type == "leave":
-        refusal = booking_refusal(fields, form.leave_type, form.end_date, toronto_today())
+        refusal = await booking_refusal_for(
+            fields, form.leave_type, form.start_date, form.end_date, form.partial_hours, toronto_today(),
+        )
         if refusal:
             raise RequestFormError(refusal)
         # Overlap (#446, #518): one leave request per day. A day that already has

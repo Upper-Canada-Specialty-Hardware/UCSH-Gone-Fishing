@@ -10,7 +10,7 @@ they all land in one transaction.
 """
 import asyncio
 import itertools
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import delete, select
@@ -24,6 +24,7 @@ from app.models.request_event import RequestEvent
 from app.models.request_record import RequestRecord
 from app.repositories.staff_balances import POT_COLUMNS
 from app.services import request_decisions as rd
+from app.services.taken_from import attach_taken_from
 
 # Fresh, unique ids each insert: a unique item_id per kind, and a unique employee
 # id so the per-employee lock never carries between tests (and between loops).
@@ -365,7 +366,7 @@ def test_work_from_home_has_no_simulated_impact():
     from app.services.employment import leave_costs_balance
 
     fields = {"SalaryHourly": "Salary", "CarryOver": -10, "CurrentVacationBalance": 6}
-    assert simulate_leave_impact(fields, "Work from Home", 1, carryover_available=True) is None
+    assert simulate_leave_impact(fields, "Work from Home", 1) is None
     assert leave_costs_balance(fields, "Work from Home") is False   # the SharePoint approval returns early
 
 
@@ -579,51 +580,38 @@ def test_legacy_refund_of_a_no_cost_leave_restores_nothing(monkeypatch):
 # ----- the Postgres decision runs the SharePoint path's follow-ups (finding 11) -----
 
 
-def test_approve_recalcs_the_allow_date_and_sends_the_blocked_notice(monkeypatch):
+def test_approve_sends_the_blocked_notice(monkeypatch):
     _use(monkeypatch, _all_pots(sick=5, vacation=10))
     record = _leave(leave_type="Sick or Personal Day", days=2)
-    recalc_calls: list = []
     blocked_calls: list = []
-
-    async def fake_recalc(employee_id, vacation, carryover):
-        recalc_calls.append((str(employee_id), vacation, carryover))
-        return None
 
     async def fake_blocked(kind, item_id, fields, email, employee_name=None):
         blocked_calls.append((kind, item_id, email))
         return 0
 
-    monkeypatch.setattr("app.services.balance.recalculate_request_allow_date", fake_recalc)
     monkeypatch.setattr("app.services.notify_blocked.notify_requests_blocked_by_approval", fake_blocked)
 
     result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
 
     assert result["status"] == "approved"
-    assert len(recalc_calls) == 1 and recalc_calls[0][0] == record.employee_id
     assert len(blocked_calls) == 1 and blocked_calls[0][0] == "leave"
 
 
-def test_refund_recalcs_the_allow_date_but_sends_no_blocked_notice(monkeypatch):
+def test_refund_sends_no_blocked_notice(monkeypatch):
     _use(monkeypatch, _all_pots(sick=5, vacation=10))
     record = _leave(leave_type="Sick or Personal Day", days=2)
     run(rd.approve("leave", record.item_id, "Boss", "email_link", link_version=1))
-    recalc = {"n": 0}
     blocked = {"n": 0}
-
-    async def fake_recalc(*_a):
-        recalc["n"] += 1
-        return None
 
     async def fake_blocked(*_a):
         blocked["n"] += 1
         return 0
 
-    monkeypatch.setattr("app.services.balance.recalculate_request_allow_date", fake_recalc)
     monkeypatch.setattr("app.services.notify_blocked.notify_requests_blocked_by_approval", fake_blocked)
 
     run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))
 
-    assert recalc["n"] == 1 and blocked["n"] == 0               # a refund frees dates, strands nothing
+    assert blocked["n"] == 0                                    # a refund frees dates, strands nothing
 
 
 # ----- SharePoint is never touched by a Postgres decision -----
@@ -693,24 +681,216 @@ def test_refunding_spent_overtime_cascades_so_no_pot_sits_negative(monkeypatch):
     assert any(row.pot == "vacation" and row.after == -1.0 for row in cascade_rows)
 
 
-# ----- the vacation booking limit is enforced at approval (#407) -----
+# ----- a vacation nothing can pay for is refused at approval -----
 
 
-def test_approving_a_vacation_past_the_booking_limit_is_refused_and_stays_pending(monkeypatch):
-    # A salaried person with vacation left may book until Mar 31 next year; a June
-    # next-year vacation is past that, so approval is refused and nothing is
-    # written. The request stays Pending for the manager to decide.
-    fake = _use(monkeypatch, _all_pots(vacation=10))              # V>0, C==0 -> limit Mar 31 next year
+def test_approving_a_vacation_nothing_can_pay_for_is_refused_and_stays_pending(monkeypatch):
+    # A June next-year vacation cannot be paid for yet, whatever the balances, so
+    # approval is refused and nothing is written. The request stays Pending for the
+    # manager to decide.
+    fake = _use(monkeypatch, _all_pots(vacation=10))
     next_june = date(date.today().year + 1, 6, 1)
     record = _leave(leave_type="Vacation", days=1, start_date=next_june, end_date=next_june)
 
     result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
 
     assert result["refused"] == "booking_limit"
-    assert "book vacation until" in result["error"]
+    assert "can be booked from January 1" in result["error"]
     fresh, ledger, _events, _outbox = run(_inspect(record))
     assert fresh.status == "pending"                             # untouched: the manager still decides
     assert fake.write_calls == [] and ledger == []               # no balance moved
+
+
+# ----- the April 1 reset names leave still pending -----
+
+
+def test_the_reset_summary_lists_leave_still_pending_by_march_31(monkeypatch):
+    from app.tasks import carryover_reset
+    from app.templates_render import render_carryover_reset_admin_summary
+
+    async def in_postgres():
+        return True
+
+    monkeypatch.setattr(carryover_reset, "requests_in_postgres", in_postgres)
+    due = _leave(leave_type="Vacation", days=1, start_date=date(2027, 3, 30), end_date=date(2027, 3, 30))
+    _leave(leave_type="Vacation", days=1, start_date=date(2027, 4, 5), end_date=date(2027, 4, 5))
+    _leave(leave_type="Vacation", days=1, start_date=date(2027, 3, 1), end_date=date(2027, 3, 1), status="approved")
+
+    pending = run(carryover_reset._pending_leave_dated_by(date(2027, 3, 31)))
+
+    assert [row["item_id"] for row in pending] == [due.item_id]    # only the undecided one in time
+    assert pending[0]["start_date"] == "Mar 30, 2027"
+    html = render_carryover_reset_admin_summary(2027, [], [], pending)
+    assert f"#{due.item_id}" in html and "Leave Still Pending (1)" in html
+
+
+# ----- which pot pays comes from the rule date -----
+
+
+def _on_day(monkeypatch, day: date) -> None:
+    """Make the decision path run as if today were this Toronto date.
+
+    Args:
+        monkeypatch: The pytest monkeypatch fixture.
+        day: The date to run on.
+    """
+    monkeypatch.setattr("app.services.balance.toronto_today", lambda: day)
+    monkeypatch.setattr(rd, "toronto_today", lambda: day)
+
+
+def test_approval_reads_the_rule_date_and_refuses_when_carry_over_was_spent(monkeypatch):
+    # Made in Nov 2026 for Feb 2027, with carry-over spent by Jan 5: vacation still
+    # cannot pay, because the rule date is in 2026. It stays pending with the reason.
+    _on_day(monkeypatch, date(2027, 1, 5))
+    fake = _use(monkeypatch, _all_pots(vacation=15))
+    record = _leave(leave_type="Vacation", days=2, start_date=date(2027, 2, 1), end_date=date(2027, 2, 2),
+                    rules_on=date(2026, 11, 20))
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["refused"] == "booking_limit"
+    assert "need 2 days of carry-over or Make-Up and you have 0" in result["error"]
+    fresh, ledger, _events, _outbox = run(_inspect(record))
+    assert fresh.status == "pending" and ledger == [] and fake.write_calls == []
+
+
+def test_an_edit_moves_the_rule_date_so_vacation_can_pay(monkeypatch):
+    # The same request with an edit dated Jan 5, 2027: 2027 is now the current year,
+    # so vacation may pay for Feb 2027.
+    _on_day(monkeypatch, date(2027, 1, 5))
+    fake = _use(monkeypatch, _all_pots(vacation=15))
+    record = _leave(leave_type="Vacation", days=2, start_date=date(2027, 2, 1), end_date=date(2027, 2, 2),
+                    rules_on=date(2027, 1, 5))
+
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"vacation": 13.0}]
+
+
+def test_a_sick_day_next_february_is_never_refused(monkeypatch):
+    # Sick days are never refused: with nothing in carry-over, vacation pays.
+    _on_day(monkeypatch, date(2026, 11, 20))
+    fake = _use(monkeypatch, _all_pots(vacation=15))
+    record = _leave(days=1, start_date=date(2027, 2, 1), end_date=date(2027, 2, 1), rules_on=date(2026, 11, 20))
+
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"vacation": 14.0}]
+
+
+def test_a_sick_day_this_year_leaves_carry_over_alone_on_approval(monkeypatch):
+    # The request that started this: nothing in Sick or Make-Up, 3 carried days saved
+    # for next year. The day comes out of vacation.
+    _on_day(monkeypatch, date(2026, 11, 5))
+    fake = _use(monkeypatch, _all_pots(vacation=5, carry_over=3))
+    record = _leave(days=1, start_date=date(2026, 11, 4), end_date=date(2026, 11, 4),
+                    rules_on=date(2026, 11, 4))
+
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"vacation": 4.0}]
+
+
+def test_a_nov_rule_date_still_pays_from_carry_over_when_approved_in_january(monkeypatch):
+    # Approved on Jan 5, but the date it was made on decides which pot pays.
+    _on_day(monkeypatch, date(2027, 1, 5))
+    fake = _use(monkeypatch, _all_pots(vacation=10, carry_over=3))
+    record = _leave(days=2, start_date=date(2027, 2, 1), end_date=date(2027, 2, 2),
+                    rules_on=date(2026, 11, 20))
+
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"carry_over": 1.0}]
+
+
+def test_the_created_date_is_the_rule_date_when_no_edit_moved_it(monkeypatch):
+    _on_day(monkeypatch, date(2027, 2, 10))
+    fake = _use(monkeypatch, _all_pots(vacation=15, carry_over=2))
+    record = _leave(days=3, start_date=date(2027, 2, 10), end_date=date(2027, 2, 12),
+                    created_at=datetime(2027, 2, 10, 15, 0, tzinfo=timezone.utc))
+
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"carry_over": 0.0, "vacation": 14.0}]
+
+
+def test_approved_after_the_carry_over_expired_moves_nothing_and_says_why(monkeypatch):
+    # Created Mar 30 for Mar 31, approved Apr 2 after the reset: approved, no balance
+    # moved, nothing negative, and the record says where the day was due from.
+    _on_day(monkeypatch, date(2027, 4, 2))
+    fake = _use(monkeypatch, _all_pots(vacation=10))
+    record = _leave(leave_type="Vacation", days=1, start_date=date(2027, 3, 31), end_date=date(2027, 3, 31),
+                    rules_on=date(2027, 3, 30))
+
+    result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+
+    assert result["status"] == "approved"
+    assert fake.write_calls == []
+    fresh, ledger, events, outbox = run(_inspect(record))
+    assert fresh.status == "approved" and fresh.balance_state == "no_balance"
+    assert ledger == []
+    note = "1 day was due from 2026 carry-over, which expired on Mar 31, 2027, so it was not charged."
+    assert any(event.detail.get("note") == note for event in events if event.type == "no_balance_used")
+    assert any(note in row.body for row in outbox)
+
+
+def test_a_part_waived_request_charges_the_rest_and_keeps_the_note(monkeypatch):
+    # Mar 30 to Apr 1, approved Apr 2: Mar 30 and 31 uncharged, Apr 1 from vacation.
+    _on_day(monkeypatch, date(2027, 4, 2))
+    fake = _use(monkeypatch, _all_pots(vacation=10))
+    record = _leave(leave_type="Vacation", days=3, start_date=date(2027, 3, 30), end_date=date(2027, 4, 1),
+                    rules_on=date(2027, 3, 30))
+
+    async def fake_employee(_employee_id):
+        return {"fields": {"Location": "Nowhere"}}                 # weekdays are enough for this range
+
+    monkeypatch.setattr("app.services.employee.get_employee_by_id", fake_employee)
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"vacation": 9.0}]
+    _fresh, _ledger, events, _outbox = run(_inspect(record))
+    assert any("2 days were due from 2026 carry-over" in (event.detail.get("note") or "")
+               for event in events if event.type == "balance_applied")
+
+
+def test_a_refund_gives_back_only_what_the_ledger_recorded(monkeypatch):
+    # Mar 31 was waived and Apr 1 came from vacation; the refund returns just that day.
+    _on_day(monkeypatch, date(2027, 4, 2))
+    fake = _use(monkeypatch, _all_pots(vacation=10))
+    record = _leave(leave_type="Vacation", days=2, start_date=date(2027, 3, 31), end_date=date(2027, 4, 1),
+                    rules_on=date(2027, 3, 30))
+
+    async def fake_employee(_employee_id):
+        return {"fields": {"Location": "Nowhere"}}
+
+    monkeypatch.setattr("app.services.employee.get_employee_by_id", fake_employee)
+    run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+    assert fake.write_calls == [{"vacation": 9.0}]
+    assert run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))["status"] == "refunded"
+    assert fake.write_calls[-1] == {"vacation": 10.0}
+
+
+def test_the_projection_equals_what_approval_moves_for_a_crossing_request(monkeypatch):
+    # Dec 30 to Jan 4 with New Year's a holiday: taken_from and approval read the same split.
+    _on_day(monkeypatch, date(2026, 11, 20))
+    fake = _use(monkeypatch, _all_pots(vacation=5, carry_over=1))
+    record = _leave(leave_type="Vacation", days=3, start_date=date(2026, 12, 30), end_date=date(2027, 1, 4),
+                    rules_on=date(2026, 11, 20))
+
+    async def fake_holidays(_province):
+        return [{"Date": "2027-01-01", "Title": "New Year"}]
+
+    async def fake_employee(_employee_id):
+        return {"fields": {"Location": "Ontario"}}
+
+    monkeypatch.setattr("app.services.balance.map_location_to_province", lambda _location: "ON")
+    monkeypatch.setattr("app.services.balance.get_holidays_for_province", fake_holidays)
+    monkeypatch.setattr("app.services.employee.get_employee_by_id", fake_employee)
+    emp = {"SalaryHourly": "Salary", "Location": "Ontario", "CurrentVacationBalance": 5, "CarryOver": 1,
+           "CurrentOvertimeBalance": 0, "CurrentSickDayBalance": 0, "Payout": 0}
+    row = {"id": str(record.item_id), "request_type": "leave", "Status": "Pending", "LeaveType": "Vacation",
+           "Days": 3, "StartDate": "2026-12-30", "EndDate": "2027-01-04", "RulesOn": "2026-11-20"}
+
+    run(attach_taken_from([row], employee_fields=emp, today=date(2026, 11, 20)))
+    projected = {piece["pot"]: piece["days"] for piece in row["taken_from"]["pieces"]}
+    assert projected == {"vacation": -2, "carry_over": -1}
+
+    assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
+    assert fake.write_calls == [{"vacation": 3.0, "carry_over": 0.0}]
 
 
 def test_refund_of_an_old_next_year_vacation_restores_make_up(monkeypatch):

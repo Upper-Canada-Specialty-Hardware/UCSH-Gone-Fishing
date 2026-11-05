@@ -141,6 +141,58 @@ def test_next_year_leaves_vacation_alone():
     assert out["projected"]["CurrentOvertimeBalance"] == 0
 
 
+# ----- which dates carry-over pays for, and what is refused -----
+
+CARRYING = {**AVERY, "CarryOver": 3, "CurrentOvertimeBalance": 0}
+TODAY = date(2026, 11, 5)
+
+
+def _vacation(start, end, emp=CARRYING, holidays=None):
+    """Preview a vacation as if today were Nov 5, 2026."""
+    form = _form("leave", leave_type="Vacation", start_date=start, end_date=end)
+    return build_preview("leave", form, emp, holidays or [], today=TODAY)
+
+
+def test_a_date_this_year_says_carry_over_is_not_used():
+    out = _vacation("2026-11-10", "2026-11-10")
+    assert "Carry-over can only pay for leave dated Jan 1 to Mar 31, 2027, so it is not used for these dates." in out["notes"]
+    assert out["projected"]["CarryOver"] == 3
+
+
+def test_a_request_crossing_new_year_says_how_many_days_carry_over_can_pay():
+    out = _vacation("2026-12-30", "2027-01-04", holidays=[{"Date": "2027-01-01", "Title": "New Year"}])
+    assert "Carry-over can pay for at most 1 of these days, the ones dated Jan 1 to Mar 31, 2027." in out["notes"]
+    assert out["projected"]["CarryOver"] == 2
+
+
+def test_a_request_inside_the_dates_has_no_note():
+    out = _vacation("2027-02-01", "2027-02-02")
+    assert not [note for note in out["notes"] if "Carry-over" in note]
+    assert out["projected"]["CarryOver"] == 1
+
+
+def test_no_carry_over_means_no_note():
+    out = _vacation("2026-11-10", "2026-11-10", emp={**CARRYING, "CarryOver": 0})
+    assert not [note for note in out["notes"] if "Carry-over" in note]
+
+
+def test_leave_that_costs_nothing_has_no_carry_over_note():
+    form = _form("leave", leave_type="Bereavement", start_date="2026-11-10", end_date="2026-11-10")
+    out = build_preview("leave", form, CARRYING, [], today=TODAY)
+    assert not [note for note in out["notes"] if "Carry-over" in note]
+
+
+def test_the_preview_keeps_its_booking_limit_shape_with_the_new_refusals():
+    allowed = _vacation("2027-02-01", "2027-02-02")["booking_limit"]
+    assert allowed == {"date": "2027-03-31", "refused": False, "message": ""}
+    short = _vacation("2027-02-01", "2027-02-04")["booking_limit"]
+    assert short["refused"] is True and "need 4 days" in short["message"]
+    april = _vacation("2027-04-05", "2027-04-05")["booking_limit"]
+    assert april["message"] == "Leave on these dates can be booked from January 1, 2027."
+    nothing = _vacation("2026-11-10", "2026-11-10", emp={**CARRYING, "CarryOver": 0})["booking_limit"]
+    assert nothing == {"date": "2026-12-31", "refused": False, "message": ""}
+
+
 # ----- the route -----
 
 @pytest.fixture
