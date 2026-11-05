@@ -388,14 +388,14 @@ def test_refused_two_carry_over_days_cover_two_days_next_february():
 def test_refused_three_days_next_february_with_two_carry_over_days():
     message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=2, CurrentVacationBalance=15)
     assert message == (
-        "These dates need 3 days of carry-over or Make-Up and you have 2. "
-        "Vacation can only be used for this year's dates."
+        "Leave in 2027 can only use carry-over or Make-Up, not 2026 vacation. "
+        "These dates need 3 days and you have 2."
     )
 
 
 def test_refused_april_next_year_whatever_the_balances():
     message = _refusal(NOV_5, date(2027, 4, 5), date(2027, 4, 5), 1, CarryOver=9, CurrentVacationBalance=15)
-    assert message == "Leave on these dates can be booked from January 1, 2027."
+    assert message == "Leave dated after March 31, 2027 can be booked from January 1, 2027."
 
 
 def test_make_up_alone_can_pay_for_next_february():
@@ -405,8 +405,8 @@ def test_make_up_alone_can_pay_for_next_february():
 def test_refused_next_february_with_no_carry_over_or_make_up():
     message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 1), 1, CurrentVacationBalance=15)
     assert message == (
-        "These dates need 1 day of carry-over or Make-Up and you have 0. "
-        "Vacation can only be used for this year's dates."
+        "Leave in 2027 can only use carry-over or Make-Up, not 2026 vacation. "
+        "These dates need 1 day and you have 0."
     )
 
 
@@ -429,7 +429,7 @@ def test_from_a_feb_rule_date_this_february_is_allowed_with_no_carry_over():
 
 def test_from_a_feb_rule_date_next_february_is_refused():
     message = _refusal(date(2027, 2, 10), date(2028, 2, 15), date(2028, 2, 15), 1, CarryOver=5)
-    assert message == "Leave on these dates can be booked from January 1, 2028."
+    assert message == "Leave dated after December 31, 2027 can be booked from January 1, 2028."
 
 
 def test_sick_and_hourly_are_never_refused():
