@@ -508,7 +508,7 @@ export interface BookingLimit {
   date: string;
   /** True when nothing can pay for these dates, so the request would be refused. */
   refused: boolean;
-  /** The sentence to show when refused, e.g. "Leave on these dates can be booked from January 1, 2027."; empty otherwise. */
+  /** The sentence to show when refused, e.g. "Leave dated after March 31, 2027 can be booked from January 1, 2027."; empty otherwise. */
   message: string;
 }
 

@@ -1360,6 +1360,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         var warn = partial && wd.skipped.length ? 'This date is the company holiday ' + wd.skipped[0] + '. A part day on a holiday is rejected automatically.' : partial && (+s.hours || 0) >= 8 ? 'A partial day is less than 8 hours; choose a full-day leave type instead.' : '';
         if (refusal) warn = refusal;                             // nothing can pay for these dates: Send is blocked below
         var potRows = order.length ? spend(me, n, order, dayFit.co) : [];   // each pot [label, before, after], cascade order
+        if (refusal) potRows = potRows.filter(function (r) { return r[0] !== 'Vacation'; });   // refused: vacation cannot pay these dates
         // Taken from: one chip per pot that dropped, worded like TakenFrom.tsx (carry-over names last year).
         var POT_TF = { Vacation: ['vac', 'vacation'], Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'], 'Carry Over': ['co', TF_YEAR + ' carry-over'] };
         var leaveSegs = potRows.filter(function (x) { return x[2] < x[1]; }).map(function (x) { var m = POT_TF[x[0]] || ['', x[0]]; return { cls: m[0], amt: tfNum(x[1] - x[2]), label: m[1] }; });
@@ -1447,10 +1448,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
    */
   function leaveRefusal(me, leave, partial, split) {
     if (leave !== 'Vacation' && !partial) return '';             // sick days are never refused
-    if (split.beyond > 0) return 'Leave on these dates can be booked from January 1, 2027.';
+    if (split.beyond > 0) return 'Leave dated after March 31, 2027 can be booked from January 1, 2027.';
     var have = Math.max(me.mu, 0) + Math.max(me.co, 0);          // a negative counts as nothing
     if (split.co <= have) return '';                             // Make-Up and carry-over cover them
-    return 'These dates need ' + num(split.co) + (split.co === 1 ? ' day' : ' days') + ' of carry-over or Make-Up and you have ' + num(have) + '. Vacation can only be used for this year\'s dates.';
+    return 'Leave in 2027 can only use carry-over or Make-Up, not 2026 vacation. These dates need ' + num(split.co) + (split.co === 1 ? ' day' : ' days') + ' and you have ' + num(have) + '.';
   }
   /**
    * Whether the practice request page must block Send, as the real page does.

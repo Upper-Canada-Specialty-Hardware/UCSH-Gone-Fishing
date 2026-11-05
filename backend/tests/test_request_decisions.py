@@ -749,7 +749,7 @@ def test_approval_reads_the_rule_date_and_refuses_when_carry_over_was_spent(monk
     result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
 
     assert result["refused"] == "booking_limit"
-    assert "need 2 days of carry-over or Make-Up and you have 0" in result["error"]
+    assert "need 2 days and you have 0" in result["error"]
     fresh, ledger, _events, _outbox = run(_inspect(record))
     assert fresh.status == "pending" and ledger == [] and fake.write_calls == []
 

@@ -38,7 +38,7 @@ def _form(kind, **body):
 
 def test_vacation_skips_the_holiday_and_spends_make_up_first():
     form = _form("leave", leave_type="Vacation", start_date="2030-11-11", end_date="2030-11-13")
-    out = build_preview("leave", form, AVERY, HOLIDAYS)
+    out = build_preview("leave", form, AVERY, HOLIDAYS, today=date(2030, 11, 1))   # a date this year, so vacation can pay
     assert out["days"] == 2                                     # Mon is a holiday: Tue and Wed
     assert "Remembrance Day is a company holiday" in out["notes"][0]
     assert out["projected"]["CurrentOvertimeBalance"] == 0      # Make-Up used first
@@ -182,13 +182,24 @@ def test_leave_that_costs_nothing_has_no_carry_over_note():
     assert not [note for note in out["notes"] if "Carry-over" in note]
 
 
+def test_a_refused_preview_never_shows_vacation_paying_for_next_year():
+    short = _vacation("2027-02-26", "2027-03-03")                  # 4 working days, 3 of carry-over
+    assert short["booking_limit"]["refused"] is True
+    assert short["projected"]["CarryOver"] == 0
+    assert short["projected"]["CurrentVacationBalance"] == CARRYING["CurrentVacationBalance"]
+    crossing = _vacation("2027-03-30", "2027-04-05")               # 2 days in the period, 3 after it
+    assert crossing["booking_limit"]["message"] == "Leave dated after March 31, 2027 can be booked from January 1, 2027."
+    assert crossing["projected"]["CarryOver"] == 1
+    assert crossing["projected"]["CurrentVacationBalance"] == CARRYING["CurrentVacationBalance"]
+
+
 def test_the_preview_keeps_its_booking_limit_shape_with_the_new_refusals():
     allowed = _vacation("2027-02-01", "2027-02-02")["booking_limit"]
     assert allowed == {"date": "2027-03-31", "refused": False, "message": ""}
     short = _vacation("2027-02-01", "2027-02-04")["booking_limit"]
     assert short["refused"] is True and "need 4 days" in short["message"]
     april = _vacation("2027-04-05", "2027-04-05")["booking_limit"]
-    assert april["message"] == "Leave on these dates can be booked from January 1, 2027."
+    assert april["message"] == "Leave dated after March 31, 2027 can be booked from January 1, 2027."
     nothing = _vacation("2026-11-10", "2026-11-10", emp={**CARRYING, "CarryOver": 0})["booking_limit"]
     assert nothing == {"date": "2026-12-31", "refused": False, "message": ""}
 

@@ -144,6 +144,10 @@ def build_preview(
                 "refused": refusal is not None,
                 "message": refusal or "",
             }
+            # Nothing is charged, and vacation cannot pay for these dates, so a refused
+            # preview shows only what Make-Up and carry-over would pay; the refusal says the rest.
+            if refusal and projected:
+                projected = {**projected, "CurrentVacationBalance": float(emp_fields.get("CurrentVacationBalance", 0) or 0)}
         # Carry-over that cannot pay for all of these dates is worth saying when the
         # person actually has some. Leave that costs nothing never reaches it.
         if (not bc and days > 0 and leave_type not in NO_COST_LEAVE

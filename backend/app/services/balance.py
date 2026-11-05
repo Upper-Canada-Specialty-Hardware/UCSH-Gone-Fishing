@@ -344,15 +344,16 @@ def booking_refusal(sp_fields: dict, leave_type: str, split: LeaveSplit, on: dat
     if leave_type not in LEAVE_BOOKING_TYPES:         # only vacation and part days are booked
         return None
     if split.unbookable_days > 0:                     # nothing can pay until the new year's balance arrives
-        return f"Leave on these dates can be booked from January 1, {on.year + 1}."
+        last = _unbookable_from(on) - timedelta(days=1)   # the last date that can be booked, named so the cutoff is clear
+        return f"Leave dated after {last:%B} {last.day}, {last.year} can be booked from January 1, {on.year + 1}."
     make_up = max(float(sp_fields.get("CurrentOvertimeBalance", 0) or 0), 0.0)   # a negative counts as 0
     carryover = max(float(sp_fields.get("CarryOver", 0) or 0), 0.0)
     have = make_up + carryover
     if split.ahead_days > have:                       # vacation cannot pay these days, and the rest falls short
         needed = f"{split.ahead_days:g} day{'' if split.ahead_days == 1 else 's'}"
         return (
-            f"These dates need {needed} of carry-over or Make-Up and you have {have:g}. "
-            "Vacation can only be used for this year's dates."
+            f"Leave in {on.year + 1} can only use carry-over or Make-Up, not {on.year} vacation. "
+            f"These dates need {needed} and you have {have:g}."
         )
     return None
 
