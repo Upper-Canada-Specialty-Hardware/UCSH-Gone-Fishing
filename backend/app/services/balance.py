@@ -351,9 +351,10 @@ def booking_refusal(sp_fields: dict, leave_type: str, split: LeaveSplit, on: dat
     have = make_up + carryover
     if split.ahead_days > have:                       # vacation cannot pay these days, and the rest falls short
         needed = f"{split.ahead_days:g} day{'' if split.ahead_days == 1 else 's'}"
+        pots = "carry-over or Make-Up" if make_up > 0 else "carry-over"   # only name Make-Up when they have some
         return (
-            f"Leave in {on.year + 1} can only use carry-over or Make-Up, not {on.year} vacation. "
-            f"These dates need {needed} and you have {have:g}."
+            f"These dates need {needed} of {pots} and you have {have:g}. "
+            f"Carry-over can't go below zero, and {on.year} vacation can't pay for {on.year + 1} dates."
         )
     return None
 

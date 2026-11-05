@@ -74,7 +74,11 @@ export default function BalancePreview({ session, type, body, vacationTaken = nu
   const hourlyStaff = isHourly(current);
   const alwaysKey: NumericBalanceKey = hourlyStaff ? 'sick_balance' : 'vacation_balance';
   const pots = hourlyStaff ? POTS.filter((p) => p.key === 'sick_balance') : POTS;
-  const changed = current && projected ? pots.filter((p) => p.key === alwaysKey || current[p.key] !== projected[p.key]) : [];
+  // A refused request charges nothing and vacation cannot pay for its dates, so its row would mislead.
+  const refused = !!preview?.booking_limit?.refused;
+  const changed = current && projected
+    ? pots.filter((p) => (p.key === alwaysKey && !refused) || current[p.key] !== projected[p.key])
+    : [];
   // The same split the dashboards show, worked out from the preview's current vs projected
   // balances (there is no server taken_from for an unsent request). Shown only when the
   // request actually moves a balance; a no-change case is already covered by `unchanged`.

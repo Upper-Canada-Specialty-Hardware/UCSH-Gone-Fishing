@@ -388,8 +388,8 @@ def test_refused_two_carry_over_days_cover_two_days_next_february():
 def test_refused_three_days_next_february_with_two_carry_over_days():
     message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=2, CurrentVacationBalance=15)
     assert message == (
-        "Leave in 2027 can only use carry-over or Make-Up, not 2026 vacation. "
-        "These dates need 3 days and you have 2."
+        "These dates need 3 days of carry-over and you have 2. "
+        "Carry-over can't go below zero, and 2026 vacation can't pay for 2027 dates."
     )
 
 
@@ -405,9 +405,14 @@ def test_make_up_alone_can_pay_for_next_february():
 def test_refused_next_february_with_no_carry_over_or_make_up():
     message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 1), 1, CurrentVacationBalance=15)
     assert message == (
-        "Leave in 2027 can only use carry-over or Make-Up, not 2026 vacation. "
-        "These dates need 1 day and you have 0."
+        "These dates need 1 day of carry-over and you have 0. "
+        "Carry-over can't go below zero, and 2026 vacation can't pay for 2027 dates."
     )
+
+
+def test_the_refusal_names_make_up_only_for_someone_who_has_some():
+    message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=1, CurrentOvertimeBalance=1)
+    assert message.startswith("These dates need 3 days of carry-over or Make-Up and you have 2. ")
 
 
 def test_a_negative_pot_counts_as_nothing_when_refusing():
