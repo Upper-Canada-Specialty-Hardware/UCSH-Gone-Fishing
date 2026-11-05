@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -11,8 +11,9 @@ from app.config import settings
 from app.database import async_session
 from app.graph.email import send_email
 from app.models.carryover_reset_log import CarryoverResetLog
+from app.models.request_record import RequestRecord
+from app.repositories.request_store import requests_in_postgres
 from app.repositories.staff_store import staff_store
-from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
 from app.services.employee import ADMIN_NAMES, get_employee_by_name
 
@@ -113,7 +114,7 @@ async def _execute_carryover_reset(year: int):
 
 
 async def _reset_single_employee(emp_info: dict):
-    """Zero out CarryOver for one employee, then recalculate RequestAllowDate."""
+    """Zero out CarryOver for one employee."""
     emp_id = emp_info["id"]
     async with lock_manager.lock(emp_id):
         # Route the zeroing through the store: on Postgres it lands there and
@@ -126,11 +127,6 @@ async def _reset_single_employee(emp_info: dict):
             history_source="system",
             history_reason="Annual carry-over reset on April 1.",
             history_actor="system",                    # automatic reset -> the system (#447)
-        )
-        await recalculate_request_allow_date(
-            emp_id,
-            vacation=emp_info["vacation"],
-            carryover=0,
         )
 
 
@@ -151,6 +147,44 @@ async def _send_employee_notification(emp_info: dict):
     )
 
 
+async def _pending_leave_dated_by(last_day: date) -> list[dict]:
+    """Leave requests still pending with a date on or before one day.
+
+    Approved after the reset, days that were due from the expired carry-over are not
+    charged, so HR is told which ones to have managers decide.
+
+    Args:
+        last_day: Mar 31 of the reset's year.
+
+    Returns:
+        One ``{"item_id", "name", "leave_type", "start_date"}`` per request, soonest
+        first; [] when requests are not in Postgres or cannot be read, because a
+        failed list must not stop the summary going out.
+    """
+    try:
+        if not await requests_in_postgres():            # SharePoint mode has no row to query here
+            return []
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(RequestRecord)
+                .where(RequestRecord.kind == "leave", RequestRecord.status == "pending",
+                       RequestRecord.start_date <= last_day)
+                .order_by(RequestRecord.start_date)
+            )).scalars().all()
+    except Exception:  # noqa: BLE001 - the summary matters more than this list
+        logger.exception("Could not list pending leave for the CarryOver reset summary")
+        return []
+    return [
+        {
+            "item_id": row.item_id,
+            "name": row.employee_name or "Unknown",
+            "leave_type": row.leave_type or "Leave",
+            "start_date": f"{row.start_date:%b} {row.start_date.day}, {row.start_date.year}",
+        }
+        for row in rows
+    ]
+
+
 async def _send_admin_summary(year: int, succeeded: list[dict], failed: list[dict]):
     admin_emails = []
     for admin_name in ADMIN_NAMES:
@@ -167,6 +201,7 @@ async def _send_admin_summary(year: int, succeeded: list[dict], failed: list[dic
     from app.templates_render import render_carryover_reset_admin_summary
     html = render_carryover_reset_admin_summary(
         year=year, succeeded=succeeded, failed=failed,
+        pending=await _pending_leave_dated_by(date(year, 3, 31)),
     )
     await send_email(
         to=admin_emails,

@@ -28,7 +28,6 @@ from app.models.request_record import RequestRecord
 from app.repositories.staff_balances import get_staff_balances
 from app.services.concurrency import lock_manager
 from app.services.request_decisions import (
-    _after_decision_followups,
     _append_audit_entry,
     _leave_year,
     _load,
@@ -341,10 +340,4 @@ async def settle(kind: str, item_id, outcome: str, reason: str,
             log_step(request, "settled", outcome=effective, state=new_state)
             await session.commit()
 
-    if effective == "now" and moved:
-        # Recalc the allow date from the new pots; settling strands nothing new, so no notice.
-        await _after_decision_followups(
-            request, final_pots.get("vacation", 0.0), final_pots.get("carry_over", 0.0),
-            send_blocked_notice=False,
-        )
     return {"status": "settled", "outcome": effective, "balance_state": new_state, "moves": shown}

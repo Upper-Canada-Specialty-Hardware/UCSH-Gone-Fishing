@@ -64,6 +64,7 @@ def _request(kind="leave", **overrides):
         "has_manager": True,
         "notified": True,
         "created_date": TODAY.isoformat(),
+        "days": 3.0,
         "start_date": "2026-09-01",
         "end_date": "2026-09-05",
         "auto_rejected": False,
@@ -279,18 +280,39 @@ def test_a_negative_carry_over_is_not_a_setup_problem():
     assert all(c["status"] != "fail" for c in report["checks"] if c["category"] == "balances")
 
 
-def test_a_pending_vacation_past_the_booking_limit_warns():
-    # Vacation dated past the person's booking limit will be refused at approval,
-    # so flag it on the setup screen before a manager tries (#407). GOOD_FIELDS has
-    # vacation 10 and no carry-over, so the limit is 31 March of next year.
-    past = _request(kind="leave", leave_type="Vacation", start_date="2027-05-20", end_date="2027-06-01")
+def test_a_pending_vacation_nothing_can_pay_for_warns():
+    # Vacation nothing can pay for will be refused at approval, so flag it on the
+    # setup screen before a manager tries. Nov 2026 to May 2027 dates cannot be paid
+    # yet, whatever the balances.
+    past = _request(kind="leave", leave_type="Vacation", start_date="2027-05-20", end_date="2027-06-01",
+                    rule_fields={"RulesOn": "2026-11-05"})
     check = _by_code(_report(requests=[past]), "pending_over_booking_limit")
     assert check["status"] == "warn"
     assert check["measure"]["actual"] == 1
 
 
-def test_a_pending_vacation_within_the_booking_limit_passes():
-    # A vacation inside the limit is not flagged (#407).
+def test_the_setup_check_judges_each_request_from_its_own_rule_date():
+    # GOOD_FIELDS has no carry-over or Make-Up. Feb 2027 made in Nov 2026 cannot be
+    # paid, but the same dates made in Jan 2027 can, by the same rule approval uses.
+    made_in_nov = _request(kind="leave", leave_type="Vacation", start_date="2027-02-01", end_date="2027-02-03",
+                           rule_fields={"RulesOn": "2026-11-05"})
+    made_in_jan = _request(kind="leave", leave_type="Vacation", start_date="2027-02-01", end_date="2027-02-03",
+                           rule_fields={"RulesOn": "2027-01-05"})
+    day = date(2027, 1, 10)
+    assert _by_code(_report(requests=[made_in_nov], toronto_day=day), "pending_over_booking_limit")["status"] == "warn"
+    assert _by_code(_report(requests=[made_in_jan], toronto_day=day), "pending_over_booking_limit")["status"] == "pass"
+
+
+def test_the_setup_check_passes_a_request_whose_carry_over_has_expired():
+    # Approval does not refuse these: the days are simply not charged.
+    expired = _request(kind="leave", leave_type="Vacation", start_date="2027-02-01", end_date="2027-02-03",
+                       rule_fields={"RulesOn": "2026-11-05"})
+    report = _report(requests=[expired], toronto_day=date(2027, 4, 2))
+    assert _by_code(report, "pending_over_booking_limit")["status"] == "pass"
+
+
+def test_a_pending_vacation_this_year_passes():
+    # This year's dates are never refused.
     ok = _request(kind="leave", leave_type="Vacation", start_date="2026-09-01", end_date="2026-09-05")
     assert _by_code(_report(requests=[ok]), "pending_over_booking_limit")["status"] == "pass"
 

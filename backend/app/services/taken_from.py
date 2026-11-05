@@ -29,9 +29,13 @@ from app.services.employment import (
     leave_costs_balance,
     overtime_costs_balance,
 )
-from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
-    carryover_available_for,
+    LeaveSplit,
+    carryover_terms,
+    leave_crosses_boundary,
+    leave_day_split,
+    leave_split_for,
+    rule_date_from_fields,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -162,7 +166,9 @@ def _costs_balance(item_fields: dict, request_type: str, employee_fields: dict |
     return True                                         # carry-over / payout always move balances
 
 
-def _simulate(item_fields: dict, request_type: str, employee_fields: dict) -> dict | None:
+def _simulate(
+    item_fields: dict, request_type: str, employee_fields: dict, today: date, split: LeaveSplit | None = None,
+) -> dict | None:
     """Projected SharePoint-style balances if this pending request were approved.
 
     Delegates to the same ``simulate_*`` functions the preview and dashboards use,
@@ -172,6 +178,9 @@ def _simulate(item_fields: dict, request_type: str, employee_fields: dict) -> di
         item_fields: The request's SharePoint field values.
         request_type: "leave", "overtime" or "carryover-payout".
         employee_fields: The submitter's current Staff Directory fields.
+        today: Today in Toronto, for whether the carry-over has expired.
+        split: The leave's split when a holiday count was needed; None works it out
+            from the stored days, which is right for a request on one side of a boundary.
 
     Returns:
         The projected balances dict, or None when the request would move nothing
@@ -180,7 +189,13 @@ def _simulate(item_fields: dict, request_type: str, employee_fields: dict) -> di
     if request_type == "leave":
         leave_type = item_fields.get("LeaveType", "")
         days = _num(item_fields.get("Days"))
-        return simulate_leave_impact(employee_fields, leave_type, days, _carryover_available(item_fields))
+        on = rule_date_from_fields(item_fields, today)     # which pot pays comes from this date
+        if split is None:
+            split = leave_day_split(
+                _parse_day(item_fields.get("StartDate")), _parse_day(item_fields.get("EndDate")), days, on,
+            )
+        carryover_days, waived_days = carryover_terms(split.carryover_days, on, today)
+        return simulate_leave_impact(employee_fields, leave_type, days, carryover_days, waived_days)
     if request_type == "overtime":
         return simulate_overtime_impact(employee_fields, _num(item_fields.get("Hours")))
     # carry-over / payout
@@ -189,25 +204,8 @@ def _simulate(item_fields: dict, request_type: str, employee_fields: dict) -> di
     )
 
 
-def _carryover_available(item_fields: dict) -> bool:
-    """Whether carry-over may pay this pending leave, from its last day (#407).
-
-    Carry-over pays none of a request whose last day is past the carry-over
-    expiry; the cascade then skips it. Replaces the old next-year test.
-
-    Args:
-        item_fields: The request's SharePoint field values.
-
-    Returns:
-        True when the last day is on or before the carry-over expiry, or when the
-        dates are missing.
-    """
-    end = _parse_day(item_fields.get("EndDate")) or _parse_day(item_fields.get("StartDate"))
-    return carryover_available_for(end, toronto_today())
-
-
 def _projected_deltas(
-    item_fields: dict, request_type: str, employee_fields: dict, projected: dict | None = None,
+    item_fields: dict, request_type: str, employee_fields: dict, projected: dict | None,
 ) -> dict[str, float]:
     """Per-pot change a pending request would make: projected minus current.
 
@@ -215,14 +213,12 @@ def _projected_deltas(
         item_fields: The request's SharePoint field values.
         request_type: "leave", "overtime" or "carryover-payout".
         employee_fields: The submitter's current Staff Directory fields.
-        projected: The already simulated balances, when the caller has them.
+        projected: The simulated balances, or None when the request moves nothing.
 
     Returns:
         ``{SharePoint balance key: signed delta}`` (negative = taken out), empty
         when the request would move nothing.
     """
-    if projected is None:                               # simulate here unless handed in
-        projected = _simulate(item_fields, request_type, employee_fields)
     if projected is None:                               # no-impact or auto-reject
         return {}
     current = {key: _num(employee_fields.get(key)) for key in BALANCE_KEYS}
@@ -397,6 +393,7 @@ def _ledger_taken_from(ledger: list[tuple], decided_at, status: str, today: date
 
 def taken_from_for(
     item_fields: dict, request_type: str, employee_fields: dict | None, today: date,
+    split: LeaveSplit | None = None,
 ) -> dict:
     """Which pots this one request's days came out of, or went into.
 
@@ -414,6 +411,8 @@ def taken_from_for(
             when the person could not be resolved.
         today: Today in Toronto, used for a pending request's year and as the
             fallback change date.
+        split: A pending leave's split when it crosses a boundary, already counted
+            with holidays; None for everything else.
 
     Returns:
         ``{"state": str, "pieces": [{"pot", "days", "year"}, ...]}``.
@@ -449,7 +448,7 @@ def taken_from_for(
     if status == "Pending":
         if employee_fields is None:                    # cannot project without balances
             return {"state": "unrecorded", "pieces": []}
-        projected = _simulate(item_fields, request_type, employee_fields)
+        projected = _simulate(item_fields, request_type, employee_fields, today, split)
         deltas = _projected_deltas(item_fields, request_type, employee_fields, projected)
         return {
             "state": "projected",
@@ -460,6 +459,33 @@ def taken_from_for(
         }
 
     return _none()                                     # unknown/blank status: nothing to attribute
+
+
+async def _crossing_split(
+    row: dict, request_type: str, status: str, employee_fields: dict | None, today: date,
+) -> LeaveSplit | None:
+    """The holiday-counted split of a pending leave that crosses a boundary.
+
+    Only those rows read holidays, so a page of requests does no extra reads for
+    the usual ones.
+
+    Args:
+        row: The request row in SharePoint field names.
+        request_type: "leave", "overtime" or "carryover-payout".
+        status: The row's status.
+        employee_fields: The submitter's Staff Directory fields, or None.
+        today: Today in Toronto.
+
+    Returns:
+        The split, or None when the row needs no counting.
+    """
+    if request_type != "leave" or status != "Pending" or employee_fields is None:
+        return None                                     # only a pending leave is projected by date
+    on = rule_date_from_fields(row, today)
+    start, end = _parse_day(row.get("StartDate")), _parse_day(row.get("EndDate"))
+    if not leave_crosses_boundary(start, end, on):      # one side only: stored days are enough
+        return None
+    return await leave_split_for(employee_fields, start, end, _num(row.get("Days")), on)
 
 
 async def attach_taken_from(
@@ -565,7 +591,8 @@ async def attach_taken_from(
             else:
                 # Pending, or still on SharePoint: the pure function reads the
                 # row's SharePoint fields (merged in by the endpoint) directly.
-                row["taken_from"] = taken_from_for(row, request_type, emp_fields, today)
+                split = await _crossing_split(row, request_type, status, emp_fields, today)
+                row["taken_from"] = taken_from_for(row, request_type, emp_fields, today, split)
         except Exception:  # noqa: BLE001 - one bad row must not fail the whole response
             logger.debug("taken_from: could not compute for a %s row", row.get("request_type"), exc_info=True)
             row["taken_from"] = {"state": "unrecorded", "pieces": []}

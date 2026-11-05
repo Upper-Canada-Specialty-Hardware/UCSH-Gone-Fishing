@@ -49,7 +49,7 @@ HISTORY_FIELD_LABELS = {
     "SalaryHourly": "Salary or hourly",
     "Supervisor": "Supervisor (text)",
     "SystemCheck": "System check",
-    "RequestAllowDate": "Can book vacation until",
+    "RequestAllowDate": "Can book vacation until",   # no longer stored; past history rows still name it
     "Comments": "Comments",
     "TitleLink": "Person link",
     "SupervisorLink": "Supervisor link",
@@ -135,8 +135,6 @@ COLUMNS: dict[str, dict] = {
                "get": lambda r: _num(r["fields"].get("Payout"))},
     "system_check": {"header": "System check", "group": "Status",
                      "get": lambda r: _text(r["fields"].get("SystemCheck"))},
-    "request_allow_date": {"header": "Can book vacation until", "group": "Status",
-                          "get": lambda r: readable_date(r["fields"].get("RequestAllowDate"))},
     "comments": {"header": "Comments", "group": "Record",
                  "get": lambda r: _text(r["fields"].get("Comments"))},
     "modified": {"header": "Last modified", "group": "Record",

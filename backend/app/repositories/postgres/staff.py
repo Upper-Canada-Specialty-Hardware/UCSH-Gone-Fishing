@@ -86,7 +86,6 @@ _NUMBER_COLUMNS = {
 # Date columns (the day only): SharePoint column -> Staff model attribute.
 _DATE_COLUMNS = {
     "Birthday": "birthday",
-    "RequestAllowDate": "request_allow_date",
 }
 
 # SharePoint timestamp columns kept for the shadow sync's newer-wins compare.
@@ -325,7 +324,6 @@ def to_sp_fields(row: Staff) -> dict:
         fields["Extension"] = row.extension
     # Dates and SharePoint timestamps as ISO strings.
     fields["Birthday"] = row.birthday.isoformat() if row.birthday else None
-    fields["RequestAllowDate"] = row.request_allow_date.isoformat() if row.request_allow_date else None
     fields["Modified"] = _iso_dt(row.sp_modified)
     fields["Created"] = _iso_dt(row.sp_created)
     # Archive state (#119): the timestamp as ISO (None when active), plus the
@@ -407,6 +405,8 @@ def scalar_updates(fields: dict) -> tuple[dict, list[str]]:
         elif column in (ALL_MANAGERS_COLUMN, "SupervisorLinkLookupId", "SupervisorLink", "id",
                         "TitleLink", "AllManagersLookupId"):
             continue                                      # relationships / ids handled elsewhere
+        elif column == "RequestAllowDate":
+            continue                                      # SharePoint still has it; refusals no longer read it
         else:
             dropped.append(column)                        # a column the typed table has no home for
     return values, dropped

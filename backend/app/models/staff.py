@@ -120,8 +120,7 @@ class Staff(Base, TimestampMixin):
     carry_over: Mapped[float | None] = mapped_column(_NUM, nullable=True)            # CarryOver
     payout: Mapped[float | None] = mapped_column(_NUM, nullable=True)                # Payout
 
-    # --- derived and free-text (RequestAllowDate / Comments) ---
-    request_allow_date: Mapped[date | None] = mapped_column(Date, nullable=True)    # RequestAllowDate (day only)
+    # --- free-text (Comments) ---
     comments: Mapped[str | None] = mapped_column(Text, nullable=True)               # Comments
 
     # --- the person's own Microsoft 365 link (TitleLink), kept so the read shape

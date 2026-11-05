@@ -105,7 +105,6 @@ const FIELDS: Record<string, FieldDef> = {
   salary_hourly: { label: 'Salary or hourly', type: 'seg', col: 'SalaryHourly', opts: SALARY_OPTS },
   supervisor_text: { label: 'Supervisor (text)', type: 'text', col: 'Supervisor' },
   system_check: { label: 'System check', type: 'seg', col: 'SystemCheck', opts: CHECK_OPTS },
-  request_allow_date: { label: 'Can book vacation until', type: 'date', col: 'RequestAllowDate' },
   comments: { label: 'Comments', type: 'area', col: 'Comments', wide: true },
   title_link: { label: 'Person link', type: 'person' },
   supervisor_link: { label: 'Supervisor link', type: 'person' },
@@ -614,7 +613,7 @@ export default function PersonProfile({
               {['email', 'cell', 'extension', 'birthday'].map((k) => renderField(k))}
             </FieldGroup>
             <FieldGroup title="Placement">
-              {['location', 'department', 'salary_hourly', 'supervisor_text', 'system_check', 'request_allow_date', 'comments'].map((k) => renderField(k))}
+              {['location', 'department', 'salary_hourly', 'supervisor_text', 'system_check', 'comments'].map((k) => renderField(k))}
             </FieldGroup>
             <Box ref={(el: HTMLElement | null) => { anchors.current.managers = el; }}>
               <GroupTitle>Managers{savedKey === 'managers' && <SavedMark sx={{ ml: 1 }} />}</GroupTitle>

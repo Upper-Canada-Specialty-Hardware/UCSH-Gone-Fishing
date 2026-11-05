@@ -23,7 +23,6 @@ from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     map_location_to_province,
 )
-from app.services.balance import recalculate_request_allow_date
 from app.services.employment import HOURLY, HOURLY_BC, HOURLY_TYPES, SALARY
 from app.services.manager_assignments import update_employee_managers
 from app.services.staff_cleanup import clean_email, clean_employee_form, collapse_whitespace
@@ -245,12 +244,6 @@ async def create_employee(
         history_source=history_source,
         history_reason="Supervisor set when the record was created.",
         history_actor=history_actor,
-    )
-
-    # Request Allow Date is derived from the opening vacation and carry-over,
-    # by the one function that already owns that rule.
-    await recalculate_request_allow_date(
-        employee_id, fields["CurrentVacationBalance"], fields["CarryOver"]
     )
 
     # Return the record as written, re-read so the caller sees the person and

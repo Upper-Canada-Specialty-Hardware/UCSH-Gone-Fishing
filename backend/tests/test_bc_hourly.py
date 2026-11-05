@@ -79,32 +79,32 @@ def test_sick_days_are_whole_for_bc():
 
 
 def test_bc_sick_takes_sick_only_and_may_go_below_zero():
-    out = simulate_leave_impact(BC, "Sick or Personal Day", 3, False)
+    out = simulate_leave_impact(BC, "Sick or Personal Day", 3, 0)
     assert out["CurrentSickDayBalance"] == -1                 # no overflow into anything
     assert out["CurrentOvertimeBalance"] == 1
     assert out["CurrentVacationBalance"] == -3.5              # untouched
 
 
 def test_bc_part_day_uses_a_whole_sick_day():
-    out = simulate_leave_impact(BC, "Half Day or Partial Day Off", 0.5, False)
+    out = simulate_leave_impact(BC, "Half Day or Partial Day Off", 0.5, 0)
     assert out["CurrentSickDayBalance"] == 1
 
 
 def test_bc_vacation_moves_nothing():
-    assert simulate_leave_impact(BC, "Vacation", 3, False) is None
+    assert simulate_leave_impact(BC, "Vacation", 3, 0) is None
 
 
 def test_floor_warning_uses_sick_for_bc_and_vacation_for_everyone_else():
-    bc_projected = simulate_leave_impact(BC, "Sick or Personal Day", 3, False)
+    bc_projected = simulate_leave_impact(BC, "Sick or Personal Day", 3, 0)
     assert employment.floor_warning(BC, bc_projected) == {"pot": "sick", "before": 2, "after": -1}
-    sal_projected = simulate_leave_impact(SALARY, "Vacation", 4, False)   # 1 make-up, then vacation
+    sal_projected = simulate_leave_impact(SALARY, "Vacation", 4, 0)   # 1 make-up, then vacation
     warning = employment.floor_warning(SALARY, sal_projected)
     assert warning["pot"] == "vacation" and warning["after"] < 0
-    assert employment.floor_warning(SALARY, simulate_leave_impact(SALARY, "Vacation", 1, False)) is None
+    assert employment.floor_warning(SALARY, simulate_leave_impact(SALARY, "Vacation", 1, 0)) is None
 
 
 def test_floor_warning_ignores_a_balance_already_negative_that_is_not_touched():
-    projected = simulate_leave_impact(BC, "Sick or Personal Day", 1, False)
+    projected = simulate_leave_impact(BC, "Sick or Personal Day", 1, 0)
     assert employment.floor_warning(BC, projected) is None    # vacation -3.5 is not BC's floor
 
 
@@ -247,7 +247,6 @@ def bc_store(monkeypatch):
     monkeypatch.setattr(leave_requests, "get_employee_by_id", by_id)
     monkeypatch.setattr(leave_requests, "send_email_with_dashboard", nothing)
     monkeypatch.setattr(leave_requests, "notify_requests_blocked_by_approval", nothing)
-    monkeypatch.setattr(leave_requests, "recalculate_request_allow_date", nothing)
     run(wipe())
     yield record
     run(wipe())

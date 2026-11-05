@@ -377,11 +377,22 @@ def render_carryover_reset_employee(employee_name: str, carryover_lost: float) -
 
 
 def render_carryover_reset_admin_summary(
-    year: int, succeeded: list[dict], failed: list[dict],
+    year: int, succeeded: list[dict], failed: list[dict], pending: list[dict] | None = None,
 ) -> str:
+    """The April 1 reset summary sent to the admins.
+
+    Args:
+        year: The reset's year.
+        succeeded: The people whose carry-over was cleared.
+        failed: The people whose reset failed.
+        pending: Leave requests still pending, dated on or before Mar 31.
+
+    Returns:
+        The email's content HTML.
+    """
     return _render(
         "carryover_reset_admin_summary.html",
-        year=year, succeeded=succeeded, failed=failed,
+        year=year, succeeded=succeeded, failed=failed, pending=pending or [],
     )
 
 

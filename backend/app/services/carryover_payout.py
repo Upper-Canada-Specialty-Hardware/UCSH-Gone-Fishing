@@ -10,7 +10,6 @@ from app.services.employee import (
     get_manager_for_employee,
     get_all_managers_for_employee,
 )
-from app.services.balance import recalculate_request_allow_date
 from app.services.employment import is_hourly
 from app.services.concurrency import lock_manager
 from app.services.idempotency import approval_email_action, claim_action, release_claim
@@ -653,9 +652,6 @@ async def approve_carryover_payout(
                 f"Transferred {days} days",
             )
 
-        # Recalculate Request Allow Date
-        await recalculate_request_allow_date(employee_id, final_vacation, final_carryover)
-
     await write_audit_log(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, audit)
 
     # Update request
@@ -756,8 +752,6 @@ async def refund_carryover_payout(
                 {"CurrentVacationBalance": final_vacation, "Payout": final_payout},
                 f"Reversed {days} days",
             )
-
-        await recalculate_request_allow_date(employee_id, final_vacation, final_carryover)
 
     await write_audit_log(settings.SP_LIST_CARRYOVER_PAYOUT, request_id, audit)
 
