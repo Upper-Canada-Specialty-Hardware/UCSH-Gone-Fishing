@@ -186,6 +186,16 @@ def test_pending_vacation_projected():
     item = {"Status": "Pending", "LeaveType": "Vacation", "StartDate": "2026-11-02", "EndDate": "2026-11-06", "Days": 5}
     result = taken_from_for(item, "leave", EMP, TODAY)
     assert result["state"] == "projected"
+    # Dated this year: Make-Up, then vacation. The carried day is for next year.
+    assert result["pieces"] == [
+        {"pot": "make_up", "days": -2.0, "year": None},
+        {"pot": "vacation", "days": -3.0, "year": None},
+    ]
+
+
+def test_pending_vacation_next_february_is_projected_from_carry_over():
+    item = {"Status": "Pending", "LeaveType": "Vacation", "StartDate": "2027-02-01", "EndDate": "2027-02-05", "Days": 5}
+    result = taken_from_for(item, "leave", EMP, TODAY)
     assert result["pieces"] == [
         {"pot": "make_up", "days": -2.0, "year": None},
         {"pot": "carry_over", "days": -1.0, "year": 2026},
@@ -591,7 +601,7 @@ def test_pending_enrich_uses_the_requests_stamped_employment_type():
         "SubmitterEmail": "pat@ucsh.com", "RequestEmploymentType": "Hourly",
     }
 
-    _enrich_pending_item(item_data, "leave", {"pat staff": staff}, {7: staff}, sp_user_to_name)
+    asyncio.run(_enrich_pending_item(item_data, "leave", {"pat staff": staff}, {7: staff}, sp_user_to_name))
 
     assert item_data["projected_balances"] is None
     assert item_data["balance_unchanged"] == "hourly: counted as vacation taken, no balance used"

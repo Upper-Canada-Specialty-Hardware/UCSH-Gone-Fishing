@@ -105,7 +105,6 @@ const FIELDS: Record<string, FieldDef> = {
   salary_hourly: { label: 'Salary or hourly', type: 'seg', col: 'SalaryHourly', opts: SALARY_OPTS },
   supervisor_text: { label: 'Supervisor (text)', type: 'text', col: 'Supervisor' },
   system_check: { label: 'System check', type: 'seg', col: 'SystemCheck', opts: CHECK_OPTS },
-  request_allow_date: { label: 'Can book vacation until', type: 'date', col: 'RequestAllowDate' },
   comments: { label: 'Comments', type: 'area', col: 'Comments', wide: true },
   title_link: { label: 'Person link', type: 'person' },
   supervisor_link: { label: 'Supervisor link', type: 'person' },
@@ -614,7 +613,7 @@ export default function PersonProfile({
               {['email', 'cell', 'extension', 'birthday'].map((k) => renderField(k))}
             </FieldGroup>
             <FieldGroup title="Placement">
-              {['location', 'department', 'salary_hourly', 'supervisor_text', 'system_check', 'request_allow_date', 'comments'].map((k) => renderField(k))}
+              {['location', 'department', 'salary_hourly', 'supervisor_text', 'system_check', 'comments'].map((k) => renderField(k))}
             </FieldGroup>
             <Box ref={(el: HTMLElement | null) => { anchors.current.managers = el; }}>
               <GroupTitle>Managers{savedKey === 'managers' && <SavedMark sx={{ ml: 1 }} />}</GroupTitle>
@@ -1427,20 +1426,23 @@ function RequestRow({ r }: { r: any }) {
 
 /**
  * Who made a change, in words: the recorded actor when there is one ("Mandy
- * Leong", "HR"), with "system" read as "the system"; otherwise a fallback from
- * the source, so an older row with no actor still names a sensible author.
+ * Leong", "Admin"), with "system" read as "the system" and an older stored "HR"
+ * read as "Admin"; otherwise a fallback from the source, so an older row with no
+ * actor still names a sensible author.
  *
  * @param e - The change row.
  * @returns The author phrase to follow "by ".
  */
 function changeWho(e: StaffChange): string {
-  if (e.actor) return e.actor === 'system' ? 'the system' : e.actor;   // the recorded actor wins
+  if (e.actor === 'system') return 'the system';                       // an automatic change
+  if (e.actor === 'HR') return 'Admin';                                // older rows stored the shared dashboard as HR
+  if (e.actor) return e.actor;                                         // the recorded actor wins
   switch (e.source) {                                                  // fall back to the channel
-    case 'admin_dashboard': return 'HR';
+    case 'admin_dashboard': return 'Admin';
     case 'manager_dashboard': return 'a manager';
     case 'system': return 'the system';
     case 'sharepoint': return 'SharePoint';
-    default: return e.source || 'HR';
+    default: return e.source || 'Admin';
   }
 }
 

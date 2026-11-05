@@ -45,7 +45,7 @@ class StaffChange(Base):
     # Why the change was made -> free text; nullable because an imported
     # SharePoint version often carries no comment to explain it (#448).
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Who or what made the change: "HR", a manager's name, "system", or the
+    # Who or what made the change: "Admin", a manager's name, "system", or the
     # SharePoint editor's name for an imported row. Null on older rows, where the
     # reader falls back to ``source`` (#447).
     actor: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -68,7 +68,7 @@ export const PROBLEM_INFO: Record<string, { title: string; fix: string }> = {
     fix: 'These approved requests hold their dates. A new request covering the same days will be refused at approval.',
   },
   pending_over_booking_limit: {
-    title: 'A pending vacation runs past the booking limit',
-    fix: 'The dates on this request are later than this person can book vacation for, so it will be refused at approval. Ask them to pick earlier dates, or reject it.',
+    title: 'A pending vacation cannot be paid for these dates',
+    fix: 'Nothing this person has can pay for these dates, so it will be refused at approval. Ask them to pick other dates, or reject it.',
   },
 };

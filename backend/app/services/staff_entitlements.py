@@ -22,7 +22,6 @@ import math
 from app.config import settings
 from app.repositories.staff_store import staff_in_postgres, staff_store
 from app.services import staff_changes
-from app.services.balance import recalculate_request_allow_date
 from app.services.concurrency import lock_manager
 from app.services.employment import HOURLY_TYPES
 from app.services.employee import (
@@ -75,7 +74,7 @@ LABELS = {
 PANEL_COLUMNS = [
     "Title", "EmailAddress", "CellNumber", "Extension", "Birthday",
     "Location", "Department", "SalaryHourly", "Supervisor", "Comments",
-    "SystemCheck", "RequestAllowDate", "DefaultYearlyVacationDays",
+    "SystemCheck", "DefaultYearlyVacationDays",
     "SickDayEntitlement", "CurrentVacationBalance", "CurrentSickDayBalance",
     "CurrentOvertimeBalance", "CarryOver", "Payout", "Modified",
 ]
@@ -109,7 +108,6 @@ NUMBER_FIELDS = {
 # a stored timestamp never reads as a change against a date the editor shows.
 DATE_FIELDS = {
     "birthday": "Birthday",               # dateTime column
-    "request_allow_date": "RequestAllowDate",  # can-book-vacation-until (dateTime)
 }
 
 # Fields that may never be blanked (closed/required columns the record needs).
@@ -143,7 +141,7 @@ COLUMN_LABELS = {
     "SalaryHourly": "Salary or hourly",
     "Supervisor": "Supervisor (text)",
     "SystemCheck": "System check",
-    "RequestAllowDate": "Can book vacation until",
+    "RequestAllowDate": "Can book vacation until",   # no longer stored; past history rows still name it
     "Comments": "Comments",
     "TitleLink": "Person link",
     "SupervisorLink": "Supervisor link",
@@ -587,7 +585,7 @@ async def apply_entitlement_changes(
             dashboard by default, ``"manager_dashboard"`` when a manager edits
             their own teammate (#362). Kept within the ``StaffChange.source``
             column's 24-character limit by the caller.
-        actor: Who made the change, stored on each history row ("HR" for the
+        actor: Who made the change, stored on each history row ("Admin" for the
             admin dashboard, the manager's name for a team edit); None leaves the
             reader to fall back to ``source`` (#447). The automatic
             request-allow-date row is always recorded as the system.
@@ -667,8 +665,7 @@ async def apply_entitlement_changes(
             logger.exception("Failed to write Staff Directory record for %s", employee_id)
             raise StaffWriteError("The record could not be saved.") from exc
 
-        # Record the history right after the write succeeds, before the derived
-        # recalculation (which can fail on its own and must not skip the log).
+        # Record the history right after the write succeeds.
         history_recorded = True                      # assume success until it throws
         notice = None                                # extra message only on failure
         try:
@@ -678,7 +675,7 @@ async def apply_entitlement_changes(
                 [(c["column"], c["before"], c["after"]) for c in changes],
                 reason,
                 source=source,                        # admin, or a manager's own team (#362)
-                actor=actor,                          # "HR" / the manager's name (#447)
+                actor=actor,                          # "Admin" / the manager's name (#447)
             )
         except Exception:                            # history must not undo the save
             logger.exception(                        # keep the detail in the logs
@@ -686,53 +683,6 @@ async def apply_entitlement_changes(
             )
             history_recorded = False                 # tell the caller it is missing
             notice = "The change was saved, but its history could not be recorded."
-
-        # The request-allow date depends on vacation and carry-over, so recompute
-        # it only when one of those two pots moved; but never when HR typed the
-        # date itself in this save (their value wins over the derived one).
-        changed_columns = {c["column"] for c in pot_changes}
-        rad_moved = None                             # (before_day, after_day) when it changed
-        if (("CurrentVacationBalance" in changed_columns
-                or "CarryOver" in changed_columns)
-                and "request_allow_date" not in fields_in):
-            vacation = sp_updates.get(                # new value if changed...
-                "CurrentVacationBalance",
-                _current_number(current.get("CurrentVacationBalance")),  # ...else current
-            )
-            carry_over = sp_updates.get(
-                "CarryOver",
-                _current_number(current.get("CarryOver")),
-            )
-            before_rad = _date_part(current.get("RequestAllowDate"))  # for the history row
-            try:
-                new_rad = await recalculate_request_allow_date(
-                    employee_id, vacation, carry_over
-                )
-                if new_rad and new_rad != before_rad:  # the derived date actually moved
-                    rad_moved = (before_rad, new_rad)
-            except Exception:                         # a stale derived date is not fatal
-                logger.exception(
-                    "Failed to recalculate request-allow date for %s", employee_id
-                )
-                extra = "The can-book-vacation date may be out of date."
-                notice = f"{notice} {extra}" if notice else extra
-
-        # When the derived date moved, record it as its own history row so the
-        # log shows the automatic change next to the balance edit that caused it.
-        if rad_moved and history_recorded:
-            try:
-                await staff_changes.record_changes(
-                    str(employee_id),
-                    name,
-                    [("RequestAllowDate", rad_moved[0], rad_moved[1])],
-                    "Recomputed automatically after a balance change.",
-                    source=source,                    # same channel as the edit that caused it
-                    actor=staff_changes.SYSTEM_ACTOR,  # automatic -> the system, not the editor (#447)
-                )
-            except Exception:                         # best-effort, like the main log
-                logger.exception(
-                    "Failed to record request-allow-date history for %s", employee_id
-                )
 
         result = {                                   # the saved outcome
             "employee_id": str(employee_id),

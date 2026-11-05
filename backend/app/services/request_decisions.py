@@ -35,9 +35,14 @@ from app.repositories.request_store import requests_in_postgres
 from app.repositories.staff_balances import POT_COLUMNS, get_staff_balances, staff_in_postgres
 from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
+    LeaveSplit,
     booking_refusal,
-    carryover_available_for,
+    carryover_period,
+    carryover_terms,
     cascade_current_year_pure,
+    leave_crosses_boundary,
+    leave_split_for,
+    rule_date_for,
     simulate_carryover_payout_impact,
     simulate_leave_impact,
     simulate_overtime_impact,
@@ -240,7 +245,14 @@ def _leave_year(request: RequestRecord) -> int:
     return request.start_date.year if request.start_date else date.today().year
 
 
-def _plan_balance(request: RequestRecord, before_pots: dict[str, float]) -> tuple[str, dict[str, float], str]:
+# The pots spending can come out of; together they fall by the days charged.
+CASCADE_COLUMNS = ("CurrentVacationBalance", "CurrentSickDayBalance", "CurrentOvertimeBalance", "CarryOver")
+
+
+def _plan_balance(
+    request: RequestRecord, before_pots: dict[str, float],
+    carryover_days: float | None = None, waived_days: float = 0.0,
+) -> tuple[str, dict[str, float], str]:
     """Work out, purely, what approving this request does to the balance.
 
     Uses the balance engine's pure ``simulate_*`` functions (the single source
@@ -250,13 +262,15 @@ def _plan_balance(request: RequestRecord, before_pots: dict[str, float]) -> tupl
     Args:
         request: The request being approved.
         before_pots: The employee's pots before the decision.
+        carryover_days: The most carry-over may pay for this leave; None means no cap.
+        waived_days: The leave's days charged to nothing because their carry-over expired.
 
     Returns:
         ``(outcome, moved_pots, note)`` where outcome is ``"balance_applied"``,
         ``"counted"`` (hourly vacation), ``"no_balance_used"`` or
         ``"refused_negative"`` (carry-over/payout that would go below zero);
         moved_pots is ``{pot: new_value}`` for a salaried/hourly-sick move; note
-        is the plain-words reason when nothing was used.
+        is the plain-words reason when nothing was used or days were waived.
     """
     sp = _sp_fields(before_pots, request)
     if request.kind == "leave":
@@ -266,10 +280,14 @@ def _plan_balance(request: RequestRecord, before_pots: dict[str, float]) -> tupl
             return "no_balance_used", {}, f"{leave_type} does not use a balance."
         if not leave_costs_balance(sp, leave_type):                # hourly vacation: counted, not spent
             return "counted", {}, ""
-        after = simulate_leave_impact(sp, leave_type, days, carryover_available=_carryover_available(request))
+        after = simulate_leave_impact(sp, leave_type, days, carryover_days, waived_days)
         if after is None:                                          # defensive: a no-impact type slipped through
             return "no_balance_used", {}, f"{leave_type} does not use a balance."
-        return "balance_applied", _moved_pots(before_pots, after), ""
+        moved = _moved_pots(before_pots, after)
+        note = _waived_note(request, sp, after, days) if waived_days > 0 else ""
+        if note and not moved:                                     # every day was waived: nothing to apply
+            return "no_balance_used", {}, note
+        return "balance_applied", moved, note
     if request.kind == "overtime":
         if not overtime_costs_balance(sp):                         # hourly overtime banks nothing
             return "no_balance_used", {}, "Overtime is paid for hourly staff, so no balance was banked."
@@ -283,45 +301,116 @@ def _plan_balance(request: RequestRecord, before_pots: dict[str, float]) -> tupl
     return "balance_applied", _moved_pots(before_pots, after), ""
 
 
-def _carryover_available(request: RequestRecord) -> bool:
-    """Whether carry-over may pay this request, from its last day (#407).
+def _waived_note(request: RequestRecord, sp: dict, after: dict, days: float) -> str:
+    """The sentence recording days not charged because their carry-over expired.
 
-    Carry-over pays none of a request whose last day is after the carry-over
-    expiry; the cascade then skips carry-over and the shortfall lands on
-    Vacation instead. Replaces the old next-year test, which picked a different
-    cascade and let carry-over go negative.
+    The record still has to say where those days were due from, so a manager or
+    HR reading it later is not left wondering why no balance moved.
 
     Args:
-        request: The leave request.
+        request: The leave being approved.
+        sp: The balances before, in balance-column names.
+        after: The balances the simulation produced.
+        days: The days the leave costs.
 
     Returns:
-        True when the request's last day is on or before the carry-over expiry,
-        or when it has no dates.
+        The sentence, or "" when no day ended up waived (Sick or Make-Up paid them,
+        or this is hourly leave, which never reaches carry-over).
     """
-    last_day = request.end_date or request.start_date      # the latest day decides
-    return carryover_available_for(last_day, toronto_today())
+    if _is_hourly(request):                                # hourly leave stops at sick
+        return ""
+    # Every day is charged to some pot unless waived, so what is missing was waived.
+    charged = sum(float(sp[column]) - float(after[column]) for column in CASCADE_COLUMNS)
+    waived = round(days - charged, 3)                      # rounded so float noise never prints as a day
+    if waived <= 0:
+        return ""
+    _, expired_on = carryover_period(rule_date_for(request))
+    amount, pronoun = ("1 day was", "it was") if waived == 1 else (f"{waived:g} days were", "they were")
+    return (
+        f"{amount} due from {expired_on.year - 1} carry-over, which expired on "
+        f"{expired_on:%b} {expired_on.day}, {expired_on.year}, so {pronoun} not charged."
+    )
 
 
-def _booking_refusal(request: RequestRecord, before_pots: dict[str, float]) -> str | None:
-    """The booking-limit refusal for a salaried Vacation/part-day approval (#407).
+async def _split_for(request: RequestRecord) -> LeaveSplit | None:
+    """How a leave's days fall against what each pot can pay for.
 
-    Computed from the pots read under the balance lock, so the dates are checked
-    against the same balances the deduction would use. Returns None for every
-    other kind, leave type, or hourly person, and when the dates are within the
-    limit.
+    Reads the person's holidays only when the leave crosses a boundary, so call it
+    before taking the balance lock. A failed read counts weekdays instead, because
+    a decision must not fail over this.
+
+    Args:
+        request: The request being decided.
+
+    Returns:
+        The split, or None for anything but leave.
+    """
+    if request.kind != "leave":                            # overtime and carry-over/payout use the whole chain
+        return None
+    from app.services.employee import get_employee_by_id   # local import, as elsewhere in this file
+    on = rule_date_for(request)
+    fields: dict = {}                                      # empty falls back to weekdays in the split
+    if leave_crosses_boundary(request.start_date, request.end_date, on):
+        try:
+            employee = await get_employee_by_id(request.employee_id)
+            fields = employee["fields"] if employee else {}
+        except Exception:  # noqa: BLE001 - never fail a decision over this
+            logger.warning("Could not read employee %s for a holiday count", request.employee_id, exc_info=True)
+    return await leave_split_for(fields, request.start_date, request.end_date, float(request.days or 0), on)
+
+
+def _terms_of(request: RequestRecord, split: LeaveSplit | None) -> tuple[float | None, float]:
+    """``(carryover_days, waived_days)`` for the cascade, once expiry is counted.
+
+    Args:
+        request: The request being decided.
+        split: Its split, or None for anything but leave.
+
+    Returns:
+        The two values; no cap and nothing waived for anything but leave.
+    """
+    if split is None:                                      # not leave: the whole chain, nothing waived
+        return None, 0.0
+    return carryover_terms(split.carryover_days, rule_date_for(request), toronto_today())
+
+
+def _terms_inputs(request: RequestRecord) -> tuple:
+    """What ``_split_for`` depends on, to spot an edit that landed meanwhile.
+
+    Args:
+        request: The request.
+
+    Returns:
+        Its dates, days and moved rule date.
+    """
+    return request.start_date, request.end_date, request.days, request.rules_on
+
+
+def _booking_refusal(
+    request: RequestRecord, before_pots: dict[str, float], split: LeaveSplit | None,
+) -> str | None:
+    """The refusal when nothing can pay for this salaried Vacation/part-day approval.
+
+    Which dates each pot pays for comes from the request's rule date, so waiting to
+    approve never changes that. Whether there is enough comes from the pots read
+    under the balance lock, the ones the deduction would use. Once its carry-over
+    has expired there is nothing to refuse: those days are simply not charged.
 
     Args:
         request: The request being approved.
         before_pots: The employee's pots before the decision.
+        split: The request's split, or None for anything but leave.
 
     Returns:
         The refusal sentence, or None when the request is allowed.
     """
-    if request.kind != "leave":                            # only leave is booked against the limit
+    if split is None:                                      # only leave is booked
         return None
-    sp = _sp_fields(before_pots, request)                  # balances the refusal reads V and C from
-    last_day = request.end_date or request.start_date      # the day the limit is checked against
-    return booking_refusal(sp, request.leave_type or "", last_day, toronto_today())
+    on = rule_date_for(request)
+    _, period_end = carryover_period(on)
+    if period_end < toronto_today():                       # expired: the request can still be decided
+        return None
+    return booking_refusal(_sp_fields(before_pots, request), request.leave_type or "", split, on)
 
 
 async def _vacation_taken_for_year(session, employee_id: str, year: int) -> float:
@@ -503,12 +592,12 @@ def _decider_label(request: RequestRecord, decider_name: str | None = None) -> t
             manager (from ``_decider_name``), else None.
 
     Returns:
-        ``("admin", "HR")``, ``("manager", <name>)``, or ``(None, None)``.
+        ``("admin", "Admin")``, ``("manager", <name>)``, or ``(None, None)``.
     """
     actor = (request.decided_by or "").strip()                     # the recorded actor id/name
     channel = request.decided_channel or ""                        # where the decision came from
     if actor.lower() == "admin" or channel == "admin_dashboard":   # an admin acted, not the manager
-        return "admin", "HR"
+        return "admin", "Admin"
     if decider_name:                                               # another manager on the list decided
         return "manager", decider_name
     if request.manager_name:                                       # the assigned manager decided
@@ -787,10 +876,17 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             await session.commit()
             return {"error": not_ready, "refused": "not_ready"}
 
+        # Which pot may pay depends on the dates, and a crossing request reads holidays,
+        # so this is worked out before anyone waits on the lock.
+        terms_inputs = _terms_inputs(request)
+        split = await _split_for(request)
+
         async with lock_manager.lock(request.employee_id):         # one employee's decisions, one at a time
             # Lock the request row (Postgres FOR UPDATE; a no-op on SQLite) and re-read it:
             # a decision another channel or another server just committed is seen here.
             await session.refresh(request, with_for_update=True)
+            if _terms_inputs(request) != terms_inputs:             # an edit landed in that moment: judge the new dates
+                split = await _split_for(request)
             if request.status != "pending":
                 await _refuse(session, request, channel, actor, version, "decided", ALREADY_DECIDED_MESSAGE)
                 await session.commit()
@@ -819,16 +915,15 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
                 await _refuse(session, request, channel, actor, version, "conflict", clash)
                 await session.commit()
                 return {"error": clash, "refused": "conflict"}
-            # Booking-limit refusal (#407): a salaried Vacation/part-day whose last
-            # day is past what the person may book is refused against the balances
-            # at this moment. Nothing is written; the request stays Pending and the
-            # approver sees the message, exactly like the clash refusal above.
-            booking = _booking_refusal(request, before_pots)
+            # A salaried Vacation/part-day nothing can pay for is refused against the
+            # balances at this moment. Nothing is written; the request stays Pending
+            # and the approver sees the message, exactly like the clash refusal above.
+            booking = _booking_refusal(request, before_pots, split)
             if booking:
                 await _refuse(session, request, channel, actor, version, "booking_limit", booking)
                 await session.commit()
                 return {"error": booking, "refused": "booking_limit"}
-            outcome, moved, note = _plan_balance(request, before_pots)
+            outcome, moved, note = _plan_balance(request, before_pots, *_terms_of(request, split))
             if outcome == "refused_negative":                      # carry-over/payout past zero: refuse, write nothing
                 await _refuse(session, request, channel, actor, version, "negative", CARRYOVER_NEGATIVE_MESSAGE)
                 await session.commit()
@@ -876,7 +971,7 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
             await _enqueue_result(session, request, event, version, subject, html, sms_text)
             log_step(request, "approved", channel=channel, actor=actor, outcome=event_type)
             # The pots after this approval (moved holds the new values; empty for
-            # a counted or no-balance outcome), for the RequestAllowDate recalc.
+            # a counted or no-balance outcome), for the carry-over/payout's new balance.
             final_pots = {**before_pots, **moved}
             if request.kind == "carryover_payout" and moved:
                 # The "New balance" the admin requests table and export show, in
@@ -890,12 +985,9 @@ async def approve(kind, item_id, actor, channel, link_version=None, reason=None)
                 request.extra = extra                              # a new dict so the JSON change is saved
             await session.commit()
         _wake_sender()                                             # send the result without waiting for the poll
-        # Recalc the allow date, and (leave/overtime) tell the employee about any
-        # request this approval has just stranded. After the commit, best-effort.
-        await _after_decision_followups(
-            request, final_pots.get("vacation", 0.0), final_pots.get("carry_over", 0.0),
-            send_blocked_notice=True,
-        )
+        # Tell the employee about any request this approval has just stranded
+        # (leave/overtime). After the commit, best-effort.
+        await _after_decision_followups(request)
         return {"status": "approved", "balance_state": request.balance_state}
 
 
@@ -995,6 +1087,9 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
         if request.status != "approved":                           # only an approved request can be refunded
             return {"error": NOT_APPROVED_MESSAGE}
         version = request.approval_version
+        # A refund moves back only what the ledger recorded; this only caps the tidy-up
+        # cascade, so nothing is waived here.
+        carryover_days, _ = _terms_of(request, await _split_for(request))
 
         async with lock_manager.lock(request.employee_id):
             await session.refresh(request, with_for_update=True)  # lock the row, see a decision just committed
@@ -1079,7 +1174,7 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
             # result the way the SharePoint refund does, and write and ledger the
             # extra moves, so Make-Up/Carry Over never sit negative (finding 6).
             pots_after = {**before_pots, **pot_writes}
-            for pot, new_value in _refund_cascade(request, pots_after).items():
+            for pot, new_value in _refund_cascade(pots_after, carryover_days).items():
                 if new_value == pots_after[pot]:
                     continue                                       # this pot did not move in the cascade
                 key = step_key(kind, request.item_id, f"refund:cascade:{pot}", version)
@@ -1090,8 +1185,6 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
             if pot_writes:
                 await balances.write_pots(session, request.employee_id, pot_writes)
                 _append_audit_entry(request, "refund", "Refunded", before_pots, pot_writes)   # for the balance panel
-            # The pots after the reversal and cascade, for the RequestAllowDate recalc below.
-            final_pots = {**before_pots, **pot_writes}
 
             _mark_decided(request, "refunded", actor, channel)
             request.balance_state = "reversed"
@@ -1106,11 +1199,6 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
             log_step(request, "refunded", channel=channel, actor=actor)
             await session.commit()
         _wake_sender()                                             # send the refund notice without waiting
-        # A refund frees dates, so it strands nothing: recalc the allow date only.
-        await _after_decision_followups(
-            request, final_pots.get("vacation", 0.0), final_pots.get("carry_over", 0.0),
-            send_blocked_notice=False,
-        )
         return {"status": "refunded", "no_balance_change": not rows}
 
 
@@ -1162,20 +1250,21 @@ async def _approval_carryover_before(session, request: RequestRecord) -> float:
     return float(before) if before is not None else 0.0
 
 
-def _refund_cascade(request: RequestRecord, pots: dict[str, float]) -> dict[str, float]:
+def _refund_cascade(
+    pots: dict[str, float], carryover_days: float | None = None,
+) -> dict[str, float]:
     """The cascaded values of the current-year pots after a refund's raw reversal.
 
     The SharePoint refund cascades the balances after putting the amount back, so
     a reversal that drives Make-Up (or Sick/Carry Over) below zero overflows down
     Sick -> Make-Up -> Carry Over -> Vacation instead of leaving a pot negative
-    (finding 6). There is one cascade for every date now (#407); when the leave
-    ran past the carry-over expiry the carry-over step is skipped, matching how
-    its approval was applied. Pure: it only reads the reversed pots and returns
-    the cascaded ones.
+    (finding 6). There is one cascade for every date, with carry-over capped the
+    way its approval was. Pure: it only reads the reversed pots and returns the
+    cascaded ones.
 
     Args:
-        request: The request being refunded (its dates pick carry-over's role).
         pots: The pots right after the raw reversal (``{pot: value}``).
+        carryover_days: The most carry-over may absorb; None means no cap.
 
     Returns:
         ``{pot: value}`` for the pots the cascade touches; Payout and the
@@ -1185,10 +1274,7 @@ def _refund_cascade(request: RequestRecord, pots: dict[str, float]) -> dict[str,
     make_up = pots.get("make_up", 0.0)
     carry_over = pots.get("carry_over", 0.0)
     vacation = pots.get("vacation", 0.0)
-    # Leave past the carry-over expiry skipped carry-over on approval; every other
-    # kind/date uses the normal chain. Non-leave always keeps carry-over available.
-    carryover_available = _carryover_available(request) if request.kind == "leave" else True
-    result = cascade_current_year_pure(sick, make_up, carry_over, vacation, carryover_available)
+    result = cascade_current_year_pure(sick, make_up, carry_over, vacation, carryover_days)
     out: dict[str, float] = {}
     for sp_field, value in result.items():                         # map SharePoint columns back to pot names
         pot = SP_FIELD_TO_POT.get(sp_field)
@@ -1248,33 +1334,17 @@ def _legacy_refund_net(request: RequestRecord) -> dict[str, float]:
     return {"vacation": -days, "carry_over": days}
 
 
-async def _after_decision_followups(
-    request: RequestRecord, final_vacation: float, final_carryover: float, *, send_blocked_notice: bool,
-) -> None:
-    """Run the SharePoint path's post-decision side effects on the Postgres path (finding 11).
+async def _after_decision_followups(request: RequestRecord) -> None:
+    """Run the SharePoint path's post-approval notice on the Postgres path (finding 11).
 
-    After a decision commits, the SharePoint path recalculates the employee's
-    RequestAllowDate from the vacation/carry-over pair and, on an approval that
-    reserves dates (leave, overtime), tells the employee about any other request
-    that approval has just stranded. The Postgres decision path dropped both; this
-    adds them back. Everything here runs after the commit, is best-effort and
-    logged, and can never undo the decision: a failure is swallowed.
+    After an approval that reserves dates (leave, overtime) commits, the employee is
+    told about any other request it has just stranded. Runs after the commit, is
+    best-effort and logged, and can never undo the decision: a failure is swallowed.
 
     Args:
-        request: The decided request.
-        final_vacation: The vacation pot after the decision.
-        final_carryover: The carry-over pot after the decision.
-        send_blocked_notice: True on an approval of leave/overtime (which reserve
-            dates); False on a refund and on carry-over/payout.
+        request: The approved request.
     """
-    try:
-        # recalculate_request_allow_date writes through the staff store, which is
-        # Postgres on this path, so no SharePoint call is made.
-        from app.services.balance import recalculate_request_allow_date
-        await recalculate_request_allow_date(request.employee_id, final_vacation, final_carryover)
-    except Exception:  # noqa: BLE001 - the decision is already committed; never fail it here
-        logger.exception("RequestAllowDate recalc failed after %s #%s", request.kind, request.item_id)
-    if not send_blocked_notice or request.kind not in ("leave", "overtime"):
+    if request.kind not in ("leave", "overtime"):
         return                                                     # only a date-reserving approval strands others
     try:
         from app.repositories.postgres.typed_requests import TypedRequestList

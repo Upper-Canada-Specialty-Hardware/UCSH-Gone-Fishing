@@ -143,6 +143,9 @@ class RequestRecord(Base):
     # SharePoint-only leftovers kept verbatim; new code only writes this through the adapter.
     extra: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # The Toronto date of the last edit to this leave's dates or days; null means the
+    # created date. Which pot pays comes from this date.
+    rules_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )

@@ -86,7 +86,6 @@ def _use(monkeypatch, pots: dict[str, float]) -> FakeStaffBalances:
     monkeypatch.setattr(bs, "get_staff_balances", _get)
     monkeypatch.setattr(rd, "get_staff_balances", _get)           # the refund test goes through the decision path
     monkeypatch.setattr(bs, "decisions_active", _on)
-    monkeypatch.setattr(bs, "_after_decision_followups", _no_followups)
     monkeypatch.setattr(rd, "_after_decision_followups", _no_followups)
     return fake
 

@@ -29,9 +29,10 @@ from app.services.business_days import calculate_business_days
 from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
     booking_refusal,
-    carryover_available_for,
+    leave_split_for,
     cascade_current_year,
-    recalculate_request_allow_date,
+    leave_carryover_terms,
+    rule_date_from_fields,
     simulate_leave_impact,
 )
 from app.services.concurrency import lock_manager
@@ -255,6 +256,26 @@ async def auto_calculate_days(leave_request_id: str | int):
         settings.SP_LIST_LEAVE_REQUESTS, leave_request_id, {"Days": days}
     )
     logger.info("Calculated %s business days for leave request #%s", days, leave_request_id)
+
+
+async def _carryover_terms_from_fields(
+    fields: dict, emp_fields: dict, days: float,
+) -> tuple[float, float]:
+    """``(carryover_days, waived_days)`` for a leave in the SharePoint list-item shape.
+
+    Args:
+        fields: The request's fields (its dates, and what its rule date is read from).
+        emp_fields: The submitter's staff fields.
+        days: The days the leave costs.
+
+    Returns:
+        The two values for the cascade, judged from the item's created date.
+    """
+    today = toronto_today()
+    return await leave_carryover_terms(
+        emp_fields, _parse_date(fields.get("StartDate")), _parse_date(fields.get("EndDate")),
+        days, rule_date_from_fields(fields, today), today,
+    )
 
 
 async def _check_partial_day(
@@ -543,21 +564,13 @@ async def send_approval_email(
     # Compute projected balances
     leave_type = fields.get("LeaveType", "")
     days = float(fields.get("Days", 0) or 0)
-    carryover_avail = True                                 # carry-over usable unless the dates run past its expiry (#407)
-    start_str = fields.get("StartDate", "")
+    start_str = fields.get("StartDate", "")                # also shown in the text below
     end_str = fields.get("EndDate", "")
-    if start_str and end_str:
-        try:
-            start = _parse_date(start_str)
-            end = _parse_date(end_str)
-            if start and end:
-                carryover_avail = carryover_available_for(end, toronto_today())  # dates past expiry remove carry-over (#407)
-        except (ValueError, TypeError):
-            pass
+    terms = await _carryover_terms_from_fields(fields, emp_fields, days)
     # Only project a change for leave that really moves a balance for this
     # person (#300): hourly vacation, for one, used to show a deduction here.
     projected = (
-        simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
+        simulate_leave_impact(emp_fields, leave_type, days, *terms)
         if leave_costs_balance(emp_fields, leave_type) else None
     )
     # Red notice when approving takes the floor below zero (sick for hourly,
@@ -826,18 +839,19 @@ async def approve_leave_request(
         # whether to reject it. The system does not cancel on their behalf.
         return {"error": conflict}
 
-    # Booking-limit refusal (#407): a salaried Vacation/part-day whose last day is
-    # past what the person may book is refused here too, so the SharePoint path
+    # A salaried Vacation/part-day nothing can pay for is refused here too, so the SharePoint path
     # matches the Postgres one. Placed before the claim (like the conflict check)
     # so a blocked approval never consumes the one-shot claim; nothing is written
     # and the request stays Pending for the manager.
     booking_employee = await resolve_request_submitter(pre_claim["fields"], "SubmittedTest")
     if booking_employee:                                         # unresolved submitter falls through to normal handling
         pre_fields = pre_claim["fields"]
-        last_day = _parse_date(pre_fields.get("EndDate")) or _parse_date(pre_fields.get("StartDate"))
-        booking = booking_refusal(
-            booking_employee["fields"], pre_fields.get("LeaveType", ""), last_day, toronto_today(),
+        today = toronto_today()
+        split = await leave_split_for(
+            booking_employee["fields"], _parse_date(pre_fields.get("StartDate")),
+            _parse_date(pre_fields.get("EndDate")), float(pre_fields.get("Days", 0) or 0), today,
         )
+        booking = booking_refusal(booking_employee["fields"], pre_fields.get("LeaveType", ""), split, today)
         if booking:
             return {"error": booking}
 
@@ -899,8 +913,6 @@ async def approve_leave_request(
         if leave_type in NO_COST_LEAVE:                       # same reply as before
             return {"status": "approved", "no_balance_change": True}
         return {"status": "approved", "hourly": True}
-
-    end_date = _parse_date(fields.get("EndDate"))                 # the last day sets the carry-over expiry test
 
     # Deduct balance by leave type
     async with lock_manager.lock(employee_id):
@@ -965,21 +977,16 @@ async def approve_leave_request(
             elif leave_type == "Sick or Personal Day":
                 pre_cascade["CurrentSickDayBalance"] = new_sick
 
-            # One cascade for every date (#407): carry-over is skipped when the
-            # request runs past its expiry, so a deficit lands on Vacation instead.
-            carryover_avail = carryover_available_for(end_date, toronto_today())
-            balances = await cascade_current_year(employee_id, carryover_avail)
-            cascade_label = "Cascade" if carryover_avail else "Cascade (carry-over expired)"
+            # One cascade for every date: carry-over is capped at the days dated
+            # inside its period, so the rest lands on Vacation instead.
+            carryover_days, waived_days = await _carryover_terms_from_fields(fields, ef, days)
+            balances = await cascade_current_year(employee_id, carryover_days, waived_days)
+            cascade_label = "Cascade" if carryover_days else "Cascade (carry-over not usable for these dates)"
 
             cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
             audit.add_step(
                 cascade_label, pre_cascade, cascade_after,
                 describe_cascade_changes(pre_cascade, cascade_after),
-            )
-
-            # Recalculate Request Allow Date
-            await recalculate_request_allow_date(
-                employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
             )
 
     # Send balance update email
@@ -1229,22 +1236,17 @@ async def refund_leave_request(
             elif leave_type == "Sick or Personal Day":
                 pre_cascade["CurrentSickDayBalance"] = new_sick
 
-            end_date = _parse_date(fields.get("EndDate"))          # the last refunded day sets the expiry test
-            # Same single cascade as approval (#407): skip carry-over when the
-            # refunded leave ran past its expiry, matching how it was applied.
-            carryover_avail = carryover_available_for(end_date, toronto_today())
-            balances = await cascade_current_year(employee_id, carryover_avail)
-            cascade_label = "Cascade" if carryover_avail else "Cascade (carry-over expired)"
+            # Same single cascade as approval, capped the way it was applied. Nothing
+            # is waived on a refund, which only puts days back.
+            carryover_days, _ = await _carryover_terms_from_fields(fields, ef, days)
+            balances = await cascade_current_year(employee_id, carryover_days)
+            cascade_label = "Cascade" if carryover_days else "Cascade (carry-over not usable for these dates)"
 
             cascade_after = {k: balances[k] for k in pre_cascade if k in balances}
             audit.add_step(
                 cascade_label, pre_cascade, cascade_after,
                 describe_cascade_changes(pre_cascade, cascade_after),
             )
-
-        await recalculate_request_allow_date(
-            employee_id, balances["CurrentVacationBalance"], balances.get("CarryOver", 0)
-        )
 
     await write_audit_log(settings.SP_LIST_LEAVE_REQUESTS, request_id, audit)
 

@@ -23,7 +23,6 @@ from app.services.employee import (
     LOCATION_PROVINCE_MAP,
     map_location_to_province,
 )
-from app.services.balance import recalculate_request_allow_date
 from app.services.employment import HOURLY, HOURLY_BC, HOURLY_TYPES, SALARY
 from app.services.manager_assignments import update_employee_managers
 from app.services.staff_cleanup import clean_email, clean_employee_form, collapse_whitespace
@@ -179,7 +178,7 @@ async def find_directory_clashes(name: str, email: str) -> dict:
 
 async def create_employee(
     form_data: dict, manager_sp_user_ids: list[int],
-    *, history_source: str = "admin_dashboard", history_actor: str | None = "HR",
+    *, history_source: str = "admin_dashboard", history_actor: str | None = "Admin",
 ) -> dict:
     """Create a fully set-up Staff Directory record and return it.
 
@@ -192,7 +191,7 @@ async def create_employee(
             the new person's history; the admin dashboard by default, or
             "manager_dashboard" when a manager adds the hire (#447). Both are human
             actions, so neither is the automatic "system" default.
-        history_actor: Who created the record: "HR" for the shared admin dashboard,
+        history_actor: Who created the record: "Admin" for the shared admin dashboard,
             the manager's own name when a manager adds the hire.
 
     Returns:
@@ -245,12 +244,6 @@ async def create_employee(
         history_source=history_source,
         history_reason="Supervisor set when the record was created.",
         history_actor=history_actor,
-    )
-
-    # Request Allow Date is derived from the opening vacation and carry-over,
-    # by the one function that already owns that rule.
-    await recalculate_request_allow_date(
-        employee_id, fields["CurrentVacationBalance"], fields["CarryOver"]
     )
 
     # Return the record as written, re-read so the caller sees the person and

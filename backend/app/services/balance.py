@@ -1,16 +1,19 @@
 import logging
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 
 from app.config import settings
-from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
-from app.services.employee import get_employee_by_id
+from app.services.app_settings import TORONTO, toronto_today  # the company's calendar day
+from app.services.business_days import calculate_business_days
+from app.services.employee import get_employee_by_id, map_location_to_province
 from app.services.employment import NO_COST_LEAVE, is_hourly, leave_costs_balance, whole_sick_days
+from app.services.holidays import get_half_friday_season, get_holidays_for_province
 from app.repositories.staff_store import staff_store  # Staff Directory reads/writes follow staff_storage
 
 logger = logging.getLogger(__name__)
 
-# The two leave types the vacation booking limit governs; salaried staff only
-# (hourly staff have no vacation balance and are never limited here) (#407).
+# The two leave types that can be refused for their dates; salaried staff only
+# (hourly staff have no vacation balance and are never refused here).
 LEAVE_BOOKING_TYPES = ("Vacation", "Half Day or Partial Day Off")
 
 
@@ -18,28 +21,26 @@ LEAVE_BOOKING_TYPES = ("Vacation", "Half Day or Partial Day Off")
 
 def cascade_current_year_pure(
     sick: float, overtime: float, carryover: float, vacation: float,
-    carryover_available: bool = True,
+    carryover_days: float | None = None, waived_days: float = 0.0,
 ) -> dict:
-    """Sick -> Make-Up -> (Carry Over) -> Vacation cascade as pure math.
+    """Sick -> Make-Up -> Carry Over -> Vacation cascade as pure math.
 
-    A deficit in a pot overflows into the next pot down the chain. Spending never
-    drives carry-over MORE negative than it started: only a deficit this request
-    itself creates is pushed on to Vacation, while a pre-existing negative
-    carry-over is left in place (moving it here would silently take vacation days
-    with no reason recorded; clearing a stored negative is the employee-setup
-    fix's job, which records why). When ``carryover_available`` is False (the
-    request runs past the carry-over expiry, #407), the Make-Up deficit skips
-    carry-over and lands on Vacation instead, leaving carry-over untouched.
-    Vacation is the final backstop and may go below zero. There is no separate
-    next-year path any more: next-year dates use these same rules (#407).
+    A deficit in a pot overflows into the next pot down the chain. A Make-Up
+    deficit first waives up to ``waived_days`` (days due from a carry-over that has
+    since expired, charged to nothing), then carry-over absorbs up to
+    ``carryover_days``, and the rest lands on Vacation. Spending never drives
+    carry-over more negative than it started: a deficit this request creates moves
+    on to Vacation, while a pre-existing negative stays put for the employee-setup
+    fix, which records why. Vacation is the final backstop and may go below zero.
 
     Args:
         sick: Sick pot (days).
         overtime: Make-Up / overtime pot (days).
         carryover: Carry-over pot (days).
         vacation: Vacation pot (days).
-        carryover_available: Whether carry-over may pay this request; False skips
-            the carry-over step so the deficit goes straight to Vacation.
+        carryover_days: The most carry-over may pay, the days dated inside its
+            period; None means no cap (a refund or anything that is not leave).
+        waived_days: The days charged to nothing because their carry-over expired.
 
     Returns:
         The four pots after the cascade, keyed by their SharePoint column names.
@@ -51,10 +52,14 @@ def cascade_current_year_pure(
             sick = 0
             continue
         if overtime < 0:                              # Make-Up overdrawn: where the deficit goes next
-            if carryover_available:                   # carry-over may pay: it absorbs, overflow handled below
-                carryover += overtime
-            else:                                     # expired for these dates: skip carry-over, hit Vacation
-                vacation += overtime
+            deficit = -overtime
+            waived = min(deficit, waived_days)        # expired carry-over days are charged to nothing
+            waived_days -= waived                     # a waived day is only waived once
+            deficit -= waived
+            # Carry-over only pays for days dated inside its period; None is uncapped.
+            to_carryover = deficit if carryover_days is None else min(deficit, carryover_days)
+            carryover -= to_carryover                 # any overdraft is handled just below
+            vacation -= deficit - to_carryover        # days carry-over cannot pay land on Vacation
             overtime = 0
             continue
         if carryover < carryover_floor:               # overdrawn BELOW where it started: only that part moves
@@ -68,32 +73,6 @@ def cascade_current_year_pure(
         "CarryOver": carryover,
         "CurrentOvertimeBalance": overtime,
     }
-
-
-def booking_limit(vacation: float, carryover: float, today: date) -> date:
-    """The last day a person may book vacation to, from their V and C (#407).
-
-    Pure, and the one place the booking-limit rule lives, so submission,
-    approval, the preview and the stored "Can book vacation until" date can never
-    drift apart. A negative vacation counts as zero, and carry-over at or below
-    zero counts as zero (carry-over is never negative after #407).
-
-    Args:
-        vacation: The vacation pot (days).
-        carryover: The carry-over pot (days).
-        today: Today in Toronto (the calendar "this year" means).
-
-    Returns:
-        Dec 31 this year (V==0, C>0), Mar 31 next year (V>0, any C), or Dec 31
-        next year (V==0, C==0).
-    """
-    v = vacation if vacation > 0 else 0.0             # V<0 treated as 0 for this rule
-    c = carryover if carryover > 0 else 0.0           # C<=0 treated as 0 (never negative)
-    if v == 0 and c > 0:
-        return date(today.year, 12, 31)               # only carry-over left: until the end of this year
-    if v == 0 and c == 0:
-        return date(today.year + 1, 12, 31)           # nothing left: next year is wide open
-    return date(today.year + 1, 3, 31)                # vacation left: through next year's carry-over window
 
 
 def carryover_expiry(today: date) -> date:
@@ -110,65 +89,273 @@ def carryover_expiry(today: date) -> date:
     return this_year if today <= this_year else date(today.year + 1, 3, 31)
 
 
-def carryover_available_for(last_day: date | None, today: date) -> bool:
-    """Whether carry-over may pay a request whose last day is ``last_day`` (#407).
+def carryover_period(on: date) -> tuple[date, date]:
+    """The leave dates carry-over can pay for, seen from one rule date.
 
-    Carry-over pays none of a request if any day of it is after the carry-over
-    expiry; the last day is the latest day, so it is the one that decides.
+    Carried days are for the year after they were saved and are gone after Mar 31.
+    A rule date from April on looks at next year's Jan 1 to Mar 31; a rule date
+    from Jan to Mar looks at this year's.
 
     Args:
-        last_day: The request's last day, or None when it has no dates.
+        on: The rule date.
+
+    Returns:
+        ``(Jan 1, Mar 31)`` of the carry-over's expiry year.
+    """
+    expiry = carryover_expiry(on)                     # Mar 31 this year or next
+    return date(expiry.year, 1, 1), expiry
+
+
+@dataclass(frozen=True)
+class LeaveSplit:
+    """How one request's days fall against what each pot can pay for.
+
+    Attributes:
+        carryover_days: Days dated inside the carry-over period.
+        ahead_days: The part of those after Dec 31 of the rule date's year, which
+            vacation cannot pay for.
+        unbookable_days: Days after Dec 31 of the rule date's year and outside the
+            carry-over period, which nothing can pay for yet.
+    """
+
+    carryover_days: float
+    ahead_days: float
+    unbookable_days: float
+
+
+def _unbookable_from(on: date) -> date:
+    """The first date nothing can pay for yet, seen from one rule date.
+
+    Args:
+        on: The rule date.
+
+    Returns:
+        The day after both Dec 31 of the rule date's year and the carry-over period.
+    """
+    _, period_end = carryover_period(on)
+    return max(date(on.year, 12, 31), period_end) + timedelta(days=1)
+
+
+def _overlap(first: date, last: date, low: date, high: date) -> tuple[date, date] | None:
+    """The part of ``first..last`` inside ``low..high``.
+
+    Args:
+        first: The request's first day.
+        last: The request's last day.
+        low: The range's first day.
+        high: The range's last day.
+
+    Returns:
+        The overlapping ``(first, last)``, or None when they do not meet.
+    """
+    start, end = max(first, low), min(last, high)     # the tighter of each end
+    return (start, end) if start <= end else None
+
+
+def leave_crosses_boundary(start: date | None, end: date | None, on: date) -> bool:
+    """Whether a request is only partly inside one of the rule date's date ranges.
+
+    Only such a request needs working days counted, and so company holidays read;
+    a request wholly on one side takes its stored days as they are.
+
+    Args:
+        start: The request's first day, or None.
+        end: The request's last day, or None.
+        on: The rule date.
+
+    Returns:
+        True when part of the request is inside a range and part is not.
+    """
+    first, last = start or end, end or start          # a one-sided request is one day
+    if first is None or last is None:                 # no dates: no boundary to cross
+        return False
+    ranges = (carryover_period(on), (_unbookable_from(on), date.max))
+    for low, high in ranges:
+        inside = _overlap(first, last, low, high)
+        if inside is not None and inside != (first, last):   # partly in, partly out
+            return True
+    return False
+
+
+def leave_day_split(
+    start: date | None, end: date | None, days: float, on: date,
+    holidays: list[dict] | None = None,
+    season: tuple[date | None, date | None] = (None, None),
+) -> LeaveSplit:
+    """Split a request's days by what each pot can pay for. Pure.
+
+    A request wholly on one side of a boundary uses its stored days, so holidays
+    are only consulted when it crosses one. A count is capped at the stored days
+    because those are what the person is charged, even if edited by hand.
+
+    Args:
+        start: The request's first day, or None.
+        end: The request's last day, or None.
+        days: The days the request costs.
+        on: The rule date.
+        holidays: The person's province's holiday rows, for a crossing request.
+        season: The half-Friday season, for a crossing request.
+
+    Returns:
+        The split. With no dates, every day counts as payable by carry-over.
+    """
+    first, last = start or end, end or start          # a one-sided request is one day
+    if first is None or last is None:                 # no dates: nothing to hold against the period
+        return LeaveSplit(carryover_days=days, ahead_days=0.0, unbookable_days=0.0)
+
+    def days_in(low: date, high: date) -> float:
+        """The request's days falling inside ``low..high``."""
+        inside = _overlap(first, last, low, high)
+        if inside is None:                            # none of the request is in this range
+            return 0.0
+        if inside == (first, last):                   # all of it is: the stored days, no counting
+            return days
+        counted = calculate_business_days(inside[0], inside[1], holidays or [], season)
+        return max(0.0, min(counted, days))           # never above what the request costs
+
+    period_start, period_end = carryover_period(on)
+    carryover_days = days_in(period_start, period_end)
+    # The rest can still be unbookable, but the two never add up past the stored days.
+    unbookable_days = min(days_in(_unbookable_from(on), date.max), days - carryover_days)
+    # The whole period sits in next year or none of it does, so the days are all or nothing.
+    ahead_days = carryover_days if period_start > date(on.year, 12, 31) else 0.0
+    return LeaveSplit(carryover_days, ahead_days, unbookable_days)
+
+
+def carryover_terms(carryover_days: float, on: date, today: date) -> tuple[float, float]:
+    """What the cascade gets for carry-over, once expiry is taken into account.
+
+    Normally carry-over pays for the days in its period. Once Mar 31 of that period
+    has passed (created Mar 30 for Mar 31, approved Apr 2), the pot has been reset:
+    those days are charged to nothing, rather than to the vacation that could not
+    pay for them when the request was made.
+
+    Args:
+        carryover_days: The days dated inside the rule date's carry-over period.
+        on: The rule date.
         today: Today in Toronto.
 
     Returns:
-        True when the whole request falls on or before the carry-over expiry.
+        ``(carryover_days, waived_days)`` for ``simulate_leave_impact``.
     """
-    if last_day is None:                              # no dates: nothing to compare, allow it
-        return True
-    return last_day <= carryover_expiry(today)
+    _, period_end = carryover_period(on)
+    if period_end < today:                            # the period is over: nothing left to pay from
+        return 0.0, carryover_days
+    return carryover_days, 0.0
 
 
-def booking_limit_message(limit: date) -> str:
-    """The plain refusal naming the limit, e.g. 'You can book vacation until March 31, 2027.' (#407).
+def _toronto_date(moment: datetime) -> date:
+    """The Toronto calendar date of a stored moment.
 
     Args:
-        limit: The booking limit date.
+        moment: The moment; a naive value is UTC, as SQLite hands it back.
 
     Returns:
-        The sentence shown to the person, with a portable month name (no %-d).
+        The date in Toronto at that moment.
     """
-    return f"You can book vacation until {limit:%B} {limit.day}, {limit.year}."
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    return aware.astimezone(TORONTO).date()
 
 
-def booking_refusal(
-    sp_fields: dict, leave_type: str, last_day: date | None, today: date,
-) -> str | None:
-    """The refusal when a salaried Vacation/part-day request runs past the limit (#407).
+def rule_date_for(request) -> date:
+    """The date whose rules decide which pot pays for this request.
 
-    The limit is computed from the person's CURRENT vacation and carry-over, so
-    the same balances the deduction would read decide whether the dates are
-    allowed. Hourly staff and every other leave type are never limited.
+    The date it was created, or the date of the last edit that changed its dates
+    or days.
+
+    Args:
+        request: A ``RequestRecord``.
+
+    Returns:
+        ``rules_on`` when set, else the Toronto date of ``created_at``, else today
+        for a row not saved yet.
+    """
+    if request.rules_on is not None:                  # an edit moved it
+        return request.rules_on
+    if request.created_at is not None:                # the normal case
+        return _toronto_date(request.created_at)
+    return toronto_today()                            # not saved yet, so it is being created today
+
+
+def rule_date_from_fields(fields: dict, today: date) -> date:
+    """``rule_date_for`` for a request in the SharePoint list-item shape.
+
+    Args:
+        fields: The request's fields; ``RulesOn`` and ``Created`` are read.
+        today: Today in Toronto, used when neither is there or readable.
+
+    Returns:
+        The rule date.
+    """
+    rules_on = str(fields.get("RulesOn") or "")[:10]
+    created = str(fields.get("Created") or "")
+    try:
+        if rules_on:                                  # an edit moved it
+            return date.fromisoformat(rules_on)
+        if created:                                   # SharePoint and Postgres both give the created time
+            return _toronto_date(datetime.fromisoformat(created.replace("Z", "+00:00")))
+    except ValueError:                                # an unreadable value should not stop a projection
+        logger.warning("Unreadable rule date: RulesOn %r, Created %r", rules_on, created)
+    return today
+
+
+def bookable_until(sp_fields: dict, on: date) -> date:
+    """The last date a salaried person can book vacation to, from one rule date.
+
+    Computed, never stored. Vacation pays to Dec 31 of the rule date's year. From
+    April on, next year's Jan 1 to Mar 31 is open too, but only to someone with
+    Make-Up or carry-over to pay for it.
+
+    Args:
+        sp_fields: The person's Staff-Directory-shaped balances.
+        on: The rule date.
+
+    Returns:
+        Mar 31 next year, or Dec 31 of the rule date's year.
+    """
+    year_end = date(on.year, 12, 31)
+    _, period_end = carryover_period(on)
+    if period_end <= year_end:                        # Jan to Mar: the period is already this year's
+        return year_end
+    make_up = float(sp_fields.get("CurrentOvertimeBalance", 0) or 0)
+    carryover = float(sp_fields.get("CarryOver", 0) or 0)
+    return period_end if make_up > 0 or carryover > 0 else year_end
+
+
+def booking_refusal(sp_fields: dict, leave_type: str, split: LeaveSplit, on: date) -> str | None:
+    """The refusal when nothing can pay for a salaried Vacation/part-day request.
+
+    This year's dates are never refused: vacation may go below zero, and the
+    manager sees the red warning. Late requests are normal, so a date already past
+    is never refused for being past. Hourly staff and every other leave type,
+    sick days included, are never refused here.
 
     Args:
         sp_fields: The person's Staff-Directory-shaped balances (and SalaryHourly).
         leave_type: The request's leave type.
-        last_day: The request's last day, or None.
-        today: Today in Toronto.
+        split: How the request's days fall, from ``leave_day_split``.
+        on: The rule date.
 
     Returns:
-        The refusal sentence when the last day is past the limit, else None.
+        The refusal sentence, or None when the request is allowed.
     """
-    if is_hourly(sp_fields):                          # hourly: no vacation balance, never limited
+    if is_hourly(sp_fields):                          # hourly: no vacation balance, never refused
         return None
     if leave_type not in LEAVE_BOOKING_TYPES:         # only vacation and part days are booked
         return None
-    if last_day is None:                              # no last day: nothing to check
-        return None
-    vacation = float(sp_fields.get("CurrentVacationBalance", 0) or 0)
-    carryover = float(sp_fields.get("CarryOver", 0) or 0)
-    limit = booking_limit(vacation, carryover, today)
-    if last_day > limit:                              # the request reaches past what they may book
-        return booking_limit_message(limit)
+    if split.unbookable_days > 0:                     # nothing can pay until the new year's balance arrives
+        last = _unbookable_from(on) - timedelta(days=1)   # the last date that can be booked, named so the cutoff is clear
+        return f"Leave dated after {last:%B} {last.day}, {last.year} can be booked from January 1, {on.year + 1}."
+    make_up = max(float(sp_fields.get("CurrentOvertimeBalance", 0) or 0), 0.0)   # a negative counts as 0
+    carryover = max(float(sp_fields.get("CarryOver", 0) or 0), 0.0)
+    have = make_up + carryover
+    if split.ahead_days > have:                       # vacation cannot pay these days, and the rest falls short
+        needed = f"{split.ahead_days:g} day{'' if split.ahead_days == 1 else 's'}"
+        pots = "carry-over or Make-Up" if make_up > 0 else "carry-over"   # only name Make-Up when they have some
+        return (
+            f"These dates need {needed} of {pots} and you have {have:g}. "
+            f"Carry-over can't go below zero, and {on.year} vacation can't pay for {on.year + 1} dates."
+        )
     return None
 
 
@@ -188,19 +375,119 @@ def apply_vacation_offset_pure(
 
 # --- Async functions (SP reads/writes, using pure math internally) ---
 
-async def cascade_current_year(
-    employee_id: str | int, carryover_available: bool = True,
-) -> dict:
-    """Run the Sick -> Make-Up -> (Carry Over) -> Vacation cascade on SharePoint.
+async def _holidays_or_none(fields: dict) -> list[dict]:
+    """The person's province's holidays, or none when they cannot be read.
 
-    Reads the employee's pots, applies ``cascade_current_year_pure`` (so the
-    carry-over step is skipped when ``carryover_available`` is False, #407), and
-    writes the result back, looping until it settles.
+    Args:
+        fields: The person's Staff Directory fields (``Location`` picks the province).
+
+    Returns:
+        The holiday rows; [] with a logged warning on any failure, which counts
+        plain weekdays instead.
+    """
+    try:
+        return await get_holidays_for_province(map_location_to_province(fields.get("Location", "")))
+    except Exception:  # noqa: BLE001 - never fail a request over this, weekdays are close enough
+        logger.warning(
+            "Holidays could not be read for %r, counting weekdays to split this request",
+            fields.get("Location"), exc_info=True,
+        )
+        return []
+
+
+async def leave_split_for(
+    fields: dict, start: date | None, end: date | None, days: float, on: date,
+) -> LeaveSplit:
+    """``leave_day_split``, reading holidays only when the request crosses a boundary.
+
+    Most requests do no extra read. If the province or holidays cannot be read,
+    weekdays are counted instead: a projection a little off is better than a
+    request that cannot be decided. Call it before taking the balance lock.
+
+    Args:
+        fields: The person's Staff Directory fields (``Location`` picks the province).
+        start: The request's first day, or None.
+        end: The request's last day, or None.
+        days: The days the request costs.
+        on: The rule date.
+
+    Returns:
+        The split.
+    """
+    if not leave_crosses_boundary(start, end, on):    # wholly on one side: no counting needed
+        return leave_day_split(start, end, days, on)
+    holidays = await _holidays_or_none(fields)
+    return leave_day_split(start, end, days, on, holidays, get_half_friday_season(holidays))
+
+
+async def booking_refusal_for(
+    fields: dict, leave_type: str, start: date | None, end: date | None,
+    partial_hours: float | None, on: date,
+) -> str | None:
+    """``booking_refusal`` for a form not saved yet, which has no stored days.
+
+    This year's dates are never refused, so they read nothing. Next year's work out
+    the days the way the submit path does, because the days are what is compared.
+
+    Args:
+        fields: The person's Staff Directory fields.
+        leave_type: The form's leave type.
+        start: The first day, or None.
+        end: The last day, or None.
+        partial_hours: A part day's hours, or None for full days.
+        on: The rule date, today for a new request.
+
+    Returns:
+        The refusal sentence, or None when the request is allowed.
+    """
+    if is_hourly(fields) or leave_type not in LEAVE_BOOKING_TYPES:   # never refused
+        return None
+    first, last = start or end, end or start
+    if first is None or last is None or last <= date(on.year, 12, 31):   # no dates, or this year's
+        return None
+    holidays = await _holidays_or_none(fields)
+    season = get_half_friday_season(holidays)
+    if partial_hours is not None:                     # a part day is its hours over 8
+        days = float(partial_hours) / 8
+    else:
+        days = calculate_business_days(first, last, holidays, season)
+    split = leave_day_split(first, last, days, on, holidays, season)
+    return booking_refusal(fields, leave_type, split, on)
+
+
+async def leave_carryover_terms(
+    fields: dict, start: date | None, end: date | None, days: float, on: date, today: date | None = None,
+) -> tuple[float, float]:
+    """``(carryover_days, waived_days)`` for one leave request, ready for the cascade.
+
+    Args:
+        fields: The person's Staff Directory fields.
+        start: The request's first day, or None.
+        end: The request's last day, or None.
+        days: The days the request costs.
+        on: The rule date.
+        today: Today in Toronto; defaults to now.
+
+    Returns:
+        The two values ``simulate_leave_impact`` and the cascade take.
+    """
+    split = await leave_split_for(fields, start, end, days, on)
+    return carryover_terms(split.carryover_days, on, today or toronto_today())
+
+
+async def cascade_current_year(
+    employee_id: str | int, carryover_days: float | None = None, waived_days: float = 0.0,
+) -> dict:
+    """Run the Sick -> Make-Up -> Carry Over -> Vacation cascade on SharePoint.
+
+    Reads the employee's pots, applies ``cascade_current_year_pure`` and writes the
+    result back, looping until it settles. The second pass finds nothing overdrawn,
+    so waived days are not used twice.
 
     Args:
         employee_id: Staff Directory item id.
-        carryover_available: Whether carry-over may pay this request (False when
-            it runs past the carry-over expiry).
+        carryover_days: The most carry-over may pay; None means no cap.
+        waived_days: The days charged to nothing because their carry-over expired.
 
     Returns:
         The final balances, keyed by their SharePoint column names.
@@ -214,7 +501,7 @@ async def cascade_current_year(
         carryover = float(fields.get("CarryOver", 0) or 0)
         vacation = float(fields.get("CurrentVacationBalance", 0) or 0)
 
-        result = cascade_current_year_pure(sick, overtime, carryover, vacation, carryover_available)
+        result = cascade_current_year_pure(sick, overtime, carryover, vacation, carryover_days, waived_days)
 
         if (result["CurrentSickDayBalance"] == sick
                 and result["CurrentOvertimeBalance"] == overtime
@@ -246,48 +533,6 @@ def is_next_year_request(start_date: date, end_date: date) -> bool:
     return start_date.year == current_year + 1 or end_date.year == current_year + 1
 
 
-async def recalculate_request_allow_date(
-    employee_id: str | int, vacation: float, carryover: float
-) -> str | None:
-    """Recompute and store the can-book-vacation date from V and C (#407).
-
-    The date is the booking limit from ``booking_limit`` (the single rule), using
-    today in Toronto, and is ALWAYS computed (even when both pots are non-zero,
-    which earlier left the stored date unchanged). The write still happens only
-    when the stored date actually differs.
-
-    Args:
-        employee_id: Staff Directory item id of the person.
-        vacation: Current vacation balance (days).
-        carryover: Current carry-over balance (days).
-
-    Returns:
-        The new date as a ``YYYY-MM-DD`` string when it was written, or None when
-        the stored date already matched.
-    """
-    new_date = booking_limit(vacation, carryover, toronto_today())  # the one booking rule
-
-    emp = await get_employee_by_id(employee_id)
-    fields = emp["fields"]
-    current_rad = fields.get("RequestAllowDate")
-
-    new_date_str = new_date.isoformat()
-    if current_rad and current_rad[:10] == new_date_str:
-        return None  # No change needed
-
-    # Include Title to avoid clearing it (SP PatchItem behavior)
-    await staff_store.update_list_item_fields(
-        settings.SP_LIST_STAFF_DIRECTORY,
-        employee_id,
-        {
-            "RequestAllowDate": new_date_str,
-            "Title": fields.get("Title", ""),
-        },
-    )
-    logger.info("Updated RequestAllowDate for employee %s to %s", employee_id, new_date_str)
-    return new_date_str  # the caller records this as its own history row
-
-
 async def apply_vacation_offset(employee_id: str | int) -> None:
     """After overtime approval: if vacation negative and overtime positive, offset."""
     emp = await get_employee_by_id(employee_id)
@@ -309,21 +554,22 @@ async def apply_vacation_offset(employee_id: str | int) -> None:
 # --- Simulation functions (pure math, for projected balance display) ---
 
 def simulate_leave_impact(
-    sp_fields: dict, leave_type: str, days: float, carryover_available: bool = True,
+    sp_fields: dict, leave_type: str, days: float,
+    carryover_days: float | None = None, waived_days: float = 0.0,
 ) -> dict | None:
     """Simulate balance impact of approving a leave request.
 
     Returns projected SP-style balance dict, or None for no-impact types. Spends
     Make-Up first (or Sick for a sick/personal day), then cascades the shortfall
-    down Sick -> Make-Up -> Carry Over -> Vacation. When ``carryover_available``
-    is False (the request runs past the carry-over expiry, #407), the cascade
-    skips carry-over. Next-year dates use these same rules (no separate path).
+    down Sick -> Make-Up -> Carry Over -> Vacation. Carry-over pays only for the
+    days dated inside its period (``carryover_days``).
 
     Args:
         sp_fields: The person's Staff-Directory-shaped balances (and SalaryHourly).
         leave_type: The request's leave type.
         days: The days the leave costs.
-        carryover_available: Whether carry-over may pay this request.
+        carryover_days: The most carry-over may pay; None means no cap.
+        waived_days: The days charged to nothing because their carry-over expired.
 
     Returns:
         The projected balances, or None when nothing moves for this person/type.
@@ -354,9 +600,8 @@ def simulate_leave_impact(
     elif leave_type == "Sick or Personal Day":
         sick -= days                      # sick/personal comes off Sick first
 
-    # One cascade for every date (no separate next-year path, #407); carry-over
-    # is skipped when it has expired for these dates.
-    result = cascade_current_year_pure(sick, overtime, carryover, vacation, carryover_available)
+    # One cascade for every date; carry-over is capped at the days it can pay for.
+    result = cascade_current_year_pure(sick, overtime, carryover, vacation, carryover_days, waived_days)
     sick = result["CurrentSickDayBalance"]
     overtime = result["CurrentOvertimeBalance"]
     carryover = result["CarryOver"]

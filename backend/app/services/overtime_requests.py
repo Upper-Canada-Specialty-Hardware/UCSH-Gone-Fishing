@@ -26,7 +26,6 @@ from app.services.holidays import (
 from app.services.balance import (
     apply_vacation_offset,
     cascade_current_year,
-    recalculate_request_allow_date,
     simulate_overtime_impact,
 )
 from app.services.concurrency import lock_manager
@@ -618,12 +617,6 @@ async def approve_overtime_request(
                 "Offset negative vacation against positive overtime",
             )
 
-        await recalculate_request_allow_date(
-            employee_id,
-            float(ef.get("CurrentVacationBalance", 0) or 0),
-            float(ef.get("CarryOver", 0) or 0),
-        )
-
     # Send approval email with updated balances
     emp = await get_employee_by_id(employee_id)
     ef = emp["fields"]
@@ -727,10 +720,6 @@ async def refund_overtime_request(
         audit.add_step(
             "Cascade (current year)", pre_cascade, cascade_after,
             describe_cascade_changes(pre_cascade, cascade_after),
-        )
-
-        await recalculate_request_allow_date(
-            employee_id, balances["CurrentVacationBalance"], balances["CarryOver"]
         )
 
     await write_audit_log(settings.SP_LIST_OVERTIME_REQUESTS, request_id, audit)

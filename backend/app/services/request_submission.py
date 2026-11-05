@@ -29,9 +29,9 @@ from app.models.request_record import RequestRecord
 from app.repositories.postgres.staff import is_archived  # tells an archived staff record from an active one (#119)
 from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.approval_links import generate_approval_url
-from app.services.app_settings import toronto_today  # Toronto calendar day for the booking policy (#407)
 from app.services.balance import (
-    carryover_available_for,
+    leave_carryover_terms,
+    rule_date_for,
     simulate_leave_impact,
     simulate_overtime_impact,
 )
@@ -220,6 +220,23 @@ async def _record_reroute(session, record: RequestRecord, chosen: dict | None,
     )
 
 
+async def _carryover_terms_for(record: RequestRecord, emp_fields: dict) -> tuple[float | None, float]:
+    """``(carryover_days, waived_days)`` for this request's projection in an email.
+
+    Args:
+        record: The request row.
+        emp_fields: The submitter's staff fields.
+
+    Returns:
+        The two values for the cascade; no cap and nothing waived for anything but leave.
+    """
+    if record.kind != "leave":                                      # only leave is paid by dates
+        return None, 0.0
+    return await leave_carryover_terms(
+        emp_fields, record.start_date, record.end_date, float(record.days or 0), rule_date_for(record),
+    )
+
+
 async def _enqueue_notifications(session, record, employee, managers, *, event, suffix=None,
                                  include_receipt=True, reask_suffix=None,
                                  manager_note: str = "", receipt_note: str = "") -> None:
@@ -261,7 +278,8 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         if is_reminder else
         step_key(record.kind, record.item_id, "sent_to_manager", version, suffix=reask_suffix)
     )
-    built = _build_manager_content(record, emp_fields, fields)      # per-kind subject + bodies
+    terms = await _carryover_terms_for(record, emp_fields)          # may read holidays for a crossing request
+    built = _build_manager_content(record, emp_fields, fields, terms)   # per-kind subject + bodies
 
     for manager in managers:
         mgr_fields = manager.get("fields", {})
@@ -289,7 +307,7 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         return                                                      # a reminder or an edit re-asks the manager only
     email = record.employee_email
     if email:                                                      # the employee's "received" receipt
-        receipt_subject, receipt_html = _build_receipt_content(record, emp_fields, fields)
+        receipt_subject, receipt_html = _build_receipt_content(record, emp_fields, fields, terms)
         # The receipt opens with any note and ends with the person's own cancel link (#519).
         receipt_html = receipt_note + receipt_html + cancel_link_html(record.kind, record.item_id, record.employee_id)
         receipt_step = step_key(record.kind, record.item_id, "receipt_sent", version)
@@ -299,7 +317,7 @@ async def _enqueue_notifications(session, record, employee, managers, *, event, 
         )
 
 
-def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict):
+def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict, terms: tuple = (None, 0.0)):
     """Return a function giving one manager's approval subject, email HTML and SMS.
 
     The content matches today's approval email, text and links, kind by kind. The
@@ -310,6 +328,7 @@ def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict
         record: The request row.
         emp_fields: The submitter's staff fields (balances for the projection).
         fields: The request in the SharePoint list-item shape.
+        terms: ``(carryover_days, waived_days)`` for a leave's projection.
 
     Returns:
         ``make(manager_id) -> (subject, html, sms_body)``.
@@ -322,10 +341,8 @@ def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict
     if kind == "leave":
         leave_type = record.leave_type or ""
         days = float(record.days or 0)
-        last_day = record.end_date or record.start_date
-        carryover_avail = carryover_available_for(last_day, toronto_today())   # carry-over expired for these dates? (#407)
         projected = (
-            simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
+            simulate_leave_impact(emp_fields, leave_type, days, *terms)
             if leave_costs_balance(emp_fields, leave_type) else None
         )
         below_zero = floor_warning(emp_fields, projected)           # red when approving goes below zero
@@ -397,13 +414,16 @@ def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict
     return make
 
 
-def _build_receipt_content(record: RequestRecord, emp_fields: dict, fields: dict) -> tuple[str, str]:
+def _build_receipt_content(
+    record: RequestRecord, emp_fields: dict, fields: dict, terms: tuple = (None, 0.0),
+) -> tuple[str, str]:
     """The employee's "request received" receipt subject and HTML, kind by kind.
 
     Args:
         record: The request row.
         emp_fields: The submitter's staff fields.
         fields: The request in the SharePoint list-item shape.
+        terms: ``(carryover_days, waived_days)`` for a leave's projection.
 
     Returns:
         ``(subject, html)``.
@@ -412,10 +432,8 @@ def _build_receipt_content(record: RequestRecord, emp_fields: dict, fields: dict
     if record.kind == "leave":
         leave_type = record.leave_type or ""
         days = float(record.days or 0)
-        last_day = record.end_date or record.start_date
-        carryover_avail = carryover_available_for(last_day, toronto_today())   # carry-over expired for these dates? (#407)
         projected = (
-            simulate_leave_impact(emp_fields, leave_type, days, carryover_avail)
+            simulate_leave_impact(emp_fields, leave_type, days, *terms)
             if leave_costs_balance(emp_fields, leave_type) else None
         )
         html = tr.render_leave_confirmation(fields, emp_fields, projected, conflict_warning=None)
@@ -768,7 +786,8 @@ async def _do_submit(session, kind, item_id, channel, notify, actor) -> bool:
         logger.warning("No manager for %s #%s; receipt queued, manager not asked", kind, record.item_id)
         emp_fields = employee.get("fields", {})
         if record.employee_email:
-            subject, html = _build_receipt_content(record, emp_fields, fields)
+            terms = await _carryover_terms_for(record, emp_fields)
+            subject, html = _build_receipt_content(record, emp_fields, fields, terms)
             await enqueue_message(
                 session, record, event, "receipt", "email", record.employee_email, subject, html,
                 f"{step_key(kind, record.item_id, 'receipt_sent', version)}:email:{record.employee_email}",
@@ -1378,7 +1397,10 @@ async def _apply_edit_locked(session, record, kind, before, after, reason, actor
     _assign_manager(record, chosen)                          # the edit's re-ask follows whoever is asked
 
     await adapter._resolve_people(record, after)             # keep names in step in production (no-op in tests)
+    dates_before = (record.start_date, record.end_date, record.days)   # to tell whether the dates or days change
     adapter._apply_fields(record, after)                     # write the edited values onto the typed columns
+    if kind == "leave" and (record.start_date, record.end_date, record.days) != dates_before:
+        record.rules_on = today_toronto()                    # which pot pays now reads from today
     new_version = (record.approval_version or 1) + 1
     record.approval_version = new_version                    # fresh links; the old ones go stale
     record.updated_at = utcnow()

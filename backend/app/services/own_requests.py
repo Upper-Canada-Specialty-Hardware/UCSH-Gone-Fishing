@@ -31,7 +31,7 @@ from app.models.mixins import utcnow
 from app.models.request_record import RequestRecord
 from app.repositories.postgres.typed_requests import TypedRequestList
 from app.services.app_settings import toronto_today
-from app.services.balance import booking_refusal
+from app.services.balance import booking_refusal_for
 from app.services.business_days import calculate_business_days
 from app.services.cancel_links import decode_cancel_token
 from app.services.concurrency import lock_manager
@@ -212,7 +212,9 @@ async def change_own_leave(item_id, employee: dict, form) -> dict:
         current = TypedRequestList("leave")._item_shape(record)["fields"]   # what it says today
 
     # The same refusals a new request gets, with this request left out of the clash check.
-    refusal = booking_refusal(emp_fields, form.leave_type, form.end_date, toronto_today())
+    refusal = await booking_refusal_for(
+        emp_fields, form.leave_type, form.start_date, form.end_date, form.partial_hours, toronto_today(),
+    )
     if refusal:
         raise OwnRequestError(refusal, 400)
     try:

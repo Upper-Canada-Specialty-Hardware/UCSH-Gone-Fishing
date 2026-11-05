@@ -30,6 +30,7 @@ from app.models.staff import (
     StaffWriteback,
 )
 from app.models.staff_change import StaffChange
+from app.repositories.postgres.staff import scalar_updates
 from app.repositories.postgres.staff_balances import PostgresStaffBalances
 from app.repositories.staff_store import staff_store
 from app.services import staff_import
@@ -81,6 +82,12 @@ def _sp_item(item_id, **overrides):
     }
     fields.update(overrides)
     return {"id": str(item_id), "fields": fields}
+
+
+def test_the_retired_booking_date_column_is_ignored_not_reported_as_lost():
+    values, dropped = scalar_updates({"RequestAllowDate": "2026-12-31", "NoSuchColumn": "x"})
+    assert "request_allow_date" not in values
+    assert dropped == ["NoSuchColumn"]
 
 
 @pytest.fixture
@@ -138,7 +145,7 @@ def test_store_shape_matches_between_backends(clean_db, monkeypatch):
         "Title", "EmailAddress", "SalaryHourly", "Location", "Department", "Supervisor",
         "DefaultYearlyVacationDays", "SickDayEntitlement", "CurrentVacationBalance",
         "CurrentSickDayBalance", "CurrentOvertimeBalance", "CarryOver", "Payout",
-        "CellNumber", "Extension", "Birthday", "SystemCheck", "RequestAllowDate",
+        "CellNumber", "Extension", "Birthday", "SystemCheck",
         "Comments", "TitleLinkLookupId", "Modified", "AllManagers", "SupervisorLinkLookupId",
     ):
         assert from_pg["fields"][column] == from_sp["fields"][column], column

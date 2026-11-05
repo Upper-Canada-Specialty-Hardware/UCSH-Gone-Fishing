@@ -20,7 +20,8 @@ from app.services.balance import (
     simulate_leave_impact,
     simulate_overtime_impact,
     simulate_carryover_payout_impact,
-    carryover_available_for,
+    leave_carryover_terms,
+    rule_date_from_fields,
 )
 from app.services.employee_validation import (
     fetch_approval_email_records,
@@ -555,7 +556,7 @@ def _balances_for(item: dict, taken: dict[str, float]) -> dict:
     return _format_balances(f, taken.get(name) if is_hourly(f) else None)
 
 
-def _enrich_pending_item(
+async def _enrich_pending_item(
     item_data: dict, request_type: str,
     staff_by_name: dict, staff_by_id: dict, sp_user_to_name: dict,
 ) -> dict:
@@ -615,16 +616,21 @@ def _enrich_pending_item(
     if request_type == "leave":
         leave_type = item_data.get("LeaveType", "")
         days = float(item_data.get("Days", 0) or 0)
-        carryover_avail = True                             # carry-over usable unless the dates run past its expiry (#407)
+        start, end = None, None                            # no readable dates: nothing to hold against the period
         start_str = item_data.get("StartDate", "")
         end_str = item_data.get("EndDate", "")
         if start_str and end_str:
             try:
+                start = dt_date.fromisoformat(start_str[:10])
                 end = dt_date.fromisoformat(end_str[:10])
-                carryover_avail = carryover_available_for(end, toronto_today())
             except (ValueError, TypeError):
-                pass
-        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, carryover_avail)
+                start, end = None, None
+        today = toronto_today()
+        # Which pots may pay comes from the request's rule date, same as approval.
+        carryover_days, waived_days = await leave_carryover_terms(
+            sf_eff, start, end, days, rule_date_from_fields(item_data, today), today,
+        )
+        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, carryover_days, waived_days)
         balance_unchanged = f"No balance deduction for {leave_type}" if projected_sp is None else ""
     elif request_type == "overtime":
         hours = float(item_data.get("Hours", 0) or 0)
@@ -845,7 +851,7 @@ async def team_pending(user: AuthUser):
         if emp_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "leave", **f}
-        _enrich_pending_item(item_data, "leave", staff_by_name, staff_by_id, sp_user_to_name)
+        await _enrich_pending_item(item_data, "leave", staff_by_name, staff_by_id, sp_user_to_name)
         pending.append(item_data)
 
     # Overtime — check Manager (via SP user ID mapping) OR submitter in my_employees
@@ -865,7 +871,7 @@ async def team_pending(user: AuthUser):
         if normalise_name(mgr_name) != normalise_name(manager_name) and submitter_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "overtime", **f}
-        _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
+        await _enrich_pending_item(item_data, "overtime", staff_by_name, staff_by_id, sp_user_to_name)
         pending.append(item_data)
 
     # Carryover/Payout — check submitter in my_employees
@@ -892,7 +898,7 @@ async def team_pending(user: AuthUser):
         if emp_name not in my_employees:
             continue
         item_data = {"id": item["id"], "request_type": "carryover-payout", **f}
-        _enrich_pending_item(item_data, "carryover-payout", staff_by_name, staff_by_id, sp_user_to_name)
+        await _enrich_pending_item(item_data, "carryover-payout", staff_by_name, staff_by_id, sp_user_to_name)
         pending.append(item_data)
 
     # Reuse the staff map already built above to project each pending row.
@@ -1577,7 +1583,7 @@ async def admin_pending():
                 if not pg and not _is_fully_processed(f, req_type):   # Postgres shows getting_ready (#455)
                     continue
                 item_data = {"id": item["id"], "request_type": req_type, **f}
-                _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
+                await _enrich_pending_item(item_data, req_type, staff_by_name, staff_by_id, sp_user_to_name)
                 pending.append(item_data)
         except Exception:
             logger.exception("Failed to fetch pending %s items", req_type)
@@ -2422,7 +2428,7 @@ async def admin_update_manager_assignment(employee_id: str, body: dict):
     # under the admin channel, not the automatic "system" default (#447).
     result = await update_employee_managers(
         int(employee_id), manager_ids,
-        history_source="admin_dashboard", history_actor="HR",
+        history_source="admin_dashboard", history_actor="Admin",
     )
     return result
 
@@ -2465,7 +2471,6 @@ async def admin_set_balances(body: dict):
         raise HTTPException(status_code=503, detail="Processing is currently disabled")
 
     from app.services.concurrency import lock_manager
-    from app.services.balance import recalculate_request_allow_date
     from app.repositories.staff_store import staff_store
 
     corrections = body.get("corrections", [])
@@ -2508,14 +2513,8 @@ async def admin_set_balances(body: dict):
                     settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
                     history_source="admin_dashboard",
                     history_reason="Balance correction from the admin dashboard.",
-                    history_actor="HR",                # the shared admin dashboard records as HR (#447)
+                    history_actor="Admin",             # the shared admin dashboard records as Admin (#447)
                 )
-
-                vacation = sp_updates.get("CurrentVacationBalance",
-                           float(fields.get("CurrentVacationBalance", 0) or 0))
-                carryover = sp_updates.get("CarryOver",
-                            float(fields.get("CarryOver", 0) or 0))
-                await recalculate_request_allow_date(emp_id, vacation, carryover)
 
                 report["applied"].append({
                     "employee_id": emp_id,
@@ -2609,7 +2608,7 @@ async def admin_update_entitlements(employee_id: str, body: EntitlementChanges):
     try:
         return await apply_entitlement_changes(
             employee_id, body.changes, body.reason, body.fields,
-            actor="HR",                                # the shared admin dashboard records as HR (#447)
+            actor="Admin",                             # the shared admin dashboard records as Admin (#447)
         )
     except LookupError as e:                           # employee not found
         raise HTTPException(status_code=404, detail=str(e))
