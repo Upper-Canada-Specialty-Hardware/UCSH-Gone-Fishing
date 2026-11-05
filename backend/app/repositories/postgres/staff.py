@@ -803,7 +803,7 @@ class PostgresStaffList:
                 nothing and the save is never logged twice.
             history_reason: The reason stored on those rows; required when
                 ``history_source`` is given.
-            history_actor: Who made the change ("HR", a manager's name, "system"),
+            history_actor: Who made the change ("Admin", a manager's name, "system"),
                 stored on those rows; None leaves the reader to fall back to
                 ``history_source`` (#447).
 

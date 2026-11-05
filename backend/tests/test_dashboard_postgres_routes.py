@@ -48,7 +48,7 @@ def test_team_create_uses_the_manager_staff_id_on_postgres(app_client, monkeypat
     async def boom(_email):
         raise AssertionError("the SharePoint user list must not be resolved on Postgres")
 
-    async def fake_create(form_data, supervisor_ids, *, history_source="admin_dashboard", history_actor="HR"):
+    async def fake_create(form_data, supervisor_ids, *, history_source="admin_dashboard", history_actor="Admin"):
         seen["ids"] = supervisor_ids
         seen["form"] = form_data
         seen["history"] = (history_source, history_actor)           # how the supervisor assignment is recorded (#447)

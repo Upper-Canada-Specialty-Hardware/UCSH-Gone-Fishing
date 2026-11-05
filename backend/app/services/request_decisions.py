@@ -592,12 +592,12 @@ def _decider_label(request: RequestRecord, decider_name: str | None = None) -> t
             manager (from ``_decider_name``), else None.
 
     Returns:
-        ``("admin", "HR")``, ``("manager", <name>)``, or ``(None, None)``.
+        ``("admin", "Admin")``, ``("manager", <name>)``, or ``(None, None)``.
     """
     actor = (request.decided_by or "").strip()                     # the recorded actor id/name
     channel = request.decided_channel or ""                        # where the decision came from
     if actor.lower() == "admin" or channel == "admin_dashboard":   # an admin acted, not the manager
-        return "admin", "HR"
+        return "admin", "Admin"
     if decider_name:                                               # another manager on the list decided
         return "manager", decider_name
     if request.manager_name:                                       # the assigned manager decided

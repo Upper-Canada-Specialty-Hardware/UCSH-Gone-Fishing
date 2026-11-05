@@ -18,7 +18,7 @@ export interface StaffChange {
   reason: string | null;
   /** Where it came from ("admin_dashboard", "manager_dashboard", "system", "sharepoint"). */
   source: string;
-  /** Who or what made it ("HR", a manager's name, "system", a SharePoint editor); null on older rows. */
+  /** Who or what made it ("Admin", a manager's name, "system", a SharePoint editor); null on older rows. */
   actor?: string | null;
   /** The SharePoint version label an imported row came from (e.g. "1.0"); null for an app edit. */
   version?: string | null;

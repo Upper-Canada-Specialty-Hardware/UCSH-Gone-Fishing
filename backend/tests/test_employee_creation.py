@@ -211,7 +211,7 @@ def test_creating_writes_the_record_then_the_manager(monkeypatch):
     assert calls["managers"] == (777, [501])
     # The admin create records the first supervisor as HR on the admin channel,
     # not the automatic "system" default (#447).
-    assert calls["manager_history"] == ("admin_dashboard", "HR")
+    assert calls["manager_history"] == ("admin_dashboard", "Admin")
 
 
 def test_a_duplicate_name_is_refused_before_anything_is_written(monkeypatch):

@@ -19,9 +19,9 @@ from app.models.staff_change import StaffChange
 logger = logging.getLogger(__name__)
 
 # Actor labels for the two app channels that have no per-person identity: the
-# admin dashboard shares one password (so "HR"), and an automatic change has no
+# admin dashboard shares one password (so "Admin"), and an automatic change has no
 # person behind it (so "system"). A manager edit records the manager's own name.
-ADMIN_ACTOR = "HR"
+ADMIN_ACTOR = "Admin"
 SYSTEM_ACTOR = "system"
 # The source the SharePoint version-history import writes under; its oldest
 # version per person seeds the starting-value rows the profile marks (#448).
@@ -124,7 +124,7 @@ async def record_changes(
         reason: Why HR made the change; required on every row written here (an
             app edit always has one; the SharePoint import writes its own rows).
         source: Where the change came from; "admin_dashboard" by default.
-        actor: Who or what made the change ("HR", a manager's name, "system");
+        actor: Who or what made the change ("Admin", a manager's name, "system");
             None leaves the reader to fall back to ``source``.
 
     Returns:
