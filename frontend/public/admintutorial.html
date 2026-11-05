@@ -1301,7 +1301,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         chip(it.status, CHIP[it.status]) + '</div>' + tfPills(it.segs, it.refund) + '</li>';
     };
     var chgRow = function (it) {
-      return '<li class="actchg">' + PENCIL + '<div><b>' + esc(it.field) + '</b> <span style="font-variant-numeric:tabular-nums">' + esc(it.from) + ' → ' + esc(it.to) + '</span><div class="small muted">Changed by HR · ' + esc(it.when) + ' · ' + esc(it.why) + '</div></div></li>';
+      return '<li class="actchg">' + PENCIL + '<div><b>' + esc(it.field) + '</b> <span style="font-variant-numeric:tabular-nums">' + esc(it.from) + ' → ' + esc(it.to) + '</span><div class="small muted">Changed by Admin · ' + esc(it.when) + ' · ' + esc(it.why) + '</div></div></li>';
     };
     var rowHtml = function (it) { return it.chg ? chgRow(it) : reqRow(it); };
     // Each year: a counted header; the current year open, older years folded; five rows then "Show N more".
@@ -1315,7 +1315,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }).join('');
     var right = '<section>' +
       '<div class="pfh"><h3>Activity</h3><span class="hint">Requests and changes, newest first</span></div>' +
-      '<p class="actleg">' + PENCIL + ' a change made by HR, not a request</p>' +
+      '<p class="actleg">' + PENCIL + ' a change made by Admin, not a request</p>' +
       (items.length ? '<div class="activity">' + activity + '</div>' : '<div class="empty">Nothing here yet.</div>') + '</section>';
 
     // The save bar (#306): appears once a tile is changed; it lists the changes,

@@ -159,7 +159,7 @@ class StaffStore:
             history_source: ``"system"`` / ``"admin_dashboard"`` to record history in
                 Postgres, or None when the caller records its own.
             history_reason: The reason stored with that history.
-            history_actor: Who made the change ("HR", a manager's name, "system"),
+            history_actor: Who made the change ("Admin", a manager's name, "system"),
                 stored on each history row; None leaves the reader to fall back to
                 ``history_source`` (#447).
 

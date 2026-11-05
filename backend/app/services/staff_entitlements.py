@@ -585,7 +585,7 @@ async def apply_entitlement_changes(
             dashboard by default, ``"manager_dashboard"`` when a manager edits
             their own teammate (#362). Kept within the ``StaffChange.source``
             column's 24-character limit by the caller.
-        actor: Who made the change, stored on each history row ("HR" for the
+        actor: Who made the change, stored on each history row ("Admin" for the
             admin dashboard, the manager's name for a team edit); None leaves the
             reader to fall back to ``source`` (#447). The automatic
             request-allow-date row is always recorded as the system.
@@ -675,7 +675,7 @@ async def apply_entitlement_changes(
                 [(c["column"], c["before"], c["after"]) for c in changes],
                 reason,
                 source=source,                        # admin, or a manager's own team (#362)
-                actor=actor,                          # "HR" / the manager's name (#447)
+                actor=actor,                          # "Admin" / the manager's name (#447)
             )
         except Exception:                            # history must not undo the save
             logger.exception(                        # keep the detail in the logs

@@ -1426,20 +1426,23 @@ function RequestRow({ r }: { r: any }) {
 
 /**
  * Who made a change, in words: the recorded actor when there is one ("Mandy
- * Leong", "HR"), with "system" read as "the system"; otherwise a fallback from
- * the source, so an older row with no actor still names a sensible author.
+ * Leong", "Admin"), with "system" read as "the system" and an older stored "HR"
+ * read as "Admin"; otherwise a fallback from the source, so an older row with no
+ * actor still names a sensible author.
  *
  * @param e - The change row.
  * @returns The author phrase to follow "by ".
  */
 function changeWho(e: StaffChange): string {
-  if (e.actor) return e.actor === 'system' ? 'the system' : e.actor;   // the recorded actor wins
+  if (e.actor === 'system') return 'the system';                       // an automatic change
+  if (e.actor === 'HR') return 'Admin';                                // older rows stored the shared dashboard as HR
+  if (e.actor) return e.actor;                                         // the recorded actor wins
   switch (e.source) {                                                  // fall back to the channel
-    case 'admin_dashboard': return 'HR';
+    case 'admin_dashboard': return 'Admin';
     case 'manager_dashboard': return 'a manager';
     case 'system': return 'the system';
     case 'sharepoint': return 'SharePoint';
-    default: return e.source || 'HR';
+    default: return e.source || 'Admin';
   }
 }
 

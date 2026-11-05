@@ -178,7 +178,7 @@ async def find_directory_clashes(name: str, email: str) -> dict:
 
 async def create_employee(
     form_data: dict, manager_sp_user_ids: list[int],
-    *, history_source: str = "admin_dashboard", history_actor: str | None = "HR",
+    *, history_source: str = "admin_dashboard", history_actor: str | None = "Admin",
 ) -> dict:
     """Create a fully set-up Staff Directory record and return it.
 
@@ -191,7 +191,7 @@ async def create_employee(
             the new person's history; the admin dashboard by default, or
             "manager_dashboard" when a manager adds the hire (#447). Both are human
             actions, so neither is the automatic "system" default.
-        history_actor: Who created the record: "HR" for the shared admin dashboard,
+        history_actor: Who created the record: "Admin" for the shared admin dashboard,
             the manager's own name when a manager adds the hire.
 
     Returns:

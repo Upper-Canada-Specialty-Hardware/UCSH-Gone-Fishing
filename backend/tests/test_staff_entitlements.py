@@ -253,6 +253,7 @@ def test_patch_route_applies_a_change(client, wired):
     assert resp.status_code == 200
     assert resp.json()["history_recorded"] is True
     assert len(wired["updates"]) == 1
+    assert wired["history"][0]["actor"] == "Admin"              # the shared dashboard signs its edits as Admin
 
 
 def test_patch_route_is_503_when_processing_is_off(client, wired, monkeypatch):

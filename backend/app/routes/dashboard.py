@@ -2428,7 +2428,7 @@ async def admin_update_manager_assignment(employee_id: str, body: dict):
     # under the admin channel, not the automatic "system" default (#447).
     result = await update_employee_managers(
         int(employee_id), manager_ids,
-        history_source="admin_dashboard", history_actor="HR",
+        history_source="admin_dashboard", history_actor="Admin",
     )
     return result
 
@@ -2513,7 +2513,7 @@ async def admin_set_balances(body: dict):
                     settings.SP_LIST_STAFF_DIRECTORY, emp_id, sp_updates,
                     history_source="admin_dashboard",
                     history_reason="Balance correction from the admin dashboard.",
-                    history_actor="HR",                # the shared admin dashboard records as HR (#447)
+                    history_actor="Admin",             # the shared admin dashboard records as Admin (#447)
                 )
 
                 report["applied"].append({
@@ -2608,7 +2608,7 @@ async def admin_update_entitlements(employee_id: str, body: EntitlementChanges):
     try:
         return await apply_entitlement_changes(
             employee_id, body.changes, body.reason, body.fields,
-            actor="HR",                                # the shared admin dashboard records as HR (#447)
+            actor="Admin",                             # the shared admin dashboard records as Admin (#447)
         )
     except LookupError as e:                           # employee not found
         raise HTTPException(status_code=404, detail=str(e))
