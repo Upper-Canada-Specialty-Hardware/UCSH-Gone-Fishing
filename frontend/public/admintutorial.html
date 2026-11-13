@@ -282,6 +282,13 @@ pre.resp { background: var(--chip); border-radius: 8px; padding: 10px; font-size
 .pot small { display: block; color: var(--muted); font-size: 12.5px; font-weight: 500; }
 .pot b { font-family: var(--display); font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .pot .chg { font-size: 12px; color: var(--muted); }
+/* The vacation tile split in two while carried-over days remain (VacationSplit, #551): two columns wide, a thin divider between the halves. */
+.pot.split { grid-column: span 2; display: flex; flex-wrap: wrap; gap: 16px; }
+.pot.split .half { flex: 1 1 140px; min-width: 0; }
+.pot.split .divider { width: 1px; background: var(--line); align-self: stretch; }
+.pot .chg.due { color: var(--warn); font-weight: 600; }
+/* On a phone the halves stack in one column and the divider goes, as in the real tile. */
+@media (max-width: 599px) { .pot.split { grid-column: auto; } .pot.split .divider { display: none; } }
 
 .tourcard { position: fixed; right: 20px; bottom: 20px; width: min(390px, calc(100vw - 32px)); background: #11151c; color: #e6e9ef; border-radius: 16px; padding: 16px 18px; box-shadow: 0 18px 50px rgba(0,0,0,.35); z-index: 45; display: grid; gap: 8px; font-family: var(--font); }
 .tourcard small { color: #9aa3ae; font-weight: 600; letter-spacing: .02em; }
@@ -576,6 +583,8 @@ body.rp-signed .rp-steps, body.rp-signed .rp-brand { display: none; }  /* signed
 .tpop p.ttodo { margin: 0; font-size: 13.5px; line-height: 1.5; }
 .tpop .tknow { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; }
 .tpop .tknow b, .tpop .ttodo b { color: var(--ink); font-weight: 700; }
+/* A step's balance rules: one short line each, under Good to know. */
+.tpop .trules { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.45; color: var(--muted); display: grid; gap: 3px; }
 .tpop .tnav { display: flex; gap: 8px; align-items: center; margin-top: 2px; flex-wrap: wrap; }
 .tpop .tdots { display: flex; gap: 4px; margin-right: auto; }
 .tpop .tdots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line2); }
@@ -717,7 +726,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     { id: 1, name: 'Avery Example', email: 'avery.example@ucsh.com', dept: 'Warehouse', loc: 'British Columbia', etype: 'Full Time', mgrs: ['Sam Supervisor', 'Pat Manager'], vac: 4.5, sick: 3, mu: 1, co: 0, vacY: 10, sickY: 5 },
     { id: 2, name: 'Jamie Sample', email: 'jamie.sample@ucsh.com', dept: 'Sales', loc: 'British Columbia', etype: 'Hourly', mgrs: ['Lee Lead'], vac: 0, sick: 2, mu: 0, co: 0, vacY: 0, sickY: 5, vacTaken: 3 },
     { id: 3, name: 'Casey Demo', email: 'casey.demo@ucsh.com', dept: 'Install', loc: 'Ottawa', mgrs: [], vac: 9, sick: 5, mu: 0, co: 2, vacY: 15, sickY: 5 },
-    { id: 4, name: 'Morgan Placeholder', email: 'morgan.p@ucsh.com', dept: 'Office', loc: 'Leaside', mgrs: ['Pat Manager', 'Lee Lead'], vac: 12, sick: 5, mu: 2, co: 3, vacY: 15, sickY: 5 },
+    { id: 4, name: 'Morgan Placeholder', email: 'morgan.p@ucsh.com', dept: 'Office', loc: 'Leaside', mgrs: ['Pat Manager', 'Lee Lead'], vac: 12, sick: 5, mu: 2, co: 3, po: 2, vacY: 15, sickY: 5 },   // po: the 2 days of payout approved in sample 1301
     { id: 5, name: 'Taylor Mock', email: 'taylor.mock@ucsh.com', dept: 'Warehouse', loc: 'British Columbia', mgrs: ['Sam Supervisor'], vac: 7, sick: 4, mu: 0, co: 1, vacY: 10, sickY: 5 },
     { id: 6, name: 'Quinn Fixture', email: 'quinn.f@ucaccess.com', dept: 'Install', loc: 'Ottawa', mgrs: ['Pat Manager'], vac: 2, sick: -0.5, mu: 0, co: 0, vacY: 10, sickY: 5 },
     { id: 7, name: 'Drew Stub', email: 'drew.stub@ucsh.com', dept: 'Door', loc: 'Toronto Victoria Park', mgrs: ['Lee Lead'], vac: 10, sick: 5, mu: 0, co: 0, vacY: 10, sickY: 5 },
@@ -1104,14 +1113,15 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       var rows = STAFF.filter(function (p) { return !p.archived && F[f](p) && (!q || (p.name + ' ' + p.email + ' ' + p.mgrs.join(' ') + ' ' + (p.dept || '') + ' ' + p.loc).toLowerCase().indexOf(q) >= 0); });
       var gone = STAFF.filter(function (p) { return p.archived; });        // departed employees, set aside (#358)
       // hourly: vacation is a counted total (not a balance) and there is no Make-Up or Carried over. (#300)
-      var balCells = function (x) { return isBC(x) ? '<td class="num muted">' + (x.vacTaken || 0) + ' taken</td>' + numCell(x.sick) + '<td class="num muted col-mu">n/a</td><td class="num muted col-co">n/a</td>' : numCell(x.vac) + numCell(x.sick) + numCell(x.mu, 'col-mu') + numCell(x.co, 'col-co'); };
+      var anyCo = rows.some(function (x) { return !isBC(x) && x.co > 0; });   // the carried-over column only when someone listed has some (#551)
+      var balCells = function (x) { return isBC(x) ? '<td class="num muted">' + (x.vacTaken || 0) + ' taken</td>' + numCell(x.sick) + '<td class="num muted col-mu">n/a</td>' + (anyCo ? '<td class="num muted col-co">n/a</td>' : '') : numCell(x.vac) + numCell(x.sick) + numCell(x.mu, 'col-mu') + (anyCo ? numCell(x.co, 'col-co') : ''); };   // its cell goes with it
       var rowHtml = function (x) { return '<tr class="click' + (x.id === state.sel ? ' sel' : '') + '" tabindex="0" data-sel="' + x.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(x.name) + '<div><b>' + esc(x.name) + '</b><span class="sub">' + esc(x.dept || 'No department') + ' · ' + esc(x.loc) + '</span></div></div></td><td class="col-mgrs">' + (x.mgrs.length ? esc(x.mgrs.join(', ')) : chip('None', 'err')) + '</td>' + balCells(x) + '</tr>'; };
       return head('Staff', 'Everyone with their balances and managers. Click a person to see and edit their whole record.', '<button class="btn out" type="button" data-go="assignments">Manage assignments</button>') +
         '<div class="paper"><div class="toolbar"><input class="input" data-search="staffq" placeholder="Search name, email, manager, department or location" value="' + esc(state.filter.staffq || '') + '" aria-label="Search staff">' +
         Object.keys(F).map(function (k) { return '<button class="fchip" type="button" data-filter="staff|' + k + '" aria-pressed="' + (k === f) + '">' + k + ' <span class="c">' + STAFF.filter(F[k]).length + '</span></button>'; }).join('') +
         '<button class="btn out" type="button" data-act="stafffilters">Filters</button><button class="btn out" type="button" data-act="exportstaff">Export to Excel</button></div>' +
         '<div class="small muted" style="padding:0 16px 10px">Filters narrow by location, department, salary or hourly, manager and system check; each active filter shows as a chip you can remove. Export opens a preview first, then downloads the .xlsx.</div>' +
-        (rows.length ? '<div class="scroll"><table class="stafftbl"><thead><tr><th>Employee</th><th class="col-mgrs">Managers</th><th class="num">2026 vacation</th><th class="num">Sick</th><th class="num col-mu">Make-Up</th><th class="num col-co">Carried over</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div><div class="staffnote small muted" style="padding:0 16px 10px">Some columns are hidden at this width. Open a person to see every value.</div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>' +
+        (rows.length ? '<div class="scroll"><table class="stafftbl"><thead><tr><th>Employee</th><th class="col-mgrs">Managers</th><th class="num">2026 vacation</th><th class="num">Sick</th><th class="num col-mu">Make-Up</th>' + (anyCo ? '<th class="num col-co">' + CO_POT + '</th>' : '') + '</tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table></div><div class="staffnote small muted" style="padding:0 16px 10px">Some columns are hidden at this width. Open a person to see every value.</div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>' +   // header named like the real column
         (gone.length ? '<div class="paper"><details class="actyr"><summary><span class="yrn">Archived</span>· ' + gone.length + ' departed ' + (gone.length === 1 ? 'employee' : 'employees') + '</summary><div class="small muted" style="padding:0 16px 8px">Set aside from the directory. Their pending requests stay pending until decided. Restore brings them back.</div><div class="scroll"><table><tbody>' +
           gone.map(function (p) { return '<tr><td><div style="display:flex;gap:10px;align-items:center">' + av(p.name) + '<div><b>' + esc(p.name) + '</b><span class="sub">' + esc(p.dept || 'No department') + ' · ' + esc(p.loc) + '</span></div></div></td><td>' + REQS.filter(function (r) { return r.who === p.name && r.status === 'Pending'; }).length + ' pending</td><td style="text-align:right"><button class="btn out" type="button" data-act="restore" data-pid="' + p.id + '">Restore</button></td></tr>'; }).join('') +
           '</tbody></table></div></details></div>' : '');
@@ -1254,7 +1264,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     // hourly: one Sick balance plus a vacation counter; no entitlement, Make-up, Carried over or Payout tiles. (#300)
     var POTS = isBC(p)
       ? [{ k: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { k: 'sick', label: 'Sick', meterOf: 'sickY' }]
-      : [{ k: 'vacY', label: 'Vacation entitlement', sub: 'days a year' }, { k: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { k: 'vac', label: VAC_POT, meterOf: 'vacY' }, { k: 'sick', label: 'Sick', meterOf: 'sickY' }, { k: 'mu', label: 'Make-up', sub: 'days (hours ÷ 8)' }, { k: 'co', label: CO_POT, sub: 'use by Mar 31, 2027' }];
+      : [{ k: 'vacY', label: 'Vacation entitlement', sub: 'days a year' }, { k: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { k: 'vac', label: VAC_POT, meterOf: 'vacY' },
+        { k: 'co', label: CO_POT, sub: 'use by Mar 31, 2027' },   // right after vacation, so the two read as a pair (#551)
+        { k: 'sick', label: 'Sick', meterOf: 'sickY' }, { k: 'mu', label: 'Make-up', sub: 'days (hours ÷ 8)' },
+        { k: 'po', label: TF_YEAR + ' payout', sub: 'days' }];   // always here, even at 0: the profile is where HR edits it (#554)
     var tiles = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">' + POTS.map(balTile).join('') +
       (isBC(p) ? '<div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px;background:var(--bg)"><span class="small muted">Vacation taken</span><b style="font-size:22px">' + (p.vacTaken || 0) + '</b><span class="small muted">days, counted</span></div>' : '') + '</div>';
     var details = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">' +
@@ -1324,7 +1337,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     // needs a reason, and nothing is written until Save is pressed.
     var bar = '';
     if (Object.keys(ed).length) {
-      var LBL = { vacY: 'Vacation entitlement', sickY: 'Sick entitlement', vac: VAC_POT, sick: 'Sick', mu: 'Make-up', co: CO_POT };
+      var LBL = { vacY: 'Vacation entitlement', sickY: 'Sick entitlement', vac: VAC_POT, sick: 'Sick', mu: 'Make-up', co: CO_POT, po: TF_YEAR + ' payout' };   // a payout edit reads "2026 payout"
       var summary = Object.keys(ed).map(function (k) { return (LBL[k] || k) + ' <b>' + num(p[k] || 0) + ' &rarr; ' + num(ed[k]) + '</b>'; }).join(' · ');
       bar = '<div style="border-top:1px solid var(--line);padding:12px 16px;display:grid;gap:10px;background:var(--bg)"><div class="small">' + (Object.keys(ed).length === 1 ? '1 change: ' : Object.keys(ed).length + ' changes: ') + summary + '</div>' +
         '<input class="input" id="balReason" placeholder="Reason, required. e.g. Day off Oct 6, approved verbally by Sam Supervisor" aria-label="Reason for the change">' +
@@ -1578,7 +1591,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         var have3 = Math.max(me3.co, 0) + Math.max(me3.vac, 0);   // both vacation lines; a line below zero has nothing to pay
         var refused3 = have3 < d3;                                // fewer days than asked: rejected automatically
         var fromCo = Math.min(Math.max(me3.co, 0), d3), fromVac = d3 - fromCo;   // carried-over days first, the rest from 2026 vacation
-        var payRows = refused3 ? [] : (fromCo > 0 ? [[CO_POT, me3.co, me3.co - fromCo]] : []).concat(fromVac > 0 ? [[VAC_POT, me3.vac, me3.vac - fromVac]] : [], [['Payout', po3, po3 + d3]]);
+        var payRows = refused3 ? [] : (fromCo > 0 ? [[CO_POT, me3.co, me3.co - fromCo]] : []).concat(fromVac > 0 ? [[VAC_POT, me3.vac, me3.vac - fromVac]] : [], [[TF_YEAR + ' payout', po3, po3 + d3]]);   // the payout row reads "2026 payout", as on BalancePreview
         // Taken from: carried-over days, then vacation, into this year's payout; nothing when it would be rejected.
         var paySegs = refused3 || d3 <= 0 ? [] : (fromCo > 0 ? [{ cls: 'co', amt: tfNum(fromCo), label: 'carried over' }] : []).concat(fromVac > 0 ? [{ cls: 'vac', amt: tfNum(fromVac), label: 'vacation' }] : [], [{ cls: 'pay', amt: '', label: '→ ' + TF_YEAR + ' payout' }]);
         // The balance check first, then the 5-day yearly cap (the system rejects a payout past it).
@@ -1717,7 +1730,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       ['Email', 'First screen. A returning device skips straight to the form.', {}],
       ['Code', 'Six boxes; typing or pasting fills them and moves on. Resend unlocks after 60 seconds.', { step: 'code', email: 'avery.example@ucsh.com' }]]],
     ['Leave', [
-      ['Vacation', 'Spends Make-Up first, then 2026 vacation, then Carried over.', mix(SIGNED, { leave: 'Vacation', notes: 'Family visit' })],
+      ['Vacation', 'Spends Make-Up first, then 2026 vacation (it ends Dec 31), then carried over. Vacation may go below 0; the manager decides.', mix(SIGNED, { leave: 'Vacation', notes: 'Family visit' })],   // Apr to Dec order
       ['Sick or Personal Day', 'Spends Sick, then Make-Up, then 2026 vacation, then Carried over. Never refused.', mix(SIGNED, { leave: 'Sick or Personal Day', start: '2026-11-23', end: '2026-11-23' })],
       ['Half Day or Partial Day Off', 'One date and the hours away; 8 hours is a day.', mix(SIGNED, { leave: 'Half Day or Partial Day Off', hours: '4' })],
       ['Vacation over a holiday', 'Remembrance Day (a British Columbia holiday) is not counted.', mix(SIGNED, { leave: 'Vacation', start: '2026-11-09', end: '2026-11-13' })],
@@ -1726,7 +1739,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       ['Jury Duty', 'Uses no balance.', mix(SIGNED, { leave: 'Jury Duty', start: '2026-12-01', end: '2026-12-02' })]]],
     ['Overtime, payout', [
       ['Overtime', 'Entered in hours, added to Make-Up as days.', mix(SIGNED, { type: 'overtime', start: '2026-10-24', hours: '6', notes: 'Inventory count' })],
-      ['Pay out', 'Takes Carried over first, then 2026 vacation. Up to 5 days a year.', mix(SIGNED, { type: 'carryover-payout', hours: '1' })],
+      ['Pay out', 'Takes carried over first, then 2026 vacation, never below 0. Up to 5 days a year.', mix(SIGNED, { type: 'carryover-payout', hours: '1' })],   // mirrors simulate_carryover_payout_impact
       ['Pay out more than the balance', 'Allowed to send; the system rejects it.', mix(SIGNED, { type: 'carryover-payout', hours: '6' })]]],
     ['Finished', [
       ['Sent', 'Goes to their manager now.', mix(SIGNED, { step: 'done' })]]],
@@ -1837,19 +1850,22 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           act: function () { var b = document.querySelector('.queue[data-go="pending"]'); if (b) b.click(); } },
         { title: 'Payout dates', target: '.co-card',
           todo: 'Payout opens only in a window you set. Pick a first and last day, then <b>Save dates</b>. Export to Excel downloads the spreadsheet whenever you need it.',
-          know: 'With no dates saved, staff see Payout greyed out on the request page. Saving a window opens it until the last day; Clear closes it again. Nobody asks to carry days over: on Jan 1, unused 2026 vacation moves to Carried over by itself (use by Mar 31, 2027), vacation refills to the entitlement, and days below zero are owed and come off the new entitlement.',
+          know: 'With no dates saved, staff see Payout greyed out on the request page. Saving a window opens it until the last day; Clear closes it again. Nobody asks to carry days over: on Jan 1, unused 2026 vacation moves to carried over by itself (use by Mar 31, 2027), vacation refills to the entitlement, and days below zero are owed and come off the new entitlement.',
+          rules: ['A payout cannot take vacation below 0 and is capped at 5 days a year.'],   // the payout rule, beside the payout window
           enter: function () { adminAt('home'); },
           signal: function () { return !!(state.coDates && (state.coDates.first || state.coDates.last)); },
           act: function () { var f = document.getElementById('coFirst'); if (f) f.value = '2026-11-01'; var l = document.getElementById('coLast'); if (l) l.value = '2026-11-30'; var b = document.querySelector('[data-act="savecodates"]'); if (b) b.click(); } },
         { title: 'Pending approvals', target: 'tr[data-rsel="1432|Avery Example|Pending"]',
           todo: 'These are waiting on a manager, oldest first. Select the top request to open it.',
           know: 'Managers normally decide their own team\'s requests. This list shows where each one is, so you can help it along.',
+          rules: ['Leave dated Jan 1 to Mar 31, 2027 booked now is refused when Make-Up, carried over and 2026 vacation above 0 cannot cover it; leave after Mar 31, 2027 can be booked from Jan 1, 2027.'],   // refused at sending, so it never reaches this list
           enter: function () { adminAt('pending'); },
           signal: function () { return !!state.reqSel; },
           act: function () { var b = document.querySelector('tr[data-rsel="1432|Avery Example|Pending"]'); if (b) b.click(); } },
         { title: 'What approving would do', target: '.reqopen .pbody',
           todo: 'The panel shows the request, its manager, a <b>What approving does</b> line of which balances the days come from, and the balances before and after. Edit, Send reminder, Approve and Reject are all here.',
-          know: 'Balances only move when a manager approves. The chips name each balance the days come out of, and the panel shows the result in advance. If approving would take a balance below zero (vacation, or sick for hourly staff), it shows in red but still lets the manager approve.',
+          know: 'Balances only move when a manager approves. The chips name each balance the days come out of, and the panel shows the result in advance. Sick for hourly staff may go below zero too, shown in red the same way.',
+          rules: ['Vacation can go below 0 for this year\'s dates; the manager decides, seeing the red below-zero line.', 'Carried-over days never go below 0.', 'April to December, 2026 vacation is used first (it ends Dec 31), then carried over; January to March, carried over first (it ends Mar 31).'],   // how the balance engine spends a request
           enter: function () { adminAt('pending'); state.reqSel = '1432|Avery Example|Pending'; } },
         { title: 'Edit before approving', target: '.reqopen [data-act="edit"]',
           todo: 'Wrong dates or the wrong type? Select <b>Edit</b> to fix the request before it is approved.',
@@ -1927,13 +1943,13 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           act: function () { var pick = document.getElementById('checkPick'); if (pick) pick.value = 'Casey Demo'; var b = document.querySelector('[data-act="checkpicked"]'); if (b) b.click(); } },
         { title: 'Staff', target: 'tr[data-sel="1"]',
           todo: 'Staff lists everyone with their balances and managers, salaried and hourly. Search, filter to below zero or no manager, group by location, or Export to Excel. Select a person to open their whole record.',
-          know: 'Hourly staff show vacation as a counted total, not a balance, and have no Make-Up or Carried over. Departed employees sit in the Archived section at the foot.',
+          know: 'Hourly staff show vacation as a counted total, not a balance, and have no Make-Up or carried over. The carried-over column shows only when someone listed has some. Departed employees sit in the Archived section at the foot.',
           enter: function () { adminAt('staff'); },
           signal: function () { return !!state.sel; },
           act: function () { var b = document.querySelector('tr[data-sel="1"]'); if (b) b.click(); } },
         { title: 'Edit a balance, with a reason', target: '[data-act="savebal"]',
           todo: 'Their record shows balances, details and an Activity list. Select a balance tile to change it; a save bar appears. Type a reason, then <b>Save</b>.',
-          know: 'Nothing is written until you type a reason and press Save, so a mistaken tap costs nothing. The change and its reason show in Activity.',
+          know: 'Nothing is written until you type a reason and press Save, so a mistaken tap costs nothing. The change and its reason show in Activity. Carried over and 2026 payout always show here, even at 0, since this is where they are changed.',
           enter: function () { adminAt('staff'); var a = person('Avery Example'); state.sel = a ? a.id : null; state.balEdits = { vac: num((a ? a.vac : 0) + 0.5) }; },
           signal: function () { return !state.balEdits || !Object.keys(state.balEdits).length; },
           act: function () { var ri = document.getElementById('balReason'); if (ri) ri.value = 'Day off Oct 6, approved verbally'; var b = document.querySelector('[data-act="savebal"]'); if (b) b.click(); } },
@@ -2041,6 +2057,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<h3>' + esc(s.title) + '</h3>' +
       '<p class="ttodo">' + s.todo + '</p>' +
       (s.know ? '<p class="tknow"><b>Good to know</b> ' + esc(s.know) + '</p>' : '') +
+      (s.rules ? '<ul class="trules">' + s.rules.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>' : '') +   // balance rules, one short line each
       '<div class="tnav"><span class="tdots">' + dots + '</span>' +
         (TV.i > 0 ? '<button class="tback" type="button" data-tback="1">Back</button>' : '') +
         '<button class="tnext" type="button" data-tnext="1">' + (last ? 'Finish' : 'Next') + '</button></div>' +
@@ -2386,12 +2403,22 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       return html + '<div class="paper"><div class="scroll"><table><thead><tr><th>Type</th><th>Status</th><th>When</th><th>Taken from</th><th class="num">Amount</th><th class="num">Request</th></tr></thead><tbody>' +
         all.map(function (r) { return '<tr><td><b>' + esc(r.kind) + '</b></td><td>' + chip(r.status, CHIP[r.status]) + '</td><td>' + esc(r.when) + '</td><td>' + tfPills(histSegs(r)) + '</td><td class="num">' + (r.hours ? r.hours + ' h' : r.days + (r.days === 1 ? ' day' : ' days')) + '</td><td class="num muted">#' + r.id + '</td></tr>'; }).join('') + '</tbody></table></div></div>';
     }
-    var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + (of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : '') + '<div class="chg">' + note + '</div></div>'; };
+    var bar = function (v, of) { return of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : ''; };   // share of the entitlement left, kept 0 to 100
+    var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + bar(v, of) + '<div class="chg">' + note + '</div></div>'; };
+    // The vacation tile split in two (VacationSplit, #551): 2026 vacation left, carried over right, a thin divider between.
+    var vacSplit = function () {
+      var half = function (label, v, under) { return '<div class="half"><small>' + label + '</small><b>' + v + '</b>' + under + '</div>'; };   // label, number, then what sits under it
+      return '<div class="pot split">' + half(VAC_POT, p.vac, bar(p.vac, p.vacY) + '<div class="chg">left of ' + p.vacY + ' days this year</div>') +   // this year's days, with the entitlement bar
+        '<span class="divider" aria-hidden="true"></span>' +    // hidden on a phone, where the halves stack
+        half(CO_POT, p.co, '<div class="chg due">use by Mar 31, 2027</div>') + '</div>';   // carried-over days, the deadline in the warning colour
+    };
     // hourly: one Sick balance, and vacation as a counted total (not a balance). No Make-Up, Carried over or Payout. (#300)
-    // Salaried: Carried over shows only while it holds days, with its use-by date (#551).
+    // Salaried: vacation is split while carried-over days remain, else the plain tile; payout only while it is not 0 (#551, #554).
     var potsRow = isBC(p)
       ? pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Vacation taken', p.vacTaken || 0, 'days, this year. Counted, not a balance.')
-      : pot(VAC_POT, p.vac, 'left of ' + p.vacY + ' days this year', p.vacY) + pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') + (p.co > 0 ? pot(CO_POT, p.co, 'use by Mar 31, 2027') : '') + pot('Payout', p.po || 0, 'days set aside to be paid out');
+      : (p.co > 0 ? vacSplit() : pot(VAC_POT, p.vac, 'left of ' + p.vacY + ' days this year', p.vacY)) +   // one tile either way, no separate Carried over tile
+        pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') +
+        ((p.po || 0) !== 0 ? pot(TF_YEAR + ' payout', p.po, 'days set aside to be paid out') : '');   // "2026 payout", hidden at 0
     return html + '<div class="pots5">' + potsRow + '</div>' +
       '<div class="paper">' + grp('Waiting on your manager', pend, 'Nothing waiting.') + grp('Coming up', [], 'No approved time off coming up.') + grp('Recent', past.slice(0, 5), 'Nothing yet.') +
       '<div class="pad" style="padding-top:8px;border-top:1px solid var(--line)"><button class="linkbtn" type="button" data-etab="history">See all ' + all.length + ' requests in History</button></div></div>';

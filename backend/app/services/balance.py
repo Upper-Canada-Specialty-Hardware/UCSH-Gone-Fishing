@@ -27,8 +27,9 @@ def cascade_current_year_pure(
 
     A deficit in a pot overflows into the next pot down the chain. Whichever
     vacation days expire first pay first (#551): with ``vacation_first`` the
-    current-year days above 0 pay before carried-over days (April to December, when
-    both run out on the same Mar 31); otherwise carried-over days go first. Carry-over absorbs up to
+    current-year days above 0 pay before carried-over days (April to December: the
+    yearly entitlement ends Dec 31, before carried-over days end on Mar 31);
+    otherwise carried-over days go first. Carry-over absorbs up to
     ``carryover_days``, and the rest lands on Vacation. Spending never drives
     carry-over more negative than it started: a deficit this request creates moves
     on to Vacation, while a pre-existing negative stays put for the employee-setup
@@ -54,7 +55,7 @@ def cascade_current_year_pure(
             continue
         if overtime < 0:                              # Make-Up overdrawn: where the deficit goes next
             deficit = -overtime
-            if vacation_first:                        # current-year days expire no sooner: they pay first
+            if vacation_first:                        # the yearly entitlement ends first (Dec 31): it pays first
                 from_vacation = min(deficit, max(vacation, 0.0))
                 vacation -= from_vacation
                 deficit -= from_vacation
@@ -239,9 +240,10 @@ def carryover_terms(carryover_days: float, on: date, today: date) -> tuple[float
 
     Carried-over days pay for days dated up to their Mar 31. Once that has passed
     (created Mar 30 for Mar 31, approved Apr 2) they have been reset, so
-    current-year vacation pays instead (#551). From April to December the
-    current-year days and the carried-over days both run out on the same Mar 31, so
-    current-year days pay first; from January to March carried-over days go first.
+    current-year vacation pays instead (#551). Whichever ends first pays first: from
+    April to December the yearly entitlement ends Dec 31, before the carried-over
+    days' Mar 31, so current-year days pay first; from January to March the
+    carried-over days end first, so they go first.
 
     Args:
         carryover_days: The days dated inside the rule date's carry-over period.
@@ -252,7 +254,7 @@ def carryover_terms(carryover_days: float, on: date, today: date) -> tuple[float
         ``(carryover_days, vacation_first)`` for ``simulate_leave_impact``.
     """
     _, period_end = carryover_period(on)
-    vacation_first = today.month >= 4                 # spent Apr to Dec: both run out on the same Mar 31
+    vacation_first = today.month >= 4                 # spent Apr to Dec: the yearly entitlement ends first, Dec 31
     if period_end < today:                            # the period is over: current-year days pay
         return 0.0, vacation_first
     return carryover_days, vacation_first
