@@ -1,10 +1,11 @@
-"""The automatic year-end carry-over (#553).
+"""The January 1 refresh and automatic year-end carry-over (#553, #319, #546).
 
-On January 1 (Toronto), each salaried person's unused vacation moves to their
-next-year line (``CarryOver``), where it can be used until March 31, and their
-vacation is refilled to its yearly entitlement. A negative leftover is debt: the
-new entitlement pays it first (#546). The April 1 reset then clears what is left
-of the next-year line, as before.
+On January 1 (Toronto), for each salaried person: unused vacation moves to their
+carried-over days (``CarryOver``), usable until March 31, and vacation is
+refilled to its yearly entitlement; sick is refilled to its entitlement; the
+yearly payout total starts again at 0. Hourly staff get their sick refill only.
+A negative leftover is time owed: the new entitlement pays it first (#546). The
+April 1 reset then clears what is left of the carried-over days, as before.
 
 It is the "actioned carry-over" management approved: done by the system, no form,
 no manager. It only runs while ``YEAR_END_CARRY_ENABLED`` is on, so it can never
@@ -34,7 +35,20 @@ logger = logging.getLogger(__name__)
 TORONTO_TZ = ZoneInfo("America/Toronto")
 CHECK_INTERVAL = 60          # seconds between checks, like the April 1 reset
 RUN_AFTER_MINUTE = 5         # 00:05 on Jan 1, clear of midnight
-HISTORY_REASON = "Automatic year end carry-over."
+HISTORY_REASON = "January 1 refresh and automatic year end carry-over."
+
+
+def sick_refill_pure(sick: float, entitlement: float) -> float:
+    """Sick after the January 1 refill. Pure.
+
+    Args:
+        sick: Sick left at the end of the year.
+        entitlement: The yearly sick entitlement.
+
+    Returns:
+        The entitlement, less any days owed; positive leftovers do not carry.
+    """
+    return entitlement + (sick if sick < 0 else 0.0)
 
 
 def carry_pure(vacation: float, carry_over: float, entitlement: float) -> dict:
@@ -140,21 +154,30 @@ async def run_year_end_carry(year: int) -> dict:
     for item in items:
         emp_id = str(item.get("id"))
         fields = item.get("fields", {})
-        if emp_id in done or is_hourly(fields) or _archived(fields):
-            continue                                          # once per year; hourly have no vacation balance
+        if emp_id in done or _archived(fields):
+            continue                                          # once per year, active people only
         name = fields.get("Title", "Unknown")
         try:
             async with lock_manager.lock(emp_id):             # same lock as every balance write
                 fresh = await staff_store.get_list_item(settings.SP_LIST_STAFF_DIRECTORY, emp_id)
                 ff = fresh.get("fields", {})
-                result = carry_pure(
-                    float(ff.get("CurrentVacationBalance", 0) or 0),
-                    float(ff.get("CarryOver", 0) or 0),
-                    float(ff.get("DefaultYearlyVacationDays", 0) or 0),
-                )
+                writes = {"CurrentSickDayBalance": sick_refill_pure(   # everyone's sick refills (#319)
+                    float(ff.get("CurrentSickDayBalance", 0) or 0), float(ff.get("SickDayEntitlement", 0) or 0),
+                )}
+                result = {"moved": 0.0}
+                if not is_hourly(ff):                         # hourly have no vacation balance or payout
+                    result = carry_pure(
+                        float(ff.get("CurrentVacationBalance", 0) or 0),
+                        float(ff.get("CarryOver", 0) or 0),
+                        float(ff.get("DefaultYearlyVacationDays", 0) or 0),
+                    )
+                    writes.update({
+                        "CurrentVacationBalance": result["CurrentVacationBalance"],
+                        "CarryOver": result["CarryOver"],
+                        "Payout": 0.0,                        # the 5-day payout cap is per year
+                    })
                 await staff_store.update_list_item_fields(
-                    settings.SP_LIST_STAFF_DIRECTORY, emp_id,
-                    {"CurrentVacationBalance": result["CurrentVacationBalance"], "CarryOver": result["CarryOver"]},
+                    settings.SP_LIST_STAFF_DIRECTORY, emp_id, writes,
                     history_source="system", history_reason=HISTORY_REASON, history_actor="system",
                 )
                 await _mark_done(year, emp_id)                # recorded right after the write
@@ -222,7 +245,7 @@ async def _send_admin_summary(year: int, carried: list[dict], failed: list[dict]
     )
     failed_rows = "".join(f"<li>{html.escape(p['name'])}</li>" for p in failed)
     body = (
-        f"<p>Year-end carry for {year}: {len(carried)} people refreshed, {len(failed)} failed.</p>"
+        f"<p>January 1 refresh for {year + 1}: {len(carried)} people refreshed, {len(failed)} failed.</p>"
         + (f"<p>Moved to {year + 1}:</p><ul>{rows}</ul>" if rows else "")
         + (f"<p>Failed, fix by hand:</p><ul>{failed_rows}</ul>" if failed_rows else "")
     )

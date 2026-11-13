@@ -261,7 +261,7 @@ async def auto_calculate_days(leave_request_id: str | int):
 async def _carryover_terms_from_fields(
     fields: dict, emp_fields: dict, days: float,
 ) -> tuple[float, float]:
-    """``(carryover_days, waived_days)`` for a leave in the SharePoint list-item shape.
+    """``(carryover_days, vacation_first)`` for a leave in the SharePoint list-item shape.
 
     Args:
         fields: The request's fields (its dates, and what its rule date is read from).
@@ -979,8 +979,8 @@ async def approve_leave_request(
 
             # One cascade for every date: carry-over is capped at the days dated
             # inside its period, so the rest lands on Vacation instead.
-            carryover_days, waived_days = await _carryover_terms_from_fields(fields, ef, days)
-            balances = await cascade_current_year(employee_id, carryover_days, waived_days)
+            carryover_days, vacation_first = await _carryover_terms_from_fields(fields, ef, days)
+            balances = await cascade_current_year(employee_id, carryover_days, vacation_first)
             cascade_label = "Cascade" if carryover_days else "Cascade (carry-over not usable for these dates)"
 
             cascade_after = {k: balances[k] for k in pre_cascade if k in balances}

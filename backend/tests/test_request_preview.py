@@ -159,15 +159,15 @@ def test_a_date_this_year_leaves_the_next_year_line_alone_with_no_note():
     assert out["projected"]["CarryOver"] == 3
 
 
-def test_a_request_crossing_new_year_uses_the_next_year_line_for_january_only():
+def test_a_request_crossing_new_year_spends_current_year_days_first_in_november():
     out = _vacation("2026-12-30", "2027-01-04", holidays=[{"Date": "2027-01-01", "Title": "New Year"}])
-    assert out["projected"]["CarryOver"] == 2
+    assert out["projected"]["CarryOver"] == 3 and out["projected"]["CurrentVacationBalance"] == 7
 
 
 def test_a_request_inside_the_dates_has_no_note():
     out = _vacation("2027-02-01", "2027-02-02")
     assert not [note for note in out["notes"] if "Carry-over" in note]
-    assert out["projected"]["CarryOver"] == 1
+    assert out["projected"]["CarryOver"] == 3                      # spent in Nov: vacation first
 
 
 def test_no_carry_over_means_no_note():
@@ -188,7 +188,7 @@ def test_a_refused_preview_never_shows_vacation_paying_for_next_year():
     assert short["projected"]["CurrentVacationBalance"] == 0
     crossing = _vacation("2027-03-30", "2027-04-05")               # 2 days in the period, 3 after it
     assert crossing["booking_limit"]["message"] == "Leave dated after March 31, 2027 can be booked from January 1, 2027."
-    assert crossing["projected"]["CarryOver"] == 1
+    assert crossing["projected"]["CarryOver"] == 3
     assert crossing["projected"]["CurrentVacationBalance"] == CARRYING["CurrentVacationBalance"]
 
 

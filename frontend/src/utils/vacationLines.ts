@@ -4,16 +4,16 @@ import { today } from './dates';
  * The names of the two vacation lines staff see (#551).
  *
  * The current-year line is the person's vacation for this year. The second line
- * (stored as CarryOver) is named by its dates, never "carry-over": from April to
- * December it holds days for January 1 to March 31 of next year; from January to
- * March it holds what is left from last year, until March 31.
+ * (stored as CarryOver) is their carried-over days: usable any time, for any
+ * date, until they expire on March 31. Unused vacation lands there on its own on
+ * January 1.
  */
 export interface VacationLabels {
   /** The current-year line's name, e.g. "2026 vacation". */
   current: string;
-  /** The second line's name: "Next year" or "From 2026". */
+  /** The second line's name. */
   next: string;
-  /** One short line under the second one, e.g. "for Jan 1 to Mar 31, 2027". */
+  /** One short line under the second one: its deadline, e.g. "use by Mar 31, 2027". */
   nextNote: string;
 }
 
@@ -21,14 +21,15 @@ export interface VacationLabels {
  * The labels for a given day.
  *
  * @param on - The day to label for; defaults to today.
- * @returns The two names and the note.
+ * @returns The two names and the deadline note.
  */
 export function vacationLabels(on: Date = today()): VacationLabels {
   const year = on.getFullYear();                     // the calendar year staff are in
-  const earlyYear = on.getMonth() <= 2;              // Jan to Mar: the second line holds last year's days
+  // Jan to Mar: the carried days expire this Mar 31; Apr to Dec: next year's.
+  const expires = on.getMonth() <= 2 ? year : year + 1;
   return {
     current: `${year} vacation`,
-    next: earlyYear ? `From ${year - 1}` : 'Next year',
-    nextNote: earlyYear ? 'until Mar 31, used first' : `for Jan 1 to Mar 31, ${year + 1}`,
+    next: 'Carried over',
+    nextNote: `use by Mar 31, ${expires}`,
   };
 }
