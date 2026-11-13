@@ -370,6 +370,8 @@ export default function EmployeeDashboard() {
   /** Open a new request; the request page uses the same sign-in. */
   const makeRequest = () => navigate('/my/request');
 
+  // Every hook runs before the early return below, or React fails the whole page.
+  const payoutLabel = usePayoutLabel();                         // the payout year, from the admin payout window (#554)
   if (loading) return <EmployeeSkeleton tab={tab} />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
@@ -379,7 +381,6 @@ export default function EmployeeDashboard() {
   const hourlyStaff = isHourly(b);                       // hourly: Sick plus the vacation counter only (#300)
   const resetIn = daysToCarryReset();
   const lines = vacationLabels();                               // the two vacation lines, named by year (#551)
-  const payoutLabel = usePayoutLabel();                         // the payout year, from the admin payout window (#554)
   // The "by kind" bars: the longest bar fills the track.
   const kindRows = myKindRows(mine);
   const top = Math.max(1, ...kindRows.map((r) => r[1]));
