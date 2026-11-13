@@ -688,10 +688,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   var MANAGERS = ['Sam Supervisor', 'Lee Lead', 'Pat Manager'];
   var LOCATIONS = ['Toronto Victoria Park', 'Toronto Warden', 'Ottawa', 'Leaside', 'Barrie', 'British Columbia', 'Newfound Land'];
   var REQS = [
-    { id: 1432, who: 'Avery Example', type: 'Leave', kind: 'Vacation', from: ['Nov', 2], to: ['Nov', 4], when: 'Nov 2 to Nov 4, 2026', days: 3, desc: 'Family visit', mgr: 'Sam Supervisor', status: 'Pending', age: 12, cur: { 'Make-Up': 1, Vacation: 4.5 }, next: { 'Make-Up': 0, Vacation: 2.5 }, overlap: 'Taylor Mock is also off Nov 3' },
+    { id: 1432, who: 'Avery Example', type: 'Leave', kind: 'Vacation', from: ['Nov', 2], to: ['Nov', 4], when: 'Nov 2 to Nov 4, 2026', days: 3, desc: 'Family visit', mgr: 'Sam Supervisor', status: 'Pending', age: 12, cur: { 'Make-Up': 1, '2026 vacation': 4.5 }, next: { 'Make-Up': 0, '2026 vacation': 2.5 }, overlap: 'Taylor Mock is also off Nov 3' },
     { id: 1440, who: 'Jamie Sample', type: 'Leave', kind: 'Sick', from: ['Oct', 5], to: ['Oct', 7], when: 'Oct 5 to Oct 7, 2026', days: 3, desc: 'Flu', mgr: 'Lee Lead', status: 'Pending', age: 4, bc: true, cur: { Sick: 2 }, next: { Sick: -1 } },
-    { id: 1441, who: 'Taylor Mock', type: 'Leave', kind: 'Half day', from: ['Nov', 3], when: 'Nov 3, 2026 (PM)', days: 0.5, desc: 'Appointment', mgr: 'Sam Supervisor', status: 'Pending', age: 2, cur: { 'Carry Over': 1 }, next: { 'Carry Over': 0.5 }, overlap: 'Avery Example is off Nov 2 to 4' },
-    { id: 1444, who: 'Morgan Placeholder', type: 'Carry Over', kind: 'Carry Over', when: '3 days into next year', days: 3, desc: '', mgr: 'Pat Manager', status: 'Pending', age: 9, cur: { Vacation: 12, 'Carry Over': 3 }, next: { Vacation: 9, 'Carry Over': 6 } },
+    { id: 1441, who: 'Taylor Mock', type: 'Leave', kind: 'Half day', from: ['Nov', 3], when: 'Nov 3, 2026 (PM)', days: 0.5, desc: 'Appointment', mgr: 'Sam Supervisor', status: 'Pending', age: 2, cur: { '2026 vacation': 7 }, next: { '2026 vacation': 6.5 }, overlap: 'Avery Example is off Nov 2 to 4' },
+    { id: 1444, who: 'Morgan Placeholder', type: 'Carry Over', kind: 'Carry Over', when: '3 days into next year', days: 3, desc: '', mgr: 'Pat Manager', status: 'Pending', age: 9, cur: { '2026 vacation': 12, 'Carried over': 3 }, next: { '2026 vacation': 9, 'Carried over': 6 } },
     { id: 1436, who: 'Casey Demo', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1, 2026', days: 1, desc: '', mgr: '', status: 'Stuck', age: 6, issues: ['No Managers (Staff Dir)'] },
     { id: 1437, who: 'Drew Stub', type: 'Leave', kind: 'Vacation', from: ['Oct', 20], when: 'Oct 20, 2026', days: 0, desc: '', mgr: 'Lee Lead', status: 'Stuck', age: 5, issues: ['Days Not Calculated', 'Approval Email Never Sent'] },
     { id: 1388, who: 'Avery Example', type: 'Leave', kind: 'Sick', from: ['Oct', 1], when: 'Oct 1, 2026', days: 1, desc: '', mgr: 'Sam Supervisor', status: 'Approved', age: 0, back: '1 day goes back to Sick' },
@@ -725,11 +725,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     refund: { role: 'admin', screen: 'requests', view: 'all', hint: 'Find an approved request and click <b>Refund</b>. It shows what goes back before it happens.' },
     bulk: { role: 'admin', screen: 'staff', hint: 'Click <b>Manage assignments</b> (today\'s wizard): add, remove or replace a manager across a whole team, with a preview first.' },
     manager: { role: 'manager', mtab: 'today', hint: 'Each request shows the dates, what it does to each balance, and who else on the team is off. Decide, and the list moves on.' },
-    employee: { role: 'employee', hint: 'Their record and every manager up top, all five balances, then requests by what they are waiting on. <b>This year</b> has their numbers and <b>History</b> every request.' }
+    employee: { role: 'employee', hint: 'Their record and every manager up top, every balance, then requests by what they are waiting on. <b>This year</b> has their numbers and <b>History</b> every request.' }
   };
 
   var state = { role: 'request', tour: null, skin: 'sunday', mode: 'system', animMode: 'auto', screen: 'home', filter: {}, sel: null, reqSel: null, ptab: 'Requests', mtab: 'today', calView: 'timeline', flow: null, prefill: null, created: null, modal: null, readonly: false, setupChecked: null, lastAnim: '', lastRp: null, rpFresh: false,
-    rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', loc: 'British Columbia', session: null, err: '', tries: 5, co: 'Carry over to next year' } };
+    rp: { step: 'email', email: '', type: 'leave', leave: 'Vacation', start: '2026-11-23', end: '2026-11-25', hours: '', notes: '', loc: 'British Columbia', session: null, err: '', tries: 5 } };
   try { var ss = localStorage.getItem('proto-skin2'); if (ss) state.skin = ss; var sm = localStorage.getItem('proto-mode'); if (sm) state.mode = sm; } catch (e) {}
   try { var sa = localStorage.getItem('ucshoo-anim'); if (sa === 'on' || sa === 'auto') state.animMode = sa; } catch (e) {}   // remembered Animations choice
 
@@ -738,7 +738,8 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function count(st) { return REQS.filter(function (r) { return r.status === st; }).length; }
   function what(r) { return esc(r.kind) + ' · ' + esc(r.when) + (r.hours ? ' · ' + r.hours + ' h' : r.days ? ' · ' + r.days + (r.days === 1 ? ' day' : ' days') : ''); }
   // ---- "Taken from" chips (#296, #307): which balances a request's days came from, worded exactly like TakenFrom.tsx. ----
-  var TF_YEAR = 2026;                                           // the sample's earned year for carry-over / payout
+  var TF_YEAR = 2026;                                           // the sample's year, for its vacation line and payouts
+  var VAC_POT = TF_YEAR + ' vacation', CO_POT = 'Carried over';   // the two vacation lines staff see (#551): this year's, and the days carried over
   function tfNum(v) { return String(+(+v).toFixed(3)); }        // trim to 3 decimals, like fmtDays
   // Render chip segments ({cls, amt, label}), or a muted line when nothing moved.
   function tfPills(segs) {
@@ -788,7 +789,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
   function numCell(v) { return '<td class="num' + (v < 0 ? ' neg' : '') + '">' + v + '</td>'; }
   function person(name) { return STAFF.filter(function (p) { return p.name === name; })[0]; }
-  // hourly employees have one balance (Sick); vacation is only a counter, no Make-Up/Carry-over/Payout. (#300)
+  // hourly employees have one balance (Sick); vacation is only a counter, no Make-Up, Carried over or Payout. (#300)
   function isBC(p) { return !!(p && (p.etype === 'Hourly' || p.etype === 'Hourly BC')); }   // every hourly person (#300)
   // A red line when approving a request would push a balance below zero. It never blocks approval. (#300)
   function belowZeroNote(next) {
@@ -928,7 +929,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div class="paper"><div class="toolbar"><input class="input" data-search="staffq" placeholder="Search name, email or manager" value="' + esc(state.filter.staffq || '') + '" aria-label="Search staff">' +
         Object.keys(F).map(function (k) { return '<button class="fchip" type="button" data-filter="staff|' + k + '" aria-pressed="' + (k === f) + '">' + k + ' <span class="c">' + STAFF.filter(F[k]).length + '</span></button>'; }).join('') +
         '<select class="input" data-fsel="group" aria-label="Group by">' + ['No grouping', 'By department', 'By location'].map(function (t) { return '<option' + (t === g ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>' +
-        (rows.length ? '<div class="scroll"><table><thead><tr><th>Employee</th><th>Managers</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th class="num">Carry Over</th></tr></thead><tbody>' + body + '</tbody></table></div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
+        (rows.length ? '<div class="scroll"><table><thead><tr><th>Employee</th><th>Managers</th><th class="num">2026 vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th class="num">Carried over</th></tr></thead><tbody>' + body + '</tbody></table></div>' : '<div class="empty">Nobody matches. Clear the search or pick All.</div>') + '</div>';
     },
     add: function () { return addEmployee(true); },
     holidays: function () {
@@ -972,7 +973,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       (isAdmin ? '<div class="field"><span class="req">Supervisor(s)</span><span class="mchips" role="group" aria-label="Supervisors">' + MANAGERS.map(function (m) { return '<button type="button" data-sup="' + m + '" aria-pressed="' + (sup.indexOf(m) >= 0) + '">' + m + '</button>'; }).join('') + '</span></div>' : '<span></span>') + '</div>' +
       '<label style="max-width:360px">Cell number (optional)<input class="input"><span class="help">Only needed if they will approve requests by text.</span></label>' +
       '<div class="cap">Yearly entitlements</div><div class="row2"><label><span class="req">Vacation days / year</span><input class="input" type="number" value="10"></label><label><span class="req">Sick days / year</span><input class="input" type="number" value="5"></label></div>' +
-      '<div class="cap">Opening balances</div><div class="row5">' + ['Vacation', 'Sick', 'Make-up', 'Carry-over', 'Payout'].map(function (b) { return '<label>' + b + '<input class="input" type="number"></label>'; }).join('') + '</div>' +
+      '<div class="cap">Opening balances</div><div class="row5">' + [VAC_POT, 'Sick', 'Make-up', CO_POT, 'Payout'].map(function (b) { return '<label>' + b + '<input class="input" type="number"></label>'; }).join('') + '</div>' +
       '<div><button class="btn pri' + P + '" type="button" data-act="review" style="padding:9px 18px">Review</button></div></div></div>';
   }
   // The confirm panel after Review (#378): before -> after for anything the
@@ -1085,7 +1086,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var nov3 = team().length - team().filter(function (p) { return offOn(p.name, idx(['Nov', 3])).length; }).length;
     var items = [
       ['warn', '!', 'If both waiting requests are approved, only <b>' + nov3 + ' of ' + team().length + '</b> are in on Nov 3.'],
-      ['info', 'i', '<b>Jesse</b> has 3 vacation days left and 2 days carried over, which reset on April 1.'],
+      ['info', 'i', '<b>Jesse</b> has 3 vacation days left and 2 days carried over to use by Mar 31, 2027.'],
       ['info', 'i', 'After Nov 2 to 4, <b>Avery</b> would have 2.5 vacation days left for the rest of the year.'],
       ['ok', '✓', '<b>Robin</b> has not taken vacation since March. Worth a nudge before the year ends.']
     ];
@@ -1093,7 +1094,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   }
   function decisionCard(r) {
     var p = person(r.who) || { vacY: 10, sickY: 5 };
-    var max = function (k) { return k === 'Vacation' ? p.vacY : k === 'Sick' ? p.sickY : 5; };
+    var max = function (k) { return k === VAC_POT ? p.vacY : k === 'Sick' ? p.sickY : 5; };
     var pill = r.type === 'Leave' ? ({ Vacation: 'vac', Sick: 'sick', 'Half day': 'half' }[r.kind] || '') : r.type === 'Overtime' ? 'ot' : r.kind === 'Payout' ? 'pay' : 'co';
     var dates = r.from ? '<div class="when"><div class="datebox"><small>' + r.from[0] + '</small><b>' + r.from[1] + '</b></div>' + (r.to ? '<span class="arrow">→</span><div class="datebox"><small>' + r.to[0] + '</small><b>' + r.to[1] + '</b></div>' : '') +
       '<div><b>' + (r.hours ? r.hours + ' hours' : r.days + (r.days === 1 ? ' working day' : ' working days')) + '</b>' + (r.desc ? '<div class="quote">"' + esc(r.desc) + '"</div>' : '') + '</div></div>' : '<div><b>' + esc(r.when) + '</b></div>';
@@ -1157,7 +1158,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function absenceDetail(r) {
     var pill = r.type === 'Leave' ? ({ Vacation: 'vac', Sick: 'sick', 'Half day': 'half' }[r.kind] || '') : r.type === 'Overtime' ? 'ot' : r.kind === 'Payout' ? 'pay' : 'co';
     var p = person(r.who) || { vacY: 10, sickY: 5 };
-    var max = function (k) { return k === 'Vacation' ? p.vacY : k === 'Sick' ? p.sickY : 5; };
+    var max = function (k) { return k === VAC_POT ? p.vacY : k === 'Sick' ? p.sickY : 5; };
     return '<div class="pad" style="border-top:1px solid var(--line)"><article class="dcard" data-reqid="' + r.id + '" style="box-shadow:none;border:1px solid var(--line)"><div class="dhead">' + av(r.who, true) + '<div><div class="nm">' + esc(r.who) + '</div><div class="small muted">' + esc(r.kind) + ', ' + esc(r.when) + (r.status === 'Pending' ? ' (asked, not approved yet)' : '') + '</div></div><span class="pill ' + pill + '">' + esc(r.kind) + '</span>' + chip(r.status, CHIP[r.status]) + '</div>' +
       (r.cur ? '<div class="impacts">' + Object.keys(r.cur).map(function (k) { return '<div class="imp"><span class="muted">' + k + '</span>' + meter(r.cur[k], r.next[k], max(k)) + '<span class="v">' + r.cur[k] + ' → ' + r.next[k] + '</span></div>'; }).join('') + '</div>' : '') +
       '<div class="dfoot">' + (r.status === 'Pending' ? rowActions(r) : '') + '<button class="btn ghost" type="button" data-act="histopen" data-cal="' + r.id + '">See in History</button><button class="btn ghost" type="button" data-act="teamopenp" data-who="' + esc(r.who) + '">Open ' + esc(first(r.who)) + '</button></div></article></div>';
@@ -1220,7 +1221,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var card = function (p) {
       var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
       var line = function (k, v, y) { return '<div class="potline"><span class="muted">' + k + '</span>' + meter(v, v, y || 5) + '<span class="v' + (v < 0 ? ' neg' : '') + '">' + v + (y ? ' of ' + y : '') + '</span></div>'; };
-      var bals = isBC(p) ? line('Sick', p.sick, p.sickY) + '<div class="potline"><span class="muted">Vacation taken</span><span></span><span class="v">' + (p.vacTaken || 0) + '</span></div>' : line('Vacation', p.vac, p.vacY) + line('Sick', p.sick, p.sickY) + line('Make-Up', p.mu) + line('Carry Over', p.co);
+      var bals = isBC(p) ? line('Sick', p.sick, p.sickY) + '<div class="potline"><span class="muted">Vacation taken</span><span></span><span class="v">' + (p.vacTaken || 0) + '</span></div>' : line(VAC_POT, p.vac, p.vacY) + line('Sick', p.sick, p.sickY) + line('Make-Up', p.mu) + (p.co > 0 ? line(CO_POT, p.co) : '');   // Carried over only while it holds days (#551)
       return '<button class="tcard" type="button" data-act="teamopen" data-pid="' + p.id + '" style="text-align:left;font:inherit;cursor:pointer"><div class="dhead">' + av(p.name, true) + '<div><div class="nm">' + esc(p.name) + '</div><div class="small muted">' + esc(p.dept) + ' · ' + esc(p.loc) + '</div></div></div>' +
         bals + '<div class="small">' + (nxt ? 'Next off: <b>' + esc(nxt.kind) + ', ' + esc(nxt.when) + '</b>' + (nxt.status === 'Pending' ? ' (asked)' : '') : '<span class="muted">No time off booked.</span>') + '</div></button>';
     };
@@ -1228,7 +1229,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<button class="tcard' + P + '" type="button" data-act="teamadd" style="border-style:dashed;cursor:pointer;place-items:center;color:var(--primary);font-weight:600;background:transparent;box-shadow:none;min-height:160px">+ Add to my team</button>';
     var body;
     if (state.teamView === 'table') {
-      body = '<div class="paper"><div class="scroll"><table><thead><tr><th>Person</th><th class="num">Vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th>Next off</th></tr></thead><tbody>' + shown.map(function (p) {
+      body = '<div class="paper"><div class="scroll"><table><thead><tr><th>Person</th><th class="num">2026 vacation</th><th class="num">Sick</th><th class="num">Make-Up</th><th>Next off</th></tr></thead><tbody>' + shown.map(function (p) {
         var nxt = REQS.filter(function (r) { return r.who === p.name && r.type === 'Leave' && (r.status === 'Approved' || r.status === 'Pending') && r.from && idx(r.from) >= TODAY; })[0];
         return '<tr class="click" tabindex="0" data-act="teamopen" data-pid="' + p.id + '"><td><div style="display:flex;gap:10px;align-items:center">' + av(p.name) + '<div><b>' + esc(p.name) + '</b><span class="sub">' + esc(p.dept || 'No department') + '</span></div></div></td>' + (isBC(p) ? '<td class="num muted">' + (p.vacTaken || 0) + ' taken</td>' : numCell(p.vac)) + numCell(p.sick) + (isBC(p) ? '<td class="num muted">n/a</td>' : numCell(p.mu)) + '<td class="small muted">' + (nxt ? esc(nxt.when) + (nxt.status === 'Pending' ? ' (asked)' : '') : 'None booked') + '</td></tr>';
       }).join('') + '</tbody></table></div></div>';
@@ -1242,7 +1243,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function profilePots(p) {
     return isBC(p)
       ? [{ key: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { key: 'sick', label: 'Sick', meterOf: 'sickY' }]
-      : [{ key: 'vacY', label: 'Vacation entitlement', sub: 'days a year' }, { key: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { key: 'vac', label: 'Vacation', meterOf: 'vacY' }, { key: 'sick', label: 'Sick', meterOf: 'sickY' }, { key: 'mu', label: 'Make-up', sub: 'days (hours ÷ 8)' }, { key: 'co', label: 'Carry-over', sub: 'days' }];
+      : [{ key: 'vacY', label: 'Vacation entitlement', sub: 'days a year' }, { key: 'sickY', label: 'Sick entitlement', sub: 'days a year' }, { key: 'vac', label: VAC_POT, meterOf: 'vacY' }, { key: 'sick', label: 'Sick', meterOf: 'sickY' }, { key: 'mu', label: 'Make-up', sub: 'days (hours ÷ 8)' }, { key: 'co', label: CO_POT, sub: 'use by Mar 31, 2027' }];
   }
   function balTile(p, pot, readonly) {
     var saved = +(p[pot.key] || 0);
@@ -1275,7 +1276,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     var edits = state.teamEdits || {};
     var bar = '';
     if (Object.keys(edits).length) {
-      var summary = Object.keys(edits).map(function (k) { var lbl = { vacY: 'Vacation entitlement', sickY: 'Sick entitlement', vac: 'Vacation', sick: 'Sick', mu: 'Make-up', co: 'Carry-over' }[k] || k; return lbl + ' <b>' + num(p[k] || 0) + ' → ' + num(edits[k]) + '</b>'; }).join(' · ');
+      var summary = Object.keys(edits).map(function (k) { var lbl = { vacY: 'Vacation entitlement', sickY: 'Sick entitlement', vac: VAC_POT, sick: 'Sick', mu: 'Make-up', co: CO_POT }[k] || k; return lbl + ' <b>' + num(p[k] || 0) + ' → ' + num(edits[k]) + '</b>'; }).join(' · ');
       bar = '<div class="savebar" style="margin-top:12px;border:1px solid var(--line2);border-radius:12px;padding:12px;display:grid;gap:10px;background:var(--paper)"><div class="small">' + (Object.keys(edits).length === 1 ? '1 change: ' : Object.keys(edits).length + ' changes: ') + summary + '</div>' +
         '<input class="input" id="balReason" placeholder="Reason, required. e.g. Day off Oct 6, approved verbally by Sam Supervisor" aria-label="Reason for the change">' +
         '<div class="acts" style="justify-content:flex-end"><button class="btn ghost" type="button" data-act="cancelbal">Cancel</button><button class="btn pri" type="button" data-act="savebal" data-pid="' + p.id + '">Save</button></div></div>';
@@ -1298,7 +1299,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
 
   // ---------- request page (the public front page, #131) ----------
   var LEAVE_TYPES = ['Vacation', 'Sick or Personal Day', 'Half Day or Partial Day Off', 'Bereavement', 'Jury Duty'];
-  var RTYPES = [['leave', 'Leave', 'Vacation, sick, part day, bereavement or jury duty', '☀'], ['overtime', 'Overtime', 'Hours worked beyond your schedule', '+'], ['carryover-payout', 'Carry-over or payout', 'Move vacation days to next year, or cash them out', '↻']];
+  var RTYPES = [['leave', 'Leave', 'Vacation, sick, part day, bereavement or jury duty', '☀'], ['overtime', 'Overtime', 'Hours worked beyond your schedule', '+'], ['carryover-payout', 'Payout', 'Cash out vacation days', '↻']];
   var MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
   function iso(d) { return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
   // Company holidays for a location's province, keyed by date (the engine filters holidays by province too).
@@ -1348,25 +1349,23 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         }
       } else if (employee) {
         var wd = workdays(s.start, partial ? s.start : s.end, me.loc), n = partial ? (+s.hours || 0) / 8 : wd.n;
-        // One chain for every date; carry-over only pays for the days dated inside its period.
-        var order = s.leave === 'Sick or Personal Day' ? ['sick', 'mu', 'co', 'vac'] : s.leave === 'Vacation' || partial ? ['mu', 'co', 'vac'] : [];
+        // Nov 2026 order: Make-Up, 2026 vacation above 0, Carried over (dates up to Mar 31, 2027), then 2026 vacation below 0.
+        var order = s.leave === 'Sick or Personal Day' ? ['sick', 'mu', 'vac', 'co', 'vac'] : s.leave === 'Vacation' || partial ? ['mu', 'vac', 'co', 'vac'] : [];   // sick days spend Sick first
         var dayFit = leaveSplit(s, me, partial, n), refusal = leaveRefusal(me, s.leave, partial, dayFit);
         var notes = [];
         if (!order.length) notes.push('Bereavement and jury duty do not use any balance.');
         if (!partial && wd.skipped.length) notes.push(wd.skipped.join(', ') + ' is a company holiday and is not counted.');
-        // Worded like the real preview: only worth saying when the person has carry-over.
-        if (order.length && me.co > 0 && n > 0 && dayFit.co === 0) notes.push('Carry-over can only pay for leave dated Jan 1 to Mar 31, 2027, so it is not used for these dates.');
-        if (order.length && me.co > 0 && dayFit.co > 0 && dayFit.co < n) notes.push('Carry-over can pay for at most ' + num(dayFit.co) + ' of these days, the ones dated Jan 1 to Mar 31, 2027.');
+        // No note on which line pays: the rows show the split, as on the real preview (#551).
         var warn = partial && wd.skipped.length ? 'This date is the company holiday ' + wd.skipped[0] + '. A part day on a holiday is rejected automatically.' : partial && (+s.hours || 0) >= 8 ? 'A partial day is less than 8 hours; choose a full-day leave type instead.' : '';
         if (refusal) warn = refusal;                             // nothing can pay for these dates: Send is blocked below
         var potRows = order.length ? spend(me, n, order, dayFit.co) : [];   // each pot [label, before, after], cascade order
-        if (refusal) potRows = potRows.filter(function (r) { return r[0] !== 'Vacation'; });   // refused: vacation cannot pay these dates
-        // Taken from: one chip per pot that dropped, worded like TakenFrom.tsx (carry-over names last year).
-        var POT_TF = { Vacation: ['vac', 'vacation'], Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'], 'Carry Over': ['co', TF_YEAR + ' carry-over'] };
+        if (refusal) potRows = potRows.filter(function (r) { return r[0] !== VAC_POT; });   // refused: vacation cannot pay these dates
+        // Taken from: one chip per pot that dropped, worded like TakenFrom.tsx (carried-over days read "carried over", no year).
+        var POT_TF = { Sick: ['sick', 'sick'], 'Make-Up': ['ot', 'Make-Up'] }; POT_TF[VAC_POT] = ['vac', 'vacation']; POT_TF[CO_POT] = ['co', 'carried over'];   // row label -> pill colour, chip word
         var leaveSegs = potRows.filter(function (x) { return x[2] < x[1]; }).map(function (x) { var m = POT_TF[x[0]] || ['', x[0]]; return { cls: m[0], amt: tfNum(x[1] - x[2]), label: m[1] }; });
-        // The backstop pot (last in the cascade, usually Vacation) may go below zero; show it in red (#300).
-        var lastPot = potRows.length ? potRows[potRows.length - 1] : null, leaveRed = null;
-        if (lastPot && lastPot[2] < 0) { leaveRed = {}; leaveRed[lastPot[0]] = lastPot[2]; }
+        // The backstop (2026 vacation) may go below zero; show it in red (#300).
+        var leaveRed = null;
+        potRows.forEach(function (x) { if (x[2] < 0) { leaveRed = leaveRed || {}; leaveRed[x[0]] = x[2]; } });   // the row that ends below zero, wherever it sits
         f += preview(me, [[partial ? 'Days (8 hours = 1 day)' : 'Working days', n]], potRows, notes.join(' '), warn, leaveSegs, false, belowZeroNote(leaveRed));
       }
     } else if (s.type === 'overtime') {
@@ -1381,51 +1380,59 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           var d2 = (+s.hours || 0) / 8, mu2 = me2.mu + d2, vac2 = me2.vac;
           if (vac2 < 0 && mu2 > 0) { vac2 += mu2; mu2 = 0; if (vac2 > 0) { mu2 = vac2; vac2 = 0; } }
           var otSegs = [{ cls: 'ot', amt: '+' + tfNum(d2), label: 'added to Make-Up' }];   // hours / 8 banked to Make-Up
-          f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [['Vacation', me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', otSegs);
+          f += preview(me2, [['Adds (8 hours = 1 day)', d2]], [['Make-Up', me2.mu, mu2]].concat(vac2 !== me2.vac ? [[VAC_POT, me2.vac, vac2]] : []), me2.vac < 0 ? 'Your Vacation is below zero, so the Make-Up pays it back first.' : '', hol2 ? 'This date is the company holiday ' + hol2 + '. Overtime on a holiday is rejected automatically.' : '', otSegs);
         }
       }
     } else {
-      f = '<div class="row2"><label class="field">Request<select class="input big" data-rpsel="co">' + ['Carry over to next year', 'Pay out'].map(function (o) { return '<option' + (s.co === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></label><label class="field">Days<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-day steps.</span></label></div>';
+      // Payout only now (#554): the days to cash out, in half days, up to 5 a year.
+      f = '<div class="row2"><label class="field">Days<input class="input big" type="number" min="0.5" step="0.5" data-rp="hours" data-live="1" value="' + esc(s.hours) + '"><span class="small muted">In half-day steps, up to 5 days a year.</span></label></div>';
       if (employee) {
-        // simulate_carryover_payout_impact: days leave Vacation; more than the balance is rejected automatically.
-        var me3 = person(s.session), d3 = +s.hours || 0, pay = s.co === 'Pay out';
-        var refused3 = me3.vac - d3 < 0;                          // more than the vacation balance is auto-refused
-        // Taken from: vacation moves into carry-over or payout (this year's), or a refusal note when there is not enough.
-        var coSegs = refused3 ? [] : [{ cls: 'vac', amt: tfNum(d3), label: 'vacation' }, { cls: pay ? 'pay' : 'co', amt: '', label: '→ ' + TF_YEAR + (pay ? ' payout' : ' carry-over') }];
-        f += preview(me3, [], [['Vacation', me3.vac, me3.vac - d3], pay ? ['Payout', 0, d3] : ['Carry Over', me3.co, me3.co + d3]], pay ? '' : 'Carried-over days reset on April 1.', refused3 ? 'That is more than your ' + me3.vac + ' Vacation days. It would be rejected automatically.' : '', coSegs, refused3);
+        // simulate_carryover_payout_impact (#554): Carried over pays first, then 2026 vacation; short of both, it is rejected.
+        var me3 = person(s.session), d3 = +s.hours || 0, po3 = me3.po || 0;
+        var have3 = Math.max(me3.co, 0) + Math.max(me3.vac, 0);   // both vacation lines; a line below zero has nothing to pay
+        var refused3 = have3 < d3;                                // fewer days than asked: rejected automatically
+        var fromCo = Math.min(Math.max(me3.co, 0), d3), fromVac = d3 - fromCo;   // carried-over days first, the rest from 2026 vacation
+        var payRows = refused3 ? [] : (fromCo > 0 ? [[CO_POT, me3.co, me3.co - fromCo]] : []).concat(fromVac > 0 ? [[VAC_POT, me3.vac, me3.vac - fromVac]] : [], [['Payout', po3, po3 + d3]]);
+        // Taken from: carried-over days, then vacation, into this year's payout; nothing when it would be rejected.
+        var paySegs = refused3 || d3 <= 0 ? [] : (fromCo > 0 ? [{ cls: 'co', amt: tfNum(fromCo), label: 'carried over' }] : []).concat(fromVac > 0 ? [{ cls: 'vac', amt: tfNum(fromVac), label: 'vacation' }] : [], [{ cls: 'pay', amt: '', label: '→ ' + TF_YEAR + ' payout' }]);
+        // The balance check first, then the 5-day yearly cap (the system rejects a payout past it).
+        var payWarn = refused3 ? 'You have ' + num(have3) + ' vacation days, fewer than ' + num(d3) + '. This request would be rejected.' : po3 + d3 > 5 ? 'Payouts are capped at 5 days a year. This request would be rejected.' : '';
+        f += preview(me3, [], payRows, '', payWarn, paySegs, refused3);
       }
     }
-    // Carry-over and payout are open in the practice copy; an hourly person has no vacation balance to move. (#300)
+    // Payout is open in the practice copy; an hourly person has no vacation balance to cash out. (#300)
     var meCo = s.session ? person(s.session) : null;             // the signed-in person, if any
     return '<div class="field">What do you need?<div class="types">' + RTYPES.map(function (t) {
-      // hourly: there is no vacation balance, so carry-over and payout stay disabled with a clear reason.
+      // hourly: there is no vacation balance, so Payout stays disabled with a clear reason.
       if (t[0] === 'carryover-payout' && isBC(meCo)) return '<button class="type off" type="button" disabled aria-disabled="true"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>Not for hourly staff. You have no vacation balance to move.</span></button>';
       return '<button class="type" type="button" data-rpt="' + t[0] + '" aria-pressed="' + (s.type === t[0]) + '"><span class="ico" aria-hidden="true">' + t[3] + '</span><b>' + t[1] + '</b><span>' + t[2] + '</span></button>';
     }).join('') + '</div></div>' + f;
   }
   // Spend n days down the balance engine's chain; the last pot is the backstop and may go negative.
-  // coDays caps carry-over at the days dated inside its period.
+  // 2026 vacation sits in the chain twice: its days above 0 pay before Carried over, then it is the backstop.
+  // coDays caps Carried over at the days dated up to Mar 31, 2027. Each pot shows once, in chain order.
   function spend(me, n, order, coDays) {
-    var names = { vac: 'Vacation', sick: 'Sick', mu: 'Make-Up', co: 'Carry Over' }, left = n, out = [];
+    var names = { vac: VAC_POT, sick: 'Sick', mu: 'Make-Up', co: CO_POT }, left = n, took = {}, seen = [];
     order.forEach(function (k, i) {
-      var have = me[k], take = i === order.length - 1 ? left : Math.min(Math.max(have, 0), left);
-      if (k === 'co' && coDays !== undefined) take = Math.min(take, coDays);   // carry-over pays only inside its dates
-      if (take > 0 || (i === order.length - 1 && left > 0)) out.push([names[k], have, +(have - take).toFixed(2)]);
-      left -= take;
+      var have = me[k] - (took[k] || 0);                         // what the pot still holds after an earlier pass
+      var take = i === order.length - 1 ? left : Math.min(Math.max(have, 0), left);   // the backstop takes the rest; others only days above 0
+      if (k === 'co' && coDays !== undefined) take = Math.min(take, coDays);   // carried-over days pay only up to Mar 31, 2027
+      if (seen.indexOf(k) < 0) seen.push(k);                     // the first pass sets the row order
+      took[k] = (took[k] || 0) + take; left -= take;
     });
-    return out;
+    return seen.filter(function (k) { return took[k] > 0; }).map(function (k) { return [names[k], me[k], +(me[k] - took[k]).toFixed(2)]; });   // [label, before, after]
   }
   function num(v) { return +(+v).toFixed(2); }
-  // The practice copy's today is in Nov 2026, so carry-over pays for Jan 1 to Mar 31, 2027,
-  // vacation pays for 2026 dates, and Apr 1, 2027 on cannot be booked yet. Mirrors leave_day_split.
-  var CO_FROM = '2027-01-01', CO_TO = '2027-03-31', BOOK_FROM = '2027-04-01';
+  // The practice copy's today is in Nov 2026: carried-over days pay for any date up to Mar 31, 2027,
+  // Jan 1 to Mar 31, 2027 must be covered by what is left, and Apr 1, 2027 on cannot be booked yet. Mirrors leave_day_split.
+  var NEXT_FROM = '2027-01-01', CO_TO = '2027-03-31', BOOK_FROM = '2027-04-01';
   /**
    * How a request's days fall against what each pot can pay for.
    * @param {Object} s - The request page's state (start, end).
    * @param {Object} me - The signed-in person, for their holidays.
    * @param {boolean} partial - Whether this is a part day (one date).
    * @param {number} n - The days the request costs.
-   * @returns {{co: number, beyond: number}} Days inside the carry-over period, and days nothing can pay for yet.
+   * @returns {{co: number, next: number, beyond: number}} Days carried-over days can pay for (up to Mar 31, 2027), days dated Jan 1 to Mar 31, 2027, and days nothing can pay for yet.
    */
   function leaveSplit(s, me, partial, n) {
     var last = partial ? s.start : s.end;                        // a part day has one date
@@ -1435,23 +1442,24 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       if (a === s.start && b === last) return n;                 // all of it is: its own days, no counting
       return Math.min(workdays(a, b, me.loc).n, n);              // part of it: count working days, capped
     }
-    var co = daysIn(CO_FROM, CO_TO);
-    return { co: co, beyond: Math.min(daysIn(BOOK_FROM, '9999-12-31'), n - co) };
+    var next = daysIn(NEXT_FROM, CO_TO);                         // the days dated in 2027
+    var beyond = Math.min(daysIn(BOOK_FROM, '9999-12-31'), n - next);   // after Mar 31, 2027: nothing pays yet
+    return { co: n - beyond, next: next, beyond: beyond };       // carried-over days pay every day up to Mar 31, 2027
   }
   /**
    * The refusal for a salaried vacation or part day nothing can pay for. Mirrors booking_refusal.
    * @param {Object} me - The signed-in person, for their balances.
    * @param {string} leave - The leave type.
    * @param {boolean} partial - Whether this is a part day.
-   * @param {{co: number, beyond: number}} split - From leaveSplit.
+   * @param {{co: number, next: number, beyond: number}} split - From leaveSplit.
    * @returns {string} The sentence to show, or '' when the request is allowed.
    */
   function leaveRefusal(me, leave, partial, split) {
     if (leave !== 'Vacation' && !partial) return '';             // sick days are never refused
     if (split.beyond > 0) return 'Leave dated after March 31, 2027 can be booked from January 1, 2027.';
-    var have = Math.max(me.mu, 0) + Math.max(me.co, 0) + Math.max(me.vac, 0);   // 2026 days carry too (#551); a negative counts as nothing
-    if (split.co <= have) return '';                             // Make-Up and carry-over cover them
-    return 'These dates need ' + num(split.co) + (split.co === 1 ? ' day' : ' days') + ' and you have ' + num(have) + ' for 2027.';
+    var have = Math.max(me.mu, 0) + Math.max(me.co, 0) + Math.max(me.vac, 0);   // Make-Up, Carried over and 2026 vacation above 0; a negative counts as nothing
+    if (split.next <= have) return '';                           // they cover the 2027 days
+    return 'These dates need ' + num(split.next) + (split.next === 1 ? ' day' : ' days') + ' and you have ' + num(have) + ' for 2027.';
   }
   /**
    * Whether the practice request page must block Send, as the real page does.
@@ -1484,7 +1492,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function submitRequest(s) {
     var me = person(s.session); if (!me) return;
     var r = { id: nextReqId++, who: me.name, mgr: me.mgrs[0], status: 'Pending', age: 0, desc: s.notes };
-    var pots = { vac: 'Vacation', sick: 'Sick', mu: 'Make-Up', co: 'Carry Over' }, toObj = function (rows, k) { var o = {}; rows.forEach(function (x) { o[x[0]] = x[k]; }); return o; };
+    var pots = { vac: VAC_POT, sick: 'Sick', mu: 'Make-Up', co: CO_POT }, toObj = function (rows, k) { var o = {}; rows.forEach(function (x) { o[x[0]] = x[k]; }); return o; };
     if (s.type === 'leave') {
       var partial = s.leave === 'Half Day or Partial Day Off', a = md(s.start), b = partial ? null : md(s.end);
       var n = partial ? (+s.hours || 0) / 8 : workdays(s.start, s.end, me.loc).n;
@@ -1496,7 +1504,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         r.bc = true;
         if (s.leave === 'Sick or Personal Day' || partial) { var sdN = partial ? 1 : workdays(s.start, s.end, me.loc).n; r.days = sdN; r.cur = { Sick: me.sick }; r.next = { Sick: me.sick - sdN }; }
       } else {
-        var order = s.leave === 'Sick or Personal Day' ? ['sick', 'mu', 'co', 'vac'] : s.leave === 'Vacation' || partial ? ['mu', 'co', 'vac'] : [];
+        var order = s.leave === 'Sick or Personal Day' ? ['sick', 'mu', 'vac', 'co', 'vac'] : s.leave === 'Vacation' || partial ? ['mu', 'vac', 'co', 'vac'] : [];   // same chain as the page preview
         var rows = order.length ? spend(me, n, order, leaveSplit(s, me, partial, n).co) : [];
         if (rows.length) { r.cur = toObj(rows, 1); r.next = toObj(rows, 2); }
       }
@@ -1504,9 +1512,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       var h = +s.hours || 0, d = md(s.start);
       r.type = 'Overtime'; r.kind = 'Overtime'; r.from = d; r.when = d[0] + ' ' + d[1]; r.hours = h; r.cur = { 'Make-Up': me.mu }; r.next = { 'Make-Up': num(me.mu + h / 8) };
     } else {
-      var dd = +s.hours || 0, pay = s.co === 'Pay out';
-      r.type = 'Carry Over'; r.kind = pay ? 'Payout' : 'Carry Over'; r.days = dd; r.when = dd + (dd === 1 ? ' day ' : ' days ') + (pay ? 'paid out' : 'into next year');
-      r.cur = pay ? { Vacation: me.vac } : { Vacation: me.vac, 'Carry Over': me.co }; r.next = pay ? { Vacation: me.vac - dd } : { Vacation: me.vac - dd, 'Carry Over': me.co + dd };
+      // A payout (#554): Carried over pays first, then 2026 vacation; it joins the same list as before.
+      var dd = +s.hours || 0, fromCo = Math.min(Math.max(me.co, 0), dd), fromVac = dd - fromCo;   // carried-over days first, the rest from vacation
+      r.type = 'Carry Over'; r.kind = 'Payout'; r.days = dd; r.when = dd + (dd === 1 ? ' day ' : ' days ') + 'paid out';
+      r.cur = {}; r.next = {};                                   // before and after, per line the payout draws on
+      if (fromCo > 0) { r.cur[CO_POT] = me.co; r.next[CO_POT] = num(me.co - fromCo); }   // Carried over drops first
+      r.cur[VAC_POT] = me.vac; r.next[VAC_POT] = num(me.vac - fromVac);                 // then 2026 vacation
     }
     REQS.unshift(r);
   }
@@ -1519,18 +1530,17 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       ['Email', 'First screen. A returning device skips straight to the form.', {}],
       ['Code', 'Six boxes; typing or pasting fills them and moves on. Resend unlocks after 60 seconds.', { step: 'code', email: 'avery.example@ucsh.com' }]]],
     ['On staff: leave', [
-      ['Vacation', 'Spends Make-Up first, then Vacation.', mix(SIGNED, { leave: 'Vacation', notes: 'Family visit' })],
-      ['Sick or Personal Day', 'Spends Sick, then Make-Up, then Vacation. Carry Over only pays for Jan 1 to Mar 31, 2027.', mix(SIGNED, { leave: 'Sick or Personal Day', start: '2026-11-23', end: '2026-11-23' })],
+      ['Vacation', 'Spends Make-Up first, then 2026 vacation, then Carried over.', mix(SIGNED, { leave: 'Vacation', notes: 'Family visit' })],
+      ['Sick or Personal Day', 'Spends Sick, then Make-Up, then 2026 vacation, then Carried over. Never refused.', mix(SIGNED, { leave: 'Sick or Personal Day', start: '2026-11-23', end: '2026-11-23' })],
       ['Half Day or Partial Day Off', 'One date and the hours away; 8 hours is a day.', mix(SIGNED, { leave: 'Half Day or Partial Day Off', hours: '4' })],
       ['Vacation over a holiday', 'Remembrance Day (a British Columbia holiday) is not counted.', mix(SIGNED, { leave: 'Vacation', start: '2026-11-09', end: '2026-11-13' })],
-      ['Vacation next year', 'Jan 1 to Mar 31, 2027 can only use Make-Up or Carry Over. Short of that, it is refused. Apr 1, 2027 on can be booked from Jan 1, 2027.', mix(SIGNED, { leave: 'Vacation', start: '2027-01-11', end: '2027-01-13' })],
+      ['Vacation next year', 'Jan 1 to Mar 31, 2027 is refused when Make-Up, Carried over and 2026 vacation above 0 cannot cover it. Apr 1, 2027 on can be booked from Jan 1, 2027.', mix(SIGNED, { leave: 'Vacation', start: '2027-01-11', end: '2027-01-13' })],
       ['Bereavement', 'Uses no balance.', mix(SIGNED, { leave: 'Bereavement' })],
       ['Jury Duty', 'Uses no balance.', mix(SIGNED, { leave: 'Jury Duty', start: '2026-12-01', end: '2026-12-02' })]]],
-    ['On staff: overtime, carry-over, payout', [
+    ['On staff: overtime, payout', [
       ['Overtime', 'Entered in hours, added to Make-Up as days.', mix(SIGNED, { type: 'overtime', start: '2026-10-24', hours: '6', notes: 'Inventory count' })],
-      ['Carry over to next year', 'Moves days out of Vacation into Carry Over.', mix(SIGNED, { type: 'carryover-payout', co: 'Carry over to next year', hours: '2' })],
-      ['Pay out', 'Moves days out of Vacation to be paid.', mix(SIGNED, { type: 'carryover-payout', co: 'Pay out', hours: '1' })],
-      ['Pay out more than the balance', 'Allowed to send; the system rejects it.', mix(SIGNED, { type: 'carryover-payout', co: 'Pay out', hours: '6' })]]],
+      ['Pay out', 'Takes Carried over first, then 2026 vacation. Up to 5 days a year.', mix(SIGNED, { type: 'carryover-payout', hours: '1' })],
+      ['Pay out more than the balance', 'Allowed to send; the system rejects it.', mix(SIGNED, { type: 'carryover-payout', hours: '6' })]]],
     ['Finished', [
       ['Sent', 'Goes to their manager now.', mix(SIGNED, { step: 'done' })]]],
     ['Problems', [
@@ -1558,7 +1568,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     }).join('');
     state.rp = keep;
     var toc = '<nav class="ctoc">' + CASES.map(function (g) { return '<span class="small muted" style="font-weight:600">' + g[0] + '</span>' + g[1].map(function (c) { var i = flat.indexOf(c); return '<button class="fchip" type="button" data-jump="' + i + '">' + (i + 1) + '. ' + c[0] + '</button>'; }).join(''); }).join('') + '</nav>';
-    return '<div class="cases"><header><h1>Request page, every case</h1><p class="muted">Each screen as someone would see it, with example data for Avery Example (on staff, Vacation 4.5, Sick 3, Make-Up 1). "Try this one" opens it live.</p>' + toc + '</header>' + html + '</div>';
+    return '<div class="cases"><header><h1>Request page, every case</h1><p class="muted">Each screen as someone would see it, with example data for Avery Example (on staff, 2026 vacation 4.5, Sick 3, Make-Up 1). "Try this one" opens it live.</p>' + toc + '</header>' + html + '</div>';
   }
   window.__cases = CASES;
   // The mood of each request kind: warm for time off, muted and dark for hard days, bright for work done.
@@ -1569,13 +1579,12 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     bereavement: ['', ''],
     jury: ['Jury duty, covered.', 'This does not use any of your balance.'],
     overtime: ['Thank you for your hard work.', 'This request makes sure it does not go unnoticed.'],
-    carry: ['Save some for next year.', 'Move unused vacation days into next year.'],
     payout: ['Cash in unused days.', 'Unused vacation days, paid out.']
   };
   function moodOf(s) {
     if (s.step === 'email' || s.step === 'code') return '';
     if (s.type === 'overtime') return 'overtime';
-    if (s.type === 'carryover-payout') return s.co === 'Pay out' ? 'payout' : 'carry';
+    if (s.type === 'carryover-payout') return 'payout';         // the third form is payout only (#554)
     return { Vacation: 'vacation', 'Sick or Personal Day': 'sick', 'Half Day or Partial Day Off': 'partial', Bereavement: 'bereavement', 'Jury Duty': 'jury' }[s.leave];
   }
   // ---------- guided tour (spotlight over the real screens) ----------
@@ -1636,10 +1645,10 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           act: function () { fillCode('482913'); } },
         { title: 'Land on My requests', target: '.pots5',
           todo: 'This is your home page. Check your balances, and see every request with its status.',
-          know: 'Your five balances are Vacation, Sick or personal, Make-Up, Carry Over and Payout, all counted in days. hourly staff instead have one Sick balance, with vacation only counted; try the Jamie (hourly) button to see it.',
+          know: 'Your balances are 2026 vacation, Sick or personal, Make-Up, Carried over (only while you have some) and Payout, all counted in days. On Jan 1, unused 2026 vacation moves to Carried over (use by Mar 31, 2027), vacation refills to your entitlement, and days below zero are owed and come off the new entitlement. hourly staff instead have one Sick balance, with vacation only counted; try the Jamie (hourly) button to see it.',
           enter: function () { tAs('Avery Example', 'employee'); } },
         { title: 'Start a new request', target: '[data-act="request"]',
-          todo: 'Select <b>Make a request</b>, then pick a form: Leave, Overtime, or Carry-over or payout.',
+          todo: 'Select <b>Make a request</b>, then pick a form: Leave, Overtime, or Payout.',
           know: 'These are the same three forms you used to fill in through Microsoft Forms, now in one place.',
           enter: function () { tAs('Avery Example', 'employee'); },
           signal: function () { return state.role === 'request' && state.rp.step === 'form'; },
@@ -1661,7 +1670,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           enter: function () { tAs('Avery Example', 'employee'); } },
         { title: 'Your whole history', target: '#main .paper',
           todo: 'Open <b>History</b> for every request in one table: search it, filter by type or status, and read what each one took.',
-          know: 'The "Taken from" chips under a request name the balance its days came out of. A carry-over or payout names the year; a date reads like Nov 2, 2026. Work from home, bereavement and jury duty cost nothing, so they show "No balance used".',
+          know: 'The "Taken from" chips under a request name the balance its days came out of. Days from carried-over days read "carried over" and a payout names its year; a date reads like Nov 2, 2026. Work from home, bereavement and jury duty cost nothing, so they show "No balance used".',
           enter: function () { tAs('Avery Example', 'employee'); state.etab = 'history'; } },
         { title: 'Next time, straight in', target: '#addr',
           todo: 'Open the same bookmark next time. You go straight to <b>My requests</b>.',
@@ -1751,7 +1760,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           know: 'People can have more than one manager, so adding or removing yourself never touches anyone else. If you are their only manager, removing yourself leaves their requests with nobody until someone adds a manager.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; var a = person('Avery Example'); state.teamPerson = a ? a.id : null; state.teamEdits = null; state.teamRemove = false; } },
         { title: 'Make a request for someone', target: '[data-act="logsick"]',
-          todo: 'On the Team tab toolbar, select <b>Make a request</b> to make one for anyone on your team, salaried or hourly, in any province: leave of any type (sick days, vacation and half days included), make-up time or overtime, or a carry-over or payout while HR has them open.',
+          todo: 'On the Team tab toolbar, select <b>Make a request</b> to make one for anyone on your team, salaried or hourly, in any province: leave of any type (sick days, vacation and half days included), make-up time or overtime, or a payout while HR has it open.',
           know: 'It is approved straight away, recorded as approved by you, and the request notes that you made it, so someone who is off sick or away does not have to send it themselves. It is never for yourself: your own requests still go through the request page.',
           enter: function () { tAs('Sam Supervisor', 'manager'); state.mtab = 'team'; state.teamPerson = null; state.teamEdits = null; state.teamRemove = false; },
           act: function () { var b = document.querySelector('[data-act="logsick"]'); if (b) b.click(); } },
@@ -1946,7 +1955,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
       '<div class="tpractice">PRACTICE TOUR. This is not the real site.</div>' +   // first thing read: practice, not live
       '<div class="tbrand"><span class="mark">OO<i></i></span>UCSH Out of Office</div>' +
       '<h2>Practice tour, not the real site</h2>' +
-      '<p><b>Requests made on this page go nowhere.</b> Nothing is sent to your manager and nothing is saved. To book real time off, log overtime or carry over vacation, use the real site:</p>' +
+      '<p><b>Requests made on this page go nowhere.</b> Nothing is sent to your manager and nothing is saved. To book real time off, log overtime or cash out vacation, use the real site:</p>' +
       linkRow() +
       '<a class="tgoreal" href="' + TOUR_LINK + '" target="_blank" rel="noopener">Go to the real site</a>' +   // the way out, before the practice paths
       '<p>Or practise here first: pick a path and a short tour points at the buttons as you go.</p>' +
@@ -2076,7 +2085,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
     render(); window.scrollTo(0, 0);
   }
   function requestPage() {
-    var s = state.rp, step = s.step, mood = moodOf(s), words = MOODS[mood] !== undefined ? MOODS[mood] : ['Time off, without the paperwork.', 'Leave, overtime, or a carry-over or payout. No Microsoft sign-in needed.'];
+    var s = state.rp, step = s.step, mood = moodOf(s), words = MOODS[mood] !== undefined ? MOODS[mood] : ['Time off, without the paperwork.', 'Leave, overtime, or a payout. No Microsoft sign-in needed.'];
     var order = ['email', 'code', 'form', 'done'];
     var labels = { email: 'Your email', code: 'The code we email you', form: 'Your request', done: 'Sent' };
     var at = order.indexOf(step);
@@ -2111,7 +2120,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function rpRepaint() {
     var rp = document.querySelector('#rp .rp'); if (!rp) return false;    // only on the live request page
     var mood = moodOf(state.rp);
-    var words = MOODS[mood] !== undefined ? MOODS[mood] : ['Time off, without the paperwork.', 'Leave, overtime, or a carry-over or payout. No Microsoft sign-in needed.'];
+    var words = MOODS[mood] !== undefined ? MOODS[mood] : ['Time off, without the paperwork.', 'Leave, overtime, or a payout. No Microsoft sign-in needed.'];
     if (mood) rp.setAttribute('data-mood', mood); else rp.removeAttribute('data-mood');   // same element -> CSS transition runs
     var h1 = rp.querySelector('.rp-side h1'); if (h1) h1.textContent = words[0];           // swap the mood headline
     var lead = rp.querySelector('.rp-side p'); if (lead) lead.textContent = words[1];      // and the line under it
@@ -2183,10 +2192,11 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         '<div class="pad small muted" style="border-top:1px solid var(--line)">' + hrows.length + ' of ' + all.length + ' ' + (all.length === 1 ? 'request' : 'requests') + '</div></div>';
     }
     var pot = function (label, v, note, of) { return '<div class="pot"><small>' + label + '</small><b>' + v + '</b>' + (of ? '<span class="meter" style="margin:6px 0 5px"><span class="keep" style="width:' + Math.max(0, Math.min(100, v / of * 100)) + '%"></span></span>' : '') + '<div class="chg">' + note + '</div></div>'; };
-    // hourly: one Sick balance, and vacation as a counted total (not a balance). No Make-Up/Carry-over/Payout. (#300)
+    // hourly: one Sick balance, and vacation as a counted total (not a balance). No Make-Up, Carried over or Payout. (#300)
+    // Salaried: Carried over shows only while it holds days, with its use-by date (#551).
     var pots = isBC(p)
       ? pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Vacation taken', p.vacTaken || 0, 'days, this year. Counted, not a balance.')
-      : pot('Vacation', p.vac, 'left of ' + p.vacY + ' days this year', p.vacY) + pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') + pot('Carry Over', p.co, 'used before vacation, cleared April 1 (in 174 days)') + pot('Payout', p.po || 0, 'days set aside to be paid out');
+      : pot(VAC_POT, p.vac, 'left of ' + p.vacY + ' days this year', p.vacY) + pot('Sick or personal', p.sick, 'left of ' + p.sickY + ' days', p.sickY) + pot('Make-Up', p.mu, 'earned from overtime, used first for vacation') + (p.co > 0 ? pot(CO_POT, p.co, 'use by Mar 31, 2027') : '') + pot('Payout', p.po || 0, 'days set aside to be paid out');
     return html + '<div class="pots5">' + pots + '</div>' +
       '<div class="paper">' + grp('Waiting on your manager', pend, 'Nothing waiting.') + grp('Coming up', [], 'No approved time off coming up.') + grp('Recent', past.slice(0, 5), 'Nothing yet.') +
       '<div class="pad" style="padding-top:8px;border-top:1px solid var(--line)"><button class="linkbtn" type="button" data-etab="history">See all ' + all.length + ' requests in History</button></div></div>';
@@ -2274,9 +2284,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
           '<button class="btn ghost" type="button" data-act="wzback">Back</button><button class="btn pri" type="button" data-act="wzdone">Done</button>', true);
       case 'checklist': return dialog('What moved where', '<span class="small muted">Every part of today\'s admin dashboard, and where it lives in this design.</span><div class="scroll"><table class="checklist"><thead><tr><th>Today</th><th>Now</th></tr></thead><tbody>' + CHECKLIST.map(function (c) { return '<tr><td>' + c[0] + '</td><td>' + c[1] + '</td></tr>'; }).join('') + '</tbody></table></div>', '', true);
       case 'mgradd': return dialog('Add a new hire', addEmployee(false), '', true);
-      case 'logsick': return dialog('Make a request for someone on your team', '<span class="small muted">For anyone on your team, salaried or hourly, in any province: leave of any type (sick days, vacation and half days included), make-up time or overtime, or a carry-over or payout while HR has them open. It is approved straight away, recorded as approved by you, and the request notes that you made it. Not for yourself: your own requests go through the request page.</span>' +
+      case 'logsick': return dialog('Make a request for someone on your team', '<span class="small muted">For anyone on your team, salaried or hourly, in any province: leave of any type (sick days, vacation and half days included), make-up time or overtime, or a payout while HR has it open. It is approved straight away, recorded as approved by you, and the request notes that you made it. Not for yourself: your own requests go through the request page.</span>' +
         '<label class="field">Who<select class="input" id="sickWho">' + team().map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('') + '</select></label>' +
-        '<label class="field">Request<select class="input">' + LEAVE_TYPES.concat(['Overtime', 'Carry over to next year', 'Pay out']).map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('') + '</select></label>' +   // every kind, for anyone on the team (#523)
+        '<label class="field">Request<select class="input">' + LEAVE_TYPES.concat(['Overtime', 'Pay out']).map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('') + '</select></label>' +   // every kind, for anyone on the team (#523); payout is the only vacation move (#554)
         '<label class="field">Day<input class="input" type="date" value="2026-10-28"></label>', '<button class="btn pri" type="button" data-act="dologsick">Make and approve</button>');
       case 'teamadd': var addable = STAFF.filter(function (p) { return p.name !== ME && p.mgrs.indexOf(ME) < 0; });
         return dialog('Add to my team', '<span class="small muted">Pick any active staff member. They can have more than one manager, so this does not remove anyone else.</span>' +
@@ -2420,7 +2430,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
         if (!reason.trim()) { $('reasonIn').placeholder = 'A reason is required'; $('reasonIn').focus(); return; }
         var who = person(m.req.who) || { mgrs: [], vac: 0 };
         if ((m.req.issues || []).indexOf('No Managers (Staff Dir)') >= 0 && !who.mgrs.length) { state.modal = null; toast('Still no manager on record for ' + m.req.who + '. Set one from Staff first, then reprocess.'); render(); return; }
-        m.req.status = 'Pending'; m.req.issues = null; m.req.mgr = m.req.mgr || who.mgrs[0]; m.req.days = m.req.days || 1; m.req.cur = { Vacation: who.vac }; m.req.next = { Vacation: who.vac - m.req.days };
+        m.req.status = 'Pending'; m.req.issues = null; m.req.mgr = m.req.mgr || who.mgrs[0]; m.req.days = m.req.days || 1; m.req.cur = { '2026 vacation': who.vac }; m.req.next = { '2026 vacation': who.vac - m.req.days };
         state.modal = null; state.reqSel = null; toast('Reprocessed #' + m.req.id + '; it is now with ' + m.req.mgr + ' (example).'); render(); return;
       case 'mgrs': var p = person(t.getAttribute('data-who')); state.modal = { kind: 'mgrs', who: p.name, sel: p.mgrs.slice() }; render(); return;
       case 'savemgrs':

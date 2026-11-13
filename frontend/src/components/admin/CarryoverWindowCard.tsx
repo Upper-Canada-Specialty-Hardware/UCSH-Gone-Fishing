@@ -31,7 +31,7 @@ export default function CarryoverWindowCard() {
   useEffect(() => {
     getCarryoverPayoutWindow()
       .then((r) => show(r.data))
-      .catch(() => setError('Could not read the carry-over and payout dates.'));
+      .catch(() => setError('Could not read the payout dates.'));
   }, []);
 
   /**
@@ -71,7 +71,7 @@ export default function CarryoverWindowCard() {
   // One line on where things stand, plus a coloured chip for it.
   const status = !saved ? 'Checking...'
     : saved.open ? `Open now, until ${longDate(saved.end!)}.`
-    : !saved.start ? 'Closed: no dates set. The request page greys carry-over and payout out.'
+    : !saved.start ? 'Closed: no dates set. The request page greys Payout out.'
     : saved.today < saved.start ? `Closed until ${longDate(saved.start)}.`
     : `Closed since ${longDate(saved.end!)}.`;
   const changed = !!saved && (start !== (saved.start || '') || end !== (saved.end || ''));
