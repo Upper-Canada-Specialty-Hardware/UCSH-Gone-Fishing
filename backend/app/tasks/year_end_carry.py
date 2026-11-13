@@ -2,8 +2,9 @@
 
 On January 1 (Toronto), for each salaried person: unused vacation moves to their
 carried-over days (``CarryOver``), usable until March 31, and vacation is
-refilled to its yearly entitlement; sick is refilled to its entitlement; the
-yearly payout total starts again at 0. Hourly staff get their sick refill only.
+refilled to its yearly entitlement; sick is refilled to its entitlement. The
+payout total is left alone: it never expires, and HR clears it by hand once
+accounting has paid it. Hourly staff get their sick refill only.
 A negative leftover is time owed: the new entitlement pays it first (#546). The
 April 1 reset then clears what is left of the carried-over days, as before.
 
@@ -165,7 +166,7 @@ async def run_year_end_carry(year: int) -> dict:
                     float(ff.get("CurrentSickDayBalance", 0) or 0), float(ff.get("SickDayEntitlement", 0) or 0),
                 )}
                 result = {"moved": 0.0}
-                if not is_hourly(ff):                         # hourly have no vacation balance or payout
+                if not is_hourly(ff):                         # hourly have no vacation balance
                     result = carry_pure(
                         float(ff.get("CurrentVacationBalance", 0) or 0),
                         float(ff.get("CarryOver", 0) or 0),
@@ -174,7 +175,6 @@ async def run_year_end_carry(year: int) -> dict:
                     writes.update({
                         "CurrentVacationBalance": result["CurrentVacationBalance"],
                         "CarryOver": result["CarryOver"],
-                        "Payout": 0.0,                        # the 5-day payout cap is per year
                     })
                 await staff_store.update_list_item_fields(
                     settings.SP_LIST_STAFF_DIRECTORY, emp_id, writes,
