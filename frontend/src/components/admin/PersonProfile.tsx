@@ -66,7 +66,7 @@ const POTS: Pot[] = [
   { key: 'sick', col: 'CurrentSickDayBalance', label: 'Sick', of: 'sick_entitlement', step: 0.5 },
   { key: 'make_up', col: 'CurrentOvertimeBalance', label: 'Make-up', unit: 'days (hours ÷ 8)', step: 0.125 },
   { key: 'carry_over', col: 'CarryOver', label: vacationLabels().next, unit: vacationLabels().nextNote, step: 0.5 },
-  { key: 'payout', col: 'Payout', label: 'Payout', unit: 'days', step: 0.5 },
+  { key: 'payout', col: 'Payout', label: vacationLabels().payout, unit: 'days', step: 0.5 },
 ];
 const POT_BY_KEY: Record<string, Pot> = Object.fromEntries(POTS.map((p) => [p.key, p]));
 
@@ -115,7 +115,7 @@ const FIELDS: Record<string, FieldDef> = {
 /** SharePoint column (as the history stores it) -> friendly label. */
 const HISTORY_LABELS: Record<string, string> = {
   CurrentVacationBalance: 'Vacation', CurrentSickDayBalance: 'Sick', CurrentOvertimeBalance: 'Make-up',
-  CarryOver: 'Next-year vacation', Payout: 'Payout', DefaultYearlyVacationDays: 'Vacation entitlement',
+  CarryOver: 'Carried over', Payout: 'Payout', DefaultYearlyVacationDays: 'Vacation entitlement',
   SickDayEntitlement: 'Sick entitlement', Title: 'Name', EmailAddress: 'Email', CellNumber: 'Cell',
   Extension: 'Extension', Birthday: 'Birthday', Location: 'Location', Department: 'Department',
   SalaryHourly: 'Salary or hourly', Supervisor: 'Supervisor (text)', SystemCheck: 'System check',
