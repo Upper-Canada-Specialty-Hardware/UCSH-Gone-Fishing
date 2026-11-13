@@ -13,7 +13,7 @@ import CodeBoxes from '../components/request/CodeBoxes';
 import { NextItem, NextSteps, SidePanel, StepItem, TypeCards } from '../components/request/RequestLayout';
 import { DEFAULT_WORDS, MOODS, moodOf } from '../components/request/moods';
 import { buildTheme } from '../theme';
-import { carryoverClosedReason } from '../utils/carryoverWindow';
+import { carryoverClosedReason, longDate } from '../utils/carryoverWindow';
 import { isHourly } from '../utils/employment';
 import { getMyBalances } from '../api/client';
 import { useSessionDraft } from '../hooks/useSessionDraft';
@@ -286,6 +286,10 @@ export default function RequestPage() {
   const closedTypes: Partial<Record<RequestType, string>> = hourlyStaff
     ? { 'carryover-payout': 'Not for hourly staff. Vacation is tracked, not a balance.' }
     : carryoverClosed ? { 'carryover-payout': carryoverClosed } : {};
+
+  // While payout is open, its card says until when (#554).
+  const typeNotes: Partial<Record<RequestType, string>> =
+    !closedTypes['carryover-payout'] && carryoverWindow ? { 'carryover-payout': `Open until ${longDate(carryoverWindow.end)}` } : {};
 
   // Pick up where this address starts: the shared sign-in for a new request,
   // or the landing page's note.
@@ -654,7 +658,7 @@ export default function RequestPage() {
             {step === 'form' && session && (
               <>
                 <Fold show={!!error}><Alert severity="error">{error}</Alert></Fold>
-                <TypeCards value={type} onPick={setType} closed={closedTypes} />
+                <TypeCards value={type} onPick={setType} closed={closedTypes} notes={typeNotes} />
                 {/* Another form cross-fades in, and the block's height follows. */}
                 <AutoHeight>
                   <AnimatePresence mode="wait" initial={false}>

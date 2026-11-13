@@ -241,18 +241,18 @@ def test_crossing_the_end_of_march_splits_carry_over_and_vacation():
     assert after["CurrentVacationBalance"] == 9                     # Apr 1
 
 
-def test_days_after_the_carry_over_expired_are_not_charged():
-    # Created Mar 30 for Mar 31, approved Apr 2 after the reset: nothing moves.
+def test_after_the_next_year_line_expired_current_year_days_pay():
+    # Created Mar 30 for Mar 31, approved Apr 2 after the reset: vacation pays (#551).
     after = _pay(MAR_2027, date(2027, 3, 31), date(2027, 3, 31), 1, today=date(2027, 4, 2),
                  CurrentVacationBalance=10)
-    assert after["CurrentVacationBalance"] == 10
+    assert after["CurrentVacationBalance"] == 9
     assert after["CarryOver"] == 0
 
 
-def test_only_the_days_due_from_the_expired_carry_over_are_waived():
-    # Mar 30 to Apr 1 approved Apr 2: Mar 30 and 31 go uncharged, Apr 1 is vacation's.
+def test_nothing_is_waived_after_expiry_any_more():
+    # Mar 30 to Apr 1 approved Apr 2: every day comes from vacation (#551).
     after = _pay(MAR_2027, MAR_2027, date(2027, 4, 1), 3, today=date(2027, 4, 2), CurrentVacationBalance=10)
-    assert after["CurrentVacationBalance"] == 9
+    assert after["CurrentVacationBalance"] == 7
 
 
 def test_sick_and_make_up_still_pay_before_any_day_is_waived():
@@ -385,12 +385,14 @@ def test_refused_two_carry_over_days_cover_two_days_next_february():
     assert _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 2), 2, CarryOver=2) is None
 
 
-def test_refused_three_days_next_february_with_two_carry_over_days():
-    message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=2, CurrentVacationBalance=15)
-    assert message == (
-        "These dates need 3 days of carry-over and you have 2. "
-        "Carry-over can't go below zero, and 2026 vacation can't pay for 2027 dates."
-    )
+def test_current_year_days_can_pay_for_next_february_too():
+    # They carry at year end on their own, so 2 next-year days plus 15 cover 3 (#551).
+    assert _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=2, CurrentVacationBalance=15) is None
+
+
+def test_refused_three_days_next_february_with_two_days_in_all():
+    message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=2, CurrentVacationBalance=0)
+    assert message == "These dates need 3 days and you have 2 for 2027."
 
 
 def test_refused_april_next_year_whatever_the_balances():
@@ -402,17 +404,14 @@ def test_make_up_alone_can_pay_for_next_february():
     assert _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 2), 2, CurrentOvertimeBalance=2) is None
 
 
-def test_refused_next_february_with_no_carry_over_or_make_up():
-    message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 1), 1, CurrentVacationBalance=15)
-    assert message == (
-        "These dates need 1 day of carry-over and you have 0. "
-        "Carry-over can't go below zero, and 2026 vacation can't pay for 2027 dates."
-    )
+def test_vacation_below_zero_counts_as_nothing_for_next_year():
+    message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 1), 1, CurrentVacationBalance=-2)
+    assert message == "These dates need 1 day and you have 0 for 2027."
 
 
-def test_the_refusal_names_make_up_only_for_someone_who_has_some():
+def test_make_up_counts_toward_next_year_dates():
     message = _refusal(NOV_5, date(2027, 2, 1), date(2027, 2, 3), 3, CarryOver=1, CurrentOvertimeBalance=1)
-    assert message.startswith("These dates need 3 days of carry-over or Make-Up and you have 2. ")
+    assert message == "These dates need 3 days and you have 2 for 2027."
 
 
 def test_a_negative_pot_counts_as_nothing_when_refusing():

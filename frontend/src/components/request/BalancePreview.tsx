@@ -7,6 +7,7 @@ import TakenFrom from '../TakenFrom';
 import { describeTakenFrom, takenFromPreview } from '../../utils/takenFrom';
 import { belowZeroSentence, isHourly } from '../../utils/employment';
 import { today } from '../../utils/dates';
+import { vacationLabels } from '../../utils/vacationLines';
 
 /** The numeric balance pots (Balances also holds the non-numeric hourly / vacation_taken, #300). */
 type NumericBalanceKey = 'vacation_balance' | 'sick_balance' | 'overtime' | 'carryover' | 'payout';
@@ -15,8 +16,8 @@ type NumericBalanceKey = 'vacation_balance' | 'sick_balance' | 'overtime' | 'car
 const POTS: { key: NumericBalanceKey; label: string }[] = [
   { key: 'overtime', label: 'Make-Up' },
   { key: 'sick_balance', label: 'Sick' },
-  { key: 'carryover', label: 'Carry Over' },
-  { key: 'vacation_balance', label: 'Vacation' },
+  { key: 'carryover', label: vacationLabels().next },           // the next-year line (#551)
+  { key: 'vacation_balance', label: vacationLabels().current },
   { key: 'payout', label: 'Payout' },
 ];
 

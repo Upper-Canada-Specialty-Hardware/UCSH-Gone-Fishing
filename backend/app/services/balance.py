@@ -225,10 +225,10 @@ def leave_day_split(
 def carryover_terms(carryover_days: float, on: date, today: date) -> tuple[float, float]:
     """What the cascade gets for carry-over, once expiry is taken into account.
 
-    Normally carry-over pays for the days in its period. Once Mar 31 of that period
-    has passed (created Mar 30 for Mar 31, approved Apr 2), the pot has been reset:
-    those days are charged to nothing, rather than to the vacation that could not
-    pay for them when the request was made.
+    Normally the next-year line (carry-over) pays for the days in its period. Once
+    Mar 31 of that period has passed (created Mar 30 for Mar 31, approved Apr 2),
+    that line has been reset, so current-year vacation pays instead (#551). Nothing
+    is waived any more.
 
     Args:
         carryover_days: The days dated inside the rule date's carry-over period.
@@ -236,11 +236,12 @@ def carryover_terms(carryover_days: float, on: date, today: date) -> tuple[float
         today: Today in Toronto.
 
     Returns:
-        ``(carryover_days, waived_days)`` for ``simulate_leave_impact``.
+        ``(carryover_days, waived_days)`` for ``simulate_leave_impact``; the second
+        is always 0 now.
     """
     _, period_end = carryover_period(on)
-    if period_end < today:                            # the period is over: nothing left to pay from
-        return 0.0, carryover_days
+    if period_end < today:                            # the period is over: current-year days pay
+        return 0.0, 0.0
     return carryover_days, 0.0
 
 
@@ -319,7 +320,8 @@ def bookable_until(sp_fields: dict, on: date) -> date:
         return year_end
     make_up = float(sp_fields.get("CurrentOvertimeBalance", 0) or 0)
     carryover = float(sp_fields.get("CarryOver", 0) or 0)
-    return period_end if make_up > 0 or carryover > 0 else year_end
+    vacation = float(sp_fields.get("CurrentVacationBalance", 0) or 0)   # carries at year end, so it can pay too (#551)
+    return period_end if make_up > 0 or carryover > 0 or vacation > 0 else year_end
 
 
 def booking_refusal(sp_fields: dict, leave_type: str, split: LeaveSplit, on: date) -> str | None:
@@ -347,15 +349,14 @@ def booking_refusal(sp_fields: dict, leave_type: str, split: LeaveSplit, on: dat
         last = _unbookable_from(on) - timedelta(days=1)   # the last date that can be booked, named so the cutoff is clear
         return f"Leave dated after {last:%B} {last.day}, {last.year} can be booked from January 1, {on.year + 1}."
     make_up = max(float(sp_fields.get("CurrentOvertimeBalance", 0) or 0), 0.0)   # a negative counts as 0
-    carryover = max(float(sp_fields.get("CarryOver", 0) or 0), 0.0)
-    have = make_up + carryover
-    if split.ahead_days > have:                       # vacation cannot pay these days, and the rest falls short
+    carryover = max(float(sp_fields.get("CarryOver", 0) or 0), 0.0)              # the next-year line
+    # Current-year days carry at year end on their own, so they pay these dates too,
+    # but only what is above 0: they never go below 0 for next year's dates (#551).
+    vacation = max(float(sp_fields.get("CurrentVacationBalance", 0) or 0), 0.0)
+    have = make_up + carryover + vacation
+    if split.ahead_days > have:                       # not enough for next year's dates
         needed = f"{split.ahead_days:g} day{'' if split.ahead_days == 1 else 's'}"
-        pots = "carry-over or Make-Up" if make_up > 0 else "carry-over"   # only name Make-Up when they have some
-        return (
-            f"These dates need {needed} of {pots} and you have {have:g}. "
-            f"Carry-over can't go below zero, and {on.year} vacation can't pay for {on.year + 1} dates."
-        )
+        return f"These dates need {needed} and you have {have:g} for {on.year + 1}."
     return None
 
 
@@ -641,13 +642,19 @@ def simulate_carryover_payout_impact(
     carryover = float(sp_fields.get("CarryOver", 0) or 0)
     payout = float(sp_fields.get("Payout", 0) or 0)
 
-    final_vacation = vacation - days
-    if final_vacation < 0:
-        return None
-
     if request_type == "Carry Over":
+        final_vacation = vacation - days               # a carry-over still moves current-year days
+        if final_vacation < 0:
+            return None
         carryover += days
     else:
+        # A payout takes the next-year line first, then current-year days (#554);
+        # refused when both together fall short. Neither goes below 0.
+        from_next = min(max(carryover, 0.0), days)     # the next-year line pays what it can
+        final_vacation = vacation - (days - from_next)  # current-year days pay the rest
+        if final_vacation < 0:
+            return None
+        carryover -= from_next
         payout += days
 
     return {

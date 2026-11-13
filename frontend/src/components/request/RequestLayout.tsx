@@ -128,8 +128,10 @@ const TYPE_ICONS: Record<RequestType, ReactNode> = {
  *   on its greyed card (carry-over and payout outside HR's dates).
  * @returns The group of cards.
  */
-export function TypeCards({ value, onPick, closed = {} }: {
+export function TypeCards({ value, onPick, closed = {}, notes = {} }: {
   value: RequestType; onPick: (t: RequestType) => void; closed?: Partial<Record<RequestType, string>>;
+  /** An extra line on an open card, e.g. the payout dates (#554). */
+  notes?: Partial<Record<RequestType, string>>;
 }) {
   const theme = useTheme();
   return (
@@ -179,6 +181,10 @@ export function TypeCards({ value, onPick, closed = {} }: {
             <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{t.label}</Typography>
             {/* The reason replaces the hint on a closed card. */}
             <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35 }}>{reason || t.hint}</Typography>
+            {/* An open card's extra line, such as when payout closes. */}
+            {!reason && notes[t.value] && (
+              <Typography variant="caption" sx={{ lineHeight: 1.35, fontWeight: 600, color: 'primary.main' }}>{notes[t.value]}</Typography>
+            )}
           </ButtonBase>
         );
       })}

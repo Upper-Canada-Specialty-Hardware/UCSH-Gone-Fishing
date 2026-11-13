@@ -1,6 +1,7 @@
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import { Box } from '@mui/material';
 import { SHARED_DATA_GRID_PROPS } from './dataGridDefaults';
+import { vacationLabels } from '../utils/vacationLines';
 
 interface Props {
   members: any[];
@@ -14,7 +15,7 @@ export default function TeamBalanceTable({ members, loading }: Props) {
     { field: 'location', headerName: 'Location', width: 160 },
     {
       field: 'vacation',
-      headerName: 'Vacation',
+      headerName: vacationLabels().current,   // the current-year line (#551)
       width: 100,
       type: 'number',
       valueGetter: (_: any, row: any) => row.balances?.vacation_balance ?? 0,
@@ -37,7 +38,7 @@ export default function TeamBalanceTable({ members, loading }: Props) {
     },
     {
       field: 'carryover',
-      headerName: 'Carry Over',
+      headerName: vacationLabels().next,      // the next-year line, named by its dates
       width: 100,
       type: 'number',
       valueGetter: (_: any, row: any) => row.balances?.carryover ?? 0,

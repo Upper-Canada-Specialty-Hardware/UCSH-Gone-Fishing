@@ -47,7 +47,8 @@ export const REQUEST_TYPES: { value: RequestType; label: string; hint: string }[
   // The staff-facing name is the old Microsoft Form's "Time make up request", and
   // the hint says plainly where the hours go; the internal code stays 'overtime' (#428).
   { value: 'overtime', label: 'Time make up request', hint: 'Extra hours you worked, banked as make-up time' },
-  { value: 'carryover-payout', label: 'Carry-over or payout', hint: 'Move vacation days to next year, or cash them out' },
+  // Carry-over is automatic at year end now, so this form is Payout only (#554).
+  { value: 'carryover-payout', label: 'Payout', hint: 'Cash out vacation days' },
 ];
 
 /** Every field any of the three forms uses, as typed (strings until sent). */
@@ -83,7 +84,7 @@ export function isRequestReady(type: RequestType, v: RequestValues): boolean {
     return v.leave_type === PARTIAL_DAY ? Number(v.partial_hours) > 0 : !!v.end_date;
   }
   if (type === 'overtime') return !!v.description.trim() && !!v.date && Number(v.hours) > 0;
-  return !!v.type_of_request && Number(v.days) > 0;
+  return Number(v.days) > 0;                                    // payout is the only option (#554)
 }
 
 /**
@@ -107,7 +108,7 @@ export function buildRequestBody(type: RequestType, v: RequestValues): Record<st
   if (type === 'overtime') {
     return { description: v.description.trim(), date: v.date, hours: Number(v.hours) };
   }
-  return { type_of_request: v.type_of_request, days: Number(v.days) };
+  return { type_of_request: 'Payout', days: Number(v.days) };     // carry-over is no longer a request (#552)
 }
 
 interface Props {
@@ -269,11 +270,7 @@ export default function RequestForm({ type, values: v, onChange, hourlyStaff = f
       {/* HR's policy shows before the carry-over/payout form is filled in (#429). */}
       <CarryoverPolicy window={carryoverWindow} />
       <Box sx={ROW2}>
-        <TextField label="Request" required select value={v.type_of_request} onChange={field('type_of_request')}>
-          <MenuItem value="Carry Over">Carry over to next year</MenuItem>
-          <MenuItem value="Payout">Pay out</MenuItem>
-        </TextField>
-        <TextField label="Days" required type="number" value={v.days} onChange={field('days')}
+        <TextField label="Days to pay out" required type="number" value={v.days} onChange={field('days')}
           slotProps={{ htmlInput: { min: 0.5, step: 0.5 } }} helperText="In half-day steps." />
       </Box>
     </Stack>
