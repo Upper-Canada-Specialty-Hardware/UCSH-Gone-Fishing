@@ -64,9 +64,9 @@ const POTS: Pot[] = [
   { key: 'vacation_entitlement', col: 'DefaultYearlyVacationDays', label: 'Vacation entitlement', unit: 'days a year', step: 0.5, min: 0.5 },
   { key: 'sick_entitlement', col: 'SickDayEntitlement', label: 'Sick entitlement', unit: 'days a year', step: 0.5, min: 0.5 },
   { key: 'vacation', col: 'CurrentVacationBalance', label: vacationLabels().current, of: 'vacation_entitlement', step: 0.5 },
+  { key: 'carry_over', col: 'CarryOver', label: vacationLabels().next, unit: vacationLabels().nextNote, step: 0.5 },   // beside vacation, so the two read as a split (#551)
   { key: 'sick', col: 'CurrentSickDayBalance', label: 'Sick', of: 'sick_entitlement', step: 0.5 },
   { key: 'make_up', col: 'CurrentOvertimeBalance', label: 'Make-up', unit: 'days (hours ÷ 8)', step: 0.125 },
-  { key: 'carry_over', col: 'CarryOver', label: vacationLabels().next, unit: vacationLabels().nextNote, step: 0.5 },
   { key: 'payout', col: 'Payout', label: 'Payout', unit: 'days', step: 0.5 },   // relabelled with the payout window's year
 ];
 const POT_BY_KEY: Record<string, Pot> = Object.fromEntries(POTS.map((p) => [p.key, p]));
@@ -458,7 +458,11 @@ export default function PersonProfile({
     [requests, currentYear],
   );
   // For hourly: the two entitlements and Sick only (vacation becomes the counter below).
-  const potsToShow = hourlyStaff ? POTS.filter((p) => ['vacation_entitlement', 'sick_entitlement', 'sick'].includes(p.key)) : POTS;
+  const potsToShow = hourlyStaff
+    ? POTS.filter((p) => ['vacation_entitlement', 'sick_entitlement', 'sick'].includes(p.key))
+    : manager
+      ? POTS.filter((p) => !['carry_over', 'payout'].includes(p.key) || Number(potValue(p)) !== 0)   // read-only: hide empty ones (#551)
+      : POTS;
 
   // Header values follow unsaved edits live.
   const currentName = String(fieldValue('name'));

@@ -369,7 +369,7 @@ export default function TeamTab({
               {line(vacationLabels().current, b.vacation_balance ?? 0, b.vacation_entitlement)}
               {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
               {line('Make-Up', b.overtime ?? 0)}
-              {line(vacationLabels().next, b.carryover ?? 0)}
+              {(b.carryover ?? 0) !== 0 && line(vacationLabels().next, b.carryover ?? 0)}   {/* only while it holds days (#551) */}
             </>
           )}
           <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>

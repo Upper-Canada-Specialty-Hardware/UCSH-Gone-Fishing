@@ -488,7 +488,7 @@ function StaffTable({ people, rows, onOpen, variant }: {
   // Which columns are visible; hourly never has Make-up or Carry-over to drop.
   const showManagers = wide;
   const showMakeUp = mid && !hourly;
-  const showCarryOver = mid && !hourly;
+  const showCarryOver = mid && !hourly && rows.some((p) => (p.balances?.carryover ?? 0) !== 0);   // only when someone has some (#551)
   const hidden = [
     !showManagers && 'Managers',
     !hourly && !showMakeUp && 'Make-up',
