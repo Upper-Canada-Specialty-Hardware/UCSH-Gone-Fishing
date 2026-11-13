@@ -18,7 +18,7 @@ const POTS: { key: NumericBalanceKey; label: string }[] = [
   { key: 'sick_balance', label: 'Sick' },
   { key: 'carryover', label: vacationLabels().next },           // the next-year line (#551)
   { key: 'vacation_balance', label: vacationLabels().current },
-  { key: 'payout', label: 'Payout' },
+  { key: 'payout', label: vacationLabels().payout },          // the yearly payout total, with its year
 ];
 
 const WAIT_MS = 400;   // pause after the last keystroke before asking the server

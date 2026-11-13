@@ -739,7 +739,7 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function what(r) { return esc(r.kind) + ' · ' + esc(r.when) + (r.hours ? ' · ' + r.hours + ' h' : r.days ? ' · ' + r.days + (r.days === 1 ? ' day' : ' days') : ''); }
   // ---- "Taken from" chips (#296, #307): which balances a request's days came from, worded exactly like TakenFrom.tsx. ----
   var TF_YEAR = 2026;                                           // the sample's year, for its vacation line and payouts
-  var VAC_POT = TF_YEAR + ' vacation', CO_POT = 'Carried over';   // the two vacation lines staff see (#551): this year's, and the days carried over
+  var VAC_POT = TF_YEAR + ' vacation', CO_POT = 'Carried over from 2026';   // the two vacation lines staff see (#551): this year's, and the days carried over
   function tfNum(v) { return String(+(+v).toFixed(3)); }        // trim to 3 decimals, like fmtDays
   // Render chip segments ({cls, amt, label}), or a muted line when nothing moved.
   function tfPills(segs) {
