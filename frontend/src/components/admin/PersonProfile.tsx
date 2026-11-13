@@ -26,6 +26,7 @@ import { getTeamMemberManagers, removeTeamMember } from '../../api/client';
 import { formatDay, formatInstantDay } from '../../utils/dates';
 import { isHourly } from '../../utils/employment';
 import { vacationLabels } from '../../utils/vacationLines';
+import { usePayoutLabel } from '../../hooks/usePayoutLabel';
 
 /*
  * The admin person profile (#273, #276, #306). The staff row grows into this
@@ -66,7 +67,7 @@ const POTS: Pot[] = [
   { key: 'sick', col: 'CurrentSickDayBalance', label: 'Sick', of: 'sick_entitlement', step: 0.5 },
   { key: 'make_up', col: 'CurrentOvertimeBalance', label: 'Make-up', unit: 'days (hours ÷ 8)', step: 0.125 },
   { key: 'carry_over', col: 'CarryOver', label: vacationLabels().next, unit: vacationLabels().nextNote, step: 0.5 },
-  { key: 'payout', col: 'Payout', label: vacationLabels().payout, unit: 'days', step: 0.5 },
+  { key: 'payout', col: 'Payout', label: 'Payout', unit: 'days', step: 0.5 },   // relabelled with the payout window's year
 ];
 const POT_BY_KEY: Record<string, Pot> = Object.fromEntries(POTS.map((p) => [p.key, p]));
 
@@ -194,6 +195,7 @@ export default function PersonProfile({
 }: Props) {
   const theme = useTheme();
   const t = theme.tokens;
+  const payoutLabel = usePayoutLabel();                      // the payout year, from the admin payout window (#554)
   const manager = mode === 'manager';                            // the team person view (#372)
   const [edits, setEdits] = useState<Record<string, any>>({});   // wire key -> unsaved value
   const [reason, setReason] = useState('');
@@ -579,7 +581,7 @@ export default function PersonProfile({
                 // hourly may set a 0 vacation entitlement, so drop the 0.5 floor and relabel its caption (#300).
                 const pot = hourlyStaff && p.key === 'vacation_entitlement'
                   ? { ...p, min: 0, unit: 'hourly staff have no vacation entitlement.' }
-                  : p;
+                  : p.key === 'payout' ? { ...p, label: payoutLabel } : p;   // e.g. "2026 payout" (#554)
                 const tile = (
                   <Tile
                     key={p.key} pot={pot} value={potValue(p)} saved={potOriginal(p)}

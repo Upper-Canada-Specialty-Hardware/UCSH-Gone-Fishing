@@ -15,8 +15,6 @@ export interface VacationLabels {
   next: string;
   /** One short line under the second one: its deadline, e.g. "use by Mar 31, 2027". */
   nextNote: string;
-  /** The yearly payout total's name, e.g. "2026 payout": the 5-day cap is per year. */
-  payout: string;
 }
 
 /**
@@ -34,6 +32,5 @@ export function vacationLabels(on: Date = today()): VacationLabels {
     // Named by the year the days come from, so nobody reads them as last year's by mistake.
     next: `Carried over from ${expires - 1}`,
     nextNote: `use by Mar 31, ${expires}`,
-    payout: `${year} payout`,
   };
 }
