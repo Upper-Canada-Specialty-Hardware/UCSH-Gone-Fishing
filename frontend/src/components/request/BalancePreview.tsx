@@ -8,6 +8,7 @@ import { describeTakenFrom, takenFromPreview } from '../../utils/takenFrom';
 import { belowZeroSentence, isHourly } from '../../utils/employment';
 import { today } from '../../utils/dates';
 import { vacationLabels } from '../../utils/vacationLines';
+import { usePayoutLabel } from '../../hooks/usePayoutLabel';
 
 /** The numeric balance pots (Balances also holds the non-numeric hourly / vacation_taken, #300). */
 type NumericBalanceKey = 'vacation_balance' | 'sick_balance' | 'overtime' | 'carryover' | 'payout';
@@ -18,7 +19,7 @@ const POTS: { key: NumericBalanceKey; label: string }[] = [
   { key: 'sick_balance', label: 'Sick' },
   { key: 'carryover', label: vacationLabels().next },           // the next-year line (#551)
   { key: 'vacation_balance', label: vacationLabels().current },
-  { key: 'payout', label: vacationLabels().payout },          // the yearly payout total, with its year
+  { key: 'payout', label: 'Payout' },                        // relabelled with the payout window's year below
 ];
 
 const WAIT_MS = 400;   // pause after the last keystroke before asking the server
@@ -46,6 +47,7 @@ interface Props {
  */
 export default function BalancePreview({ session, type, body, vacationTaken = null, onBookingLimit }: Props) {
   const theme = useTheme();
+  const payoutLabel = usePayoutLabel();                          // e.g. "2026 payout", from the admin payout window (#554)
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const key = body ? JSON.stringify(body) : '';         // a stable value for the effect to watch
 
@@ -116,7 +118,7 @@ export default function BalancePreview({ session, type, body, vacationTaken = nu
             )}
             {changed.map((p, i) => (
               <Row
-                key={p.key} i={i + 1} label={hourlyStaff ? 'Sick days left' : p.label} negative={projected![p.key] < 0}
+                key={p.key} i={i + 1} label={hourlyStaff ? 'Sick days left' : p.key === 'payout' ? payoutLabel : p.label} negative={projected![p.key] < 0}
                 value={<>{fmt(current[p.key])} → <CountUp from={current[p.key]} value={projected![p.key]} format={fmt} delay={0.15 + i * 0.06} /></>}
               />
             ))}

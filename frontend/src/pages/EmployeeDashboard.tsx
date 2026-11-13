@@ -25,6 +25,7 @@ import { isHourly } from '../utils/employment';
 import { CountUp, EASE, Enter, KF, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
 import { EmployeeSkeleton } from '../components/Skeletons';
 import { vacationLabels } from '../utils/vacationLines';
+import { usePayoutLabel } from '../hooks/usePayoutLabel';
 
 /** The tabs, keyed by url segment (#/my/<key>). */
 const TABS = ['overview', 'year', 'history'] as const;
@@ -378,6 +379,7 @@ export default function EmployeeDashboard() {
   const hourlyStaff = isHourly(b);                       // hourly: Sick plus the vacation counter only (#300)
   const resetIn = daysToCarryReset();
   const lines = vacationLabels();                               // the two vacation lines, named by year (#551)
+  const payoutLabel = usePayoutLabel();                         // the payout year, from the admin payout window (#554)
   // The "by kind" bars: the longest bar fills the track.
   const kindRows = myKindRows(mine);
   const top = Math.max(1, ...kindRows.map((r) => r[1]));
@@ -455,7 +457,7 @@ export default function EmployeeDashboard() {
                 )}
                 <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
                 <Pot count={arriving} label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
-                <Pot count={arriving} label={lines.payout} value={b.payout ?? 0} note="days set aside to be paid out" />
+                <Pot count={arriving} label={payoutLabel} value={b.payout ?? 0} note="days set aside to be paid out" />
               </>
             )}
           </Box>
