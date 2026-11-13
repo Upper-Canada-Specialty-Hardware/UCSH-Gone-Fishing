@@ -154,7 +154,7 @@ export const SRC_META: Record<Src | 'all', { label: string; sub: string; note: s
   all: { label: 'All lists', sub: '', note: 'Leave Requests, Overtime Requests Data and CarryOver_Payout_Data together' },
   leave: { label: 'Leave', sub: '', note: 'SharePoint list: Leave Requests' },
   mu: { label: 'Make-up', sub: '', note: 'SharePoint list: Overtime Requests Data. Hours become days at 8 hours a day.' },
-  co: { label: 'Carry-over and payout', sub: '', note: 'SharePoint list: CarryOver_Payout_Data' },
+  co: { label: 'Payouts', sub: '', note: 'Includes past carry-over requests' },   // carry-over is automatic now; the list keeps its history (#554)
 };
 
 /** A column's display settings; the cell itself is rendered by the table. */
