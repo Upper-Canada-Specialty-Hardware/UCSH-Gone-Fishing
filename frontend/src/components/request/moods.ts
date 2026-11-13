@@ -70,7 +70,7 @@ export const MOODS: Record<Mood, MoodSpec> = {
 /** The side panel's lines before a kind is chosen. */
 export const DEFAULT_WORDS: [string, string] = [
   'Time off, without the paperwork.',
-  'Leave, overtime, or a carry-over or payout. No Microsoft sign-in needed.',
+  'Leave, overtime, or a payout. No Microsoft sign-in needed.',
 ];
 
 /** Leave types (as the backend words them) to their mood. */

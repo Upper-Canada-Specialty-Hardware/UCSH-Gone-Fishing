@@ -458,7 +458,8 @@ export default function EmployeeDashboard() {
                 )}
                 <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
                 <Pot count={arriving} label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
-                <Pot count={arriving} label={payoutLabel} value={b.payout ?? 0} note="days set aside to be paid out" />
+                {/* Payout only while days are set aside, like carried-over days (#551). */}
+                {(b.payout ?? 0) !== 0 && <Pot count={arriving} label={payoutLabel} value={b.payout ?? 0} note="days set aside to be paid out" />}
               </>
             )}
           </Box>

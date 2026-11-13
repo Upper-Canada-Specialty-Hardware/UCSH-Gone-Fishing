@@ -45,6 +45,10 @@ export default function TeamBalanceTable({ members, loading }: Props) {
     },
   ];
 
+  // The carried-over column shows only when someone has carried-over days (#551).
+  const anyCarried = members.some((m: any) => (m.balances?.carryover ?? 0) !== 0);
+  const shown = anyCarried ? columns : columns.filter((c) => c.field !== 'carryover');
+
   const rows = members.map((m: any) => ({
     id: m.id,
     name: m.name || m.employee?.name,
@@ -61,7 +65,7 @@ export default function TeamBalanceTable({ members, loading }: Props) {
     >
       <DataGrid
         rows={rows}
-        columns={columns}
+        columns={shown}
         loading={loading}
         {...SHARED_DATA_GRID_PROPS}
       />
