@@ -174,7 +174,7 @@ def test_new_request_options_report_the_carry_over_dates(stubbed, monkeypatch):
     result = run(tm.team_new_request_options(STEVE))
     assert "Sick or Personal Day" in result["leave_types"]
     assert result["carryover_payout_open"] is False
-    assert result["carryover_closed_message"] == "Carry-over and payout requests open on November 1, 2026, until November 30, 2026."
+    assert result["carryover_closed_message"] == "Payout requests open on November 1, 2026, until November 30, 2026."
 
 
 def test_the_bc_only_sick_day_route_and_flag_are_gone():

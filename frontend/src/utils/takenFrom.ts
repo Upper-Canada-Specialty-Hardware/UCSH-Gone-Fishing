@@ -99,6 +99,19 @@ export interface BalanceSnapshot {
  * @param year - The year its days were earned, or null.
  * @returns e.g. "vacation", "Make-Up", "2025 carry-over", "2026 payout".
  */
+export function takenLabel(pot: Pot, year: number | null): string {
+  // Days a leave took from the next-year line are named by the year they came from (#551).
+  if (pot === 'carry_over' && year != null) return `from ${year}`;
+  return potLabel(pot, year);
+}
+
+/**
+ * A chip's label: the pot name, with a year before it only for carry-over and payout.
+ *
+ * @param pot - The balance pot.
+ * @param year - The year its days were earned, or null.
+ * @returns e.g. "vacation", "Make-Up", "2025 carry-over", "2026 payout".
+ */
 export function potLabel(pot: Pot, year: number | null): string {
   const name = POT_NAME[pot];                                   // base pot name
   const hasYear = year != null && (pot === 'carry_over' || pot === 'payout');   // only these two name a year
@@ -258,7 +271,7 @@ export function takenFromText(value: TakenFromValue | null | undefined): string 
       return `+${fmtDays(s.days)} added to ${potLabel(s.pot, null)}${paid}`;
     }
     if (s.type === 'move') return `${fmtDays(s.days)} vacation → ${potLabel(s.toPot, s.toYear)}`;
-    return `${fmtDays(s.days)} ${potLabel(s.pot, s.year)}`;
+    return `${fmtDays(s.days)} ${takenLabel(s.pot, s.year)}`;
   });
   const note = shape.projected ? ' (if approved)' : shape.refunded ? ' (refunded)' : '';
   return parts.join(', ') + note;

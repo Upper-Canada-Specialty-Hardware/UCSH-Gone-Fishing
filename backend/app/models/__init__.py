@@ -3,6 +3,7 @@ from app.models.webhook_subscription import WebhookSubscription
 from app.models.change_token import ChangeToken
 from app.models.processing_log import ProcessingLog
 from app.models.carryover_reset_log import CarryoverResetLog
+from app.models.year_end_carry_log import YearEndCarryLog
 from app.models.request_approval_state import RequestApprovalState
 from app.models.dashboard_link_state import DashboardLinkState
 from app.models.staff_setup_nudge import StaffSetupNudge
@@ -52,6 +53,7 @@ __all__ = [
     "ChangeToken",
     "ProcessingLog",
     "CarryoverResetLog",
+    "YearEndCarryLog",
     "RequestApprovalState",
     "DashboardLinkState",
     "StaffSetupNudge",

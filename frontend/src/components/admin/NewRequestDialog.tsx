@@ -11,6 +11,7 @@ import {
 import { createTeamRequest, previewTeamRequest } from '../../api/client';
 import { belowZeroSentence } from '../../utils/employment';
 import { Src } from './requestTable';
+import { vacationLabels } from '../../utils/vacationLines';
 
 /** The one leave type measured in hours, not a date range (backend's name). */
 const PARTIAL = 'Half Day or Partial Day Off';
@@ -20,10 +21,10 @@ const TYPE_OF: Record<Src, string> = { leave: 'leave', mu: 'overtime', co: 'carr
 
 /** The balance pots the preview shows, with their keys and labels. */
 const POTS: { key: string; label: string }[] = [
-  { key: 'vacation_balance', label: 'Vacation' },
+  { key: 'vacation_balance', label: vacationLabels().current },
   { key: 'sick_balance', label: 'Sick' },
   { key: 'overtime', label: 'Make-Up' },
-  { key: 'carryover', label: 'Carry Over' },
+  { key: 'carryover', label: vacationLabels().next },
   { key: 'payout', label: 'Payout' },
 ];
 
@@ -86,7 +87,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
   const [otHours, setOtHours] = useState('');
   const [otDesc, setOtDesc] = useState('');
   // Carry-over / payout fields.
-  const [coType, setCoType] = useState<'Carry Over' | 'Payout'>('Carry Over');
+  const [coType, setCoType] = useState<'Carry Over' | 'Payout'>('Payout');   // payout only now (#554)
   const [coDays, setCoDays] = useState('');
   // Preview + saving.
   const [preview, setPreview] = useState<PreviewResult | null>(null);
@@ -100,7 +101,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
     setLeaveType(options.leave_types[0] || 'Vacation');
     setStart(todayIso()); setEnd(todayIso()); setPartialHours(''); setNotes('');
     setOtDate(todayIso()); setOtHours(''); setOtDesc('');
-    setCoType('Carry Over'); setCoDays('');
+    setCoType('Payout'); setCoDays('');
     setPreview(null);
   }, [open, defaultSrc, options.leave_types, forTeam]);
 
@@ -165,7 +166,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
   };
 
   const listOptions: { key: Src; label: string }[] = [
-    { key: 'leave', label: 'Leave' }, { key: 'mu', label: 'Make-up' }, { key: 'co', label: 'Carry-over or payout' },
+    { key: 'leave', label: 'Leave' }, { key: 'mu', label: 'Make-up' }, { key: 'co', label: 'Payout' },
   ];
 
   return (
@@ -236,7 +237,7 @@ export default function NewRequestDialog({ open, onClose, defaultSrc, options, p
               <Box>
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Type of request</Typography>
                 <Box sx={{ mt: 0.5 }}>
-                  <PillToggle name="co-type" label="Carry over or payout" value={coType} onChange={setCoType} options={[{ key: 'Carry Over', label: 'Carry Over' }, { key: 'Payout', label: 'Payout' }]} />
+                  <PillToggle name="co-type" label="Payout" value={coType} onChange={setCoType} options={[{ key: 'Payout', label: 'Payout' }]} />
                 </Box>
               </Box>
               <TextField required type="number" label="Days" value={coDays} onChange={(e) => setCoDays(e.target.value)} inputProps={{ step: 0.5, min: 0.5 }} helperText={forTeam ? 'Moved out of Vacation.' : "Moved out of Vacation. Allowed any time (HR's own tool)."} />

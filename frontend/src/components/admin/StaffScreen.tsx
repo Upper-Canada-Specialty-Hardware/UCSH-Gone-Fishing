@@ -16,6 +16,7 @@ import { formatInstantDay } from '../../utils/dates';
 import { Enter } from '../Motion';
 import PersonProfile from './PersonProfile';
 import StaffExportDialog, { ExportPerson } from './StaffExportDialog';
+import { vacationLabels } from '../../utils/vacationLines';
 
 /**
  * A name in the form two spellings of it are compared in: trimmed, spaces
@@ -501,7 +502,7 @@ function StaffTable({ people, rows, onOpen, variant }: {
   // Below ~560px: labelled cards, so nothing has to scroll sideways.
   if (cards) {
     // The balance lines each card shows, by variant.
-    const salaryPairs: [string, string][] = [['Vacation', 'vacation_balance'], ['Sick', 'sick_balance'], ['Make-up', 'overtime'], ['Carry-over', 'carryover']];
+    const salaryPairs: [string, string][] = [[vacationLabels().current, 'vacation_balance'], ['Sick', 'sick_balance'], ['Make-up', 'overtime'], [vacationLabels().next, 'carryover']];
     return (
       <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
         {rows.map((p) => (
@@ -562,10 +563,10 @@ function StaffTable({ people, rows, onOpen, variant }: {
               </>
             ) : (
               <>
-                <TableCell align="right">Vacation</TableCell>
+                <TableCell align="right">{vacationLabels().current}</TableCell>
                 <TableCell align="right">Sick</TableCell>
                 {showMakeUp && <TableCell align="right">Make-up</TableCell>}
-                {showCarryOver && <TableCell align="right">Carry-over</TableCell>}
+                {showCarryOver && <TableCell align="right">{vacationLabels().next}</TableCell>}
               </>
             )}
           </TableRow>

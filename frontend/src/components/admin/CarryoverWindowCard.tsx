@@ -80,7 +80,7 @@ export default function CarryoverWindowCard() {
     <Paper sx={{ p: 2.5, display: 'grid', gap: 1.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
         <Box sx={{ flex: 1, minWidth: 220 }}>
-          <Typography sx={{ fontWeight: 700 }}>Carry-over and payout requests</Typography>
+          <Typography sx={{ fontWeight: 700 }}>Payout requests</Typography>
           <Typography variant="body2" color="text.secondary">{status}</Typography>
         </Box>
         {saved && <Chip size="small" label={saved.open ? 'Open' : 'Closed'} color={saved.open ? 'success' : 'default'} />}

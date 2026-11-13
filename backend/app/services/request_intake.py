@@ -40,8 +40,13 @@ class RequestTypeClosed(RequestFormError):
 
 
 CARRYOVER_CLOSED_MESSAGE = (
-    "Carry-over and payout requests are not open right now. "
+    "Payout requests are not open right now. "
     "HR opens them at the time of year they are taken."
+)
+
+# Carry-over is no longer a request: unused vacation moves to next year on its own (#552).
+CARRY_OVER_AUTOMATIC_MESSAGE = (
+    "Carry-over happens automatically at year end. Payout is the only request now."
 )
 
 
@@ -59,8 +64,8 @@ def carryover_closed_message(window, today) -> str:
         return CARRYOVER_CLOSED_MESSAGE                        # no dates set
     start, end = (f"{d:%B} {d.day}, {d.year}" for d in window)  # "November 1, 2026" on any OS
     if today < window[0]:
-        return f"Carry-over and payout requests open on {start}, until {end}."
-    return f"Carry-over and payout requests closed on {end}."
+        return f"Payout requests open on {start}, until {end}."
+    return f"Payout requests closed on {end}."
 
 
 async def ensure_request_type_open(request_type: str) -> None:
@@ -289,6 +294,10 @@ async def submit_request(
     email = (fields.get("EmailAddress") or "").strip()
     if not email:
         raise RequestFormError("Your staff record has no email address. Ask your manager to fix it.")
+    # A new carry-over is refused on every path into here: the year end moves the
+    # days on its own now (#552). Requests already pending are still decided as usual.
+    if request_type == "carryover-payout" and getattr(form, "type_of_request", "") == "Carry Over":
+        raise RequestFormError(CARRY_OVER_AUTOMATIC_MESSAGE)
     # A salaried Vacation/part-day request nothing can pay for is refused before any
     # row is created, on every path into here (the request page, admin New request,
     # /api/forms). Hourly staff and other leave types are never refused.

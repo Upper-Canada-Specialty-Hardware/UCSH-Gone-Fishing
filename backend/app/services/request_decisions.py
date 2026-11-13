@@ -374,6 +374,21 @@ def _terms_of(request: RequestRecord, split: LeaveSplit | None) -> tuple[float |
     return carryover_terms(split.carryover_days, rule_date_for(request), toronto_today())
 
 
+def _next_year_line_expired(request: RequestRecord) -> bool:
+    """Whether the next-year days a leave could use have passed their Mar 31.
+
+    Args:
+        request: The request being refunded.
+
+    Returns:
+        True for leave whose carry-over period ended before today; False otherwise.
+    """
+    if request.kind != "leave":                            # only leave spends the next-year line by date
+        return False
+    _, period_end = carryover_period(rule_date_for(request))
+    return period_end < toronto_today()                    # the Apr 1 reset has been and gone
+
+
 def _terms_inputs(request: RequestRecord) -> tuple:
     """What ``_split_for`` depends on, to spot an edit that landed meanwhile.
 
@@ -1135,6 +1150,14 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                                  "value": f"{before_count:g} -> {before_count - net:g} days"})
                     continue
                 before = before_pots.get(pot, 0.0)
+                if pot == "carry_over" and net < 0 and _next_year_line_expired(request):
+                    # The next-year days this leave used have since expired on Mar 31:
+                    # unused, they would be gone too, so they are not given back (#551).
+                    _, expired_on = carryover_period(rule_date_for(request))
+                    rows.append({"label": POT_LABEL[pot],
+                                 "value": f"{-net:g} days not returned, they expired on "
+                                          f"{expired_on:%b} {expired_on.day}, {expired_on.year}"})
+                    continue
                 if pot == "carry_over" and net < 0:                # the approval spent carry-over: split the refund
                     # A spend that drove carry-over below zero (the old next-year path)
                     # must not come back as carry-over the setup fix already moved on

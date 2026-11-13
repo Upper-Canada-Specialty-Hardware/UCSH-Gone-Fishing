@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Processing toggle — when False, app is read-only (dashboards only)
     PROCESSING_ENABLED: bool = False
 
+    # The automatic January 1 carry-over (#553). Off until HR stops refreshing
+    # vacation by hand, so the two can never both run.
+    YEAR_END_CARRY_ENABLED: bool = False
+
     # Storage backend per domain. "sharepoint" (default) keeps SharePoint as the
     # source of truth; "postgres" switches that domain's reads/writes to Postgres.
     # Holidays is the only domain with a Postgres implementation; flip its flag

@@ -20,6 +20,7 @@ import { StaffRecord } from '../../api/staff';
 import {
   AddableMember, addTeamMember, getAddableMembers, getTeamMemberRecord,
 } from '../../api/client';
+import { vacationLabels } from '../../utils/vacationLines';
 
 /** A tile filter key, or null for "show everyone". */
 type FilterKey = 'waiting' | 'off' | 'low' | 'mu' | null;
@@ -365,10 +366,10 @@ export default function TeamTab({
             </>
           ) : (
             <>
-              {line('Vacation', b.vacation_balance ?? 0, b.vacation_entitlement)}
+              {line(vacationLabels().current, b.vacation_balance ?? 0, b.vacation_entitlement)}
               {line('Sick', b.sick_balance ?? 0, b.sick_entitlement)}
               {line('Make-Up', b.overtime ?? 0)}
-              {line('Carry Over', b.carryover ?? 0)}
+              {line(vacationLabels().next, b.carryover ?? 0)}
             </>
           )}
           <Box sx={{ mt: 0.5, pt: 1, borderTop: 1, borderColor: 'divider' }}>

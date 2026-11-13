@@ -10,15 +10,16 @@ import { askedAgo, daysWaiting, requestAmount, requestKind, requestNote, request
 import { BalanceMeter } from './Charts';
 import { Swap, riseAt } from '../Motion';
 import { belowZeroSentence, isHourly } from '../../utils/employment';
+import { vacationLabels } from '../../utils/vacationLines';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /** The balances shown on a card, with the entitlement that sets each bar's length. */
 const POTS: { key: string; label: string; of?: string }[] = [
-  { key: 'vacation_balance', label: 'Vacation', of: 'vacation_entitlement' },
+  { key: 'vacation_balance', label: vacationLabels().current, of: 'vacation_entitlement' },
   { key: 'sick_balance', label: 'Sick', of: 'sick_entitlement' },
   { key: 'overtime', label: 'Make-Up' },
-  { key: 'carryover', label: 'Carry Over' },
+  { key: 'carryover', label: vacationLabels().next },
 ];
 
 interface Props {

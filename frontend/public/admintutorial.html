@@ -1635,9 +1635,9 @@ body[data-skin="sunday"] .tpreview .tpbtn.ok { background: var(--ok); }
   function leaveRefusal(me, leave, partial, split) {
     if (leave !== 'Vacation' && !partial) return '';             // sick days are never refused
     if (split.beyond > 0) return 'Leave dated after March 31, 2027 can be booked from January 1, 2027.';
-    var have = Math.max(me.mu, 0) + Math.max(me.co, 0);          // a negative counts as nothing
+    var have = Math.max(me.mu, 0) + Math.max(me.co, 0) + Math.max(me.vac, 0);   // 2026 days carry too (#551); a negative counts as nothing
     if (split.co <= have) return '';                             // Make-Up and carry-over cover them
-    return 'These dates need ' + num(split.co) + (split.co === 1 ? ' day' : ' days') + ' of ' + (me.mu > 0 ? 'carry-over or Make-Up' : 'carry-over') + ' and you have ' + num(have) + '. Carry-over can\'t go below zero, and 2026 vacation can\'t pay for 2027 dates.';
+    return 'These dates need ' + num(split.co) + (split.co === 1 ? ' day' : ' days') + ' and you have ' + num(have) + ' for 2027.';
   }
   /**
    * Whether the practice request page must block Send, as the real page does.
