@@ -294,9 +294,10 @@ def test_a_pending_vacation_nothing_can_pay_for_warns():
 def test_the_setup_check_judges_each_request_from_its_own_rule_date():
     # GOOD_FIELDS has no carry-over or Make-Up. Feb 2027 made in Nov 2026 cannot be
     # paid, but the same dates made in Jan 2027 can, by the same rule approval uses.
-    made_in_nov = _request(kind="leave", leave_type="Vacation", start_date="2027-02-01", end_date="2027-02-03",
+    # Apr 2027 made in Nov 2026 cannot be booked yet; made in Jan 2027 it is this year's (#551).
+    made_in_nov = _request(kind="leave", leave_type="Vacation", start_date="2027-04-05", end_date="2027-04-07",
                            rule_fields={"RulesOn": "2026-11-05"})
-    made_in_jan = _request(kind="leave", leave_type="Vacation", start_date="2027-02-01", end_date="2027-02-03",
+    made_in_jan = _request(kind="leave", leave_type="Vacation", start_date="2027-04-05", end_date="2027-04-07",
                            rule_fields={"RulesOn": "2027-01-05"})
     day = date(2027, 1, 10)
     assert _by_code(_report(requests=[made_in_nov], toronto_day=day), "pending_over_booking_limit")["status"] == "warn"

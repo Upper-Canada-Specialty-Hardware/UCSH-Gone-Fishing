@@ -24,6 +24,8 @@ import { daysWaiting, requestKind, requestWhat, requestWhen } from '../utils/req
 import { isHourly } from '../utils/employment';
 import { CountUp, EASE, Enter, KF, Seen, riseAt, staggerChildren, useArrival, useDirection } from '../components/Motion';
 import { EmployeeSkeleton } from '../components/Skeletons';
+import { vacationLabels } from '../utils/vacationLines';
+import { usePayoutLabel } from '../hooks/usePayoutLabel';
 
 /** The tabs, keyed by url segment (#/my/<key>). */
 const TABS = ['overview', 'year', 'history'] as const;
@@ -78,6 +80,56 @@ function Pot({ label, value, note, of, count }: { label: string; value: number; 
         </Box>
       )}
       <Typography variant="caption" color="text.secondary">{note}</Typography>
+    </Paper>
+  );
+}
+
+/**
+ * The vacation tile split in two (#551): this year's days on the left, the
+ * carried-over days on the right, each with its own number and line, so the two
+ * are read side by side and never mistaken for one another.
+ *
+ * @param props.current - The current-year label, e.g. "2026 vacation".
+ * @param props.vacation - Current-year days.
+ * @param props.of - The yearly entitlement, for the bar; omit for none.
+ * @param props.next - The carried-over label, e.g. "Carried over from 2026".
+ * @param props.carried - Carried-over days.
+ * @param props.deadline - The carried-over line, e.g. "use by Mar 31, 2027".
+ * @param props.count - Count the numbers up from 0 (on arrival only).
+ * @returns The tile, two columns wide where there is room.
+ */
+function VacationSplit({ current, vacation, of, next, carried, deadline, count }: {
+  current: string; vacation: number; of?: number; next: string; carried: number; deadline: string; count?: boolean;
+}) {
+  const theme = useTheme();
+  const left = of && of > 0 ? Math.max(0, Math.min(1, vacation / of)) : null;   // share of the entitlement left
+  // One half: label, number, and what sits under it.
+  const half = (label: string, value: number, under: ReactNode) => (
+    <Box sx={{ display: 'grid', gap: 0.5, alignContent: 'start', flex: '1 1 140px', minWidth: 0 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>{label}</Typography>
+      <Typography sx={{ fontFamily: theme.tokens.display, fontSize: 32, fontWeight: 600, lineHeight: 1.15, color: value < 0 ? 'error.main' : 'text.primary' }}>
+        {count ? <CountUp from={0} value={value} format={fmt} /> : fmt(value)}
+      </Typography>
+      {under}
+    </Box>
+  );
+  return (
+    <Paper sx={{ p: 2, gridColumn: { xs: 'auto', sm: 'span 2' }, display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+      {half(current, vacation, (
+        <>
+          {left !== null && (
+            <Box sx={{ height: 6, borderRadius: 999, bgcolor: theme.tokens.hover, overflow: 'hidden' }} aria-hidden>
+              <Box sx={{ height: '100%', width: `${left * 100}%`, borderRadius: 999, bgcolor: left < 0.2 ? 'warning.main' : 'primary.main' }} />
+            </Box>
+          )}
+          <Typography variant="caption" color="text.secondary">{of ? `left of ${fmt(of)} days this year` : 'days left'}</Typography>
+        </>
+      ))}
+      {/* The divider between the halves; it disappears when they wrap on a phone. */}
+      <Box aria-hidden sx={{ width: '1px', bgcolor: theme.tokens.line, alignSelf: 'stretch', display: { xs: 'none', sm: 'block' } }} />
+      {half(next, carried, (
+        <Typography variant="caption" sx={{ fontWeight: 600, color: 'warning.main' }}>{deadline}</Typography>
+      ))}
     </Paper>
   );
 }
@@ -318,6 +370,8 @@ export default function EmployeeDashboard() {
   /** Open a new request; the request page uses the same sign-in. */
   const makeRequest = () => navigate('/my/request');
 
+  // Every hook runs before the early return below, or React fails the whole page.
+  const payoutLabel = usePayoutLabel();                         // the payout year, from the admin payout window (#554)
   if (loading) return <EmployeeSkeleton tab={tab} />;
   if (error) {
     return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
@@ -326,6 +380,7 @@ export default function EmployeeDashboard() {
   const b = balances || {};
   const hourlyStaff = isHourly(b);                       // hourly: Sick plus the vacation counter only (#300)
   const resetIn = daysToCarryReset();
+  const lines = vacationLabels();                               // the two vacation lines, named by year (#551)
   // The "by kind" bars: the longest bar fills the track.
   const kindRows = myKindRows(mine);
   const top = Math.max(1, ...kindRows.map((r) => r[1]));
@@ -392,11 +447,19 @@ export default function EmployeeDashboard() {
               </>
             ) : (
               <>
-                <Pot count={arriving} label="Vacation" value={b.vacation_balance ?? 0} of={b.vacation_entitlement} note={b.vacation_entitlement ? `left of ${fmt(b.vacation_entitlement)} days this year` : 'days left'} />
+                {/* Vacation, split in two while carried-over days remain (#551). */}
+                {(b.carryover ?? 0) > 0 ? (
+                  <VacationSplit
+                    count={arriving} current={lines.current} vacation={b.vacation_balance ?? 0} of={b.vacation_entitlement}
+                    next={lines.next} carried={b.carryover ?? 0} deadline={lines.nextNote}
+                  />
+                ) : (
+                  <Pot count={arriving} label={lines.current} value={b.vacation_balance ?? 0} of={b.vacation_entitlement} note={b.vacation_entitlement ? `left of ${fmt(b.vacation_entitlement)} days this year` : 'days left'} />
+                )}
                 <Pot count={arriving} label="Sick or personal" value={b.sick_balance ?? 0} of={b.sick_entitlement} note={b.sick_entitlement ? `left of ${fmt(b.sick_entitlement)} days` : 'days left'} />
                 <Pot count={arriving} label="Make-Up" value={b.overtime ?? 0} note="earned from overtime, used first for vacation" />
-                <Pot count={arriving} label="Carry Over" value={b.carryover ?? 0} note={`used before vacation, cleared April 1 (in ${resetIn} day${resetIn === 1 ? '' : 's'})`} />
-                <Pot count={arriving} label="Payout" value={b.payout ?? 0} note="days set aside to be paid out" />
+                {/* Payout only while days are set aside, like carried-over days (#551). */}
+                {(b.payout ?? 0) !== 0 && <Pot count={arriving} label={payoutLabel} value={b.payout ?? 0} note="days set aside to be paid out" />}
               </>
             )}
           </Box>

@@ -2,7 +2,7 @@ import { Fragment, ReactNode } from 'react';
 import { Box, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { kindColor, RequestKind } from '../constants/leaveColors';
-import { TakenFromValue, describeTakenFrom, fmtDays, potKind, potLabel } from '../utils/takenFrom';
+import { TakenFromValue, describeTakenFrom, fmtDays, potKind, potLabel, takenLabel } from '../utils/takenFrom';
 import { belowZeroSentence } from '../utils/employment';
 
 interface Props {
@@ -126,7 +126,7 @@ export default function TakenFrom({ value, compact }: Props) {
           );
         } else {
           // A plain take: "1.5 Make-Up", "2 2025 carry-over", "1 vacation".
-          chips = <Chip kind={potKind(s.pot)} amount={fmtDays(s.days)} label={potLabel(s.pot, s.year)} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />;
+          chips = <Chip kind={potKind(s.pot)} amount={fmtDays(s.days)} label={takenLabel(s.pot, s.year)} projected={projected} refunded={refunded} danger={danger} title={sentence} compact={compact} />;
         }
         return <Fragment key={i}>{chips}</Fragment>;
       })}

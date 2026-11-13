@@ -627,10 +627,10 @@ async def _enrich_pending_item(
                 start, end = None, None
         today = toronto_today()
         # Which pots may pay comes from the request's rule date, same as approval.
-        carryover_days, waived_days = await leave_carryover_terms(
+        carryover_days, vacation_first = await leave_carryover_terms(
             sf_eff, start, end, days, rule_date_from_fields(item_data, today), today,
         )
-        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, carryover_days, waived_days)
+        projected_sp = simulate_leave_impact(sf_eff, leave_type, days, carryover_days, vacation_first)
         balance_unchanged = f"No balance deduction for {leave_type}" if projected_sp is None else ""
     elif request_type == "overtime":
         hours = float(item_data.get("Hours", 0) or 0)

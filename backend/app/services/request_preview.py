@@ -20,7 +20,7 @@ from app.services.balance import (
     LEAVE_BOOKING_TYPES,
     bookable_until,
     booking_refusal,
-    carryover_period,
+    carryover_terms,
     is_next_year_request,
     leave_day_split,
     simulate_carryover_payout_impact,
@@ -134,7 +134,9 @@ def build_preview(
         last_day = form.end_date                        # set for both a part day and a range
         # A new request's rule date is today, so its carry-over has not expired.
         split = leave_day_split(form.start_date, last_day, days, today, holidays, season)
-        projected = simulate_leave_impact(emp_fields, leave_type, days, split.carryover_days)
+        # Whichever vacation days expire first pay first (#551); the rule date is today.
+        carryover_days, vacation_first = carryover_terms(split.carryover_days, today, today)
+        projected = simulate_leave_impact(emp_fields, leave_type, days, carryover_days, vacation_first)
         # Only salaried vacation and part days can be refused for their dates; carry
         # the last bookable day and any refusal to the page.
         if not bc and leave_type in LEAVE_BOOKING_TYPES:
@@ -148,17 +150,8 @@ def build_preview(
             # preview shows only what Make-Up and carry-over would pay; the refusal says the rest.
             if refusal and projected:
                 projected = {**projected, "CurrentVacationBalance": float(emp_fields.get("CurrentVacationBalance", 0) or 0)}
-        # Carry-over that cannot pay for all of these dates is worth saying when the
-        # person actually has some. Leave that costs nothing never reaches it.
-        if (not bc and days > 0 and leave_type not in NO_COST_LEAVE
-                and float(emp_fields.get("CarryOver", 0) or 0) > 0):
-            _, period_end = carryover_period(today)
-            period = f"Jan 1 to Mar 31, {period_end.year}"      # from the rule, never hardcoded
-            if split.carryover_days == 0:                       # none of these days are in its dates
-                notes.append(f"Carry-over can only pay for leave dated {period}, so it is not used for these dates.")
-            elif split.carryover_days < days:                   # some are, so say how many
-                count = f"{split.carryover_days:g}"
-                notes.append(f"Carry-over can pay for at most {count} of these days, the ones dated {period}.")
+        # No note about which line pays: the projected rows show the split, and the
+        # system refuses what cannot be paid (#551, keep it simple).
         if bc and leave_type == PART_DAY_LEAVE:
             notes.append("A part day uses one whole sick day.")
     elif request_type == "overtime":
@@ -176,7 +169,9 @@ def build_preview(
             projected = None
             warning = "Hourly staff have no vacation balance to carry over or pay out."
         elif projected is None:                            # vacation would go below zero
-            have = float(emp_fields.get("CurrentVacationBalance", 0) or 0)
+            # A payout can use both vacation lines (#554), so name what they have in all.
+            have = (max(float(emp_fields.get("CurrentVacationBalance", 0) or 0), 0.0)
+                    + max(float(emp_fields.get("CarryOver", 0) or 0), 0.0))
             warning = f"You have {have:g} vacation days, fewer than {days:g}. This request would be rejected."
 
     unchanged = ""

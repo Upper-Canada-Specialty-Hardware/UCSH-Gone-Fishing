@@ -194,8 +194,8 @@ def _simulate(
             split = leave_day_split(
                 _parse_day(item_fields.get("StartDate")), _parse_day(item_fields.get("EndDate")), days, on,
             )
-        carryover_days, waived_days = carryover_terms(split.carryover_days, on, today)
-        return simulate_leave_impact(employee_fields, leave_type, days, carryover_days, waived_days)
+        carryover_days, vacation_first = carryover_terms(split.carryover_days, on, today)
+        return simulate_leave_impact(employee_fields, leave_type, days, carryover_days, vacation_first)
     if request_type == "overtime":
         return simulate_overtime_impact(employee_fields, _num(item_fields.get("Hours")))
     # carry-over / payout

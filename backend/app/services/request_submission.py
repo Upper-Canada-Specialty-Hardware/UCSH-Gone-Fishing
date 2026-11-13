@@ -221,7 +221,7 @@ async def _record_reroute(session, record: RequestRecord, chosen: dict | None,
 
 
 async def _carryover_terms_for(record: RequestRecord, emp_fields: dict) -> tuple[float | None, float]:
-    """``(carryover_days, waived_days)`` for this request's projection in an email.
+    """``(carryover_days, vacation_first)`` for this request's projection in an email.
 
     Args:
         record: The request row.
@@ -328,7 +328,7 @@ def _build_manager_content(record: RequestRecord, emp_fields: dict, fields: dict
         record: The request row.
         emp_fields: The submitter's staff fields (balances for the projection).
         fields: The request in the SharePoint list-item shape.
-        terms: ``(carryover_days, waived_days)`` for a leave's projection.
+        terms: ``(carryover_days, vacation_first)`` for a leave's projection.
 
     Returns:
         ``make(manager_id) -> (subject, html, sms_body)``.
@@ -423,7 +423,7 @@ def _build_receipt_content(
         record: The request row.
         emp_fields: The submitter's staff fields.
         fields: The request in the SharePoint list-item shape.
-        terms: ``(carryover_days, waived_days)`` for a leave's projection.
+        terms: ``(carryover_days, vacation_first)`` for a leave's projection.
 
     Returns:
         ``(subject, html)``.

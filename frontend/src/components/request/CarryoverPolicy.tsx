@@ -17,28 +17,18 @@ import { longDate } from '../../utils/carryoverWindow';
 export default function CarryoverPolicy({ window }: { window: { start: string; end: string } | null }) {
   const theme = useTheme();
   const t = theme.tokens;
-  // Each policy line, as a short sentence; the dates line is added only when HR
-  // has set a window (otherwise the form card itself is closed anyway).
+  // Payout only now: carry-over happens on its own at year end (#554). Kept short;
+  // the dates line is added only when HR has set a window.
   const points: string[] = [
-    'Check your current vacation balance first, shown with your request below.',
-    'Days on requests that are still pending are not counted in that balance yet.',
     'Payout is capped: your total paid-out days for the year cannot go above 5.',
-    'Carried-over days must be used by March 31 next year.',
-    'To both carry over and pay out, send two separate requests, one for each.',
+    'Days on requests that are still pending are not counted yet.',
   ];
   if (window) {
     // The window is the time HR accepts these requests; its end is the deadline to send.
-    points.unshift(`Requests are open from ${longDate(window.start)} until ${longDate(window.end)} (the deadline to send).`);
+    points.unshift(`Open from ${longDate(window.start)} until ${longDate(window.end)}.`);
   }
-  // A short FAQ, each a question and a plain answer, from the same rules.
-  const faq: [string, string][] = [
-    ['How many days can I carry over or pay out?',
-      'Only what is actually in your vacation balance. Pending requests are not taken off yet, so do not count days you have already asked for.'],
-    ['Can I do both carry-over and payout?',
-      'Yes. Send one request for the carry-over and a second for the payout.'],
-    ['When must carried-over days be used by?',
-      'By March 31 of next year.'],
-  ];
+  // No FAQ any more: the two lines above are the whole policy.
+  const faq: [string, string][] = [];
   return (
     <Box
       sx={{
@@ -47,7 +37,7 @@ export default function CarryoverPolicy({ window }: { window: { start: string; e
         px: 2, py: 1.75, display: 'grid', gap: 1.25, minWidth: 0,
       }}
     >
-      <Typography sx={{ fontWeight: 700, fontSize: 14 }}>Before you send a carry-over or payout request</Typography>
+      <Typography sx={{ fontWeight: 700, fontSize: 14 }}>Before you send a payout request</Typography>
       {/* The rules as a tight list; everything wraps, so a phone never scrolls sideways. */}
       <Box component="ul" sx={{ m: 0, pl: 2.5, display: 'grid', gap: 0.5 }}>
         {points.map((p) => (
@@ -57,7 +47,7 @@ export default function CarryoverPolicy({ window }: { window: { start: string; e
         ))}
       </Box>
       {/* A short FAQ under a faint divider, kept plain so HR can reword it. */}
-      <Box sx={{ borderTop: `1px solid ${t.line}`, pt: 1, display: 'grid', gap: 1 }}>
+      <Box sx={{ borderTop: `1px solid ${t.line}`, pt: 1, display: faq.length ? 'grid' : 'none', gap: 1 }}>
         {faq.map(([q, a]) => (
           <Box key={q} sx={{ display: 'grid', gap: 0.25, minWidth: 0 }}>
             <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{q}</Typography>

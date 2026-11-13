@@ -251,7 +251,7 @@ CASCADE_COLUMNS = ("CurrentVacationBalance", "CurrentSickDayBalance", "CurrentOv
 
 def _plan_balance(
     request: RequestRecord, before_pots: dict[str, float],
-    carryover_days: float | None = None, waived_days: float = 0.0,
+    carryover_days: float | None = None, vacation_first: bool = False,
 ) -> tuple[str, dict[str, float], str]:
     """Work out, purely, what approving this request does to the balance.
 
@@ -263,14 +263,14 @@ def _plan_balance(
         request: The request being approved.
         before_pots: The employee's pots before the decision.
         carryover_days: The most carry-over may pay for this leave; None means no cap.
-        waived_days: The leave's days charged to nothing because their carry-over expired.
+        vacation_first: Spend current-year vacation above 0 before carry-over.
 
     Returns:
         ``(outcome, moved_pots, note)`` where outcome is ``"balance_applied"``,
         ``"counted"`` (hourly vacation), ``"no_balance_used"`` or
         ``"refused_negative"`` (carry-over/payout that would go below zero);
         moved_pots is ``{pot: new_value}`` for a salaried/hourly-sick move; note
-        is the plain-words reason when nothing was used or days were waived.
+        is the plain-words reason when nothing was used.
     """
     sp = _sp_fields(before_pots, request)
     if request.kind == "leave":
@@ -280,14 +280,10 @@ def _plan_balance(
             return "no_balance_used", {}, f"{leave_type} does not use a balance."
         if not leave_costs_balance(sp, leave_type):                # hourly vacation: counted, not spent
             return "counted", {}, ""
-        after = simulate_leave_impact(sp, leave_type, days, carryover_days, waived_days)
+        after = simulate_leave_impact(sp, leave_type, days, carryover_days, vacation_first)
         if after is None:                                          # defensive: a no-impact type slipped through
             return "no_balance_used", {}, f"{leave_type} does not use a balance."
-        moved = _moved_pots(before_pots, after)
-        note = _waived_note(request, sp, after, days) if waived_days > 0 else ""
-        if note and not moved:                                     # every day was waived: nothing to apply
-            return "no_balance_used", {}, note
-        return "balance_applied", moved, note
+        return "balance_applied", _moved_pots(before_pots, after), ""
     if request.kind == "overtime":
         if not overtime_costs_balance(sp):                         # hourly overtime banks nothing
             return "no_balance_used", {}, "Overtime is paid for hourly staff, so no balance was banked."
@@ -299,37 +295,6 @@ def _plan_balance(
     if after is None:                                              # vacation would go below zero: refuse
         return "refused_negative", {}, ""
     return "balance_applied", _moved_pots(before_pots, after), ""
-
-
-def _waived_note(request: RequestRecord, sp: dict, after: dict, days: float) -> str:
-    """The sentence recording days not charged because their carry-over expired.
-
-    The record still has to say where those days were due from, so a manager or
-    HR reading it later is not left wondering why no balance moved.
-
-    Args:
-        request: The leave being approved.
-        sp: The balances before, in balance-column names.
-        after: The balances the simulation produced.
-        days: The days the leave costs.
-
-    Returns:
-        The sentence, or "" when no day ended up waived (Sick or Make-Up paid them,
-        or this is hourly leave, which never reaches carry-over).
-    """
-    if _is_hourly(request):                                # hourly leave stops at sick
-        return ""
-    # Every day is charged to some pot unless waived, so what is missing was waived.
-    charged = sum(float(sp[column]) - float(after[column]) for column in CASCADE_COLUMNS)
-    waived = round(days - charged, 3)                      # rounded so float noise never prints as a day
-    if waived <= 0:
-        return ""
-    _, expired_on = carryover_period(rule_date_for(request))
-    amount, pronoun = ("1 day was", "it was") if waived == 1 else (f"{waived:g} days were", "they were")
-    return (
-        f"{amount} due from {expired_on.year - 1} carry-over, which expired on "
-        f"{expired_on:%b} {expired_on.day}, {expired_on.year}, so {pronoun} not charged."
-    )
 
 
 async def _split_for(request: RequestRecord) -> LeaveSplit | None:
@@ -360,18 +325,33 @@ async def _split_for(request: RequestRecord) -> LeaveSplit | None:
 
 
 def _terms_of(request: RequestRecord, split: LeaveSplit | None) -> tuple[float | None, float]:
-    """``(carryover_days, waived_days)`` for the cascade, once expiry is counted.
+    """``(carryover_days, vacation_first)`` for the cascade, once expiry is counted.
 
     Args:
         request: The request being decided.
         split: Its split, or None for anything but leave.
 
     Returns:
-        The two values; no cap and nothing waived for anything but leave.
+        The two values; no cap and the usual order for anything but leave.
     """
-    if split is None:                                      # not leave: the whole chain, nothing waived
-        return None, 0.0
+    if split is None:                                      # not leave: the whole chain, usual order
+        return None, False
     return carryover_terms(split.carryover_days, rule_date_for(request), toronto_today())
+
+
+def _next_year_line_expired(request: RequestRecord) -> bool:
+    """Whether the next-year days a leave could use have passed their Mar 31.
+
+    Args:
+        request: The request being refunded.
+
+    Returns:
+        True for leave whose carry-over period ended before today; False otherwise.
+    """
+    if request.kind != "leave":                            # only leave spends the next-year line by date
+        return False
+    _, period_end = carryover_period(rule_date_for(request))
+    return period_end < toronto_today()                    # the Apr 1 reset has been and gone
 
 
 def _terms_inputs(request: RequestRecord) -> tuple:
@@ -1087,8 +1067,7 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
         if request.status != "approved":                           # only an approved request can be refunded
             return {"error": NOT_APPROVED_MESSAGE}
         version = request.approval_version
-        # A refund moves back only what the ledger recorded; this only caps the tidy-up
-        # cascade, so nothing is waived here.
+        # A refund moves back only what the ledger recorded; this only caps the tidy-up cascade.
         carryover_days, _ = _terms_of(request, await _split_for(request))
 
         async with lock_manager.lock(request.employee_id):
@@ -1135,6 +1114,14 @@ async def refund(kind, item_id, actor, channel, link_version=None, reason=None) 
                                  "value": f"{before_count:g} -> {before_count - net:g} days"})
                     continue
                 before = before_pots.get(pot, 0.0)
+                if pot == "carry_over" and net < 0 and _next_year_line_expired(request):
+                    # The next-year days this leave used have since expired on Mar 31:
+                    # unused, they would be gone too, so they are not given back (#551).
+                    _, expired_on = carryover_period(rule_date_for(request))
+                    rows.append({"label": POT_LABEL[pot],
+                                 "value": f"{-net:g} days not returned, they expired on "
+                                          f"{expired_on:%b} {expired_on.day}, {expired_on.year}"})
+                    continue
                 if pot == "carry_over" and net < 0:                # the approval spent carry-over: split the refund
                     # A spend that drove carry-over below zero (the old next-year path)
                     # must not come back as carry-over the setup fix already moved on

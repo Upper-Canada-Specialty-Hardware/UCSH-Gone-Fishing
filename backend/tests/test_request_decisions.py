@@ -742,14 +742,14 @@ def test_approval_reads_the_rule_date_and_refuses_when_carry_over_was_spent(monk
     # Made in Nov 2026 for Feb 2027, with carry-over spent by Jan 5: vacation still
     # cannot pay, because the rule date is in 2026. It stays pending with the reason.
     _on_day(monkeypatch, date(2027, 1, 5))
-    fake = _use(monkeypatch, _all_pots(vacation=15))
+    fake = _use(monkeypatch, _all_pots(vacation=0))                # nothing left to pay next year's dates
     record = _leave(leave_type="Vacation", days=2, start_date=date(2027, 2, 1), end_date=date(2027, 2, 2),
                     rules_on=date(2026, 11, 20))
 
     result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
 
     assert result["refused"] == "booking_limit"
-    assert "need 2 days of carry-over and you have 0" in result["error"]
+    assert "need 2 days and you have 0 for 2027" in result["error"]
     fresh, ledger, _events, _outbox = run(_inspect(record))
     assert fresh.status == "pending" and ledger == [] and fake.write_calls == []
 
@@ -809,9 +809,8 @@ def test_the_created_date_is_the_rule_date_when_no_edit_moved_it(monkeypatch):
     assert fake.write_calls == [{"carry_over": 0.0, "vacation": 14.0}]
 
 
-def test_approved_after_the_carry_over_expired_moves_nothing_and_says_why(monkeypatch):
-    # Created Mar 30 for Mar 31, approved Apr 2 after the reset: approved, no balance
-    # moved, nothing negative, and the record says where the day was due from.
+def test_approved_after_the_next_year_line_expired_is_paid_by_current_year_days(monkeypatch):
+    # Created Mar 30 for Mar 31, approved Apr 2 after the reset: vacation pays (#551).
     _on_day(monkeypatch, date(2027, 4, 2))
     fake = _use(monkeypatch, _all_pots(vacation=10))
     record = _leave(leave_type="Vacation", days=1, start_date=date(2027, 3, 31), end_date=date(2027, 3, 31),
@@ -820,17 +819,11 @@ def test_approved_after_the_carry_over_expired_moves_nothing_and_says_why(monkey
     result = run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
 
     assert result["status"] == "approved"
-    assert fake.write_calls == []
-    fresh, ledger, events, outbox = run(_inspect(record))
-    assert fresh.status == "approved" and fresh.balance_state == "no_balance"
-    assert ledger == []
-    note = "1 day was due from 2026 carry-over, which expired on Mar 31, 2027, so it was not charged."
-    assert any(event.detail.get("note") == note for event in events if event.type == "no_balance_used")
-    assert any(note in row.body for row in outbox)
+    assert fake.write_calls == [{"vacation": 9.0}]
 
 
-def test_a_part_waived_request_charges_the_rest_and_keeps_the_note(monkeypatch):
-    # Mar 30 to Apr 1, approved Apr 2: Mar 30 and 31 uncharged, Apr 1 from vacation.
+def test_a_request_across_the_expiry_is_paid_by_current_year_days(monkeypatch):
+    # Mar 30 to Apr 1, approved Apr 2: all three days from vacation (#551).
     _on_day(monkeypatch, date(2027, 4, 2))
     fake = _use(monkeypatch, _all_pots(vacation=10))
     record = _leave(leave_type="Vacation", days=3, start_date=date(2027, 3, 30), end_date=date(2027, 4, 1),
@@ -841,14 +834,11 @@ def test_a_part_waived_request_charges_the_rest_and_keeps_the_note(monkeypatch):
 
     monkeypatch.setattr("app.services.employee.get_employee_by_id", fake_employee)
     assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
-    assert fake.write_calls == [{"vacation": 9.0}]
-    _fresh, _ledger, events, _outbox = run(_inspect(record))
-    assert any("2 days were due from 2026 carry-over" in (event.detail.get("note") or "")
-               for event in events if event.type == "balance_applied")
+    assert fake.write_calls == [{"vacation": 7.0}]
 
 
 def test_a_refund_gives_back_only_what_the_ledger_recorded(monkeypatch):
-    # Mar 31 was waived and Apr 1 came from vacation; the refund returns just that day.
+    # Both days came from vacation after the expiry; the refund returns both.
     _on_day(monkeypatch, date(2027, 4, 2))
     fake = _use(monkeypatch, _all_pots(vacation=10))
     record = _leave(leave_type="Vacation", days=2, start_date=date(2027, 3, 31), end_date=date(2027, 4, 1),
@@ -859,9 +849,23 @@ def test_a_refund_gives_back_only_what_the_ledger_recorded(monkeypatch):
 
     monkeypatch.setattr("app.services.employee.get_employee_by_id", fake_employee)
     run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
-    assert fake.write_calls == [{"vacation": 9.0}]
+    assert fake.write_calls == [{"vacation": 8.0}]
     assert run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))["status"] == "refunded"
     assert fake.write_calls[-1] == {"vacation": 10.0}
+
+
+def test_a_refund_after_expiry_does_not_return_next_year_days(monkeypatch):
+    # Feb leave paid from the next-year line, refunded in April: those days expired
+    # on Mar 31, so they are not given back (#551).
+    _on_day(monkeypatch, date(2027, 2, 1))
+    fake = _use(monkeypatch, _all_pots(vacation=10, carry_over=3))
+    record = _leave(leave_type="Vacation", days=2, start_date=date(2027, 2, 8), end_date=date(2027, 2, 9),
+                    rules_on=date(2027, 1, 20))
+    run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))
+    assert fake.write_calls == [{"carry_over": 1.0}]
+    _on_day(monkeypatch, date(2027, 4, 15))
+    assert run(rd.refund("leave", record.item_id, "admin", "admin_dashboard"))["status"] == "refunded"
+    assert all("carry_over" not in call for call in fake.write_calls[1:])
 
 
 def test_the_projection_equals_what_approval_moves_for_a_crossing_request(monkeypatch):
@@ -887,10 +891,10 @@ def test_the_projection_equals_what_approval_moves_for_a_crossing_request(monkey
 
     run(attach_taken_from([row], employee_fields=emp, today=date(2026, 11, 20)))
     projected = {piece["pot"]: piece["days"] for piece in row["taken_from"]["pieces"]}
-    assert projected == {"vacation": -2, "carry_over": -1}
+    assert projected == {"vacation": -3}                            # spent in Nov: vacation first
 
     assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
-    assert fake.write_calls == [{"vacation": 3.0, "carry_over": 0.0}]
+    assert fake.write_calls == [{"vacation": 2.0}]
 
 
 def test_refund_of_an_old_next_year_vacation_restores_make_up(monkeypatch):

@@ -193,13 +193,12 @@ def test_pending_vacation_projected():
     ]
 
 
-def test_pending_vacation_next_february_is_projected_from_carry_over():
+def test_pending_vacation_next_february_projected_in_november_uses_vacation_first():
     item = {"Status": "Pending", "LeaveType": "Vacation", "StartDate": "2027-02-01", "EndDate": "2027-02-05", "Days": 5}
     result = taken_from_for(item, "leave", EMP, TODAY)
     assert result["pieces"] == [
         {"pot": "make_up", "days": -2.0, "year": None},
-        {"pot": "carry_over", "days": -1.0, "year": 2026},
-        {"pot": "vacation", "days": -2.0, "year": None},
+        {"pot": "vacation", "days": -3.0, "year": None},
     ]
 
 
