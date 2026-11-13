@@ -58,7 +58,7 @@ const SRC_OPTIONS: { key: Src | 'all'; label: string }[] = [
   { key: 'all', label: 'All lists' },
   { key: 'leave', label: 'Leave' },
   { key: 'mu', label: 'Make-up' },
-  { key: 'co', label: 'Carry-over and payout' },
+  { key: 'co', label: 'Payouts' },                                   // includes past carry-overs (#554)
 ];
 
 /** Today at local midnight, for the date-range filter. */

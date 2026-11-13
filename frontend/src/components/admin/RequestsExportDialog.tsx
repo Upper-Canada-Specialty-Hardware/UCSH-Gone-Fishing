@@ -99,7 +99,7 @@ const PREVIEW_COLS = 6;
 /** How many rows the preview shows. */
 const PREVIEW_ROWS = 12;
 /** The per-type sheet titles, in the order they are written. */
-const TYPE_SHEETS: [Src, string][] = [['leave', 'Leave'], ['mu', 'Make-up'], ['co', 'Carry-over and payout']];
+const TYPE_SHEETS: [Src, string][] = [['leave', 'Leave'], ['mu', 'Make-up'], ['co', 'Payouts']]   // the sheet keeps past carry-overs too (#554);
 /** Every request type, in the order the type filter lists them. */
 const ALL_TYPES: Src[] = TYPE_SHEETS.map(([src]) => src);
 /** The status the totals count, and the one the status filter starts on (#516). */
