@@ -20,6 +20,7 @@ from app.services.balance import (
     LEAVE_BOOKING_TYPES,
     bookable_until,
     booking_refusal,
+    carryover_terms,
     is_next_year_request,
     leave_day_split,
     simulate_carryover_payout_impact,
@@ -133,7 +134,9 @@ def build_preview(
         last_day = form.end_date                        # set for both a part day and a range
         # A new request's rule date is today, so its carry-over has not expired.
         split = leave_day_split(form.start_date, last_day, days, today, holidays, season)
-        projected = simulate_leave_impact(emp_fields, leave_type, days, split.carryover_days)
+        # Whichever vacation days expire first pay first (#551); the rule date is today.
+        carryover_days, vacation_first = carryover_terms(split.carryover_days, today, today)
+        projected = simulate_leave_impact(emp_fields, leave_type, days, carryover_days, vacation_first)
         # Only salaried vacation and part days can be refused for their dates; carry
         # the last bookable day and any refusal to the page.
         if not bc and leave_type in LEAVE_BOOKING_TYPES:

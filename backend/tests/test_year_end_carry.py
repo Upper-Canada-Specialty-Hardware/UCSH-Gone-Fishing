@@ -75,11 +75,14 @@ def wired(monkeypatch):
     run(clear())
     staff = FakeStaff({
         "1": {"Title": "Avery", "EmailAddress": "a@x", "SalaryHourly": "Salary",
-              "CurrentVacationBalance": 3, "CarryOver": 4, "DefaultYearlyVacationDays": 15},
+              "CurrentVacationBalance": 3, "CarryOver": 4, "DefaultYearlyVacationDays": 15,
+              "CurrentSickDayBalance": 2, "SickDayEntitlement": 6, "Payout": 3},
         "2": {"Title": "Jamie", "EmailAddress": "j@x", "SalaryHourly": "Salary",
-              "CurrentVacationBalance": -2, "CarryOver": 0, "DefaultYearlyVacationDays": 15},
+              "CurrentVacationBalance": -2, "CarryOver": 0, "DefaultYearlyVacationDays": 15,
+              "CurrentSickDayBalance": -1, "SickDayEntitlement": 6, "Payout": 0},
         "3": {"Title": "Pat", "EmailAddress": "p@x", "SalaryHourly": "Hourly",
-              "CurrentVacationBalance": 0, "CarryOver": 0, "DefaultYearlyVacationDays": 0},
+              "CurrentVacationBalance": 0, "CarryOver": 0, "DefaultYearlyVacationDays": 0,
+              "CurrentSickDayBalance": 1, "SickDayEntitlement": 5, "Payout": 0},
     })
     sent: list[tuple[list, str]] = []
 
@@ -109,19 +112,26 @@ def wired(monkeypatch):
     return staff, sent
 
 
-def test_the_run_carries_salaried_people_once_and_skips_hourly(wired):
+def test_the_run_refreshes_everyone_once(wired):
     staff, sent = wired
     result = run(yec.run_year_end_carry(2026))
-    assert staff.people["1"]["CurrentVacationBalance"] == 15 and staff.people["1"]["CarryOver"] == 7
-    assert staff.people["2"]["CurrentVacationBalance"] == 13 and staff.people["2"]["CarryOver"] == 0
-    assert "3" not in [pid for pid, _v, _a in staff.writes]          # hourly have no vacation balance
+    avery, jamie, pat = staff.people["1"], staff.people["2"], staff.people["3"]
+    assert (avery["CurrentVacationBalance"], avery["CarryOver"], avery["CurrentSickDayBalance"], avery["Payout"]) == (15, 7, 6, 0)
+    assert (jamie["CurrentVacationBalance"], jamie["CarryOver"], jamie["CurrentSickDayBalance"]) == (13, 0, 5)   # owed days come off
+    assert pat["CurrentSickDayBalance"] == 5 and pat["CurrentVacationBalance"] == 0   # hourly: sick refill only
+    assert "CurrentVacationBalance" not in dict((p, v) for p, v, _a in staff.writes)["3"]
     assert all(actor == "system" for _p, _v, actor in staff.writes)
     assert [to for to, _s in sent] == [["a@x"]]                       # only someone whose days moved
     assert sent[0][1] == "Your 2026 vacation days moved to 2027"
-    assert len(result["carried"]) == 2
+    assert len(result["carried"]) == 3
 
     run(yec.run_year_end_carry(2026))                                 # a second run changes nothing
-    assert staff.people["1"]["CarryOver"] == 7 and len(staff.writes) == 2
+    assert avery["CarryOver"] == 7 and len(staff.writes) == 3
+
+
+def test_sick_refill_takes_off_days_owed_and_never_carries():
+    assert yec.sick_refill_pure(-2, 6) == 4
+    assert yec.sick_refill_pure(3, 6) == 6
 
 
 def test_the_moved_email_names_the_deadline():

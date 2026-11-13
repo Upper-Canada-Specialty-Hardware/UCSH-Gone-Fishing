@@ -76,9 +76,10 @@ def _zeroed(**over):
     return base
 
 
-def test_split_a_date_this_year_is_not_for_carry_over():
+def test_split_carried_over_days_can_pay_a_date_this_year():
+    # Carried-over days can be used any time until Mar 31 (#551).
     split = leave_day_split(NOV_2026, NOV_2026, 1, NOV_2026)
-    assert (split.carryover_days, split.ahead_days, split.unbookable_days) == (0, 0, 0)
+    assert (split.carryover_days, split.ahead_days, split.unbookable_days) == (1, 0, 0)
 
 
 def test_split_jan_to_mar_next_year_is_ahead_of_vacation():
@@ -99,7 +100,7 @@ def test_split_jan_to_mar_this_year_vacation_can_still_pay():
 def test_split_rest_of_this_year_and_a_late_request_are_for_vacation():
     assert leave_day_split(date(2027, 6, 1), date(2027, 6, 1), 1, FEB_2027).carryover_days == 0
     late = leave_day_split(date(2026, 2, 3), date(2026, 2, 3), 1, NOV_2026)   # dated last Feb, filed in Nov
-    assert (late.carryover_days, late.ahead_days, late.unbookable_days) == (0, 0, 0)
+    assert (late.carryover_days, late.ahead_days, late.unbookable_days) == (1, 0, 0)
 
 
 def test_split_next_years_jan_is_unbookable_from_jan_to_mar():
@@ -116,7 +117,7 @@ def test_split_no_dates_is_never_held_against_the_period():
 def test_split_crossing_new_year_counts_working_days_without_the_holiday():
     # Dec 30, Dec 31 and Jan 4; Jan 1 is a holiday and Jan 2 and 3 are the weekend.
     split = leave_day_split(date(2026, 12, 30), date(2027, 1, 4), 3, NOV_2026, NEW_YEARS)
-    assert (split.carryover_days, split.ahead_days, split.unbookable_days) == (1, 1, 0)
+    assert (split.carryover_days, split.ahead_days, split.unbookable_days) == (3, 1, 0)
 
 
 def test_split_crossing_the_end_of_march_from_nov_is_partly_unbookable():
@@ -155,13 +156,13 @@ def test_a_holiday_read_failure_counts_weekdays_and_logs(monkeypatch, caplog):
     monkeypatch.setattr("app.services.balance.get_holidays_for_province", boom)
     split = run(leave_split_for({"Location": "Ontario"}, date(2026, 12, 30), date(2027, 1, 4), 3, NOV_2026))
     # Jan 1 and Jan 4 are both weekdays, so without the holiday list 2 days are counted.
-    assert split.carryover_days == 2
+    assert split.ahead_days == 2
     assert "counting weekdays" in caplog.text
 
 
 def test_an_unknown_location_counts_weekdays_rather_than_failing():
     split = run(leave_split_for({"Location": "Nowhere"}, date(2026, 12, 30), date(2027, 1, 4), 3, NOV_2026))
-    assert split.carryover_days == 2
+    assert split.ahead_days == 2
 
 
 # --- which pot pays, from the rule date ---
@@ -195,10 +196,17 @@ def test_a_sick_day_this_year_comes_from_vacation_not_carry_over():
     assert after["CarryOver"] == 3
 
 
-def test_next_years_feb_comes_from_carry_over_from_a_nov_rule_date():
+def test_spent_in_november_current_year_days_go_first():
+    # Both lines run out on the same Mar 31 when spent Apr to Dec, so vacation pays first.
     after = _pay(NOV_2026, date(2027, 2, 1), date(2027, 2, 2), 2, CurrentVacationBalance=10, CarryOver=3)
-    assert after["CarryOver"] == 1
-    assert after["CurrentVacationBalance"] == 10
+    assert after["CarryOver"] == 3
+    assert after["CurrentVacationBalance"] == 8
+
+
+def test_spent_in_november_carried_over_days_pay_once_vacation_is_used_up():
+    after = _pay(NOV_2026, NOV_2026, NOV_2026, 2, CurrentVacationBalance=1, CarryOver=3)
+    assert after["CurrentVacationBalance"] == 0
+    assert after["CarryOver"] == 2
 
 
 def test_feb_from_a_feb_rule_date_overflows_into_vacation():
@@ -223,8 +231,8 @@ def test_a_nov_rule_date_still_pays_from_carry_over_when_approved_in_january():
 def test_crossing_new_year_splits_vacation_and_carry_over():
     after = _pay(NOV_2026, date(2026, 12, 30), date(2027, 1, 4), 3, holidays=NEW_YEARS,
                  CurrentVacationBalance=5, CarryOver=1)
-    assert after["CurrentVacationBalance"] == 3                     # Dec 30 and 31
-    assert after["CarryOver"] == 0                                  # Jan 4
+    assert after["CurrentVacationBalance"] == 2                     # spent in Nov: vacation first
+    assert after["CarryOver"] == 1
 
 
 def test_crossing_new_year_with_make_up_and_no_carry_over():

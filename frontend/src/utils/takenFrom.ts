@@ -93,15 +93,16 @@ export interface BalanceSnapshot {
 }
 
 /**
- * A chip's label: the pot name, with a year before it only for carry-over and payout.
+ * A taken-from chip's label for leave: carried-over days read "carried over",
+ * every other pot as potLabel names it.
  *
  * @param pot - The balance pot.
  * @param year - The year its days were earned, or null.
- * @returns e.g. "vacation", "Make-Up", "2025 carry-over", "2026 payout".
+ * @returns e.g. "vacation", "Make-Up", "carried over".
  */
 export function takenLabel(pot: Pot, year: number | null): string {
-  // Days a leave took from the next-year line are named by the year they came from (#551).
-  if (pot === 'carry_over' && year != null) return `from ${year}`;
+  // Days a leave took from carried-over days read plainly (#551).
+  if (pot === 'carry_over') return 'carried over';
   return potLabel(pot, year);
 }
 

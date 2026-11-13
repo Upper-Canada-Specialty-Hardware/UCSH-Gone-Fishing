@@ -891,10 +891,10 @@ def test_the_projection_equals_what_approval_moves_for_a_crossing_request(monkey
 
     run(attach_taken_from([row], employee_fields=emp, today=date(2026, 11, 20)))
     projected = {piece["pot"]: piece["days"] for piece in row["taken_from"]["pieces"]}
-    assert projected == {"vacation": -2, "carry_over": -1}
+    assert projected == {"vacation": -3}                            # spent in Nov: vacation first
 
     assert run(rd.approve("leave", record.item_id, "Boss", "manager_dashboard"))["status"] == "approved"
-    assert fake.write_calls == [{"vacation": 3.0, "carry_over": 0.0}]
+    assert fake.write_calls == [{"vacation": 2.0}]
 
 
 def test_refund_of_an_old_next_year_vacation_restores_make_up(monkeypatch):
